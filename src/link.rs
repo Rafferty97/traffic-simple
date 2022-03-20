@@ -114,9 +114,9 @@ impl Link {
 
     fn project_obstacle(obstacle: &Obstacle, src: &Link, dst: &Link) -> Obstacle {
         // TODO
-        //  - Project to world coords
-        //  - Project coords onto dst link
-        //  - pos is min, lats
+        // - Use LUT to translate `pos` from `src` to `dst`
+        // - Sample the `dst` link at the new `pos`
+        // - Calculate `pos` and `lat` offsets, and apply to obstacle
 
         unimplemented!()
     }
