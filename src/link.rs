@@ -1,33 +1,34 @@
 use slotmap::Key;
-use smallvec::SmallVec;
+use crate::curve::LinkCurve;
+use crate::obstacle::Obstacle;
 use crate::{LinkId, VehicleId, LinkSet, VehicleSet};
 use crate::util::Interval;
-use crate::math::Point2d;
+use crate::math::{LookupTable, project_local, Vector2d};
+
+/// The minimum lateral clearance for own vehicle to pass another, in m.
+const LATERAL_CLEARANCE: f64 = 0.5;
 
 pub struct Link {
     id: LinkId,
-    vehicles: Vec<VehicleId>,
-    links_in: SmallVec<[LinkId; 4]>,
-    links_out: SmallVec<[LinkId; 4]>,
-    links_adj: SmallVec<[LinkId; 8]>,
+    curve: LinkCurve,
+    links_in: Vec<LinkId>,
+    links_out: Vec<LinkId>,
+    links_adj: Vec<AdjacentLink>,
+    vehicles: Vec<VehicleId>
 }
 
-#[derive(Clone, Copy)]
-struct Obstacle {
-    /// The longitudinal position of the obstacle in m.
-    pub pos: f64,
-    /// The lateral extents of the obstacle in m.
-    pub lat: Interval<f64>,
-    /// The world space coordinates of the obstacle,
-    /// represented as the two ends of a line segment.
-    pub coords: [Point2d; 2],
-    /// The velocity of the obstacle in m/s.
-    pub vel: f64
+/// Information about a link which overlaps another link
+struct AdjacentLink {
+    /// The ID of the adjacent link
+    link: LinkId,
+    /// An approximate mapping from longitudinal positions
+    /// in the original link to positions in the adjacent link
+    pos_map: LookupTable
 }
 
 impl Link {
     pub fn length(&self) -> f64 {
-        0.0 // TODO
+        self.curve.length()
     }
 
     pub fn apply_car_following(
@@ -36,30 +37,29 @@ impl Link {
         vehicles: &VehicleSet
     ) {
         // Apply accelerations to vehicles on this link
-        let obstacles = self.vehicles_as_obstacles(vehicles);
-        self.follow_obstacles(links, vehicles, obstacles);
+        for (idx, obstacle) in self.vehicle_obstacles(vehicles).enumerate() {
+            self.follow_obstacle(links, vehicles, obstacle, &[], idx + 1);
+        }
 
         // Apply accelerations to vehicles on adjacent links
-        for link_id in &self.links_adj {
-            let obstacles = self.vehicles_as_obstacles(vehicles); // TODO: Project
-            self.follow_obstacles(links, vehicles, obstacles);
+        for adj_link in &self.links_adj {
+            let link = &links[adj_link.link];
+            let obstacles = self.vehicle_obstacles(vehicles)
+                .map(|o| Self::project_obstacle(&o, link, adj_link));
+            link.follow_obstacles(links, vehicles, obstacles);
         }
     }
 
-    /// Returns an iterator over the vehicles on the link as obstacles,
-    /// ordered from the end of the link to the beginning.
-    fn vehicles_as_obstacles<'a>(&'a self, vehicles: &'a VehicleSet) -> impl Iterator<Item=Obstacle> + 'a {
-        self.vehicles.iter().rev().map(|id| {
-            let veh = &vehicles[*id];
-            Obstacle {
-                pos: veh.pos_rear(),
-                lat: veh.lat_extent(),
-                coords: veh.obstacle_coords(),
-                vel: veh.vel()
-            }
-        })
+    /// Gets the vehicles on this link as obstacles, in reverse order.
+    fn vehicle_obstacles<'a>(&'a self, vehicles: &'a VehicleSet) -> impl Iterator<Item=Obstacle> + 'a {
+        self.vehicles.iter()
+            .rev()
+            .map(|id| vehicles[*id].get_obstacle())
     }
 
+    /// Applies an acceleration to the vehicles on this and preceeding links
+    /// that need to follow the given obstacles.
+    /// The obstacles must be in reverse order along the link (end to beginning).
     fn follow_obstacles(
         &self,
         links: &LinkSet,
@@ -78,7 +78,7 @@ impl Link {
                 .unwrap_or(self.vehicles.len());
 
             // Follow the obstacle
-            self.follow_obstacle(links, obstacle, &[], skip);
+            self.follow_obstacle(links, vehicles, obstacle, &[], skip);
         }
     }
 
@@ -86,18 +86,34 @@ impl Link {
     /// that need to follow the given obstacle.
     /// 
     /// # Parameters
-    /// * `links` - The other links in the network
+    /// * `links` - The links in the network
+    /// * `vehicles` - The vehicles in the network
     /// * `obstacle` - The obstacle to follow
     /// * `route` - Only consider vehicles following this route
     /// * `skip` - Do not consider this number of vehicles at the end of the link
-    fn follow_obstacle(&self, links: &LinkSet, obstacle: Obstacle, route: &[LinkId], skip: usize) {
+    fn follow_obstacle(
+        &self,
+        links: &LinkSet,
+        vehicles: &VehicleSet,
+        obstacle: Obstacle,
+        route: &[LinkId],
+        skip: usize
+    ) {
         // TODO: Limit search distance
 
-        for vehicle in self.vehicles.iter().rev().skip(skip) {
-            // TODO: Check lat, and continue
-            // TODO: Apply acceleration and return
+        // Look for a following vehicle on this link
+        for veh_id in self.vehicles.iter().rev().skip(skip) {
+            let vehicle = &vehicles[*veh_id];
+            let own_lat = vehicle.lat_extent();
+            let clearance = own_lat.clearance_with(&obstacle.lat);
+
+            if clearance < LATERAL_CLEARANCE {
+                vehicle.follow_obstacle(obstacle.pos, obstacle.vel);
+                return;
+            }
         }
 
+        // Look for a following vehicle on preceeding links
         let mut ext_route = [LinkId::null(); 8];
         ext_route[0] = self.id;
         ext_route[1..(route.len() + 1)].copy_from_slice(route);
@@ -108,16 +124,34 @@ impl Link {
                 pos: obstacle.pos + link.length(),
                 ..obstacle
             };
-            link.follow_obstacle(links, obstacle, &ext_route, 0);
+            link.follow_obstacle(links, vehicles, obstacle, &ext_route, 0);
         }
     }
 
-    fn project_obstacle(obstacle: &Obstacle, src: &Link, dst: &Link) -> Obstacle {
-        // TODO
-        // - Use LUT to translate `pos` from `src` to `dst`
-        // - Sample the `dst` link at the new `pos`
-        // - Calculate `pos` and `lat` offsets, and apply to obstacle
+    /// Projects an obstacle onto the given link.
+    fn project_obstacle(
+        obstacle: &Obstacle,
+        link: &Link,
+        mapping: &AdjacentLink
+    ) -> Obstacle {
+        // Find an approximate mapping of the `pos` onto the link
+        let dst_pos = mapping.pos_map.sample(obstacle.pos);
 
-        unimplemented!()
+        // Get the local coordinate system around this point
+        let (origin, y_axis) = link.curve.sample_centre(dst_pos);
+        let x_axis = Vector2d::new(-y_axis.y, y_axis.x);
+
+        // Project the obstacle's rear coordinates
+        // - x: The lateral offset
+        // - y: The longitudinal offset
+        let proj = obstacle.coords.map(|coord| {
+            project_local(coord, origin, x_axis, y_axis)
+        });
+
+        Obstacle {
+            pos: dst_pos + f64::min(proj[0].y, proj[1].y),
+            lat: Interval::new(proj[0].x, proj[0].y),
+            ..*obstacle
+        }
     }
 }

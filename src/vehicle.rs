@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use crate::obstacle::Obstacle;
 use crate::util::Interval;
 use crate::{VehicleId, LinkId};
 use crate::math::{CubicFn, Point2d, Vector2d};
@@ -93,9 +94,20 @@ impl Vehicle {
         )
     }
 
+    /// Gets the represention of the vehicle as an `Obstacle`.
+    pub(crate) fn get_obstacle(&self) -> Obstacle {
+        // TODO: cache?
+        Obstacle {
+            pos: self.pos_rear(),
+            lat: self.lat_extent(),
+            coords: self.obstacle_coords(),
+            vel: self.vel()
+        }
+    }
+
     /// Gets the end points of the line segment behind the vehicle
     /// which is used for the car following model.
-    pub(crate) fn obstacle_coords(&self) -> [Point2d; 2] {
+    fn obstacle_coords(&self) -> [Point2d; 2] {
         let tan = self.world_tan;
         let perp = Vector2d::new(-tan.y, tan.x);
         let rear = self.world_pos - self.half_len * tan;
