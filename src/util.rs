@@ -1,0 +1,64 @@
+//! Miscellaneous utility structs and functions.
+
+use cgmath::num_traits::Float;
+
+/// An interval on the real number line.
+#[derive(Copy, Clone, Default, PartialEq, Eq)]
+pub struct Interval<T> {
+    pub min: T,
+    pub max: T
+}
+
+impl<T> Interval<T> {
+    /// Creates a new interval.
+    pub const fn new(min: T, max: T) -> Self {
+        Self { min, max }
+    }
+}
+
+impl<T: std::cmp::PartialOrd> Interval<T> {
+    /// Returns true if this interval overlaps with the other.
+    pub fn overlaps(&self, other: &Self) -> bool {
+        self.max > other.min && other.max > self.min
+    }
+}
+
+impl<T: std::ops::Sub<T, Output=T> + Copy> Interval<T> {
+    /// Gets the magnitude of the interval.
+    pub fn length(&self) -> T {
+        self.max - self.min
+    }
+}
+
+impl<T: Copy> Interval<T> {
+    /// Gets the interval as an array.
+    pub fn as_array(&self) -> [T; 2] {
+        [self.min, self.max]
+    }
+}
+
+impl<T: Float> Interval<T> {
+    /// Creates an interval with the given centre and radius.
+    pub fn disc(centre: T, radius: T) -> Self {
+        Self { min: centre - radius, max: centre + radius }
+    }
+
+    /// Returns the centre/mid-point of the interval.
+    pub fn midpoint(&self) -> T {
+        T::from(0.5).unwrap() * (self.min + self.max)
+    }
+
+    /// Computes the gap between two intervals.
+    /// Will be negative if the intervals overlap.
+    pub fn clearance_with(&self, other: &Self) -> T {
+        T::max(other.min - self.max, self.min - other.max)
+    }
+
+    pub fn lerp(&self, t: T) -> T {
+        self.min + t * (self.max - self.min)
+    }
+
+    pub fn inv_lerp(&self, value: T) -> T {
+        (value - self.min) / (self.max - self.min)
+    }
+}
