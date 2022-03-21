@@ -24,12 +24,26 @@ pub struct Vehicle {
     acc: Cell<f64>,
     /// The vehicle's route, including the link it's currently on.
     route: Vec<RouteElement>,
+    /// Whether the vehicle can exit at the end of its route.
+    can_exit: bool,
     /// The in-progress lane change, if there is one.
     lane_change: Option<LaneChange>,
     /// The world space coordinates of the centre of the vehicle.
     world_pos: Point2d,
     /// A world space vector tangent to the vehicle's heading.
     world_tan: Vector2d
+}
+
+/// The attributes of a simulated vehicle.
+pub struct VehicleAttributes {
+    /// The vehicle width in m.
+    pub width: f64,
+    /// The vehicle length in m.
+    pub length: f64,
+    /// The maximum acceleration of the vehicle, in m/s^2.
+    max_acc: f64,
+    /// The comfortable deceleration of the vehicle, a negative number in m/s^2.
+    comf_dec: f64
 }
 
 /// A link along a vehicle's route.
@@ -48,6 +62,25 @@ struct LaneChange {
 }
 
 impl Vehicle {
+    /// Creates a new vehicle.
+    pub fn new(id: VehicleId, attributes: &VehicleAttributes) -> Self {
+        Self {
+            id,
+            half_wid: 0.5 * attributes.width,
+            half_len: 0.5 * attributes.length,
+            max_acc: attributes.max_acc,
+            comf_dec: attributes.comf_dec,
+            pos: 0.0,
+            vel: 0.0,
+            acc: Cell::new(attributes.max_acc),
+            route: vec![],
+            can_exit: true,
+            lane_change: None,
+            world_pos: Point2d::new(0.0, 0.0),
+            world_tan: Vector2d::new(0.0, 0.0)
+        }
+    }
+
     /// Half the vehicle's width in m.
     pub(crate) fn half_wid(&self) -> f64 {
         self.half_wid
@@ -178,5 +211,14 @@ impl Vehicle {
             }
         }
         false
+    }
+
+    /// Sets the vehicle's route.
+    pub(crate) fn set_route(&mut self, route: &[LinkId], now: usize, can_exit: bool) {
+        self.route = route.iter().enumerate().map(|(idx, link)| RouteElement {
+            link: *link,
+            entered_at: (idx == 0).then(|| now)
+        }).collect();
+        self.can_exit = can_exit;
     }
 }

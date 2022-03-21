@@ -1,4 +1,5 @@
-use crate::{LinkSet, VehicleSet};
+use crate::{LinkSet, VehicleSet, LinkId};
+use crate::vehicle::{VehicleAttributes, Vehicle};
 
 pub struct Simulation {
     links: LinkSet,
@@ -7,6 +8,16 @@ pub struct Simulation {
 }
 
 impl Simulation {
+    /// Adds a vehicle to the simulation.
+    pub fn add_vehicle(&mut self, attributes: &VehicleAttributes, link: LinkId) {
+        let vehicle_id = self.vehicles.insert_with_key(|id| {
+            let mut vehicle = Vehicle::new(id, attributes);
+            vehicle.set_route(&[link], self.frame, false);
+            vehicle
+        });
+        self.links[link].insert_vehicle(vehicle_id);
+    }
+
     /// Advances the simulation by `dt` seconds.
     pub fn step(&mut self, dt: f64) {
         self.apply_car_following();
