@@ -1,6 +1,7 @@
 use slotmap::Key;
 use crate::curve::LinkCurve;
 use crate::obstacle::Obstacle;
+use crate::vehicle::Vehicle;
 use crate::{LinkId, VehicleId, LinkSet, VehicleSet};
 use crate::util::Interval;
 use crate::math::{LookupTable, project_local, Vector2d};
@@ -27,10 +28,24 @@ struct AdjacentLink {
 }
 
 impl Link {
+    /// Gets the length of the link in m.
     pub fn length(&self) -> f64 {
         self.curve.length()
     }
 
+    /// Inserts the vehicle with the given ID into the link.
+    pub fn insert_vehicle(&mut self, id: VehicleId) {
+        self.vehicles.insert(0, id);
+    }
+
+    /// Removes the vehicle with the given ID from the link.
+    pub fn remove_vehicle(&mut self, id: VehicleId) {
+        if let Some(idx) = self.vehicles.iter().rposition(|v| *v == id) {
+            self.vehicles.remove(idx);
+        }
+    }
+
+    /// Applies the car following model to all vehicles following a vehicle on this link.
     pub fn apply_car_following(
         &self,
         links: &LinkSet,
@@ -104,10 +119,7 @@ impl Link {
         // Look for a following vehicle on this link
         for veh_id in self.vehicles.iter().rev().skip(skip) {
             let vehicle = &vehicles[*veh_id];
-            let own_lat = vehicle.lat_extent();
-            let clearance = own_lat.clearance_with(&obstacle.lat);
-
-            if clearance < LATERAL_CLEARANCE {
+            if !Self::can_pass(vehicle, &obstacle) {
                 vehicle.follow_obstacle(obstacle.pos, obstacle.vel);
                 return;
             }
@@ -126,6 +138,13 @@ impl Link {
             };
             link.follow_obstacle(links, vehicles, obstacle, &ext_route, 0);
         }
+    }
+
+    /// Determines whether the vehicle can pass the given obstacle.
+    fn can_pass(vehicle: &Vehicle, obstacle: &Obstacle) -> bool {
+        let own_lat = vehicle.lat_extent();
+        let clearance = own_lat.clearance_with(&obstacle.lat);
+        clearance >= LATERAL_CLEARANCE
     }
 
     /// Projects an obstacle onto the given link.

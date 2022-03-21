@@ -4,6 +4,7 @@ use link::Link;
 
 mod util;
 mod math;
+mod simulation;
 mod link;
 mod vehicle;
 mod curve;

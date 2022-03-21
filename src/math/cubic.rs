@@ -38,6 +38,7 @@ impl CubicFn {
         Self { coeffs, offset }
     }
 
+    /// Returns a copy of this `CubicFn` translated to the left by `amount` units.
     pub fn translate_x(&self, amount: f64) -> CubicFn {
         Self {
             coeffs: self.coeffs,
