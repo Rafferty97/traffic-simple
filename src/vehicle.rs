@@ -119,6 +119,14 @@ impl Vehicle {
         self.vel
     }
 
+    /// Checks whether the vehicle's route coincides with the given links.
+    pub(crate) fn on_route(&self, links: &[LinkId]) -> bool {
+        self.route.iter()
+            .skip(1)
+            .map(|el| &el.link)
+            .eq(links.iter())
+    }
+
     /// Applies an acceleration to the vehicle so it follows an obstacle.
     pub(crate) fn follow_obstacle(&self, pos: f64, vel: f64) {
         let acc = 0.0; // todo: IDM

@@ -11,14 +11,25 @@ mod curve;
 /// The minimum lateral clearance for own vehicle to pass another, in m.
 const LATERAL_CLEARANCE: f64 = 0.5;
 
+/// The maximum lookahead for the car following model, in s.
+const MAX_LOOKAHEAD: f64 = 10.0;
+
 /// A link represents a single lane of traffic.
 #[derive(Clone)]
 pub struct Link {
+    /// The link ID.
     id: LinkId,
+    /// The geometry of the link.
     curve: LinkCurve,
+    /// The links that precede this one.
     links_in: Vec<LinkId>,
+    /// The links that succeed this one.
     links_out: Vec<LinkId>,
+    /// The links adjacent to this one.
     links_adj: Vec<AdjacentLink>,
+    /// Speed limit in m/s.
+    speed_limit: f64,
+    /// The vehicles on the link.
     vehicles: Vec<VehicleId>
 }
 
@@ -119,15 +130,26 @@ impl Link {
         route: &[LinkId],
         skip: usize
     ) {
-        // TODO: Limit search distance
+        let min_pos = obstacle.pos - MAX_LOOKAHEAD * self.speed_limit;
 
         // Look for a following vehicle on this link
         for veh_id in self.vehicles.iter().rev().skip(skip) {
             let vehicle = &vehicles[*veh_id];
-            if !Self::can_pass(vehicle, &obstacle) {
-                vehicle.follow_obstacle(obstacle.pos, obstacle.vel);
-                return;
+            if !vehicle.on_route(route) {
+                continue;
             }
+            if Self::can_pass(vehicle, &obstacle) {
+                continue;
+            }
+            if vehicle.pos_front() > min_pos {
+                vehicle.follow_obstacle(obstacle.pos, obstacle.vel);
+            }
+            return;
+        }
+
+        // Limit search distance
+        if min_pos >= 0.0 {
+            return;
         }
 
         // Look for a following vehicle on preceeding links
