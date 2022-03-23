@@ -1,8 +1,11 @@
-use std::cell::Cell;
 use crate::obstacle::Obstacle;
 use crate::util::Interval;
 use crate::{VehicleId, LinkId, LinkSet};
 use crate::math::{CubicFn, Point2d, Vector2d};
+
+use self::acceleration::AccelerationModel;
+
+mod acceleration;
 
 /// A simulated vehicle.
 #[derive(Clone)]
@@ -13,16 +16,12 @@ pub struct Vehicle {
     half_wid: f64,
     /// Half the vehicle's length in m.
     half_len: f64,
-    /// The maximum acceleration of the vehicle, in m/s^2.
-    max_acc: f64,
-    /// The comfortable deceleration of the vehicle, a negative number in m/s^2.
-    comf_dec: f64,
+    /// The acceleration model
+    acc: AccelerationModel,
     /// The longitudinal position along the current link, in m.
     pos: f64,
     /// The velocity in m/s.
     vel: f64,
-    /// The acceleration in m/s^2.
-    acc: Cell<f64>,
     /// The vehicle's route, including the link it's currently on.
     route: Vec<RouteElement>,
     /// Whether the vehicle can exit at the end of its route.
@@ -71,11 +70,12 @@ impl Vehicle {
             id,
             half_wid: 0.5 * attributes.width,
             half_len: 0.5 * attributes.length,
-            max_acc: attributes.max_acc,
-            comf_dec: attributes.comf_dec,
+            acc: AccelerationModel::new(&acceleration::ModelParams {
+                max_acceleration: attributes.max_acc,
+                comf_deceleration: attributes.comf_dec
+            }),
             pos: 0.0,
             vel: 0.0,
-            acc: Cell::new(attributes.max_acc),
             route: vec![],
             can_exit: true,
             lane_change: None,
@@ -129,8 +129,8 @@ impl Vehicle {
 
     /// Applies an acceleration to the vehicle so it follows an obstacle.
     pub(crate) fn follow_obstacle(&self, pos: f64, vel: f64) {
-        let acc = 0.0; // todo: IDM
-        self.acc.set(f64::min(self.acc.get(), acc));
+        let net_dist = pos - self.pos_front();
+        self.acc.follow_vehicle(net_dist, self.vel, vel);
     }
 
     /// Gets the vehicle's current lateral offset from the centre line.
@@ -179,8 +179,9 @@ impl Vehicle {
             .map(|lat| rear + lat * perp)
     }
 
-    pub(crate) fn reset_acceleration(&self) {
-        self.acc.set(self.max_acc);
+    /// Resets internal model states in preparation for a new step of the simulation.
+    pub(crate) fn reset(&self) {
+        self.acc.reset()
     }
 
     /// Integrates the vehicle's velocity and position
@@ -189,7 +190,7 @@ impl Vehicle {
     /// * `dt` - The time step in seconds
     pub(crate) fn integrate(&mut self, dt: f64) {
         // Perform the integration
-        let vel = f64::max(self.vel + dt * self.acc.get(), 0.0);
+        let vel = f64::max(self.vel + dt * self.acc.acc(), 0.0);
         let pos = self.pos + 0.5 * (self.vel + vel) * dt;
         self.vel = vel;
         self.pos = pos;

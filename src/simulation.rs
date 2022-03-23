@@ -45,7 +45,7 @@ impl Simulation {
     fn integrate(&mut self, dt: f64) {
         for (_, vehicle) in &mut self.vehicles {
             vehicle.integrate(dt);
-            vehicle.reset_acceleration();
+            vehicle.reset();
         }
     }
 
