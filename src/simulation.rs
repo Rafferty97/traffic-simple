@@ -1,6 +1,7 @@
 use crate::{LinkSet, VehicleSet, LinkId};
 use crate::vehicle::{VehicleAttributes, Vehicle};
 
+#[derive(Default, Clone)]
 pub struct Simulation {
     links: LinkSet,
     vehicles: VehicleSet,
@@ -8,6 +9,11 @@ pub struct Simulation {
 }
 
 impl Simulation {
+    /// Creates a new simulation.
+    pub fn new() -> Self {
+        Default::default()
+    }
+
     /// Adds a vehicle to the simulation.
     pub fn add_vehicle(&mut self, attributes: &VehicleAttributes, link: LinkId) {
         let vehicle_id = self.vehicles.insert_with_key(|id| {

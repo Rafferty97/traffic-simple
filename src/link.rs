@@ -1,14 +1,17 @@
 use slotmap::Key;
-use crate::curve::LinkCurve;
+use curve::LinkCurve;
 use crate::obstacle::Obstacle;
 use crate::vehicle::Vehicle;
 use crate::{LinkId, VehicleId, LinkSet, VehicleSet};
 use crate::util::Interval;
 use crate::math::{LookupTable, project_local, Vector2d};
 
+mod curve;
+
 /// The minimum lateral clearance for own vehicle to pass another, in m.
 const LATERAL_CLEARANCE: f64 = 0.5;
 
+#[derive(Clone)]
 pub struct Link {
     id: LinkId,
     curve: LinkCurve,
@@ -19,6 +22,7 @@ pub struct Link {
 }
 
 /// Information about a link which overlaps another link
+#[derive(Clone)]
 struct AdjacentLink {
     /// The ID of the adjacent link
     link: LinkId,

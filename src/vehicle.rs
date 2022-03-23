@@ -5,6 +5,7 @@ use crate::{VehicleId, LinkId, LinkSet};
 use crate::math::{CubicFn, Point2d, Vector2d};
 
 /// A simulated vehicle.
+#[derive(Clone)]
 pub struct Vehicle {
     /// The vehicle's ID
     pub(crate) id: VehicleId,
@@ -35,6 +36,7 @@ pub struct Vehicle {
 }
 
 /// The attributes of a simulated vehicle.
+#[derive(Clone, Copy)]
 pub struct VehicleAttributes {
     /// The vehicle width in m.
     pub width: f64,
@@ -47,6 +49,7 @@ pub struct VehicleAttributes {
 }
 
 /// A link along a vehicle's route.
+#[derive(Clone, Copy)]
 struct RouteElement {
     link: LinkId,
     entered_at: Option<usize>

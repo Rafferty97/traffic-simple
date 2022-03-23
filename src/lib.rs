@@ -1,13 +1,13 @@
 use slotmap::{new_key_type, SlotMap};
-use vehicle::Vehicle;
-use link::Link;
+pub use simulation::Simulation;
+pub use vehicle::Vehicle;
+pub use link::Link;
 
+pub mod math;
 mod util;
-mod math;
 mod simulation;
 mod link;
 mod vehicle;
-mod curve;
 mod obstacle;
 
 new_key_type! {
