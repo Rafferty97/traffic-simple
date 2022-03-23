@@ -11,6 +11,7 @@ mod curve;
 /// The minimum lateral clearance for own vehicle to pass another, in m.
 const LATERAL_CLEARANCE: f64 = 0.5;
 
+/// A link represents a single lane of traffic.
 #[derive(Clone)]
 pub struct Link {
     id: LinkId,
@@ -21,7 +22,7 @@ pub struct Link {
     vehicles: Vec<VehicleId>
 }
 
-/// Information about a link which overlaps another link
+/// Information about a link which overlaps another link.
 #[derive(Clone)]
 struct AdjacentLink {
     /// The ID of the adjacent link
@@ -38,19 +39,19 @@ impl Link {
     }
 
     /// Inserts the vehicle with the given ID into the link.
-    pub fn insert_vehicle(&mut self, id: VehicleId) {
+    pub(crate) fn insert_vehicle(&mut self, id: VehicleId) {
         self.vehicles.insert(0, id);
     }
 
     /// Removes the vehicle with the given ID from the link.
-    pub fn remove_vehicle(&mut self, id: VehicleId) {
+    pub(crate) fn remove_vehicle(&mut self, id: VehicleId) {
         if let Some(idx) = self.vehicles.iter().rposition(|v| *v == id) {
             self.vehicles.remove(idx);
         }
     }
 
     /// Applies the car following model to all vehicles following a vehicle on this link.
-    pub fn apply_car_following(
+    pub(crate) fn apply_car_following(
         &self,
         links: &LinkSet,
         vehicles: &VehicleSet

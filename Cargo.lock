@@ -193,7 +193,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "traffic-simple"
+name = "traffic-sim"
 version = "0.1.0"
 dependencies = [
  "assert_approx_eq",

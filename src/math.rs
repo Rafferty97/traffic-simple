@@ -1,3 +1,5 @@
+//! Mathematical structs and functions.
+
 use cgmath::{Point2, Vector2};
 pub use util::*;
 pub use lut::LookupTable;

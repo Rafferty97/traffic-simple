@@ -1,6 +1,7 @@
 use crate::{LinkSet, VehicleSet, LinkId};
 use crate::vehicle::{VehicleAttributes, Vehicle};
 
+/// A traffic simulation.
 #[derive(Default, Clone)]
 pub struct Simulation {
     links: LinkSet,

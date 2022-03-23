@@ -11,7 +11,9 @@ mod vehicle;
 mod obstacle;
 
 new_key_type! {
+    /// Unique ID of a [Link].
     pub struct LinkId;
+    /// Unique ID of a [Vehicle].
     pub struct VehicleId;
 }
 

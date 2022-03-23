@@ -66,7 +66,7 @@ struct LaneChange {
 
 impl Vehicle {
     /// Creates a new vehicle.
-    pub fn new(id: VehicleId, attributes: &VehicleAttributes) -> Self {
+    pub(crate) fn new(id: VehicleId, attributes: &VehicleAttributes) -> Self {
         Self {
             id,
             half_wid: 0.5 * attributes.width,
@@ -95,7 +95,7 @@ impl Vehicle {
     }
 
     /// The ID of the link the vehicle is currently travelling on.
-    pub(crate) fn link_id(&self) -> Option<LinkId> {
+    pub fn link_id(&self) -> Option<LinkId> {
         self.route.get(0).map(|el| el.link)
     }
 
@@ -115,7 +115,7 @@ impl Vehicle {
     }
 
     /// The vehicle's velocity in m/s.
-    pub(crate) fn vel(&self) -> f64 {
+    pub fn vel(&self) -> f64 {
         self.vel
     }
 
