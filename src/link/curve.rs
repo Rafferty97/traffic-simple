@@ -1,5 +1,5 @@
-use cgmath::InnerSpace;
-use crate::math::{Point2d, Vector2d, rot90, normalize_with_derivative, QuadraticBezier2d, ParametricCurve2d};
+use cgmath::prelude::*;
+use crate::math::{Point2d, Vector2d, rot90, normalize_with_derivative, QuadraticBezier2d, ParametricCurve2d, equidistant_points_along_curve};
 
 #[derive(Clone)]
 pub struct LinkCurve {
@@ -9,6 +9,44 @@ pub struct LinkCurve {
 }
 
 impl LinkCurve {
+    /// Creates a new [LinkCurve] from the given parametric curve,
+    /// with the default step size.
+    pub fn new(curve: &impl ParametricCurve2d) -> Self {
+        const LINK_SEGMENT_LEN: f64 = 0.5;
+        Self::with_step(curve, LINK_SEGMENT_LEN)
+    }
+
+    /// Creates a new [LinkCurve] from the given parametric curve,
+    /// with the given step size.
+    pub fn with_step(curve: &impl ParametricCurve2d, step: f64) -> Self {
+        let (mut points, length) = equidistant_points_along_curve(curve, step);
+
+        // Ensure number of points are odd so they can be evenly divided among segments
+        if points.len() % 2 == 0 {
+            let p1 = points[points.len() - 2];
+            let p2 = points[points.len() - 1];
+            let p3 = Point2d::from_vec(Vector2d::lerp(p1.to_vec(), p2.to_vec(), 2.0));
+            points.push(p3);
+        }
+
+        let segments = points
+            .windows(3)
+            .step_by(2)
+            .map(|points| {
+                let [p1, p2, p3]: [_; 3] = points.try_into().unwrap();
+                let mid = Vector2d::lerp(p1.to_vec(), p3.to_vec(), 0.5);
+                let control = Point2d::from_vec(Vector2d::lerp(p2.to_vec(), mid, -1.0));
+                QuadraticBezier2d::new(&[p1, control, p3])
+            })
+            .collect::<Vec<_>>();
+
+        Self {
+            scale: 2.0 / step,
+            length,
+            segments
+        }
+    }
+    
     /// The length of the curve in m.
     pub fn length(&self) -> f64 {
         self.length

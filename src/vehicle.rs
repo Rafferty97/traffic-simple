@@ -42,9 +42,9 @@ pub struct VehicleAttributes {
     /// The vehicle length in m.
     pub length: f64,
     /// The maximum acceleration of the vehicle, in m/s^2.
-    max_acc: f64,
+    pub max_acc: f64,
     /// The comfortable deceleration of the vehicle, a negative number in m/s^2.
-    comf_dec: f64
+    pub comf_dec: f64
 }
 
 /// A link along a vehicle's route.
@@ -100,17 +100,17 @@ impl Vehicle {
     }
 
     /// The longitudinal position of the centre of the vehicle in m.
-    pub(crate) fn pos_mid(&self) -> f64 {
+    pub fn pos_mid(&self) -> f64 {
         self.pos
     }
 
     /// The longitudinal position of the rear of the vehicle in m.
-    pub(crate) fn pos_rear(&self) -> f64 {
+    pub fn pos_rear(&self) -> f64 {
         self.pos - self.half_len
     }
 
     /// The longitudinal position of the front of the vehicle in m.
-    pub(crate) fn pos_front(&self) -> f64 {
+    pub fn pos_front(&self) -> f64 {
         self.pos + self.half_len
     }
 

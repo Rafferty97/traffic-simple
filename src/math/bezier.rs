@@ -3,6 +3,51 @@ use crate::util::Interval;
 use super::{Point2d, Vector2d};
 use super::curve::ParametricCurve2d;
 
+/// A line segment
+#[derive(Copy, Clone)]
+pub struct LineSegment2d {
+    start: Point2d,
+    tangent: Vector2d,
+    length: f64
+}
+
+impl LineSegment2d {
+    /// Creates a 2D line segment given two endpoints.
+    pub fn from_ends(start: Point2d, end: Point2d) -> Self {
+        let diff = end.to_vec() - start.to_vec();
+        let length = diff.magnitude();
+        let mut tangent = diff / length;
+        if tangent.x.is_nan() {
+            tangent = Vector2d::zero();
+        }
+        Self { start, tangent, length }
+    }
+
+    /// The start point of the line segment.
+    pub const fn start(&self) -> Point2d {
+        self.start
+    }
+
+    /// The end point of the line segment.
+    pub fn end(&self) -> Point2d {
+        self.start + self.length * self.tangent
+    }
+}
+
+impl ParametricCurve2d for LineSegment2d {
+    fn sample(&self, t: f64) -> Point2d {
+        self.start + t * self.tangent
+    }
+
+    fn bounds(&self) -> Interval<f64> {
+        Interval::new(0.0, self.length)
+    }
+    
+    fn sample_dt(&self, _t: f64) -> Vector2d {
+        self.tangent
+    }
+}
+
 /// A quadratic bezier curve
 #[derive(Copy, Clone)]
 pub struct QuadraticBezier2d {

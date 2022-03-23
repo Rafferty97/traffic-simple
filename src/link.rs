@@ -4,7 +4,7 @@ use crate::obstacle::Obstacle;
 use crate::vehicle::Vehicle;
 use crate::{LinkId, VehicleId, LinkSet, VehicleSet};
 use crate::util::Interval;
-use crate::math::{LookupTable, project_local, Vector2d};
+use crate::math::{LookupTable, project_local, Vector2d, ParametricCurve2d};
 
 mod curve;
 
@@ -33,6 +33,14 @@ pub struct Link {
     vehicles: Vec<VehicleId>
 }
 
+/// The attributes of a link.
+pub struct LinkAttributes<'a> {
+    /// A curve defining the centre line of the link.
+    pub curve: &'a dyn ParametricCurve2d,
+    /// The speed limit in m/s.
+    pub speed_limit: f64
+}
+
 /// Information about a link which overlaps another link.
 #[derive(Clone)]
 struct AdjacentLink {
@@ -44,6 +52,19 @@ struct AdjacentLink {
 }
 
 impl Link {
+    /// Creates a new link.
+    pub(crate) fn new(id: LinkId, attribs: &LinkAttributes) -> Self {
+        Self {
+            id,
+            curve: LinkCurve::new(&attribs.curve),
+            links_in: vec![],
+            links_out: vec![],
+            links_adj: vec![],
+            speed_limit: attribs.speed_limit,
+            vehicles: vec![]
+        }
+    }
+
     /// Gets the length of the link in m.
     pub fn length(&self) -> f64 {
         self.curve.length()

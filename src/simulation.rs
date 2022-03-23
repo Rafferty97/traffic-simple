@@ -1,4 +1,5 @@
-use crate::{LinkSet, VehicleSet, LinkId};
+use crate::{LinkSet, VehicleSet, LinkId, VehicleId};
+use crate::link::{Link, LinkAttributes};
 use crate::vehicle::{VehicleAttributes, Vehicle};
 
 /// A traffic simulation.
@@ -15,14 +16,20 @@ impl Simulation {
         Default::default()
     }
 
+    /// Adds a link to the network.
+    pub fn add_link(&mut self, attributes: &LinkAttributes) -> LinkId {
+        self.links.insert_with_key(|id| Link::new(id, attributes))
+    }
+
     /// Adds a vehicle to the simulation.
-    pub fn add_vehicle(&mut self, attributes: &VehicleAttributes, link: LinkId) {
+    pub fn add_vehicle(&mut self, attributes: &VehicleAttributes, link: LinkId) -> VehicleId {
         let vehicle_id = self.vehicles.insert_with_key(|id| {
             let mut vehicle = Vehicle::new(id, attributes);
             vehicle.set_route(&[link], self.frame, false);
             vehicle
         });
         self.links[link].insert_vehicle(vehicle_id);
+        vehicle_id
     }
 
     /// Advances the simulation by `dt` seconds.
@@ -31,6 +38,11 @@ impl Simulation {
         self.integrate(dt);
         self.advance_vehicles();
         self.frame += 1;
+    }
+
+    /// Gets a reference to the vehicle with the given ID.
+    pub fn get_vehicle(&self, vehicle_id: VehicleId) -> &Vehicle {
+        &self.vehicles[vehicle_id]
     }
 
     /// Applies the car following model to all vehicles.

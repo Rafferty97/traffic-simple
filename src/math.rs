@@ -2,10 +2,10 @@
 
 use cgmath::{Point2, Vector2};
 pub use util::*;
-pub use lut::LookupTable;
-pub use cubic::CubicFn;
-pub use curve::ParametricCurve2d;
-pub use bezier::{QuadraticBezier2d, CubicBezier2d};
+pub use lut::*;
+pub use cubic::*;
+pub use curve::*;
+pub use bezier::*;
 
 mod util;
 mod lut;
