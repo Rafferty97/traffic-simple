@@ -51,6 +51,7 @@ impl<T: ParametricCurve2d + ?Sized> ParametricCurve2d for &T {
     }
 }
 
+/// Finds a set of evenly spaced points along the given parametric curve.
 pub fn equidistant_points_along_curve(curve: &impl ParametricCurve2d, dist: f64) -> (Vec<Point2d>, f64) {
     let end_ts = curve.bounds();
     let end_ps = [curve.sample(end_ts.min), curve.sample(end_ts.max)];
@@ -104,4 +105,26 @@ pub fn equidistant_points_along_curve(curve: &impl ParametricCurve2d, dist: f64)
     }
 
     (points, length)
+}
+
+#[cfg(test)]
+mod test {
+    use assert_approx_eq::assert_approx_eq;
+    use crate::math::LineSegment2d;
+    use super::*;
+
+    #[test]
+    pub fn equidistant_points_along_curve_is_stable() {
+        for i in 0..100 {
+            let len = 0.1 * i as f64;
+            let points = equidistant_points_along_curve(
+                &LineSegment2d::from_ends(Point2d::new(10.0, 10.0), Point2d::new(10.0 + len, 10.0)),
+                0.5
+            );
+            assert_approx_eq!(points.1, len);
+            for point in points.0.into_iter() {
+                assert!(!point.x.is_nan() && !point.y.is_nan());
+            }
+        }
+    }
 }

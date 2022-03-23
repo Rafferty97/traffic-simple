@@ -1,5 +1,7 @@
 //! Miscellaneous utility structs and functions.
 
+use std::fmt::Debug;
+
 use cgmath::num_traits::Float;
 
 /// An interval on the real number line.
@@ -60,5 +62,11 @@ impl<T: Float> Interval<T> {
 
     pub fn inv_lerp(&self, value: T) -> T {
         (value - self.min) / (self.max - self.min)
+    }
+}
+
+impl<T: Debug> Debug for Interval<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Interval({:?}, {:?})", &self.min, &self.max)
     }
 }

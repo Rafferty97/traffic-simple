@@ -26,3 +26,31 @@ impl LookupTable {
         self.values[idx]
     }
 }
+
+#[cfg(test)]
+mod test {
+    use crate::util::Interval;
+    use super::LookupTable;
+
+    #[test]
+    fn basic_lut() {
+        let range = Interval::new(50.0, 200.0);
+        let lut = LookupTable::from_samples(range, 5.0, |x| 2.0 * x);
+
+        assert_eq!(lut.sample(20.0), 105.0);
+
+        assert_eq!(lut.sample(50.0), 105.0);
+        assert_eq!(lut.sample(52.0), 105.0);
+        assert_eq!(lut.sample(54.0), 105.0);
+        
+        assert_eq!(lut.sample(90.0), 185.0);
+        assert_eq!(lut.sample(92.0), 185.0);
+        assert_eq!(lut.sample(94.0), 185.0);
+        
+        assert_eq!(lut.sample(195.0), 395.0);
+        assert_eq!(lut.sample(197.0), 395.0);
+        assert_eq!(lut.sample(199.0), 395.0);
+        
+        assert_eq!(lut.sample(888.0), 395.0);
+    }
+}

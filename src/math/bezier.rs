@@ -146,3 +146,27 @@ impl ParametricCurve2d for CubicBezier2d {
             + (3.0 * t * t) * self.points[3].to_vec()
     }
 }
+
+#[cfg(test)]
+mod test {
+    use assert_approx_eq::assert_approx_eq;
+    use crate::{math::{Point2d, ParametricCurve2d}, util::Interval};
+    use super::QuadraticBezier2d;
+
+    #[test]
+    fn quadratic_beziers() {
+        let b = QuadraticBezier2d::new(&[
+            Point2d::new(10.0, 15.0),
+            Point2d::new(50.0, 30.0),
+            Point2d::new(20.0, 75.0)
+        ]);
+        
+        assert_eq!(b.bounds(), Interval::new(0.0, 1.0));
+        assert_approx_eq!(b.sample(0.0).x, 10.0);
+        assert_approx_eq!(b.sample(0.0).y, 15.0);
+        assert_approx_eq!(b.sample(0.5).x, 32.5);
+        assert_approx_eq!(b.sample(0.5).y, 37.5);
+        assert_approx_eq!(b.sample(1.0).x, 20.0);
+        assert_approx_eq!(b.sample(1.0).y, 75.0);
+    }
+}
