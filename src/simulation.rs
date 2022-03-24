@@ -5,8 +5,13 @@ use crate::vehicle::{VehicleAttributes, Vehicle};
 /// A traffic simulation.
 #[derive(Default, Clone)]
 pub struct Simulation {
+    /// The links in the network.
     links: LinkSet,
+    /// The vehicles being simulated.
     vehicles: VehicleSet,
+    /// The set of "frozen" vehicles, which will not move.
+    frozen_vehs: Vec<VehicleId>,
+    /// The current frame of simulation.
     frame: usize
 }
 
@@ -32,9 +37,20 @@ impl Simulation {
         vehicle_id
     }
 
+    /// Freezes or unfreezes a vehicle.
+    pub fn set_vehicle_frozen(&mut self, vehicle_id: VehicleId, frozen: bool) {
+        let idx = self.frozen_vehs.iter().position(|id| *id == vehicle_id);
+        match (frozen, idx) {
+            (true, None) => { self.frozen_vehs.push(vehicle_id); }
+            (false, Some(idx)) => { self.frozen_vehs.remove(idx); },
+            _ => {}
+        }
+    }
+
     /// Advances the simulation by `dt` seconds.
     pub fn step(&mut self, dt: f64) {
         self.apply_car_following();
+        self.apply_frozen_vehicles();
         self.integrate(dt);
         self.advance_vehicles();
         self.frame += 1;
@@ -49,6 +65,13 @@ impl Simulation {
     fn apply_car_following(&mut self) {
         for (_, link) in &self.links {
             link.apply_car_following(&self.links, &self.vehicles);
+        }
+    }
+
+    /// Applies a large negative acceleration to all frozen vehicles.
+    fn apply_frozen_vehicles(&mut self) {
+        for vehicle_id in &self.frozen_vehs {
+            self.vehicles[*vehicle_id].emergency_stop();
         }
     }
 

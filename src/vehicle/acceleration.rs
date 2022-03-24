@@ -1,7 +1,10 @@
 use std::cell::Cell;
 
-/// The minimum gap to maintain between vehicles.
+/// The minimum gap to maintain between vehicles in m.
 const MIN_GAP: f64 = 2.5; // m
+
+/// The maximum deceleration of all vehicles in m/s^2.
+const MAX_DECEL: f64 = -6.0; // m/s^2
 
 /// The acceleration model of a vehicle.
 #[derive(Clone)]
@@ -36,9 +39,13 @@ impl AccelerationModel {
 
     /// Gets the current acceleration of the vehicle.
     pub fn acc(&self) -> f64 {
-        self.acc.get()
+        f64::max(self.acc.get(), MAX_DECEL)
     }
-    
+
+    /// Applies the maximum deceleration to the vehicle.
+    pub fn emergency_stop(&self) {
+        self.acc.set(MAX_DECEL);
+    }
 
     /// Calculates the acceleration needed to maintain the speed limit.
     /// # Arguments

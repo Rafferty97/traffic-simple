@@ -133,6 +133,11 @@ impl Vehicle {
         self.acc.follow_vehicle(net_dist, self.vel, vel);
     }
 
+    /// Applies a maximum deceleration to the vehicle, causing it to stop.
+    pub(crate) fn emergency_stop(&self) {
+        self.acc.emergency_stop();
+    }
+
     /// Gets the vehicle's current lateral offset from the centre line.
     pub(crate) fn offset(&self) -> f64 {
         self.offset_at(self.pos)
