@@ -5,13 +5,11 @@ pub use util::*;
 pub use lut::*;
 pub use cubic::*;
 pub use curve::*;
-pub use bezier::*;
 
 mod util;
 mod lut;
 mod cubic;
 mod curve;
-mod bezier;
 
 /// A 2D point
 pub type Point2d = Point2<f64>;

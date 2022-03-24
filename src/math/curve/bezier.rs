@@ -1,7 +1,6 @@
 use cgmath::prelude::*;
 use crate::util::Interval;
-use super::{Point2d, Vector2d};
-use super::curve::ParametricCurve2d;
+use super::{Point2d, Vector2d, ParametricCurve2d};
 
 /// A line segment
 #[derive(Copy, Clone)]

@@ -1,6 +1,11 @@
 use cgmath::prelude::*;
 use crate::util::Interval;
 use super::{Point2d, Vector2d};
+pub use bezier::*;
+pub use offset::*;
+
+mod bezier;
+mod offset;
 
 /// A parametric curve in 2D space.
 pub trait ParametricCurve2d {
