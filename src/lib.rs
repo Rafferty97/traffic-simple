@@ -2,6 +2,8 @@ use slotmap::{new_key_type, SlotMap};
 pub use simulation::Simulation;
 pub use vehicle::{VehicleAttributes, Vehicle};
 pub use link::{LinkAttributes, Link};
+pub use cgmath;
+pub use slotmap::{Key, KeyData};
 
 pub mod math;
 mod util;

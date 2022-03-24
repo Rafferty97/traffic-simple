@@ -39,6 +39,11 @@ impl Simulation {
     }
 
     /// Freezes or unfreezes a vehicle.
+    pub fn get_vehicle_frozen(&mut self, vehicle_id: VehicleId) -> bool {
+        self.frozen_vehs.iter().any(|id| *id == vehicle_id)
+    }
+
+    /// Freezes or unfreezes a vehicle.
     pub fn set_vehicle_frozen(&mut self, vehicle_id: VehicleId, frozen: bool) {
         let idx = self.frozen_vehs.iter().position(|id| *id == vehicle_id);
         match (frozen, idx) {
@@ -55,6 +60,11 @@ impl Simulation {
         self.advance_vehicles();
         self.update_vehicle_coords();
         self.frame += 1;
+    }
+
+    /// Returns an iterator over all the vehicles in the simulation.
+    pub fn iter_vehicles(&self) -> impl Iterator<Item=&Vehicle> {
+        self.vehicles.iter().map(|(_, veh)| veh)
     }
 
     /// Gets a reference to the vehicle with the given ID.
@@ -77,9 +87,14 @@ impl Simulation {
 
     /// Applies a large negative acceleration to all frozen vehicles.
     fn apply_frozen_vehicles(&mut self) {
-        for vehicle_id in &self.frozen_vehs {
-            self.vehicles[*vehicle_id].emergency_stop();
-        }
+        self.frozen_vehs.retain(|vehicle_id| {
+            if let Some(vehicle) = self.vehicles.get(*vehicle_id) {
+                vehicle.emergency_stop();
+                true
+            } else {
+                false
+            }
+        })
     }
 
     /// Integrates the velocities and positions of all vehicles,

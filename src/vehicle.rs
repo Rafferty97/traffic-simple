@@ -83,15 +83,30 @@ impl Vehicle {
             world_tan: Vector2d::new(0.0, 0.0)
         }
     }
+    
+    /// Gets the vehicle's ID.
+    pub fn id(&self) -> VehicleId {
+        self.id
+    }
 
     /// Half the vehicle's width in m.
-    pub(crate) fn half_wid(&self) -> f64 {
+    pub(crate) fn half_width(&self) -> f64 {
         self.half_wid
     }
     
     /// Half the vehicle's length in m.
-    pub(crate) fn half_len(&self) -> f64 {
+    pub(crate) fn half_length(&self) -> f64 {
         self.half_len
+    }
+
+    /// The vehicle's width in m.
+    pub fn width(&self) -> f64 {
+        2.0 * self.half_wid
+    }
+    
+    /// The vehicle's length in m.
+    pub fn length(&self) -> f64 {
+        2.0 * self.half_len
     }
 
     /// The ID of the link the vehicle is currently travelling on.
@@ -167,8 +182,8 @@ impl Vehicle {
     pub(crate) fn lat_extent(&self) -> Interval<f64> {
         let offset = self.offset();
         Interval::new(
-            f64::min(offset, 0.0) - self.half_wid(),
-            f64::max(offset, 0.0) + self.half_wid()
+            f64::min(offset, 0.0) - self.half_width(),
+            f64::max(offset, 0.0) + self.half_width()
         )
     }
 

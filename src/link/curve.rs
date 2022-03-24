@@ -41,7 +41,7 @@ impl LinkCurve {
             .collect::<Vec<_>>();
 
         Self {
-            scale: 2.0 / step,
+            scale: 0.5 / step,
             length,
             segments
         }
@@ -104,5 +104,28 @@ impl LinkCurve {
             segment.sample_dt(t),
             segment.sample_dt2(t)
         )
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use cgmath::prelude::*;
+    use super::*;
+    
+    #[test]
+    fn curve_is_arclength_parameterised() {
+        let curve = QuadraticBezier2d::new(&[
+            Point2d::new(10.0, 10.0),
+            Point2d::new(60.0, 40.0),
+            Point2d::new(100.0, 45.0)
+        ]);
+        let curve = LinkCurve::new(&curve);
+
+        let ts = (0..100).map(|i| i as f64 * 0.01 * curve.length()).collect::<Vec<_>>();
+        for ts in ts.windows(2) {
+            let p1 = curve.sample_centre(ts[0]).0;
+            let p2 = curve.sample_centre(ts[1]).0;
+            assert_approx_eq::assert_approx_eq!((p2 - p1).magnitude(), ts[1] - ts[0], 0.01);
+        }
     }
 }
