@@ -70,6 +70,11 @@ impl Link {
         self.curve.length()
     }
 
+    /// Gets the curve representing the link's centre line.
+    pub fn curve(&self) -> &LinkCurve {
+        &self.curve
+    }
+
     /// Inserts the vehicle with the given ID into the link.
     pub(crate) fn insert_vehicle(&mut self, id: VehicleId) {
         self.vehicles.insert(0, id);

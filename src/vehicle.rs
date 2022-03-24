@@ -114,6 +114,16 @@ impl Vehicle {
         self.pos + self.half_len
     }
 
+    /// The coordinates in world space of the centre of the vehicle.
+    pub fn position(&self) -> Point2d {
+        self.world_pos
+    }
+
+    /// A unit vector in world space aligned with the vehicle's heading.
+    pub fn direction(&self) -> Vector2d {
+        self.world_tan
+    }
+
     /// The vehicle's velocity in m/s.
     pub fn vel(&self) -> f64 {
         self.vel
@@ -237,5 +247,17 @@ impl Vehicle {
             entered_at: (idx == 0).then(|| now)
         }).collect();
         self.can_exit = can_exit;
+    }
+
+    /// Updates the vehicle's world coordinates
+    pub(crate) fn update_coords(&mut self, links: &LinkSet) {
+        let curve = &links[self.route[0].link].curve();
+        (self.world_pos, self.world_tan) = match self.lane_change {
+            Some(lc) => {
+                let (offset, slope) = lc.offset.y_and_dy(self.pos);
+                curve.sample(self.pos, offset, slope)
+            },
+            None => curve.sample_centre(self.pos)
+        };
     }
 }

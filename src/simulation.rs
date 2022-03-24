@@ -31,6 +31,7 @@ impl Simulation {
         let vehicle_id = self.vehicles.insert_with_key(|id| {
             let mut vehicle = Vehicle::new(id, attributes);
             vehicle.set_route(&[link], self.frame, false);
+            vehicle.update_coords(&self.links);
             vehicle
         });
         self.links[link].insert_vehicle(vehicle_id);
@@ -49,16 +50,22 @@ impl Simulation {
 
     /// Advances the simulation by `dt` seconds.
     pub fn step(&mut self, dt: f64) {
-        self.apply_car_following();
-        self.apply_frozen_vehicles();
+        self.apply_accelerations();
         self.integrate(dt);
         self.advance_vehicles();
+        self.update_vehicle_coords();
         self.frame += 1;
     }
 
     /// Gets a reference to the vehicle with the given ID.
     pub fn get_vehicle(&self, vehicle_id: VehicleId) -> &Vehicle {
         &self.vehicles[vehicle_id]
+    }
+
+    /// Calculates the accelerations of the vehicles.
+    fn apply_accelerations(&mut self) {
+        self.apply_car_following();
+        self.apply_frozen_vehicles();
     }
 
     /// Applies the car following model to all vehicles.
@@ -107,6 +114,13 @@ impl Simulation {
 
         for vehicle_id in exited {
             self.vehicles.remove(vehicle_id);
+        }
+    }
+
+    /// Updates the world coordinates of all the vehicles.
+    fn update_vehicle_coords(&mut self) {
+        for (_, vehicle) in &mut self.vehicles {
+            vehicle.update_coords(&self.links);
         }
     }
 }
