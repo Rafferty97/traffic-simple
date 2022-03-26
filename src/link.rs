@@ -45,7 +45,7 @@ pub struct LinkAttributes<'a> {
 #[derive(Clone)]
 struct AdjacentLink {
     /// The ID of the adjacent link
-    link: LinkId,
+    link_id: LinkId,
     /// An approximate mapping from longitudinal positions
     /// in the original link to positions in the adjacent link
     pos_map: LookupTable
@@ -73,6 +73,16 @@ impl Link {
     /// Gets the curve representing the link's centre line.
     pub fn curve(&self) -> &LinkCurve {
         &self.curve
+    }
+
+    /// Adds an adjacent link.
+    pub(crate) fn add_adjacent_link(&mut self, link: &Link) {
+        self.links_adj.push(AdjacentLink {
+            link_id: link.id,
+            pos_map: LookupTable::from_samples(self.curve.bounds(), 1.0, |pos| {
+                project_point_onto_curve(&link.curve, self.curve.sample_centre(pos).0, 0.01, None).unwrap()
+            })
+        })
     }
 
     /// Inserts the vehicle with the given ID into the link.
@@ -105,11 +115,22 @@ impl Link {
 
         // Apply accelerations to vehicles on adjacent links
         for adj_link in &self.links_adj {
-            let link = &links[adj_link.link];
+            let link = &links[adj_link.link_id];
             let obstacles = self.vehicle_obstacles(vehicles)
                 .map(|o| Self::project_obstacle(&o, link, adj_link));
             link.follow_obstacles(links, vehicles, obstacles);
         }
+    }
+
+    // debug
+    pub(crate) fn projected_lines<'a>(&'a self, links: &'a LinkSet, vehicles: &'a VehicleSet) -> impl Iterator<Item=[Point2d; 2]> + '_ {
+        self.links_adj.iter().flat_map(|adj_link| {
+            let link = &links[adj_link.link_id];
+            self.vehicle_obstacles(vehicles)
+                // .map(|o| o.coords)
+                .map(|o| Self::project_obstacle(&o, link, adj_link))
+                .map(|o| o.lat.as_array().map(|l| link.curve.sample(o.pos, l, 0.0).0))
+        })
     }
 
     /// Gets the vehicles on this link as obstacles, in reverse order.
@@ -227,7 +248,7 @@ impl Link {
 
         Obstacle {
             pos: dst_pos + f64::min(proj[0].y, proj[1].y),
-            lat: Interval::new(proj[0].x, proj[0].y),
+            lat: Interval::new(proj[0].x, proj[1].x),
             ..*obstacle
         }
     }

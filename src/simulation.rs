@@ -1,4 +1,4 @@
-use crate::math::CubicFn;
+use crate::math::{CubicFn, Point2d};
 use crate::{LinkSet, VehicleSet, LinkId, VehicleId};
 use crate::link::{Link, LinkAttributes};
 use crate::vehicle::{VehicleAttributes, Vehicle, LaneChange};
@@ -25,6 +25,20 @@ impl Simulation {
     /// Adds a link to the network.
     pub fn add_link(&mut self, attributes: &LinkAttributes) -> LinkId {
         self.links.insert_with_key(|id| Link::new(id, attributes))
+    }
+
+    pub fn add_link_group(&mut self, links: &[LinkId]) {
+        for ids in links.iter().flat_map(|a| links.iter().map(|b| [*a, *b])) {
+            if let Some([a, b]) = self.links.get_disjoint_mut(ids) {
+                a.add_adjacent_link(b);
+            }
+        }
+    }
+
+    pub fn projected_lines(&self) -> impl Iterator<Item=[Point2d; 2]> + '_ {
+        self.links.iter().flat_map(|(_, link)| {
+            link.projected_lines(&self.links, &self.vehicles)
+        })
     }
 
     /// Adds a vehicle to the simulation.

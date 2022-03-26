@@ -206,7 +206,7 @@ impl Vehicle {
         let rear = self.world_pos - self.half_len * tan;
         self.lat_extent()
             .as_array()
-            .map(|lat| rear + lat * perp)
+            .map(|lat| rear + (lat - self.offset()) * perp)
     }
 
     /// Resets internal model states in preparation for a new step of the simulation.
