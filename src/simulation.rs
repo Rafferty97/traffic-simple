@@ -1,6 +1,7 @@
+use crate::math::CubicFn;
 use crate::{LinkSet, VehicleSet, LinkId, VehicleId};
 use crate::link::{Link, LinkAttributes};
-use crate::vehicle::{VehicleAttributes, Vehicle};
+use crate::vehicle::{VehicleAttributes, Vehicle, LaneChange};
 
 /// A traffic simulation.
 #[derive(Default, Clone)]
@@ -30,11 +31,11 @@ impl Simulation {
     pub fn add_vehicle(&mut self, attributes: &VehicleAttributes, link: LinkId) -> VehicleId {
         let vehicle_id = self.vehicles.insert_with_key(|id| {
             let mut vehicle = Vehicle::new(id, attributes);
-            vehicle.set_route(&[link], self.frame, false);
+            vehicle.set_location(link, 0.0, None);
             vehicle.update_coords(&self.links);
             vehicle
         });
-        self.links[link].insert_vehicle(vehicle_id);
+        self.links[link].insert_vehicle(&self.vehicles, vehicle_id);
         vehicle_id
     }
 
@@ -109,22 +110,27 @@ impl Simulation {
     /// Find vehicles that have advanced their link and either move them
     /// to their new link or remove them from the simulation.
     fn advance_vehicles(&mut self) {
+        let mut advanced = vec![];
         let mut exited = vec![];
 
         for (vehicle_id, vehicle) in &mut self.vehicles {
             let link_id = vehicle.link_id().unwrap();
-            let advanced = vehicle.advance(&self.links, self.frame);
+            let did_advance = vehicle.advance(&self.links, self.frame);
 
-            if advanced {
+            if did_advance {
                 self.links[link_id].remove_vehicle(vehicle_id);
                 if let Some(link_id) = vehicle.link_id() {
                     // Vehicle is now on a new link
-                    self.links[link_id].insert_vehicle(vehicle_id);
+                    advanced.push((vehicle_id, link_id));
                 } else {
                     // Vehicle has exited the simulation
                     exited.push(vehicle_id);
                 }
             }
+        }
+
+        for (vehicle_id, link_id) in advanced {
+            self.links[link_id].insert_vehicle(&self.vehicles, vehicle_id);
         }
 
         for vehicle_id in exited {
@@ -137,5 +143,33 @@ impl Simulation {
         for (_, vehicle) in &mut self.vehicles {
             vehicle.update_coords(&self.links);
         }
+    }
+
+    /// Causes a vehicle to change lanes.
+    pub fn do_lane_change(&mut self, vehicle_id: VehicleId, link_id: LinkId, distance: f64) {
+        let vehicle = &mut self.vehicles[vehicle_id];
+
+        // Remove the vehicle from its current link
+        if let Some(link_id) = vehicle.link_id() {
+            self.links[link_id].remove_vehicle(vehicle_id);
+        }
+
+        // Project the vehicle's position onto the new link
+        let link = &mut self.links[link_id];
+        let (pos, offset, slope) = link.curve().inverse_sample(
+            vehicle.position(),
+            vehicle.direction()
+        ).unwrap();
+
+        // Set the vehicle's new position
+        let end_pos = pos + distance;
+        let lane_change = LaneChange {
+            end_pos,
+            offset: CubicFn::fit(pos, offset, slope, end_pos, 0.0, 0.0)
+        };
+        vehicle.set_location(link_id, pos, Some(lane_change));
+
+        // Add the vehicle to the new link
+        link.insert_vehicle(&self.vehicles, vehicle_id);
     }
 }

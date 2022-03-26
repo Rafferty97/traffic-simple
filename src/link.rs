@@ -4,7 +4,7 @@ use crate::obstacle::Obstacle;
 use crate::vehicle::Vehicle;
 use crate::{LinkId, VehicleId, LinkSet, VehicleSet};
 use crate::util::Interval;
-use crate::math::{LookupTable, project_local, Vector2d, ParametricCurve2d};
+use crate::math::{LookupTable, project_local, Vector2d, ParametricCurve2d, Point2d, project_point_onto_curve};
 
 mod curve;
 
@@ -76,8 +76,13 @@ impl Link {
     }
 
     /// Inserts the vehicle with the given ID into the link.
-    pub(crate) fn insert_vehicle(&mut self, id: VehicleId) {
-        self.vehicles.insert(0, id);
+    pub(crate) fn insert_vehicle(&mut self, vehicles: &VehicleSet, id: VehicleId) {
+        let veh_pos = vehicles[id].pos_mid();
+        let idx = self.vehicles.iter()
+            .map(|id| vehicles[*id].pos_mid())
+            .position(|pos| pos > veh_pos)
+            .unwrap_or(self.vehicles.len());
+        self.vehicles.insert(idx, id);
     }
 
     /// Removes the vehicle with the given ID from the link.

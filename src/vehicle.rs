@@ -56,11 +56,11 @@ struct RouteElement {
 
 /// Represents an in-progress lane change.
 #[derive(Clone, Copy)]
-struct LaneChange {
+pub struct LaneChange {
     /// The longitudinal position at which the lane change is complete.
-    end_pos: f64,
+    pub end_pos: f64,
     /// The vehicle's lateral offset during the lane change.
-    offset: CubicFn
+    pub offset: CubicFn
 }
 
 impl Vehicle {
@@ -255,12 +255,22 @@ impl Vehicle {
         false
     }
 
+    /// Sets the vehicle's position in the network.
+    /// This also clears the vehicle's route.
+    pub(crate) fn set_location(&mut self, link: LinkId, pos: f64, lane_change: Option<LaneChange>) {
+        self.route = vec![RouteElement { link, entered_at: None }];
+        self.pos = pos;
+        self.lane_change = lane_change;
+        self.can_exit = false;
+    }
+
     /// Sets the vehicle's route.
-    pub(crate) fn set_route(&mut self, route: &[LinkId], now: usize, can_exit: bool) {
-        self.route = route.iter().enumerate().map(|(idx, link)| RouteElement {
+    pub(crate) fn set_route(&mut self, route: &[LinkId], can_exit: bool) {
+        self.route.truncate(1);
+        self.route.extend(route.iter().map(|link| RouteElement {
             link: *link,
-            entered_at: (idx == 0).then(|| now)
-        }).collect();
+            entered_at: None
+        }));
         self.can_exit = can_exit;
     }
 
