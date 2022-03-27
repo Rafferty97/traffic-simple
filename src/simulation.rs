@@ -73,7 +73,7 @@ impl Simulation {
         self.links[link].insert_vehicle(&self.vehicles, vehicle_id);
         vehicle_id
     }
-
+    
     /// Freezes or unfreezes a vehicle.
     pub fn get_vehicle_frozen(&mut self, vehicle_id: VehicleId) -> bool {
         self.frozen_vehs.iter().any(|id| *id == vehicle_id)

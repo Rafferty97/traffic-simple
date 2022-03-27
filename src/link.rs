@@ -14,6 +14,9 @@ const LATERAL_CLEARANCE: f64 = 0.5;
 /// The maximum lookahead for the car following model, in s.
 const MAX_LOOKAHEAD: f64 = 10.0;
 
+/// The quantization of the adjacent link LUT, in m.
+const LUT_SPACING: f64 = 4.0;
+
 /// A link represents a single lane of traffic.
 #[derive(Clone)]
 pub struct Link {
@@ -79,7 +82,7 @@ impl Link {
     pub(crate) fn add_adjacent_link(&mut self, link: &Link) {
         self.links_adj.push(AdjacentLink {
             link_id: link.id,
-            pos_map: LookupTable::from_samples(self.curve.bounds(), 1.0, |pos| {
+            pos_map: LookupTable::from_samples(self.curve.bounds(), LUT_SPACING, |pos| {
                 project_point_onto_curve(&link.curve, self.curve.sample_centre(pos).0, 0.01, None)
             })
         })
@@ -136,10 +139,12 @@ impl Link {
     pub(crate) fn projected_lines<'a>(&'a self, links: &'a LinkSet, vehicles: &'a VehicleSet) -> impl Iterator<Item=[Point2d; 2]> + '_ {
         self.links_adj.iter().flat_map(|adj_link| {
             let link = &links[adj_link.link_id];
-            self.vehicle_obstacles(vehicles)
-                // .map(|o| o.coords)
+            let a = self.vehicle_obstacles(vehicles)
+                .map(|o| o.coords);
+            let b = self.vehicle_obstacles(vehicles)
                 .flat_map(|o| Self::project_obstacle(&o, link, adj_link))
-                .map(|o| o.lat.as_array().map(|l| link.curve.sample(o.pos, l, 0.0).0))
+                .map(|o| o.lat.as_array().map(|l| link.curve.sample(o.pos, l, 0.0).0));
+            a.chain(b)
         })
     }
 
@@ -242,8 +247,14 @@ impl Link {
         link: &Link,
         mapping: &AdjacentLink
     ) -> Option<Obstacle> {
-        // Find an approximate mapping of the `pos` onto the link
+        // Find an approximate mapping of the `pos` onto the link, then refine it.
         let dst_pos = (*mapping.pos_map.sample(obstacle.pos))?;
+        let dst_pos = project_point_onto_curve(
+            &link.curve, 
+            obstacle.coords[0],
+            0.1,
+            Some(dst_pos)
+        )?;
 
         // Get the local coordinate system around this point
         let (origin, y_axis) = link.curve.sample_centre(dst_pos);
