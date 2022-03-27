@@ -1,5 +1,5 @@
-use slotmap::Key;
 use curve::LinkCurve;
+use smallvec::SmallVec;
 use crate::obstacle::Obstacle;
 use crate::vehicle::Vehicle;
 use crate::{LinkId, VehicleId, LinkSet, VehicleSet};
@@ -48,7 +48,7 @@ struct AdjacentLink {
     link_id: LinkId,
     /// An approximate mapping from longitudinal positions
     /// in the original link to positions in the adjacent link
-    pos_map: LookupTable
+    pos_map: LookupTable<Option<f64>>
 }
 
 impl Link {
@@ -80,9 +80,19 @@ impl Link {
         self.links_adj.push(AdjacentLink {
             link_id: link.id,
             pos_map: LookupTable::from_samples(self.curve.bounds(), 1.0, |pos| {
-                project_point_onto_curve(&link.curve, self.curve.sample_centre(pos).0, 0.01, None).unwrap()
+                project_point_onto_curve(&link.curve, self.curve.sample_centre(pos).0, 0.01, None)
             })
         })
+    }
+
+    /// Adds a successor link.
+    pub(crate) fn add_successor_link(&mut self, link_id: LinkId) {
+        self.links_out.push(link_id);
+    }
+
+    /// Adds a predecessor link.
+    pub(crate) fn add_predecessor_link(&mut self, link_id: LinkId) {
+        self.links_in.push(link_id);
     }
 
     /// Inserts the vehicle with the given ID into the link.
@@ -117,7 +127,7 @@ impl Link {
         for adj_link in &self.links_adj {
             let link = &links[adj_link.link_id];
             let obstacles = self.vehicle_obstacles(vehicles)
-                .map(|o| Self::project_obstacle(&o, link, adj_link));
+                .flat_map(|o| Self::project_obstacle(&o, link, adj_link));
             link.follow_obstacles(links, vehicles, obstacles);
         }
     }
@@ -128,7 +138,7 @@ impl Link {
             let link = &links[adj_link.link_id];
             self.vehicle_obstacles(vehicles)
                 // .map(|o| o.coords)
-                .map(|o| Self::project_obstacle(&o, link, adj_link))
+                .flat_map(|o| Self::project_obstacle(&o, link, adj_link))
                 .map(|o| o.lat.as_array().map(|l| link.curve.sample(o.pos, l, 0.0).0))
         })
     }
@@ -205,9 +215,9 @@ impl Link {
         }
 
         // Look for a following vehicle on preceeding links
-        let mut ext_route = [LinkId::null(); 8];
-        ext_route[0] = self.id;
-        ext_route[1..(route.len() + 1)].copy_from_slice(route);
+        let route = std::iter::once(self.id)
+            .chain(route.iter().copied())
+            .collect::<SmallVec<[_; 8]>>();
 
         for link_id in &self.links_in {
             let link = &links[*link_id];
@@ -215,13 +225,13 @@ impl Link {
                 pos: obstacle.pos + link.length(),
                 ..obstacle
             };
-            link.follow_obstacle(links, vehicles, obstacle, &ext_route, 0);
+            link.follow_obstacle(links, vehicles, obstacle, &route, 0);
         }
     }
 
     /// Determines whether the vehicle can pass the given obstacle.
     fn can_pass(vehicle: &Vehicle, obstacle: &Obstacle) -> bool {
-        let own_lat = vehicle.lat_extent();
+        let own_lat = vehicle.lat_extent_at(obstacle.pos - vehicle.half_length());
         let clearance = own_lat.clearance_with(&obstacle.lat);
         clearance >= LATERAL_CLEARANCE
     }
@@ -231,9 +241,9 @@ impl Link {
         obstacle: &Obstacle,
         link: &Link,
         mapping: &AdjacentLink
-    ) -> Obstacle {
+    ) -> Option<Obstacle> {
         // Find an approximate mapping of the `pos` onto the link
-        let dst_pos = mapping.pos_map.sample(obstacle.pos);
+        let dst_pos = (*mapping.pos_map.sample(obstacle.pos))?;
 
         // Get the local coordinate system around this point
         let (origin, y_axis) = link.curve.sample_centre(dst_pos);
@@ -246,10 +256,10 @@ impl Link {
             project_local(coord, origin, x_axis, y_axis)
         });
 
-        Obstacle {
+        Some(Obstacle {
             pos: dst_pos + f64::min(proj[0].y, proj[1].y),
             lat: Interval::new(proj[0].x, proj[1].x),
             ..*obstacle
-        }
+        })
     }
 }

@@ -48,7 +48,7 @@ pub struct VehicleAttributes {
 }
 
 /// A link along a vehicle's route.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct RouteElement {
     link: LinkId,
     entered_at: Option<usize>
@@ -146,8 +146,10 @@ impl Vehicle {
 
     /// Checks whether the vehicle's route coincides with the given links.
     pub(crate) fn on_route(&self, links: &[LinkId]) -> bool {
+        println!("{:?}", &self.route);
         self.route.iter()
             .skip(1)
+            .take(links.len())
             .map(|el| &el.link)
             .eq(links.iter())
     }
@@ -177,10 +179,17 @@ impl Vehicle {
             .unwrap_or(0.0)
     }
 
-    /// Gets the lateral extents of the vehicle
+    /// Gets the current lateral extents of the vehicle
     /// for the purpose of applying a car-following model.
     pub(crate) fn lat_extent(&self) -> Interval<f64> {
-        let offset = self.offset();
+        self.lat_extent_at(self.pos)
+    }
+
+    /// Gets the lateral extents of the vehicle
+    /// for the purpose of applying a car-following model,
+    /// at the given longitudinal position along the current link.
+    pub(crate) fn lat_extent_at(&self, pos: f64) -> Interval<f64> {
+        let offset = self.offset_at(pos);
         Interval::new(
             f64::min(offset, 0.0) - self.half_width(),
             f64::max(offset, 0.0) + self.half_width()
@@ -284,5 +293,33 @@ impl Vehicle {
             },
             None => curve.sample_centre(self.pos)
         };
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use slotmap::{KeyData, Key};
+    use super::*;
+
+    /// Tests the `on_route` method of `Vehicle`.
+    #[test]
+    fn on_route() {
+        let link1 = KeyData::from_ffi(0).into();
+        let link2 = KeyData::from_ffi(1).into();
+        let link3 = KeyData::from_ffi(2).into();
+        let mut vehicle = Vehicle::new(VehicleId::null(), &VehicleAttributes {
+            width: 2.0,
+            length: 5.0,
+            comf_dec: 2.0,
+            max_acc: 2.0
+        });
+        vehicle.set_location(link3, 0.0, None);
+        vehicle.set_route(&[link1, link2], true);
+
+        assert!(vehicle.on_route(&[]));
+        assert!(vehicle.on_route(&[link1]));
+        assert!(vehicle.on_route(&[link1, link2]));
+        assert!(!vehicle.on_route(&[link2]));
+        assert!(!vehicle.on_route(&[link1, link2, link3]));
     }
 }

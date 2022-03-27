@@ -27,12 +27,33 @@ impl Simulation {
         self.links.insert_with_key(|id| Link::new(id, attributes))
     }
 
-    pub fn add_link_group(&mut self, links: &[LinkId]) {
+    /// Specifies the relationships between the links of the network.
+    pub fn connect_links<'a>(
+        &mut self,
+        adjacent: impl IntoIterator<Item=&'a [LinkId]>,
+        successor: impl IntoIterator<Item=(LinkId, LinkId)>
+    ) {
+        for links in adjacent {
+            self.add_link_adjacency(links);
+        }
+        for (from, to) in successor {
+            self.add_link_connection(from, to);
+        }
+    }
+
+    /// Specifies that the given links are all adjacent to one another.
+    pub fn add_link_adjacency(&mut self, links: &[LinkId]) {
         for ids in links.iter().flat_map(|a| links.iter().map(|b| [*a, *b])) {
             if let Some([a, b]) = self.links.get_disjoint_mut(ids) {
                 a.add_adjacent_link(b);
             }
         }
+    }
+    
+    /// Specifies that the end of the `from` link connects to the start of the `to` link.
+    pub fn add_link_connection(&mut self, from: LinkId, to: LinkId) {
+        self.links[from].add_successor_link(to);
+        self.links[to].add_predecessor_link(from);
     }
 
     pub fn projected_lines(&self) -> impl Iterator<Item=[Point2d; 2]> + '_ {
@@ -185,5 +206,9 @@ impl Simulation {
 
         // Add the vehicle to the new link
         link.insert_vehicle(&self.vehicles, vehicle_id);
+    }
+
+    pub fn set_vehicle_route(&mut self, vehicle_id: VehicleId, route: &[LinkId]) {
+        self.vehicles[vehicle_id].set_route(route, true);
     }
 }
