@@ -110,13 +110,14 @@ impl Simulation {
 
     /// Calculates the accelerations of the vehicles.
     fn apply_accelerations(&mut self) {
-        self.apply_car_following();
+        self.apply_link_accelerations();
         self.apply_frozen_vehicles();
     }
 
-    /// Applies the car following model to all vehicles.
-    fn apply_car_following(&mut self) {
+    /// Applies the car following model, speed limits, etc. to all vehicles.
+    fn apply_link_accelerations(&mut self) {
         for (_, link) in &self.links {
+            link.apply_speed_limit(&self.links, &self.vehicles);
             link.apply_car_following(&self.links, &self.vehicles);
         }
     }

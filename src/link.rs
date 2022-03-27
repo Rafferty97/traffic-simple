@@ -115,12 +115,21 @@ impl Link {
         }
     }
 
+    /// Applies the speed limit to the vehicles on and entering this link.
+    pub(crate) fn apply_speed_limit(&self, links: &LinkSet, vehicles: &VehicleSet) {
+        for vehicle_id in &self.vehicles {
+            vehicles[*vehicle_id].apply_current_speed_limit(self.speed_limit);
+        }
+        for link_id in &self.links_in {
+            let link = &links[*link_id];
+            if let Some(vehicle_id) = link.vehicles.last() {
+                vehicles[*vehicle_id].apply_speed_limit(self.speed_limit, link.length());
+            }
+        }
+    }
+
     /// Applies the car following model to all vehicles following a vehicle on this link.
-    pub(crate) fn apply_car_following(
-        &self,
-        links: &LinkSet,
-        vehicles: &VehicleSet
-    ) {
+    pub(crate) fn apply_car_following(&self, links: &LinkSet, vehicles: &VehicleSet) {
         // Apply accelerations to vehicles on this link
         for (idx, obstacle) in self.vehicle_obstacles(vehicles).enumerate() {
             self.follow_obstacle(links, vehicles, obstacle, &[], idx + 1);

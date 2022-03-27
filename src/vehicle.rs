@@ -160,6 +160,16 @@ impl Vehicle {
         self.acc.follow_vehicle(net_dist, self.vel, vel);
     }
 
+    /// Applies a current speed limit to the vehicle.
+    pub(crate) fn apply_current_speed_limit(&self, speed_limit: f64) {
+        self.acc.apply_current_speed_limit(self.vel, speed_limit);
+    }
+
+    /// Applies an upcoming speed limit to the vehicle.
+    pub(crate) fn apply_speed_limit(&self, speed_limit: f64, pos: f64) {
+        self.acc.apply_speed_limit(self.vel, speed_limit, pos - self.pos);
+    }
+
     /// Applies a maximum deceleration to the vehicle, causing it to stop.
     pub(crate) fn emergency_stop(&self) {
         self.acc.emergency_stop();
