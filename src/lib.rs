@@ -4,6 +4,7 @@ pub use vehicle::{VehicleAttributes, Vehicle};
 pub use link::{LinkAttributes, Link};
 pub use cgmath;
 pub use slotmap::{Key, KeyData};
+pub use util::{Interval};
 
 pub mod math;
 mod util;

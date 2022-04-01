@@ -104,6 +104,16 @@ impl CubicBezier2d {
         Self { points: ps.map(Point2d::from_vec) }
     }
 
+    pub fn quadratic(points: &[Point2d; 3]) -> Self {
+        let points = [
+            points[0],
+            points[0] + (2./3.) * (points[1] - points[0]),
+            points[2] + (2./3.) * (points[1] - points[2]),
+            points[2]
+        ];
+        Self { points }
+    }
+
     pub fn subdivide(&self, t: f64) -> [CubicBezier2d; 2] {
         let [p00, p01, p02, p03] = self.points.map(|x| x.to_vec());
         let p10 = p00.lerp(p01, t);
