@@ -27,13 +27,24 @@ impl Simulation {
         self.links.insert_with_key(|id| Link::new(id, attributes))
     }
 
-    /// Specifies that the given links are all adjacent to one another.
-    pub fn add_link_adjacency(&mut self, links: &[LinkId]) {
-        for ids in links.iter().flat_map(|a| links.iter().map(|b| [*a, *b])) {
+    /// Gets a link.
+    pub fn get_link(&self, id: LinkId) -> &Link {
+        &self.links[id]
+    }
+
+    /// Specifies that all the links in `a` are all adjacent to all the links in `b`.
+    /// The sets `a` and `b` may be the same.
+    pub fn add_link_adjacency(&mut self, a: &[LinkId], b: &[LinkId]) {
+        for ids in a.iter().flat_map(|a| b.iter().map(|b| [*a, *b])) {
             if let Some([a, b]) = self.links.get_disjoint_mut(ids) {
                 a.add_adjacent_link(b);
             }
         }
+    }
+
+    /// Permits lane changes from one link to another.
+    pub fn permit_lanechange(&mut self, from: LinkId, to: LinkId) {
+        self.links[from].permit_lanechange(to);
     }
     
     /// Specifies that the end of the `from` link connects to the start of the `to` link.

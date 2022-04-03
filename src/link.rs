@@ -51,7 +51,9 @@ struct AdjacentLink {
     link_id: LinkId,
     /// An approximate mapping from longitudinal positions
     /// in the original link to positions in the adjacent link
-    pos_map: LookupTable<Option<f64>>
+    pos_map: LookupTable<Option<f64>>,
+    /// Whether a vehicle on this link can change lanes into the adjacent link
+    can_lanechange: bool
 }
 
 impl Link {
@@ -78,14 +80,35 @@ impl Link {
         &self.curve
     }
 
+    /// Gets the links the succeed this link.
+    pub fn successors(&self) -> &[LinkId] {
+        &self.links_out
+    }
+
+    /// Gets the links that a vehicle on this link is allowed to change into.
+    pub fn valid_lanechanges(&self) -> impl Iterator<Item=LinkId> + '_ {
+        self.links_adj.iter()
+            .filter(|adj| adj.can_lanechange)
+            .map(|adj| adj.link_id)
+    }
+
     /// Adds an adjacent link.
     pub(crate) fn add_adjacent_link(&mut self, link: &Link) {
         self.links_adj.push(AdjacentLink {
             link_id: link.id,
             pos_map: LookupTable::from_samples(self.curve.bounds(), LUT_SPACING, |pos| {
                 project_point_onto_curve(&link.curve, self.curve.sample_centre(pos).0, 0.01, None)
-            })
+            }),
+            can_lanechange: false
         })
+    }
+
+    /// Permits lane changes to an adjacent link.
+    pub(crate) fn permit_lanechange(&mut self, link_id: LinkId) {
+        let adj = self.links_adj.iter_mut()
+            .find(|adj| adj.link_id == link_id)
+            .expect("Cannot permit lane change to non-adjacent link.");
+        adj.can_lanechange = true;
     }
 
     /// Adds a successor link.

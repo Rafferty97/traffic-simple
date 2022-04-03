@@ -46,7 +46,7 @@ pub fn equidistant_points_along_curve(curve: &impl ParametricCurve2d, dist: f64)
     let mut last_p = end_ps[0];
     
     while dists.max > dist {
-        loop {
+        for _ in 0..100 {
             let new_t = ts.lerp(dists.inv_lerp(dist));
             let new_p = curve.sample(new_t);
             let new_dist = (new_p - last_p).magnitude();
