@@ -146,7 +146,6 @@ impl Vehicle {
 
     /// Checks whether the vehicle's route coincides with the given links.
     pub(crate) fn on_route(&self, links: &[LinkId]) -> bool {
-        println!("{:?}", &self.route);
         self.route.iter()
             .skip(1)
             .take(links.len())

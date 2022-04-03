@@ -24,7 +24,7 @@ pub fn project_point_onto_curve(
     for _ in 0..64 {
         let error = p_dt.dot(point - p) / p_dt.magnitude();
         t += error;
-        if error.abs() < max_error {
+        if error.abs() < max_error || !bounds.contains(t) {
             return Some(t);
         }
         (p, p_dt) = (curve.sample(t), curve.sample_dt(t));
@@ -87,6 +87,36 @@ pub fn equidistant_points_along_curve(curve: &impl ParametricCurve2d, dist: f64)
     }
 
     (points, length)
+}
+
+/// Approximates a curve by subdividing it until all segments are no longer than `dist` units in length.
+pub fn subdivided_points_along_curve(curve: &impl ParametricCurve2d, dist: f64) -> Vec<Point2d> {
+    let dist2 = dist.powi(2);
+
+    let Interval { min, max } = curve.bounds();
+    let (mut last_t, mut last_p) = (min, curve.sample(min));
+    let (mut next_t, mut next_p) = (max, curve.sample(max));
+    let mut out = vec![last_p];
+    let mut stack = vec![];
+
+    loop {
+        if (next_p - last_p).magnitude2() > dist2 {
+            let mid_t = 0.5 * (next_t + last_t);
+            let mid_p = curve.sample(mid_t);
+            stack.push((next_t, next_p));
+            (next_t, next_p) = (mid_t, mid_p);
+        } else {
+            out.push(next_p);
+            (last_t, last_p) = (next_t, next_p);
+            if let Some(v) = stack.pop() {
+                (next_t, next_p) = v;
+            } else {
+                break;
+            }
+        }
+    }
+
+    out
 }
 
 #[cfg(test)]

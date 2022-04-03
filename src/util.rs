@@ -23,6 +23,11 @@ impl<T: std::cmp::PartialOrd> Interval<T> {
     pub fn overlaps(&self, other: &Self) -> bool {
         self.max > other.min && other.max > self.min
     }
+
+    /// Returns true if this interval contains the value.
+    pub fn contains(&self, value: T) -> bool {
+        value >= self.min && value <= self.max
+    }
 }
 
 impl<T: std::ops::Sub<T, Output=T> + Copy> Interval<T> {

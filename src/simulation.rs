@@ -27,20 +27,6 @@ impl Simulation {
         self.links.insert_with_key(|id| Link::new(id, attributes))
     }
 
-    /// Specifies the relationships between the links of the network.
-    pub fn connect_links<'a>(
-        &mut self,
-        adjacent: impl IntoIterator<Item=&'a [LinkId]>,
-        successor: impl IntoIterator<Item=(LinkId, LinkId)>
-    ) {
-        for links in adjacent {
-            self.add_link_adjacency(links);
-        }
-        for (from, to) in successor {
-            self.add_link_connection(from, to);
-        }
-    }
-
     /// Specifies that the given links are all adjacent to one another.
     pub fn add_link_adjacency(&mut self, links: &[LinkId]) {
         for ids in links.iter().flat_map(|a| links.iter().map(|b| [*a, *b])) {
