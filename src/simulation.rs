@@ -32,13 +32,11 @@ impl Simulation {
         &self.links[id]
     }
 
-    /// Specifies that all the links in `a` are all adjacent to all the links in `b`.
-    /// The sets `a` and `b` may be the same.
-    pub fn add_link_adjacency(&mut self, a: &[LinkId], b: &[LinkId]) {
-        for ids in a.iter().flat_map(|a| b.iter().map(|b| [*a, *b])) {
-            if let Some([a, b]) = self.links.get_disjoint_mut(ids) {
-                a.add_adjacent_link(b);
-            }
+    /// Specifies that two links are adjacent to each other.
+    pub fn add_link_adjacency(&mut self, a: LinkId, b: LinkId) {
+        if let Some([a, b]) = self.links.get_disjoint_mut([a, b]) {
+            a.add_adjacent_link(b);
+            b.add_adjacent_link(a);
         }
     }
 
