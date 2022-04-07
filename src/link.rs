@@ -1,10 +1,10 @@
-use curve::LinkCurve;
 use smallvec::SmallVec;
 use crate::obstacle::Obstacle;
 use crate::vehicle::Vehicle;
 use crate::{LinkId, VehicleId, LinkSet, VehicleSet};
 use crate::util::Interval;
-use crate::math::{LookupTable, project_local, Vector2d, ParametricCurve2d, Point2d, project_point_onto_curve};
+use crate::math::{LookupTable, project_local, ParametricCurve2d, project_point_onto_curve, rot90};
+pub use curve::{LinkCurve, LinkSample};
 
 mod curve;
 
@@ -97,7 +97,7 @@ impl Link {
         self.links_adj.push(AdjacentLink {
             link_id: link.id,
             pos_map: LookupTable::from_samples(self.curve.bounds(), LUT_SPACING, |pos| {
-                project_point_onto_curve(&link.curve, self.curve.sample_centre(pos).0, 0.01, None)
+                project_point_onto_curve(&link.curve, self.curve.sample_centre(pos).pos, 0.01, None)
             }),
             can_lanechange: false
         })
@@ -165,19 +165,6 @@ impl Link {
                 .flat_map(|o| Self::project_obstacle(&o, link, adj_link));
             link.follow_obstacles(links, vehicles, obstacles);
         }
-    }
-
-    // debug
-    pub(crate) fn projected_lines<'a>(&'a self, links: &'a LinkSet, vehicles: &'a VehicleSet) -> impl Iterator<Item=[Point2d; 2]> + '_ {
-        self.links_adj.iter().flat_map(|adj_link| {
-            let link = &links[adj_link.link_id];
-            let a = self.vehicle_obstacles(vehicles)
-                .map(|o| o.coords);
-            let b = self.vehicle_obstacles(vehicles)
-                .flat_map(|o| Self::project_obstacle(&o, link, adj_link))
-                .map(|o| o.lat.as_array().map(|l| link.curve.sample(o.pos, l, 0.0).0));
-            a.chain(b)
-        })
     }
 
     /// Gets the vehicles on this link as obstacles, in reverse order.
@@ -289,14 +276,13 @@ impl Link {
         )?;
 
         // Get the local coordinate system around this point
-        let (origin, y_axis) = link.curve.sample_centre(dst_pos);
-        let x_axis = Vector2d::new(-y_axis.y, y_axis.x);
+        let LinkSample { pos, tan, .. } = link.curve.sample_centre(dst_pos);
 
         // Project the obstacle's rear coordinates
         // - x: The lateral offset
         // - y: The longitudinal offset
         let proj = obstacle.coords.map(|coord| {
-            project_local(coord, origin, x_axis, y_axis)
+            project_local(coord, pos, rot90(tan), tan)
         });
 
         Some(Obstacle {

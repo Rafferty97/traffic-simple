@@ -1,8 +1,8 @@
+use crate::link::LinkSample;
 use crate::obstacle::Obstacle;
 use crate::util::Interval;
 use crate::{VehicleId, LinkId, LinkSet};
-use crate::math::{CubicFn, Point2d, Vector2d};
-
+use crate::math::{CubicFn, Point2d, Vector2d, rot90};
 use self::acceleration::AccelerationModel;
 
 mod acceleration;
@@ -31,7 +31,9 @@ pub struct Vehicle {
     /// The world space coordinates of the centre of the vehicle.
     world_pos: Point2d,
     /// A world space vector tangent to the vehicle's heading.
-    world_tan: Vector2d
+    world_dir: Vector2d,
+    /// The two end points of a line behind the vehicle used for car following.
+    rear_coords: [Point2d; 2]
 }
 
 /// The attributes of a simulated vehicle.
@@ -80,7 +82,8 @@ impl Vehicle {
             can_exit: true,
             lane_change: None,
             world_pos: Point2d::new(0.0, 0.0),
-            world_tan: Vector2d::new(0.0, 0.0)
+            world_dir: Vector2d::new(0.0, 0.0),
+            rear_coords: [Point2d::new(0.0, 0.0); 2]
         }
     }
     
@@ -136,7 +139,12 @@ impl Vehicle {
 
     /// A unit vector in world space aligned with the vehicle's heading.
     pub fn direction(&self) -> Vector2d {
-        self.world_tan
+        self.world_dir
+    }
+
+    /// The two end points of a line behind the vehicle used for car following.
+    pub fn rear_coords(&self) -> [Point2d; 2] {
+        self.rear_coords
     }
 
     /// The vehicle's velocity in m/s.
@@ -207,24 +215,12 @@ impl Vehicle {
 
     /// Gets the represention of the vehicle as an `Obstacle`.
     pub(crate) fn get_obstacle(&self) -> Obstacle {
-        // TODO: cache?
         Obstacle {
             pos: self.pos_rear(),
             lat: self.lat_extent(),
-            coords: self.obstacle_coords(),
+            coords: self.rear_coords(),
             vel: self.vel()
         }
-    }
-
-    /// Gets the end points of the line segment behind the vehicle
-    /// which is used for the car following model.
-    fn obstacle_coords(&self) -> [Point2d; 2] {
-        let tan = self.world_tan;
-        let perp = Vector2d::new(-tan.y, tan.x);
-        let rear = self.world_pos - self.half_len * tan;
-        self.lat_extent()
-            .as_array()
-            .map(|lat| rear + (lat - self.offset()) * perp)
     }
 
     /// Resets internal model states in preparation for a new step of the simulation.
@@ -295,13 +291,31 @@ impl Vehicle {
     /// Updates the vehicle's world coordinates
     pub(crate) fn update_coords(&mut self, links: &LinkSet) {
         let curve = &links[self.route[0].link].curve();
-        (self.world_pos, self.world_tan) = match self.lane_change {
+        
+        let (pos, dir, tan, lats) = match self.lane_change {
             Some(lc) => {
                 let (offset, slope) = lc.offset.y_and_dy(self.pos);
-                curve.sample(self.pos, offset, slope)
+                let LinkSample { pos, dir, tan } = curve.sample(self.pos, offset, slope);
+                let wid = self.half_wid + self.half_len * dir.perp_dot(tan).abs();
+                let lats = [
+                    f64::min(-offset, 0.0) - wid,
+                    f64::max(-offset, 0.0) + wid
+                ];
+                (pos, dir, tan, lats)
             },
-            None => curve.sample_centre(self.pos)
+            None => {
+                let LinkSample { pos, dir, tan } = curve.sample_centre(self.pos);
+                let lats = [-self.half_wid, self.half_wid];
+                (pos, dir, tan, lats)
+            }
         };
+
+        self.world_pos = pos;
+        self.world_dir = dir;
+        
+        let rear_mid = pos - self.half_len * tan;
+        let perp = rot90(tan);
+        self.rear_coords = lats.map(|lat| rear_mid + lat * perp);
     }
 }
 

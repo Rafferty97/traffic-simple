@@ -50,13 +50,7 @@ impl Simulation {
         self.links[from].add_successor_link(to);
         self.links[to].add_predecessor_link(from);
     }
-
-    pub fn projected_lines(&self) -> impl Iterator<Item=[Point2d; 2]> + '_ {
-        self.links.iter().flat_map(|(_, link)| {
-            link.projected_lines(&self.links, &self.vehicles)
-        })
-    }
-
+    
     /// Adds a vehicle to the simulation.
     pub fn add_vehicle(&mut self, attributes: &VehicleAttributes, link: LinkId) -> VehicleId {
         let vehicle_id = self.vehicles.insert_with_key(|id| {

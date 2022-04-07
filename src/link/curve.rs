@@ -8,6 +8,16 @@ pub struct LinkCurve {
     segments: Vec<QuadraticBezier2d>
 }
 
+/// The result of sampling a [LinkCurve].
+pub struct LinkSample {
+    /// The vehicle position
+    pub pos: Point2d,
+    /// The vehicle direction unit vector
+    pub dir: Vector2d,
+    /// The tangent unit vector of the link.
+    pub tan: Vector2d
+}
+
 impl LinkCurve {
     /// Creates a new [LinkCurve] from the given parametric curve,
     /// with the default step size.
@@ -58,7 +68,7 @@ impl LinkCurve {
     /// * `pos` - The longitudinal position along the curve
     /// * `offset` - The lateral offset from the centre line
     /// * `slope` - The derivative of `offset` with respect to `pos`.
-    pub fn sample(&self, pos: f64, offset: f64, slope: f64) -> (Point2d, Vector2d) {
+    pub fn sample(&self, pos: f64, offset: f64, slope: f64) -> LinkSample {
         // Calculate centre point and its derivatives
         let (segment, t) = self.sample_internal(pos);
         let c = segment.sample(t);
@@ -75,7 +85,11 @@ impl LinkCurve {
         let o = c + p * offset;
         let o_dp = c_dp + p_dp * offset + p * slope;
 
-        (o, o_dp.normalize())
+        LinkSample {
+            pos: o,
+            dir: o_dp.normalize(),
+            tan: t
+        }
     }
 
     /// The inverse of the `sample` function.
@@ -106,11 +120,16 @@ impl LinkCurve {
     /// 
     /// # Parameters
     /// * `pos` - The longitudinal position along the curve
-    pub fn sample_centre(&self, pos: f64) -> (Point2d, Vector2d) {
+    pub fn sample_centre(&self, pos: f64) -> LinkSample {
         let (segment, t) = self.sample_internal(pos);
         let c = segment.sample(t);
         let c_dp = segment.sample_dt(t);
-        (c, c_dp.normalize())
+        let tan = c_dp.normalize();
+        LinkSample {
+            pos: c,
+            dir: tan,
+            tan
+        }
     }
 
     /// Samples the curve and returns the position, as well as the
@@ -170,8 +189,8 @@ mod test {
 
         let ts = (0..100).map(|i| i as f64 * 0.01 * curve.length()).collect::<Vec<_>>();
         for ts in ts.windows(2) {
-            let p1 = curve.sample_centre(ts[0]).0;
-            let p2 = curve.sample_centre(ts[1]).0;
+            let p1 = curve.sample_centre(ts[0]).pos;
+            let p2 = curve.sample_centre(ts[1]).pos;
             assert_approx_eq::assert_approx_eq!((p2 - p1).magnitude(), ts[1] - ts[0], 0.01);
         }
     }
