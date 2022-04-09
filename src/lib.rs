@@ -11,6 +11,7 @@ mod util;
 mod simulation;
 mod link;
 mod vehicle;
+mod conflict;
 mod obstacle;
 
 new_key_type! {

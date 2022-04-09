@@ -76,13 +76,29 @@ impl AccelerationModel {
         }
     }
 
+    /// Calculates the acceleration needed to merge with another vehicle.
+    /// 
+    /// # Arguments
+    /// * `net_dist` - The distance between this vehicle and the vehicle ahead in metres.
+    /// * `stop_dist` - The distance between this vehicle and the stop line.
+    /// * `my_vel` - The velocity of the simulated vehicle (m/s).
+    /// * `their_vel` - The vehicle ahead's velocity (m/s).
+    pub fn merge_vehicle(&self, net_dist: f64, stop_dist: f64, my_vel: f64, their_vel: f64) {
+        let acc = f64::max(
+            self.idm(net_dist, my_vel, their_vel),
+            self.idm(stop_dist, my_vel, 0.0)
+        );
+        self.acc.set(f64::min(self.acc.get(), acc));
+    }
+
     /// Calculates the acceleration needed to stop before a stop line.
     /// 
     /// # Arguments
     /// * `net_dist` - The distance between this vehicle and the stop line.
     /// * `my_vel` - The velocity of the simulated vehicle (m/s).
     pub fn stop_at_line(&self, net_dist: f64, my_vel: f64) {
-        self.follow_vehicle(net_dist, my_vel, 0.0);
+        let acc = self.idm(net_dist, my_vel, 0.0);
+        self.acc.set(f64::min(self.acc.get(), acc));
     }
 
     /// Calculates the acceleration needed to follow the vehicle ahead.
@@ -92,20 +108,7 @@ impl AccelerationModel {
     /// * `my_vel` - The velocity of the simulated vehicle (m/s).
     /// * `their_vel` - The vehicle ahead's velocity (m/s).
     pub fn follow_vehicle(&self, net_dist: f64, my_vel: f64, their_vel: f64) {
-        let headway = 1.5; // s
-        let comf_dec = self.comf_dec; // m.s^-2
-        let max_acc = self.max_acc; // m.s^-2
-
-        let acc = if net_dist <= MIN_GAP {
-            -10. * max_acc
-        } else {
-            let appr = my_vel - their_vel;
-            let factor = 1. / (2. * (max_acc * comf_dec).sqrt());
-            let ss = MIN_GAP + (my_vel * headway) + (my_vel * appr * factor);
-            let term = ss / net_dist;
-            max_acc * (1. - (term * term))
-        };
-
+        let acc = self.idm(net_dist, my_vel, their_vel);
         self.acc.set(f64::min(self.acc.get(), acc));
     }
 
@@ -116,5 +119,22 @@ impl AccelerationModel {
         let t = my_vel / self.comf_dec;
         let comf_dist = 0.5 * my_vel * t + min_dist;
         net_dist >= comf_dist
+    }
+
+    /// Computes an acceleration using the intelligent driver model.
+    fn idm(&self, net_dist: f64, my_vel: f64, their_vel: f64) -> f64 {
+        let headway = 1.5; // s
+        let comf_dec = self.comf_dec; // m.s^-2
+        let max_acc = self.max_acc; // m.s^-2
+
+        if net_dist <= MIN_GAP {
+            -10. * max_acc
+        } else {
+            let appr = my_vel - their_vel;
+            let factor = 1. / (2. * (max_acc * comf_dec).sqrt());
+            let ss = MIN_GAP + (my_vel * headway) + (my_vel * appr * factor);
+            let term = ss / net_dist;
+            max_acc * (1. - (term * term))
+        }
     }
 }

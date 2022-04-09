@@ -1,8 +1,11 @@
+use std::cell::Cell;
+
+use cgmath::prelude::*;
 use crate::link::LinkSample;
 use crate::obstacle::Obstacle;
 use crate::util::Interval;
 use crate::{VehicleId, LinkId, LinkSet};
-use crate::math::{CubicFn, Point2d, Vector2d, rot90};
+use crate::math::{CubicFn, Point2d, Vector2d, rot90, project_local};
 use self::acceleration::AccelerationModel;
 
 mod acceleration;
@@ -33,7 +36,9 @@ pub struct Vehicle {
     /// A world space vector tangent to the vehicle's heading.
     world_dir: Vector2d,
     /// The two end points of a line behind the vehicle used for car following.
-    rear_coords: [Point2d; 2]
+    rear_coords: [Point2d; 2],
+    /// Tracks the vehicle's projection onto adjacent links, for performance.
+    min_segments: [Cell<u16>; 8]
 }
 
 /// The attributes of a simulated vehicle.
@@ -51,9 +56,9 @@ pub struct VehicleAttributes {
 
 /// A link along a vehicle's route.
 #[derive(Clone, Copy, Debug)]
-struct RouteElement {
-    link: LinkId,
-    entered_at: Option<usize>
+pub(crate) struct RouteElement {
+    pub link: LinkId,
+    pub entered_at: Option<usize>
 }
 
 /// Represents an in-progress lane change.
@@ -83,7 +88,8 @@ impl Vehicle {
             lane_change: None,
             world_pos: Point2d::new(0.0, 0.0),
             world_dir: Vector2d::new(0.0, 0.0),
-            rear_coords: [Point2d::new(0.0, 0.0); 2]
+            rear_coords: [Point2d::new(0.0, 0.0); 2],
+            min_segments: Default::default()
         }
     }
     
@@ -152,19 +158,49 @@ impl Vehicle {
         self.vel
     }
 
-    /// Checks whether the vehicle's route coincides with the given links.
-    pub(crate) fn on_route(&self, links: &[LinkId]) -> bool {
-        self.route.iter()
-            .skip(1)
-            .take(links.len())
-            .map(|el| &el.link)
-            .eq(links.iter())
+    /// Gets the vehicle's route.
+    pub(crate) fn route(&self) -> &[RouteElement] {
+        &self.route
+    }
+
+    /// Gets the vehicle's route.
+    pub(crate) fn on_route(&self, idx: usize, link: LinkId) -> bool {
+        if let Some(element) = self.route.get(idx) {
+            element.link == link
+        } else {
+            false
+        }
+    }
+    
+    /// Determines whether the vehicle can comfortably stop before reaching `pos`.
+    pub(crate) fn can_stop(&self, pos: f64) -> bool {
+        self.acc.can_stop(pos - self.pos_front(), self.vel)
+    }
+
+    /// Enters the link.
+    pub(crate) fn enter_link(&mut self, idx: usize, now: usize) {
+        for el in self.route.iter_mut().take(idx + 1) {
+            el.entered_at.get_or_insert(now);
+        }
+    }
+    
+    /// Applies an acceleration to the vehicle so it follows an obstacle.
+    pub(crate) fn stop_at_line(&self, pos: f64) {
+        let net_dist = pos - self.pos_front();
+        self.acc.stop_at_line(net_dist, self.vel);
     }
 
     /// Applies an acceleration to the vehicle so it follows an obstacle.
-    pub(crate) fn follow_obstacle(&self, pos: f64, vel: f64) {
+    pub(crate) fn follow_vehicle(&self, pos: f64, vel: f64) {
         let net_dist = pos - self.pos_front();
         self.acc.follow_vehicle(net_dist, self.vel, vel);
+    }
+
+    /// Applies an acceleration to the vehicle so it merges with a vehicle.
+    pub(crate) fn merge_vehicle(&self, pos: f64, vel: f64, stop_line: f64) {
+        let net_dist = pos - self.pos_front();
+        let stop_dist = stop_line - self.pos_front();
+        self.acc.merge_vehicle(net_dist, stop_dist, self.vel, vel);
     }
 
     /// Applies a current speed limit to the vehicle.
@@ -180,6 +216,53 @@ impl Vehicle {
     /// Applies a maximum deceleration to the vehicle, causing it to stop.
     pub(crate) fn emergency_stop(&self) {
         self.acc.emergency_stop();
+    }
+
+    /// Gets the vehicle as an obstacle on its own link.
+    pub(crate) fn local_obstacle(&self) -> Obstacle {
+        Obstacle {
+            pos: self.pos_rear(),
+            lat: self.lat_extent(),
+            vel: self.vel()
+        }
+    }
+
+    /// Gets the vehicle as an obstacle on an adjacent link.
+    pub(crate) fn adjacent_obstacle(
+        &self,
+        idx: usize,
+        curve: &[(f64, Point2d, Vector2d)]
+    ) -> Obstacle {
+        // Find the closest segment to the obstacle
+        let segment_idx = curve.iter()
+            .skip(self.min_segments[idx].get() as usize)
+            .position(|(_, pos, tan)| {
+                self.rear_coords.iter().any(|c| (c - pos).dot(*tan) <= 0.0)
+            })
+            .map(|i| i + self.min_segments[idx].get() as usize)
+            .unwrap_or(curve.len())
+            .saturating_sub(1);
+
+        // Record the new segment index
+        self.min_segments[idx].set(segment_idx as u16);
+        
+        // Get the local coordinate system around the obstacle
+        let (pos, origin, tan) = unsafe {
+            // SAFETY: Use of `position` above guarantees the index is in bounds.
+            *curve.get_unchecked(segment_idx)
+        };
+
+        // Project the obstacle's rear coordinates
+        let proj = self.rear_coords.map(|coord| {
+            project_local(coord, origin, rot90(tan), tan)
+        });
+
+        // Create the obstacle
+        Obstacle {
+            pos: pos + f64::min(proj[0].y, proj[1].y),
+            lat: Interval::new(proj[0].x, proj[1].x),
+            vel: self.vel
+        }
     }
 
     /// Gets the vehicle's current lateral offset from the centre line.
@@ -211,16 +294,6 @@ impl Vehicle {
             f64::min(offset, 0.0) - self.half_width(),
             f64::max(offset, 0.0) + self.half_width()
         )
-    }
-
-    /// Gets the represention of the vehicle as an `Obstacle`.
-    pub(crate) fn get_obstacle(&self) -> Obstacle {
-        Obstacle {
-            pos: self.pos_rear(),
-            lat: self.lat_extent(),
-            coords: self.rear_coords(),
-            vel: self.vel()
-        }
     }
 
     /// Resets internal model states in preparation for a new step of the simulation.
@@ -263,6 +336,7 @@ impl Vehicle {
                     lc.offset = lc.offset.translate_x(length);
                     lc.end_pos -= length;
                 }
+                self.min_segments.fill(Cell::new(0));
                 return true;
             }
         }
@@ -276,6 +350,7 @@ impl Vehicle {
         self.pos = pos;
         self.lane_change = lane_change;
         self.can_exit = false;
+        self.min_segments.fill(Cell::new(0));
     }
 
     /// Sets the vehicle's route.
@@ -316,33 +391,5 @@ impl Vehicle {
         let rear_mid = pos - self.half_len * tan;
         let perp = rot90(tan);
         self.rear_coords = lats.map(|lat| rear_mid + lat * perp);
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use slotmap::{KeyData, Key};
-    use super::*;
-
-    /// Tests the `on_route` method of `Vehicle`.
-    #[test]
-    fn on_route() {
-        let link1 = KeyData::from_ffi(0).into();
-        let link2 = KeyData::from_ffi(1).into();
-        let link3 = KeyData::from_ffi(2).into();
-        let mut vehicle = Vehicle::new(VehicleId::null(), &VehicleAttributes {
-            width: 2.0,
-            length: 5.0,
-            comf_dec: 2.0,
-            max_acc: 2.0
-        });
-        vehicle.set_location(link3, 0.0, None);
-        vehicle.set_route(&[link1, link2], true);
-
-        assert!(vehicle.on_route(&[]));
-        assert!(vehicle.on_route(&[link1]));
-        assert!(vehicle.on_route(&[link1, link2]));
-        assert!(!vehicle.on_route(&[link2]));
-        assert!(!vehicle.on_route(&[link1, link2, link3]));
     }
 }

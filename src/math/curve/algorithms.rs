@@ -33,6 +33,31 @@ pub fn project_point_onto_curve(
     None
 }
 
+/// Finds intersection between two curves, if one exists.
+pub fn intersect_curves(
+    curve1: &impl ParametricCurve2d,
+    curve2: &impl ParametricCurve2d
+) -> Option<(f64, f64)> {
+    let mut pos1 = curve1.bounds().min;
+    let mut pos2 = None;
+    while pos1 < curve1.bounds().max {
+        let point1 = curve1.sample(pos1);
+        pos2 = project_point_onto_curve(curve2, point1, 0.1, pos2);
+        if let Some(pos2) = pos2 {
+            let point2 = curve2.sample(pos2);
+            let distance = point1.distance(point2);
+            if distance < 0.01 {
+                return Some((pos1, pos2));
+            } else {
+                pos1 += distance;
+            }
+        } else {
+            pos1 += 1.0;
+        }
+    }
+    None
+}
+
 /// Finds a set of evenly spaced points along the given parametric curve.
 pub fn equidistant_points_along_curve(curve: &impl ParametricCurve2d, dist: f64) -> (Vec<Point2d>, f64) {
     let end_ts = curve.bounds();

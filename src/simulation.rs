@@ -1,3 +1,4 @@
+use crate::conflict::ConflictPoint;
 use crate::math::{CubicFn, Point2d};
 use crate::{LinkSet, VehicleSet, LinkId, VehicleId};
 use crate::link::{Link, LinkAttributes};
@@ -10,10 +11,14 @@ pub struct Simulation {
     links: LinkSet,
     /// The vehicles being simulated.
     vehicles: VehicleSet,
+    /// The conflict points.
+    conflicts: Vec<ConflictPoint>,
     /// The set of "frozen" vehicles, which will not move.
     frozen_vehs: Vec<VehicleId>,
     /// The current frame of simulation.
-    frame: usize
+    frame: usize,
+    /// Debug lines
+    debug_lines: Vec<Vec<Point2d>>
 }
 
 impl Simulation {
@@ -40,6 +45,13 @@ impl Simulation {
         }
     }
 
+    /// Specifies that two links may converge or cross.
+    pub fn add_link_convergance(&mut self, a: LinkId, b: LinkId) {
+        if let [Some(a), Some(b)] = [a, b].map(|i| self.links.get(i)) {
+            self.conflicts.extend(ConflictPoint::new(a, b));
+        }
+    }
+
     /// Permits lane changes from one link to another.
     pub fn permit_lanechange(&mut self, from: LinkId, to: LinkId) {
         self.links[from].permit_lanechange(to);
@@ -47,8 +59,8 @@ impl Simulation {
     
     /// Specifies that the end of the `from` link connects to the start of the `to` link.
     pub fn add_link_connection(&mut self, from: LinkId, to: LinkId) {
-        self.links[from].add_successor_link(to);
-        self.links[to].add_predecessor_link(from);
+        self.links[from].add_link_out(to);
+        self.links[to].add_link_in(from);
     }
     
     /// Adds a vehicle to the simulation.
@@ -80,6 +92,8 @@ impl Simulation {
 
     /// Advances the simulation by `dt` seconds.
     pub fn step(&mut self, dt: f64) {
+        self.debug_lines.clear();
+        self.enter_intersections();
         self.apply_accelerations();
         self.integrate(dt);
         self.advance_vehicles();
@@ -97,6 +111,13 @@ impl Simulation {
         &self.vehicles[vehicle_id]
     }
 
+    /// Allows vehicles to enter intersections.
+    fn enter_intersections(&mut self) {
+        for (_, link) in &self.links {
+            link.enter_vehicles(&mut self.vehicles, self.frame);
+        }
+    }
+
     /// Calculates the accelerations of the vehicles.
     fn apply_accelerations(&mut self) {
         self.apply_link_accelerations();
@@ -108,6 +129,9 @@ impl Simulation {
         for (_, link) in &self.links {
             link.apply_speed_limit(&self.links, &self.vehicles);
             link.apply_car_following(&self.links, &self.vehicles);
+        }
+        for conflict in &self.conflicts {
+            conflict.apply_car_following(&self.links, &self.vehicles);
         }
     }
 
@@ -200,5 +224,9 @@ impl Simulation {
 
     pub fn set_vehicle_route(&mut self, vehicle_id: VehicleId, route: &[LinkId]) {
         self.vehicles[vehicle_id].set_route(route, true);
+    }
+
+    pub fn debug_lines(&self) -> &[Vec<Point2d>] {
+        &self.debug_lines
     }
 }
