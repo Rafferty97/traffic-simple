@@ -1,5 +1,4 @@
 use std::cell::Cell;
-
 use cgmath::prelude::*;
 use crate::link::LinkSample;
 use crate::obstacle::Obstacle;
@@ -25,6 +24,8 @@ pub struct Vehicle {
     pos: f64,
     /// The velocity in m/s.
     vel: f64,
+    /// The number of frames that the vehicle has been stopped.
+    stop_cnt: usize,
     /// The vehicle's route, including the link it's currently on.
     route: Vec<RouteElement>,
     /// Whether the vehicle can exit at the end of its route.
@@ -83,6 +84,7 @@ impl Vehicle {
             }),
             pos: 0.0,
             vel: 0.0,
+            stop_cnt: 0,
             route: vec![],
             can_exit: true,
             lane_change: None,
@@ -314,6 +316,18 @@ impl Vehicle {
 
         // Check for lane change completion
         self.lane_change = self.lane_change.filter(|lc| lc.end_pos > pos);
+
+        // Update the stop count
+        self.update_stop_count();
+    }
+
+    /// Updates the vehicle's stop counter.
+    fn update_stop_count(&mut self) {
+        if self.vel < 0.1 {
+            self.stop_cnt += 1;
+        } else {
+            self.stop_cnt = 0;
+        }
     }
 
     /// Checks whether the vehicle has travelled past the end of its current link,
