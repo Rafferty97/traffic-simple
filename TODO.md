@@ -1,0 +1,7 @@
+- Remove hard coded constant of 30m in `conflict.rs`
+- Implement better conflict detection
+  - Use polygons to calculate exact `min_pos` and `max_pos`
+  - Use maximum of entry and exit angles to determine padding factor (currently just 2.0 * LINK_RADIUS)
+- Perhaps vehicles, upon entering a link, can "awaken" the conflicts on that link?
+  - When conflicts have no vehicles to process they can "sleep"?
+  - Or perhaps easier to awaken/sleep the links themselves?

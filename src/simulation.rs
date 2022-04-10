@@ -1,8 +1,16 @@
+use std::borrow::Borrow;
+use std::cell::RefCell;
+use std::sync::Mutex;
+
 use crate::conflict::ConflictPoint;
 use crate::math::{CubicFn, Point2d};
 use crate::{LinkSet, VehicleSet, LinkId, VehicleId};
 use crate::link::{Link, LinkAttributes};
 use crate::vehicle::{VehicleAttributes, Vehicle, LaneChange};
+
+thread_local! {
+    pub(crate) static DEBUG_LINES: RefCell<Vec<Vec<Point2d>>> = RefCell::default();
+}
 
 /// A traffic simulation.
 #[derive(Default, Clone)]
@@ -16,9 +24,7 @@ pub struct Simulation {
     /// The set of "frozen" vehicles, which will not move.
     frozen_vehs: Vec<VehicleId>,
     /// The current frame of simulation.
-    frame: usize,
-    /// Debug lines
-    debug_lines: Vec<Vec<Point2d>>
+    frame: usize
 }
 
 impl Simulation {
@@ -92,7 +98,6 @@ impl Simulation {
 
     /// Advances the simulation by `dt` seconds.
     pub fn step(&mut self, dt: f64) {
-        self.debug_lines.clear();
         self.enter_intersections();
         self.apply_accelerations();
         self.integrate(dt);
@@ -242,7 +247,11 @@ impl Simulation {
         self.vehicles[vehicle_id].set_route(route, true);
     }
 
-    pub fn debug_lines(&self) -> &[Vec<Point2d>] {
-        &self.debug_lines
+    pub fn debug_lines(mut f: impl FnMut(&[Point2d])) {
+        DEBUG_LINES.with(|lines| {
+            for line in lines.borrow().iter() {
+                f(&line[..]);
+            }
+        });
     }
 }

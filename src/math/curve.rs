@@ -2,10 +2,12 @@ use crate::util::Interval;
 use super::{Point2d, Vector2d};
 pub use bezier::*;
 pub use offset::*;
+pub use subcurve::*;
 pub use algorithms::*;
 
 mod bezier;
 mod offset;
+mod subcurve;
 mod algorithms;
 
 /// A parametric curve in 2D space.

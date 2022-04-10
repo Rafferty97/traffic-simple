@@ -1,7 +1,5 @@
 use cgmath::InnerSpace;
-
 use crate::math::rot90;
-
 use super::ParametricCurve2d;
 
 pub struct OffsetCurve<C, F>

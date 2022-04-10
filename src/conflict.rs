@@ -1,8 +1,8 @@
 use cgmath::InnerSpace;
 use itertools::{unfold, Itertools};
-use crate::{LinkId, Link, math::{project_point_onto_curve, Point2d}, LinkSet, VehicleSet, Vehicle, vehicle::RouteElement};
+use crate::{LinkId, Link, math::{project_point_onto_curve, subdivided_points_along_curve, OffsetCurve}, LinkSet, VehicleSet, Vehicle, simulation::DEBUG_LINES};
 
-const LINK_RADIUS: f64 = 3.0; // m
+const LINK_RADIUS: f64 = 2.0; // m
 
 #[derive(Clone, Copy, Debug)]
 pub struct ConflictPoint {
@@ -37,7 +37,7 @@ impl ConflictPoint {
         let v1 = self.links[0].iter_vehicles(links, vehicles);
         let v2 = self.links[1].iter_vehicles(links, vehicles);
         let merged = v1.merge_by(v2, |a, b| a.entered_at < b.entered_at);
-        let mut vehicles = merged.take_while(|v| v.pos_mid() > -20.0); // TODO: Constant
+        let mut vehicles = merged.take_while(|v| v.pos_mid() > -30.0); // TODO: Constant
 
         let mut prev = if let Some(v) = vehicles.next() { v } else { return };
         for curr in vehicles {
@@ -73,7 +73,26 @@ impl ConflictingLink {
             own_pos += STEP;
         }
 
+        for offset in [-LINK_RADIUS, LINK_RADIUS] {
+            let debug_line = subdivided_points_along_curve(
+                &OffsetCurve::new(
+                    link.curve(),
+                    |_| offset
+                ),
+                0.1
+            );
+            DEBUG_LINES.with(|v| v.borrow_mut().push(debug_line));
+        }
+
         if let (Some(min_pos), Some(max_pos)) = (min_pos, max_pos) {
+
+            for pos in [min_pos, max_pos] {
+                let line = [-LINK_RADIUS, LINK_RADIUS].map(|offset| {
+                    link.curve().sample(pos, offset, 0.0).pos
+                });
+                DEBUG_LINES.with(|v| v.borrow_mut().push(line.to_vec()));
+            }
+
             Some(Self {
                 link_id: link.id(),
                 min_pos,
@@ -141,6 +160,10 @@ impl<'a> OffsetVehicle<'a> {
     }
 
     fn merge_vehicle(&self, pos: f64, vel: f64, stop_line: f64) {
-        self.vehicle.merge_vehicle(pos + self.offset, vel, stop_line + self.offset);
+        self.vehicle.merge_vehicle(
+            pos + self.offset - 2. * LINK_RADIUS,
+            vel,
+            stop_line + self.offset
+        );
     }
 }
