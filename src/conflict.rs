@@ -89,14 +89,13 @@ impl ConflictingLink {
         links: &'a LinkSet,
         vehicles: &'a VehicleSet
     ) -> impl Iterator<Item=OffsetVehicle<'a>> + 'a {
-        let init = (Some(&links[self.link_id]), self.min_pos, 0);
-        unfold(init, |(m_link, offset, idx)| {
+        let init = (Some(&links[self.link_id]), self.min_pos);
+        unfold(init, |(m_link, offset)| {
             if let Some(link) = m_link {
-                let out = (*link, *offset, *idx);
+                let out = (*link, *offset);
                 if let [prev] = link.links_in() {
                     *link = &links[*prev];
                     *offset += link.length();
-                    *idx += 1;
                 } else {
                     *m_link = None;
                 }
@@ -105,17 +104,19 @@ impl ConflictingLink {
                 None
             }
         })
-            .flat_map(move |(link, offset, idx)| {
+            .enumerate()
+            .flat_map(move |(idx, (link, offset))| {
                 link.iter_vehicles_rev()
                     .filter_map(move |id| {
                         let vehicle = &vehicles[id];
-                        let RouteElement { link, entered_at } = vehicle.route()[idx];
-                        if link != self.link_id {
-                            return None;
-                        }
-                        entered_at.map(|entered_at| {
-                            OffsetVehicle { vehicle, offset, link, entered_at }
-                        })
+                        vehicle.route()
+                            .get(idx)
+                            .filter(|el| el.link == self.link_id)
+                            .and_then(|el| el.entered_at)
+                            .map(|entered_at| {
+                                let link = self.link_id;
+                                OffsetVehicle { vehicle, offset, link, entered_at }
+                            })
                     })
             })
             .skip_while(|veh| veh.pos_rear() > self.max_pos - self.min_pos)

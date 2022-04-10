@@ -101,6 +101,20 @@ impl Simulation {
         self.frame += 1;
     }
 
+    /// Advances the simulation by `dt` seconds,
+    /// but only integrates vehicles positions.
+    pub fn step_fast(&mut self, dt: f64) {
+        self.integrate(dt);
+        self.advance_vehicles();
+        self.update_vehicle_coords();
+        self.frame += 1;
+    }
+
+    /// Gets the current simulation frame index.
+    pub fn frame(&self) -> usize {
+        self.frame
+    }
+
     /// Returns an iterator over all the vehicles in the simulation.
     pub fn iter_vehicles(&self) -> impl Iterator<Item=&Vehicle> {
         self.vehicles.iter().map(|(_, veh)| veh)
@@ -120,6 +134,9 @@ impl Simulation {
 
     /// Calculates the accelerations of the vehicles.
     fn apply_accelerations(&mut self) {
+        for (_, vehicle) in &mut self.vehicles {
+            vehicle.reset();
+        }
         self.apply_link_accelerations();
         self.apply_frozen_vehicles();
     }
@@ -152,7 +169,6 @@ impl Simulation {
     fn integrate(&mut self, dt: f64) {
         for (_, vehicle) in &mut self.vehicles {
             vehicle.integrate(dt);
-            vehicle.reset();
         }
     }
 
