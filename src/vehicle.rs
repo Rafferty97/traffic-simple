@@ -198,11 +198,14 @@ impl Vehicle {
         self.acc.follow_vehicle(net_dist, self.vel, vel);
     }
 
-    /// Applies an acceleration to the vehicle so it merges with a vehicle.
-    pub(crate) fn merge_vehicle(&self, pos: f64, vel: f64, stop_line: f64) {
-        let net_dist = pos - self.pos_front();
-        let stop_dist = stop_line - self.pos_front();
-        self.acc.merge_vehicle(net_dist, stop_dist, self.vel, vel);
+    /// Applies an acceleration to the vehicle so it follows an obstacle.
+    pub(crate) fn follow_obstacle(&self, coords: [Point2d; 2], vel: f64) {
+        let mid_dist = f64::min(
+            self.direction().dot(coords[0] - self.position()),
+            self.direction().dot(coords[1] - self.position())
+        );
+        let net_dist = mid_dist - self.half_len;
+        self.acc.follow_vehicle(net_dist, self.vel, vel);
     }
 
     /// Applies a current speed limit to the vehicle.

@@ -76,21 +76,6 @@ impl AccelerationModel {
         }
     }
 
-    /// Calculates the acceleration needed to merge with another vehicle.
-    /// 
-    /// # Arguments
-    /// * `net_dist` - The distance between this vehicle and the vehicle ahead in metres.
-    /// * `stop_dist` - The distance between this vehicle and the stop line.
-    /// * `my_vel` - The velocity of the simulated vehicle (m/s).
-    /// * `their_vel` - The vehicle ahead's velocity (m/s).
-    pub fn merge_vehicle(&self, net_dist: f64, stop_dist: f64, my_vel: f64, their_vel: f64) {
-        let acc = f64::max(
-            self.idm(net_dist, my_vel, their_vel),
-            self.idm(stop_dist, my_vel, 0.0)
-        );
-        self.acc.set(f64::min(self.acc.get(), acc));
-    }
-
     /// Calculates the acceleration needed to stop before a stop line.
     /// 
     /// # Arguments
