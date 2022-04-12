@@ -1,11 +1,8 @@
-use std::borrow::Borrow;
 use std::cell::RefCell;
-use std::sync::Mutex;
-
 use crate::conflict::ConflictPoint;
 use crate::math::{CubicFn, Point2d};
 use crate::{LinkSet, VehicleSet, LinkId, VehicleId};
-use crate::link::{Link, LinkAttributes};
+use crate::link::{Link, LinkAttributes, TrafficControl};
 use crate::vehicle::{VehicleAttributes, Vehicle, LaneChange};
 
 thread_local! {
@@ -98,7 +95,6 @@ impl Simulation {
 
     /// Advances the simulation by `dt` seconds.
     pub fn step(&mut self, dt: f64) {
-        self.enter_intersections();
         self.apply_accelerations();
         self.integrate(dt);
         self.advance_vehicles();
@@ -130,11 +126,9 @@ impl Simulation {
         &self.vehicles[vehicle_id]
     }
 
-    /// Allows vehicles to enter intersections.
-    fn enter_intersections(&mut self) {
-        for (_, link) in &self.links {
-            link.enter_vehicles(&mut self.vehicles, self.frame);
-        }
+    /// Gets a reference to the link with the given ID.
+    pub fn set_link_control(&mut self, link_id: LinkId, control: TrafficControl) {
+        self.links[link_id].set_control(control);
     }
 
     /// Calculates the accelerations of the vehicles.
@@ -142,8 +136,17 @@ impl Simulation {
         for (_, vehicle) in &mut self.vehicles {
             vehicle.reset();
         }
+        self.apply_stoplines();
         self.apply_link_accelerations();
         self.apply_frozen_vehicles();
+    }
+
+    /// Applies accelerations to stop vehicles before stop lines,
+    /// and allows vehicles to enter links.
+    fn apply_stoplines(&mut self) {
+        for (_, link) in &self.links {
+            link.apply_stoplines(&self.links, &mut self.vehicles, self.frame);
+        }
     }
 
     /// Applies the car following model, speed limits, etc. to all vehicles.

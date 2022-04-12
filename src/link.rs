@@ -30,7 +30,9 @@ pub struct Link {
     /// Speed limit in m/s.
     speed_limit: f64,
     /// The vehicles on the link.
-    vehicles: Vec<VehicleId>
+    vehicles: Vec<VehicleId>,
+    /// The traffic control at the start of the link.
+    control: TrafficControl
 }
 
 /// The attributes of a link.
@@ -39,6 +41,24 @@ pub struct LinkAttributes<'a> {
     pub curve: &'a dyn ParametricCurve2d,
     /// The speed limit in m/s.
     pub speed_limit: f64
+}
+
+/// A traffic control.
+#[derive(Clone, Copy, Debug)]
+pub enum TrafficControl {
+    /// Traffic can enter freely, e.g. green light or priority road.
+    Open,
+    /// Traffic must yield before entering.
+    Yield {
+        /// Higher numbers indicate higher priority.
+        priority: u8,
+        /// The minimum distance from the stop line before a vehicle can enter.
+        distance: f64,
+        /// Whether a vehicle needs to come to a stop before entering.
+        must_stop: bool
+    },
+    /// Traffic cannot enter, e.g. red light.
+    Closed
 }
 
 /// Information about a link which overlaps another link.
@@ -70,7 +90,8 @@ impl Link {
             links_out: vec![],
             links_adj: vec![],
             speed_limit: attribs.speed_limit,
-            vehicles: vec![]
+            vehicles: vec![],
+            control: TrafficControl::Open
         }
     }
 
@@ -149,13 +170,31 @@ impl Link {
         }
     }
 
+    /// Sets the traffic control at the start of the link.
+    pub(crate) fn set_control(&mut self, control: TrafficControl) {
+        self.control = control;
+    }
+
     /// Allows vehicles to enter the link.
-    pub(crate) fn enter_vehicles(&self, vehicles: &mut VehicleSet, now: usize) {
-        // TODO...
-        if let Some(vehicle_id) = self.vehicles.last() {
+    pub(crate) fn apply_stoplines(&self, links: &LinkSet, vehicles: &mut VehicleSet, now: usize) {
+        for vehicle_id in self.vehicles.iter().rev() {
             let vehicle = &mut vehicles[*vehicle_id];
-            if !vehicle.can_stop(self.length()) {
-                vehicle.enter_link(1, now);
+            if let Some(route) = vehicle.route().get(1) {
+                if route.entered_at.is_some() {
+                    continue;
+                }
+                match &links[route.link].control {
+                    TrafficControl::Open => if vehicle.can_stop(self.length()) {
+                        break;
+                    } else {
+                        vehicle.enter_link(1, now);
+                    },
+                    TrafficControl::Closed => {
+                        vehicle.stop_at_line(self.length());
+                        break;
+                    },
+                    _ => unimplemented!()
+                }
             }
         }
     }
