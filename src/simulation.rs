@@ -1,9 +1,9 @@
-use std::cell::RefCell;
 use crate::conflict::ConflictPoint;
-use crate::math::{CubicFn, Point2d};
-use crate::{LinkSet, VehicleSet, LinkId, VehicleId};
 use crate::link::{Link, LinkAttributes, TrafficControl};
-use crate::vehicle::{VehicleAttributes, Vehicle, LaneChange};
+use crate::math::{CubicFn, Point2d};
+use crate::vehicle::{LaneChange, Vehicle, VehicleAttributes};
+use crate::{LinkId, LinkSet, VehicleId, VehicleSet};
+use std::cell::RefCell;
 
 thread_local! {
     pub(crate) static DEBUG_LINES: RefCell<Vec<Vec<Point2d>>> = RefCell::default();
@@ -21,7 +21,7 @@ pub struct Simulation {
     /// The set of "frozen" vehicles, which will not move.
     frozen_vehs: Vec<VehicleId>,
     /// The current frame of simulation.
-    frame: usize
+    frame: usize,
 }
 
 impl Simulation {
@@ -59,13 +59,13 @@ impl Simulation {
     pub fn permit_lanechange(&mut self, from: LinkId, to: LinkId) {
         self.links[from].permit_lanechange(to);
     }
-    
+
     /// Specifies that the end of the `from` link connects to the start of the `to` link.
     pub fn add_link_connection(&mut self, from: LinkId, to: LinkId) {
         self.links[from].add_link_out(to);
         self.links[to].add_link_in(from);
     }
-    
+
     /// Adds a vehicle to the simulation.
     pub fn add_vehicle(&mut self, attributes: &VehicleAttributes, link: LinkId) -> VehicleId {
         let vehicle_id = self.vehicles.insert_with_key(|id| {
@@ -77,7 +77,7 @@ impl Simulation {
         self.links[link].insert_vehicle(&self.vehicles, vehicle_id);
         vehicle_id
     }
-    
+
     /// Freezes or unfreezes a vehicle.
     pub fn get_vehicle_frozen(&mut self, vehicle_id: VehicleId) -> bool {
         self.frozen_vehs.iter().any(|id| *id == vehicle_id)
@@ -87,8 +87,12 @@ impl Simulation {
     pub fn set_vehicle_frozen(&mut self, vehicle_id: VehicleId, frozen: bool) {
         let idx = self.frozen_vehs.iter().position(|id| *id == vehicle_id);
         match (frozen, idx) {
-            (true, None) => { self.frozen_vehs.push(vehicle_id); }
-            (false, Some(idx)) => { self.frozen_vehs.remove(idx); },
+            (true, None) => {
+                self.frozen_vehs.push(vehicle_id);
+            }
+            (false, Some(idx)) => {
+                self.frozen_vehs.remove(idx);
+            }
             _ => {}
         }
     }
@@ -117,7 +121,7 @@ impl Simulation {
     }
 
     /// Returns an iterator over all the vehicles in the simulation.
-    pub fn iter_vehicles(&self) -> impl Iterator<Item=&Vehicle> {
+    pub fn iter_vehicles(&self) -> impl Iterator<Item = &Vehicle> {
         self.vehicles.iter().map(|(_, veh)| veh)
     }
 
@@ -229,16 +233,16 @@ impl Simulation {
 
         // Project the vehicle's position onto the new link
         let link = &mut self.links[link_id];
-        let (pos, offset, slope) = link.curve().inverse_sample(
-            vehicle.position(),
-            vehicle.direction()
-        ).unwrap();
+        let (pos, offset, slope) = link
+            .curve()
+            .inverse_sample(vehicle.position(), vehicle.direction())
+            .unwrap();
 
         // Set the vehicle's new position
         let end_pos = pos + distance;
         let lane_change = LaneChange {
             end_pos,
-            offset: CubicFn::fit(pos, offset, slope, end_pos, 0.0, 0.0)
+            offset: CubicFn::fit(pos, offset, slope, end_pos, 0.0, 0.0),
         };
         vehicle.set_location(link_id, pos, Some(lane_change));
 

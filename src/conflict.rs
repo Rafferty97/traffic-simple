@@ -1,7 +1,7 @@
+use crate::math::project_point_onto_curve;
+use crate::{Link, LinkId, LinkSet, Vehicle, VehicleSet};
 use cgmath::prelude::*;
 use itertools::{unfold, Itertools};
-use crate::{LinkId, Link, LinkSet, VehicleSet, Vehicle};
-use crate::math::project_point_onto_curve;
 
 const LINK_RADIUS: f64 = 1.8; // m
 
@@ -10,14 +10,14 @@ pub struct ConflictPoint {
     /// Data associated with each of the conflicting links.
     links: [ConflictingLink; 2],
     /// Whether the links run in the same general direction.
-    same_dir: bool
+    same_dir: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct ConflictingLink {
     link_id: LinkId,
     min_pos: f64,
-    max_pos: f64
+    max_pos: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -25,7 +25,7 @@ struct OffsetVehicle<'a> {
     vehicle: &'a Vehicle,
     offset: f64,
     link: LinkId,
-    entered_at: usize
+    entered_at: usize,
 }
 
 impl ConflictPoint {
@@ -34,16 +34,15 @@ impl ConflictPoint {
         let conflict_b = ConflictingLink::new(b, a)?;
 
         let tangents = [(a, conflict_a), (b, conflict_b)].map(|(l, conflict)| {
-            let points = [conflict.min_pos, conflict.max_pos].map(|pos| {
-                l.curve().sample_centre(pos).pos
-            });
+            let points =
+                [conflict.min_pos, conflict.max_pos].map(|pos| l.curve().sample_centre(pos).pos);
             (points[1] - points[0]).normalize()
         });
         let same_dir = tangents[0].dot(tangents[1]) > 0.25;
 
         Some(Self {
             links: [conflict_a, conflict_b],
-            same_dir
+            same_dir,
         })
     }
 
@@ -53,11 +52,16 @@ impl ConflictPoint {
         let merged = v1.merge_by(v2, |a, b| a.entered_at < b.entered_at);
         let mut vehicles = merged.take_while(|v| v.pos_mid() > -40.0); // TODO: Constant
 
-        let mut prev = if let Some(v) = vehicles.next() { v } else { return };
+        let mut prev = if let Some(vehicle) = vehicles.next() {
+            vehicle
+        } else {
+            return;
+        };
         for curr in vehicles {
             if prev.link != curr.link {
                 if self.same_dir && prev.pos_rear() > 0.0 {
-                    curr.vehicle.follow_obstacle(prev.vehicle.rear_coords(), prev.vel());
+                    curr.vehicle
+                        .follow_obstacle(prev.vehicle.rear_coords(), prev.vel());
                 } else {
                     curr.stop_at_line(0.0);
                 }
@@ -95,7 +99,7 @@ impl ConflictingLink {
             Some(Self {
                 link_id: link.id(),
                 min_pos,
-                max_pos
+                max_pos,
             })
         } else {
             None
@@ -105,8 +109,8 @@ impl ConflictingLink {
     fn iter_vehicles<'a>(
         &'a self,
         links: &'a LinkSet,
-        vehicles: &'a VehicleSet
-    ) -> impl Iterator<Item=OffsetVehicle<'a>> + 'a {
+        vehicles: &'a VehicleSet,
+    ) -> impl Iterator<Item = OffsetVehicle<'a>> + 'a {
         let init = (Some(&links[self.link_id]), self.min_pos);
         unfold(init, |(m_link, offset)| {
             if let Some(link) = m_link {
@@ -122,22 +126,27 @@ impl ConflictingLink {
                 None
             }
         })
-            .enumerate()
-            .flat_map(move |(idx, (link, offset))| {
-                link.iter_vehicles_rev()
-                    .filter_map(move |id| {
-                        let vehicle = &vehicles[id];
-                        vehicle.route()
-                            .get(idx)
-                            .filter(|el| el.link == self.link_id)
-                            .and_then(|el| el.entered_at)
-                            .map(|entered_at| {
-                                let link = self.link_id;
-                                OffsetVehicle { vehicle, offset, link, entered_at }
-                            })
+        .enumerate()
+        .flat_map(move |(idx, (link, offset))| {
+            link.iter_vehicles_rev().filter_map(move |id| {
+                let vehicle = &vehicles[id];
+                vehicle
+                    .route()
+                    .get(idx)
+                    .filter(|el| el.link == self.link_id)
+                    .and_then(|el| el.entered_at)
+                    .map(|entered_at| {
+                        let link = self.link_id;
+                        OffsetVehicle {
+                            vehicle,
+                            offset,
+                            link,
+                            entered_at,
+                        }
                     })
             })
-            .skip_while(|veh| veh.pos_rear() > self.max_pos - self.min_pos)
+        })
+        .skip_while(|veh| veh.pos_rear() > self.max_pos - self.min_pos)
     }
 }
 

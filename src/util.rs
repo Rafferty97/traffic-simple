@@ -8,7 +8,7 @@ use cgmath::num_traits::Float;
 #[derive(Copy, Clone, Default, PartialEq, Eq)]
 pub struct Interval<T> {
     pub min: T,
-    pub max: T
+    pub max: T,
 }
 
 impl<T> Interval<T> {
@@ -30,7 +30,7 @@ impl<T: std::cmp::PartialOrd> Interval<T> {
     }
 }
 
-impl<T: std::ops::Sub<T, Output=T> + Copy> Interval<T> {
+impl<T: std::ops::Sub<T, Output = T> + Copy> Interval<T> {
     /// Gets the magnitude of the interval.
     pub fn length(&self) -> T {
         self.max - self.min
@@ -47,7 +47,10 @@ impl<T: Copy> Interval<T> {
 impl<T: Float> Interval<T> {
     /// Creates an interval with the given centre and radius.
     pub fn disc(centre: T, radius: T) -> Self {
-        Self { min: centre - radius, max: centre + radius }
+        Self {
+            min: centre - radius,
+            max: centre + radius,
+        }
     }
 
     /// Returns the centre/mid-point of the interval.

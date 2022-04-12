@@ -1,11 +1,11 @@
-use std::cell::Cell;
-use cgmath::prelude::*;
+use self::acceleration::AccelerationModel;
 use crate::link::LinkSample;
+use crate::math::{project_local, rot90, CubicFn, Point2d, Vector2d};
 use crate::obstacle::Obstacle;
 use crate::util::Interval;
-use crate::{VehicleId, LinkId, LinkSet};
-use crate::math::{CubicFn, Point2d, Vector2d, rot90, project_local};
-use self::acceleration::AccelerationModel;
+use crate::{LinkId, LinkSet, VehicleId};
+use cgmath::prelude::*;
+use std::cell::Cell;
 
 mod acceleration;
 
@@ -39,7 +39,7 @@ pub struct Vehicle {
     /// The two end points of a line behind the vehicle used for car following.
     rear_coords: [Point2d; 2],
     /// Tracks the vehicle's projection onto adjacent links, for performance.
-    min_segments: [Cell<u16>; 8]
+    min_segments: [Cell<u16>; 8],
 }
 
 /// The attributes of a simulated vehicle.
@@ -52,14 +52,14 @@ pub struct VehicleAttributes {
     /// The maximum acceleration of the vehicle, in m/s^2.
     pub max_acc: f64,
     /// The comfortable deceleration of the vehicle, a negative number in m/s^2.
-    pub comf_dec: f64
+    pub comf_dec: f64,
 }
 
 /// A link along a vehicle's route.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RouteElement {
     pub link: LinkId,
-    pub entered_at: Option<usize>
+    pub entered_at: Option<usize>,
 }
 
 /// Represents an in-progress lane change.
@@ -68,7 +68,7 @@ pub struct LaneChange {
     /// The longitudinal position at which the lane change is complete.
     pub end_pos: f64,
     /// The vehicle's lateral offset during the lane change.
-    pub offset: CubicFn
+    pub offset: CubicFn,
 }
 
 impl Vehicle {
@@ -80,7 +80,7 @@ impl Vehicle {
             half_len: 0.5 * attributes.length,
             acc: AccelerationModel::new(&acceleration::ModelParams {
                 max_acceleration: attributes.max_acc,
-                comf_deceleration: attributes.comf_dec
+                comf_deceleration: attributes.comf_dec,
             }),
             pos: 0.0,
             vel: 0.0,
@@ -91,10 +91,10 @@ impl Vehicle {
             world_pos: Point2d::new(0.0, 0.0),
             world_dir: Vector2d::new(0.0, 0.0),
             rear_coords: [Point2d::new(0.0, 0.0); 2],
-            min_segments: Default::default()
+            min_segments: Default::default(),
         }
     }
-    
+
     /// Gets the vehicle's ID.
     pub fn id(&self) -> VehicleId {
         self.id
@@ -104,7 +104,7 @@ impl Vehicle {
     pub(crate) fn half_width(&self) -> f64 {
         self.half_wid
     }
-    
+
     /// Half the vehicle's length in m.
     pub(crate) fn half_length(&self) -> f64 {
         self.half_len
@@ -114,7 +114,7 @@ impl Vehicle {
     pub fn width(&self) -> f64 {
         2.0 * self.half_wid
     }
-    
+
     /// The vehicle's length in m.
     pub fn length(&self) -> f64 {
         2.0 * self.half_len
@@ -173,7 +173,7 @@ impl Vehicle {
             false
         }
     }
-    
+
     /// Determines whether the vehicle can comfortably stop before reaching `pos`.
     pub(crate) fn can_stop(&self, pos: f64) -> bool {
         self.acc.can_stop(pos - self.pos_front(), self.vel)
@@ -185,7 +185,7 @@ impl Vehicle {
             el.entered_at.get_or_insert(now);
         }
     }
-    
+
     /// Applies an acceleration to the vehicle so it follows an obstacle.
     pub(crate) fn stop_at_line(&self, pos: f64) {
         let net_dist = pos - self.pos_front();
@@ -202,7 +202,7 @@ impl Vehicle {
     pub(crate) fn follow_obstacle(&self, coords: [Point2d; 2], vel: f64) {
         let mid_dist = f64::min(
             self.direction().dot(coords[0] - self.position()),
-            self.direction().dot(coords[1] - self.position())
+            self.direction().dot(coords[1] - self.position()),
         );
         let net_dist = mid_dist - self.half_len;
         self.acc.follow_vehicle(net_dist, self.vel, vel);
@@ -215,7 +215,8 @@ impl Vehicle {
 
     /// Applies an upcoming speed limit to the vehicle.
     pub(crate) fn apply_speed_limit(&self, speed_limit: f64, pos: f64) {
-        self.acc.apply_speed_limit(self.vel, speed_limit, pos - self.pos);
+        self.acc
+            .apply_speed_limit(self.vel, speed_limit, pos - self.pos);
     }
 
     /// Applies a maximum deceleration to the vehicle, causing it to stop.
@@ -228,7 +229,7 @@ impl Vehicle {
         Obstacle {
             pos: self.pos_rear(),
             lat: self.lat_extent(),
-            vel: self.vel()
+            vel: self.vel(),
         }
     }
 
@@ -236,21 +237,20 @@ impl Vehicle {
     pub(crate) fn adjacent_obstacle(
         &self,
         idx: usize,
-        curve: &[(f64, Point2d, Vector2d)]
+        curve: &[(f64, Point2d, Vector2d)],
     ) -> Obstacle {
         // Find the closest segment to the obstacle
-        let segment_idx = curve.iter()
+        let segment_idx = curve
+            .iter()
             .skip(self.min_segments[idx].get() as usize)
-            .position(|(_, pos, tan)| {
-                self.rear_coords.iter().any(|c| (c - pos).dot(*tan) <= 0.0)
-            })
+            .position(|(_, pos, tan)| self.rear_coords.iter().any(|c| (c - pos).dot(*tan) <= 0.0))
             .map(|i| i + self.min_segments[idx].get() as usize)
             .unwrap_or(curve.len())
             .saturating_sub(1);
 
         // Record the new segment index
         self.min_segments[idx].set(segment_idx as u16);
-        
+
         // Get the local coordinate system around the obstacle
         let (pos, origin, tan) = unsafe {
             // SAFETY: Use of `position` above guarantees the index is in bounds.
@@ -258,15 +258,15 @@ impl Vehicle {
         };
 
         // Project the obstacle's rear coordinates
-        let proj = self.rear_coords.map(|coord| {
-            project_local(coord, origin, rot90(tan), tan)
-        });
+        let proj = self
+            .rear_coords
+            .map(|coord| project_local(coord, origin, rot90(tan), tan));
 
         // Create the obstacle
         Obstacle {
             pos: pos + f64::min(proj[0].y, proj[1].y),
             lat: Interval::new(proj[0].x, proj[1].x),
-            vel: self.vel
+            vel: self.vel,
         }
     }
 
@@ -297,7 +297,7 @@ impl Vehicle {
         let offset = self.offset_at(pos);
         Interval::new(
             f64::min(offset, 0.0) - self.half_width(),
-            f64::max(offset, 0.0) + self.half_width()
+            f64::max(offset, 0.0) + self.half_width(),
         )
     }
 
@@ -307,7 +307,7 @@ impl Vehicle {
     }
 
     /// Integrates the vehicle's velocity and position
-    /// 
+    ///
     /// # Parameters
     /// * `dt` - The time step in seconds
     pub(crate) fn integrate(&mut self, dt: f64) {
@@ -336,7 +336,7 @@ impl Vehicle {
     /// Checks whether the vehicle has travelled past the end of its current link,
     /// and if so, advances it to the next link on its route if there is one.
     /// Returns `true` iff the vehicle was advanced.
-    /// 
+    ///
     /// # Parameters
     /// * `links` - The links in the network
     /// * `now` - The current frame of simulation
@@ -363,7 +363,10 @@ impl Vehicle {
     /// Sets the vehicle's position in the network.
     /// This also clears the vehicle's route.
     pub(crate) fn set_location(&mut self, link: LinkId, pos: f64, lane_change: Option<LaneChange>) {
-        self.route = vec![RouteElement { link, entered_at: None }];
+        self.route = vec![RouteElement {
+            link,
+            entered_at: None,
+        }];
         self.pos = pos;
         self.lane_change = lane_change;
         self.can_exit = false;
@@ -375,7 +378,7 @@ impl Vehicle {
         self.route.truncate(1);
         self.route.extend(route.iter().map(|link| RouteElement {
             link: *link,
-            entered_at: None
+            entered_at: None,
         }));
         self.can_exit = can_exit;
     }
@@ -383,18 +386,15 @@ impl Vehicle {
     /// Updates the vehicle's world coordinates
     pub(crate) fn update_coords(&mut self, links: &LinkSet) {
         let curve = &links[self.route[0].link].curve();
-        
+
         let (pos, dir, tan, lats) = match self.lane_change {
             Some(lc) => {
                 let (offset, slope) = lc.offset.y_and_dy(self.pos);
                 let LinkSample { pos, dir, tan } = curve.sample(self.pos, offset, slope);
                 let wid = self.half_wid + self.half_len * dir.perp_dot(tan).abs();
-                let lats = [
-                    f64::min(-offset, 0.0) - wid,
-                    f64::max(-offset, 0.0) + wid
-                ];
+                let lats = [f64::min(-offset, 0.0) - wid, f64::max(-offset, 0.0) + wid];
                 (pos, dir, tan, lats)
-            },
+            }
             None => {
                 let LinkSample { pos, dir, tan } = curve.sample_centre(self.pos);
                 let lats = [-self.half_wid, self.half_wid];
@@ -404,7 +404,7 @@ impl Vehicle {
 
         self.world_pos = pos;
         self.world_dir = dir;
-        
+
         let rear_mid = pos - self.half_len * tan;
         let perp = rot90(tan);
         self.rear_coords = lats.map(|lat| rear_mid + lat * perp);

@@ -1,7 +1,7 @@
+use crate::math::{rot90, ParametricCurve2d, Point2d, Vector2d};
 use crate::obstacle::Obstacle;
 use crate::vehicle::Vehicle;
-use crate::{LinkId, VehicleId, LinkSet, VehicleSet};
-use crate::math::{ParametricCurve2d, rot90, Point2d, Vector2d};
+use crate::{LinkId, LinkSet, VehicleId, VehicleSet};
 pub use curve::{LinkCurve, LinkSample};
 
 mod curve;
@@ -32,7 +32,7 @@ pub struct Link {
     /// The vehicles on the link.
     vehicles: Vec<VehicleId>,
     /// The traffic control at the start of the link.
-    control: TrafficControl
+    control: TrafficControl,
 }
 
 /// The attributes of a link.
@@ -40,7 +40,7 @@ pub struct LinkAttributes<'a> {
     /// A curve defining the centre line of the link.
     pub curve: &'a dyn ParametricCurve2d,
     /// The speed limit in m/s.
-    pub speed_limit: f64
+    pub speed_limit: f64,
 }
 
 /// A traffic control.
@@ -55,10 +55,10 @@ pub enum TrafficControl {
         /// The minimum distance from the stop line before a vehicle can enter.
         distance: f64,
         /// Whether a vehicle needs to come to a stop before entering.
-        must_stop: bool
+        must_stop: bool,
     },
     /// Traffic cannot enter, e.g. red light.
-    Closed
+    Closed,
 }
 
 /// Information about a link which overlaps another link.
@@ -67,21 +67,22 @@ struct AdjacentLink {
     /// The ID of the adjacent link
     link_id: LinkId,
     /// Whether a vehicle on this link can change lanes into the adjacent link
-    can_lanechange: bool
+    can_lanechange: bool,
 }
 
 impl Link {
     /// Creates a new link.
     pub(crate) fn new(id: LinkId, attribs: &LinkAttributes) -> Self {
         let curve = LinkCurve::new(&attribs.curve);
-        let approx_curve = (0..).map(|i| i as f64)
+        let approx_curve = (0..)
+            .map(|i| i as f64)
             .take_while(|pos| *pos < curve.length())
             .map(|pos| {
                 let s = curve.sample_centre(pos);
                 (pos, s.pos, s.tan)
             })
             .collect();
-        
+
         Self {
             id,
             curve,
@@ -91,7 +92,7 @@ impl Link {
             links_adj: vec![],
             speed_limit: attribs.speed_limit,
             vehicles: vec![],
-            control: TrafficControl::Open
+            control: TrafficControl::Open,
         }
     }
 
@@ -121,8 +122,9 @@ impl Link {
     }
 
     /// Gets the links that a vehicle on this link is allowed to change into.
-    pub fn valid_lanechanges(&self) -> impl Iterator<Item=LinkId> + '_ {
-        self.links_adj.iter()
+    pub fn valid_lanechanges(&self) -> impl Iterator<Item = LinkId> + '_ {
+        self.links_adj
+            .iter()
             .filter(|adj| adj.can_lanechange)
             .map(|adj| adj.link_id)
     }
@@ -131,13 +133,15 @@ impl Link {
     pub(crate) fn add_adjacent_link(&mut self, link: &Link) {
         self.links_adj.push(AdjacentLink {
             link_id: link.id,
-            can_lanechange: false
+            can_lanechange: false,
         })
     }
 
     /// Permits lane changes to an adjacent link.
     pub(crate) fn permit_lanechange(&mut self, link_id: LinkId) {
-        let adj = self.links_adj.iter_mut()
+        let adj = self
+            .links_adj
+            .iter_mut()
             .find(|adj| adj.link_id == link_id)
             .expect("Cannot permit lane change to non-adjacent link.");
         adj.can_lanechange = true;
@@ -156,7 +160,9 @@ impl Link {
     /// Inserts the vehicle with the given ID into the link.
     pub(crate) fn insert_vehicle(&mut self, vehicles: &VehicleSet, id: VehicleId) {
         let veh_pos = vehicles[id].pos_mid();
-        let idx = self.vehicles.iter()
+        let idx = self
+            .vehicles
+            .iter()
             .map(|id| vehicles[*id].pos_mid())
             .position(|pos| pos > veh_pos)
             .unwrap_or(self.vehicles.len());
@@ -184,16 +190,18 @@ impl Link {
                     continue;
                 }
                 match &links[route.link].control {
-                    TrafficControl::Open => if vehicle.can_stop(self.length()) {
-                        break;
-                    } else {
-                        vehicle.enter_link(1, now);
-                    },
+                    TrafficControl::Open => {
+                        if vehicle.can_stop(self.length()) {
+                            break;
+                        } else {
+                            vehicle.enter_link(1, now);
+                        }
+                    }
                     TrafficControl::Closed => {
                         vehicle.stop_at_line(self.length());
                         break;
-                    },
-                    _ => unimplemented!()
+                    }
+                    _ => unimplemented!(),
                 }
             }
         }
@@ -215,7 +223,10 @@ impl Link {
     /// Applies the car following model to all vehicles following a vehicle on this link.
     pub(crate) fn apply_car_following(&self, links: &LinkSet, vehicles: &VehicleSet) {
         // Apply accelerations to vehicles on this link
-        let obstacles = self.vehicles.iter().rev()
+        let obstacles = self
+            .vehicles
+            .iter()
+            .rev()
             .map(|id| vehicles[*id].local_obstacle());
         for (idx, obstacle) in obstacles.enumerate() {
             self.follow_obstacle(links, vehicles, obstacle, (0, self.id), idx + 1);
@@ -224,26 +235,38 @@ impl Link {
         // Apply accelerations to vehicles on adjacent links
         for (link_idx, adj_link) in self.links_adj.iter().enumerate() {
             let link = &links[adj_link.link_id];
-            let obstacles = self.vehicles.iter().rev()
+            let obstacles = self
+                .vehicles
+                .iter()
+                .rev()
                 .map(|id| vehicles[*id].adjacent_obstacle(link_idx, &link.approx_curve));
             link.follow_obstacles(links, vehicles, obstacles);
         }
     }
 
-    pub(crate) fn iter_vehicles_rev(&self) -> impl Iterator<Item=VehicleId> + '_ {
+    pub(crate) fn iter_vehicles_rev(&self) -> impl Iterator<Item = VehicleId> + '_ {
         self.vehicles.iter().rev().copied()
     }
 
-    pub fn debug<'a>(&'a self, links: &'a LinkSet, vehicles: &'a VehicleSet) -> impl Iterator<Item=[Point2d; 2]> + 'a {
-        self.links_adj.iter().enumerate().flat_map(move |(link_idx, adj_link)| {
-            let link = &links[adj_link.link_id];
-            self.vehicles.iter().rev()
-                .map(move |id| vehicles[*id].adjacent_obstacle(link_idx, &link.approx_curve))
-                .map(|o| {
-                    let s = link.curve().sample_centre(o.pos);
-                    o.lat.as_array().map(|l| s.pos + rot90(s.tan) * l)
-                })
-        })
+    pub fn debug<'a>(
+        &'a self,
+        links: &'a LinkSet,
+        vehicles: &'a VehicleSet,
+    ) -> impl Iterator<Item = [Point2d; 2]> + 'a {
+        self.links_adj
+            .iter()
+            .enumerate()
+            .flat_map(move |(link_idx, adj_link)| {
+                let link = &links[adj_link.link_id];
+                self.vehicles
+                    .iter()
+                    .rev()
+                    .map(move |id| vehicles[*id].adjacent_obstacle(link_idx, &link.approx_curve))
+                    .map(|o| {
+                        let s = link.curve().sample_centre(o.pos);
+                        o.lat.as_array().map(|l| s.pos + rot90(s.tan) * l)
+                    })
+            })
     }
 
     /// Applies an acceleration to the vehicles on this and preceeding links
@@ -253,13 +276,16 @@ impl Link {
         &self,
         links: &LinkSet,
         vehicles: &VehicleSet,
-        obstacles: impl Iterator<Item=Obstacle>
+        obstacles: impl Iterator<Item = Obstacle>,
     ) {
         let mut skip = 0;
 
         for obstacle in obstacles {
             // Skip vehicles ahead of the obstacle
-            skip = self.vehicles.iter().rev()
+            skip = self
+                .vehicles
+                .iter()
+                .rev()
                 .skip(skip)
                 .map(|id| vehicles[*id].pos_mid())
                 .position(|pos| pos < obstacle.pos)
@@ -273,7 +299,7 @@ impl Link {
 
     /// Applies an acceleration to the vehicles on this and preceeding links
     /// that need to follow the given obstacle.
-    /// 
+    ///
     /// # Parameters
     /// * `links` - The links in the network
     /// * `vehicles` - The vehicles in the network
@@ -286,7 +312,7 @@ impl Link {
         vehicles: &VehicleSet,
         obstacle: Obstacle,
         route: (usize, LinkId),
-        skip: usize
+        skip: usize,
     ) {
         let min_pos = obstacle.pos - MAX_LOOKAHEAD * self.speed_limit;
 

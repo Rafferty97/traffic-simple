@@ -1,18 +1,30 @@
-use crate::Interval;
 use super::ParametricCurve2d;
+use crate::Interval;
 
-pub struct Subcurve<C> where C: ParametricCurve2d {
+pub struct Subcurve<C>
+where
+    C: ParametricCurve2d,
+{
     inner: C,
-    bounds: Interval<f64>
+    bounds: Interval<f64>,
 }
 
-impl<C> Subcurve<C> where C: ParametricCurve2d {
+impl<C> Subcurve<C>
+where
+    C: ParametricCurve2d,
+{
     pub fn new(curve: C, bounds: Interval<f64>) -> Self {
-        Self { inner: curve, bounds }
+        Self {
+            inner: curve,
+            bounds,
+        }
     }
 }
 
-impl<C> ParametricCurve2d for Subcurve<C> where C: ParametricCurve2d {
+impl<C> ParametricCurve2d for Subcurve<C>
+where
+    C: ParametricCurve2d,
+{
     #[inline(always)]
     fn sample(&self, t: f64) -> crate::math::Point2d {
         self.inner.sample(t)

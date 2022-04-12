@@ -11,7 +11,7 @@ const MAX_DECEL: f64 = -6.0; // m/s^2
 pub struct AccelerationModel {
     max_acc: f64,
     comf_dec: f64,
-    acc: Cell<f64>
+    acc: Cell<f64>,
 }
 
 /// The parameters of the acceleration model.
@@ -19,7 +19,7 @@ pub struct ModelParams {
     /// The vehicle's maximum acceleration in m/s<sup>2</sup>.
     pub max_acceleration: f64,
     /// The comfortable decelleration in m/s<sup>2</sup>.
-    pub comf_deceleration: f64
+    pub comf_deceleration: f64,
 }
 
 impl AccelerationModel {
@@ -28,7 +28,7 @@ impl AccelerationModel {
         AccelerationModel {
             max_acc: params.max_acceleration,
             comf_dec: params.comf_deceleration,
-            acc: Cell::new(params.max_acceleration)
+            acc: Cell::new(params.max_acceleration),
         }
     }
 
@@ -77,7 +77,7 @@ impl AccelerationModel {
     }
 
     /// Calculates the acceleration needed to stop before a stop line.
-    /// 
+    ///
     /// # Arguments
     /// * `net_dist` - The distance between this vehicle and the stop line.
     /// * `my_vel` - The velocity of the simulated vehicle (m/s).
@@ -87,7 +87,7 @@ impl AccelerationModel {
     }
 
     /// Calculates the acceleration needed to follow the vehicle ahead.
-    /// 
+    ///
     /// # Arguments
     /// * `net_dist` - The distance between this vehicle and the vehicle ahead in metres.
     /// * `my_vel` - The velocity of the simulated vehicle (m/s).

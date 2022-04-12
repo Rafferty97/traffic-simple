@@ -1,19 +1,19 @@
 //! Mathematical functions.
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// A cubic function.
 #[derive(Clone, Copy, Serialize, Deserialize, Debug)]
 pub struct CubicFn {
     coeffs: [f64; 4],
-    offset: f64
+    offset: f64,
 }
 
 impl CubicFn {
     pub const fn constant(y: f64) -> Self {
         Self {
             coeffs: [0.0, 0.0, 0.0, y],
-            offset: 0.0
+            offset: 0.0,
         }
     }
 
@@ -25,7 +25,7 @@ impl CubicFn {
         let d = y1;
         Self {
             coeffs: [a * w.powi(-3), b * w.powi(-2), c * w.powi(-1), d],
-            offset: -x1
+            offset: -x1,
         }
     }
 
@@ -42,7 +42,7 @@ impl CubicFn {
     pub fn translate_x(&self, amount: f64) -> CubicFn {
         Self {
             coeffs: self.coeffs,
-            offset: self.offset + amount
+            offset: self.offset + amount,
         }
     }
 
@@ -69,7 +69,7 @@ impl CubicFn {
 mod test {
     use super::*;
     use assert_approx_eq::assert_approx_eq;
-    use rand::{SeedableRng, Rng};
+    use rand::{Rng, SeedableRng};
 
     #[test]
     pub fn from_ends() {

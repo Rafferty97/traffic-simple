@@ -1,13 +1,13 @@
-use cgmath::prelude::*;
+use super::{ParametricCurve2d, Point2d, Vector2d};
 use crate::util::Interval;
-use super::{Point2d, Vector2d, ParametricCurve2d};
+use cgmath::prelude::*;
 
 /// A line segment
 #[derive(Copy, Clone)]
 pub struct LineSegment2d {
     start: Point2d,
     tangent: Vector2d,
-    length: f64
+    length: f64,
 }
 
 impl LineSegment2d {
@@ -19,7 +19,11 @@ impl LineSegment2d {
         if tangent.x.is_nan() {
             tangent = Vector2d::zero();
         }
-        Self { start, tangent, length }
+        Self {
+            start,
+            tangent,
+            length,
+        }
     }
 
     /// The start point of the line segment.
@@ -41,7 +45,7 @@ impl ParametricCurve2d for LineSegment2d {
     fn bounds(&self) -> Interval<f64> {
         Interval::new(0.0, self.length)
     }
-    
+
     fn sample_dt(&self, _t: f64) -> Vector2d {
         self.tangent
     }
@@ -50,7 +54,7 @@ impl ParametricCurve2d for LineSegment2d {
 /// A quadratic bezier curve
 #[derive(Copy, Clone)]
 pub struct QuadraticBezier2d {
-    points: [Point2d; 3]
+    points: [Point2d; 3],
 }
 
 impl QuadraticBezier2d {
@@ -62,26 +66,27 @@ impl QuadraticBezier2d {
 impl ParametricCurve2d for QuadraticBezier2d {
     fn sample(&self, t: f64) -> Point2d {
         let t1 = 1.0 - t;
-        Point2d::from_vec(t1 * t1 * self.points[0].to_vec()
-            + 2.0 * t1 * t * self.points[1].to_vec()
-            + t * t * self.points[2].to_vec())
+        Point2d::from_vec(
+            t1 * t1 * self.points[0].to_vec()
+                + 2.0 * t1 * t * self.points[1].to_vec()
+                + t * t * self.points[2].to_vec(),
+        )
     }
 
     fn bounds(&self) -> Interval<f64> {
         Interval { min: 0.0, max: 1.0 }
     }
-    
+
     fn sample_dt(&self, t: f64) -> Vector2d {
         let t1 = 1.0 - t;
         -2.0 * t1 * self.points[0].to_vec()
             + (2.0 - 4.0 * t) * self.points[1].to_vec()
             + 2.0 * t * self.points[2].to_vec()
     }
-    
+
     fn sample_dt2(&self, t: f64) -> Vector2d {
         let t1 = 1.0 - t;
-        2.0 * self.points[0].to_vec()
-            - 4.0 * self.points[1].to_vec()
+        2.0 * self.points[0].to_vec() - 4.0 * self.points[1].to_vec()
             + 2.0 * self.points[2].to_vec()
     }
 }
@@ -89,7 +94,7 @@ impl ParametricCurve2d for QuadraticBezier2d {
 /// A cubic bezier curve
 #[derive(Copy, Clone, Debug)]
 pub struct CubicBezier2d {
-    points: [Point2d; 4]
+    points: [Point2d; 4],
 }
 
 impl CubicBezier2d {
@@ -100,16 +105,18 @@ impl CubicBezier2d {
     pub fn line(start: Point2d, end: Point2d) -> Self {
         let s = start.to_vec();
         let e = end.to_vec();
-        let ps = [s, s.lerp(e, 1./3.), s.lerp(e, 2./3.), e];
-        Self { points: ps.map(Point2d::from_vec) }
+        let ps = [s, s.lerp(e, 1. / 3.), s.lerp(e, 2. / 3.), e];
+        Self {
+            points: ps.map(Point2d::from_vec),
+        }
     }
 
     pub fn quadratic(points: &[Point2d; 3]) -> Self {
         let points = [
             points[0],
-            points[0] + (2./3.) * (points[1] - points[0]),
-            points[2] + (2./3.) * (points[1] - points[2]),
-            points[2]
+            points[0] + (2. / 3.) * (points[1] - points[0]),
+            points[2] + (2. / 3.) * (points[1] - points[2]),
+            points[2],
         ];
         Self { points }
     }
@@ -122,11 +129,10 @@ impl CubicBezier2d {
         let p20 = p10.lerp(p11, t);
         let p21 = p11.lerp(p12, t);
         let p30 = p20.lerp(p21, t);
-        let curves = [
-            [p00, p10, p20, p30],
-            [p30, p21, p12, p03]
-        ];
-        curves.map(|p| CubicBezier2d { points: p.map(Point2d::from_vec) })
+        let curves = [[p00, p10, p20, p30], [p30, p21, p12, p03]];
+        curves.map(|p| CubicBezier2d {
+            points: p.map(Point2d::from_vec),
+        })
     }
 
     pub fn reverse(&mut self) {
@@ -137,16 +143,18 @@ impl CubicBezier2d {
 impl ParametricCurve2d for CubicBezier2d {
     fn sample(&self, t: f64) -> Point2d {
         let t1 = 1.0 - t;
-        Point2d::from_vec(t1 * t1 * t1 * self.points[0].to_vec()
-            + 3.0 * t1 * t1 * t * self.points[1].to_vec()
-            + 3.0 * t1 * t * t * self.points[2].to_vec()
-            + t * t * t * self.points[3].to_vec())
+        Point2d::from_vec(
+            t1 * t1 * t1 * self.points[0].to_vec()
+                + 3.0 * t1 * t1 * t * self.points[1].to_vec()
+                + 3.0 * t1 * t * t * self.points[2].to_vec()
+                + t * t * t * self.points[3].to_vec(),
+        )
     }
 
     fn bounds(&self) -> Interval<f64> {
         Interval { min: 0.0, max: 1.0 }
     }
-    
+
     fn sample_dt(&self, t: f64) -> Vector2d {
         let t1 = 1.0 - t;
         (-3.0 * t1 * t1) * self.points[0].to_vec()
@@ -158,18 +166,21 @@ impl ParametricCurve2d for CubicBezier2d {
 
 #[cfg(test)]
 mod test {
-    use assert_approx_eq::assert_approx_eq;
-    use crate::{math::{Point2d, ParametricCurve2d}, util::Interval};
     use super::QuadraticBezier2d;
+    use crate::{
+        math::{ParametricCurve2d, Point2d},
+        util::Interval,
+    };
+    use assert_approx_eq::assert_approx_eq;
 
     #[test]
     fn quadratic_beziers() {
         let b = QuadraticBezier2d::new(&[
             Point2d::new(10.0, 15.0),
             Point2d::new(50.0, 30.0),
-            Point2d::new(20.0, 75.0)
+            Point2d::new(20.0, 75.0),
         ]);
-        
+
         assert_eq!(b.bounds(), Interval::new(0.0, 1.0));
         assert_approx_eq!(b.sample(0.0).x, 10.0);
         assert_approx_eq!(b.sample(0.0).y, 15.0);

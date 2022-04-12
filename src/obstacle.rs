@@ -9,5 +9,5 @@ pub struct Obstacle {
     /// The lateral extents of the obstacle in m.
     pub lat: Interval<f64>,
     /// The velocity of the obstacle in m/s.
-    pub vel: f64
+    pub vel: f64,
 }

@@ -1,18 +1,18 @@
-use slotmap::{new_key_type, SlotMap};
-pub use simulation::Simulation;
-pub use vehicle::{VehicleAttributes, Vehicle};
-pub use link::{LinkAttributes, Link, TrafficControl};
 pub use cgmath;
+pub use link::{Link, LinkAttributes, TrafficControl};
+pub use simulation::Simulation;
+use slotmap::{new_key_type, SlotMap};
 pub use slotmap::{Key, KeyData};
-pub use util::{Interval};
+pub use util::Interval;
+pub use vehicle::{Vehicle, VehicleAttributes};
 
-pub mod math;
-mod util;
-mod simulation;
-mod link;
-mod vehicle;
 mod conflict;
+mod link;
+pub mod math;
 mod obstacle;
+mod simulation;
+mod util;
+mod vehicle;
 
 new_key_type! {
     /// Unique ID of a [Link].

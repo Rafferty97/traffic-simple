@@ -1,11 +1,14 @@
+use crate::math::{
+    equidistant_points_along_curve, normalize_with_derivative, project_point_onto_curve, rot90,
+    ParametricCurve2d, Point2d, QuadraticBezier2d, Vector2d,
+};
 use cgmath::prelude::*;
-use crate::math::{Point2d, Vector2d, rot90, normalize_with_derivative, QuadraticBezier2d, ParametricCurve2d, equidistant_points_along_curve, project_point_onto_curve};
 
 #[derive(Clone)]
 pub struct LinkCurve {
     scale: f64,
     length: f64,
-    segments: Vec<QuadraticBezier2d>
+    segments: Vec<QuadraticBezier2d>,
 }
 
 /// The result of sampling a [LinkCurve].
@@ -15,7 +18,7 @@ pub struct LinkSample {
     /// The vehicle direction unit vector
     pub dir: Vector2d,
     /// The tangent unit vector of the link.
-    pub tan: Vector2d
+    pub tan: Vector2d,
 }
 
 impl LinkCurve {
@@ -53,17 +56,17 @@ impl LinkCurve {
         Self {
             scale: 0.5 / step,
             length,
-            segments
+            segments,
         }
     }
-    
+
     /// The length of the curve in m.
     pub fn length(&self) -> f64 {
         self.length
     }
 
     /// Samples the curve and returns the position and tangent unit vector.
-    /// 
+    ///
     /// # Parameters
     /// * `pos` - The longitudinal position along the curve
     /// * `offset` - The lateral offset from the centre line
@@ -80,7 +83,7 @@ impl LinkCurve {
 
         // Rotate to get perpendicular unit vector and its derivative
         let [p, p_dp] = [t, t_dp].map(rot90);
-        
+
         // Calculate offset point and its derivative
         let o = c + p * offset;
         let o_dp = c_dp + p_dp * offset + p * slope;
@@ -88,7 +91,7 @@ impl LinkCurve {
         LinkSample {
             pos: o,
             dir: o_dp.normalize(),
-            tan: t
+            tan: t,
         }
     }
 
@@ -96,7 +99,7 @@ impl LinkCurve {
     pub fn inverse_sample(&self, point: Point2d, tangent: Vector2d) -> Option<(f64, f64, f64)> {
         // Find the `pos` value
         let pos = project_point_onto_curve(self, point, 0.001, None)?;
-        
+
         // Calculate centre point and its derivatives
         let (segment, t) = self.sample_internal(pos);
         let c = segment.sample(t);
@@ -108,7 +111,7 @@ impl LinkCurve {
 
         // Rotate to get perpendicular unit vector and its derivative
         let [p, p_dp] = [t, t_dp].map(rot90);
-        
+
         // Calculate offset point and its derivative
         let offset = (point - c).dot(p);
         let slope = -(c_dp + p_dp * offset).perp_dot(tangent) / p.perp_dot(tangent);
@@ -117,7 +120,7 @@ impl LinkCurve {
     }
 
     /// Samples the curve and returns the position and tangent unit vector.
-    /// 
+    ///
     /// # Parameters
     /// * `pos` - The longitudinal position along the curve
     pub fn sample_centre(&self, pos: f64) -> LinkSample {
@@ -128,13 +131,13 @@ impl LinkCurve {
         LinkSample {
             pos: c,
             dir: tan,
-            tan
+            tan,
         }
     }
 
     /// Samples the curve and returns the position, as well as the
     /// first derivative and second derivatives with respect to `pos`.
-    /// 
+    ///
     /// # Parameters
     /// * `pos` - The longitudinal position along the curve
     fn sample_internal(&self, pos: f64) -> (&QuadraticBezier2d, f64) {
@@ -175,19 +178,21 @@ impl ParametricCurve2d for LinkCurve {
 
 #[cfg(test)]
 mod test {
-    use cgmath::prelude::*;
     use super::*;
-    
+    use cgmath::prelude::*;
+
     #[test]
     fn curve_is_arclength_parameterised() {
         let curve = QuadraticBezier2d::new(&[
             Point2d::new(10.0, 10.0),
             Point2d::new(60.0, 40.0),
-            Point2d::new(100.0, 45.0)
+            Point2d::new(100.0, 45.0),
         ]);
         let curve = LinkCurve::new(&curve);
 
-        let ts = (0..100).map(|i| i as f64 * 0.01 * curve.length()).collect::<Vec<_>>();
+        let ts = (0..100)
+            .map(|i| i as f64 * 0.01 * curve.length())
+            .collect::<Vec<_>>();
         for ts in ts.windows(2) {
             let p1 = curve.sample_centre(ts[0]).pos;
             let p2 = curve.sample_centre(ts[1]).pos;
