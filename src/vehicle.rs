@@ -181,7 +181,13 @@ impl Vehicle {
 
     /// Determines whether the vehicle can comfortably stop before reaching `pos`.
     pub(crate) fn can_stop(&self, pos: f64) -> bool {
-        self.acc.can_stop(pos - self.pos_front(), self.vel)
+        let net_dist = pos - self.pos_front();
+        net_dist >= self.acc.stopping_distance(self.vel)
+    }
+
+    /// Determines the comfortable stopping distance of the vehicle.
+    pub(crate) fn stopping_distance(&self) -> f64 {
+        self.acc.stopping_distance(self.vel)
     }
 
     /// Enters the link.

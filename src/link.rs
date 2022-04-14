@@ -195,7 +195,10 @@ impl Link {
                             break;
                         }
                     }
-                    TrafficControl::Yield { distance, must_stop } => {
+                    TrafficControl::Yield {
+                        distance,
+                        must_stop,
+                    } => {
                         let close_enough = self.length() - vehicle.pos_front() < *distance;
                         let stopped = !must_stop || vehicle.has_stopped();
                         if close_enough && stopped && Self::vehicle_can_enter(links, vehicle, 1) {

@@ -97,13 +97,11 @@ impl AccelerationModel {
         self.acc.set(f64::min(self.acc.get(), acc));
     }
 
-    /// Calculates whether or not the vehicle is able to come to a stop within
-    /// a distance of `net_dist` metres without excessive breaking.
-    pub fn can_stop(&self, net_dist: f64, my_vel: f64) -> bool {
+    /// Calculates the comfortable break distance of the vehicle.
+    pub fn stopping_distance(&self, my_vel: f64) -> f64 {
         let min_dist = 2.5; // m
         let t = my_vel / self.comf_dec;
-        let comf_dist = 0.5 * my_vel * t + min_dist;
-        net_dist >= comf_dist
+        0.5 * my_vel * t + min_dist
     }
 
     /// Computes an acceleration using the intelligent driver model.

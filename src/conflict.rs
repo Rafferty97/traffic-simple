@@ -49,8 +49,8 @@ impl ConflictPoint {
     pub(crate) fn apply_car_following(&self, links: &LinkSet, vehicles: &VehicleSet) {
         let v1 = self.links[0].iter_vehicles(links, vehicles);
         let v2 = self.links[1].iter_vehicles(links, vehicles);
-        let merged = v1.merge_by(v2, |a, b| a.entered_at < b.entered_at);
-        let mut vehicles = merged.take_while(|v| v.pos_mid() > -40.0); // TODO: Constant
+        // let mut vehicles = v1.merge_by(v2, |a, b| a.entered_at < b.entered_at);
+        let mut vehicles = v1.merge_by(v2, |a, b| a.pos_stop() > b.pos_stop());
 
         let mut prev = if let Some(vehicle) = vehicles.next() {
             vehicle
@@ -128,25 +128,21 @@ impl ConflictingLink {
         })
         .enumerate()
         .flat_map(move |(idx, (link, offset))| {
-            link.iter_vehicles_rev().filter_map(move |id| {
+            link.iter_vehicles_rev().map(move |id| {
                 let vehicle = &vehicles[id];
-                vehicle
-                    .route()
-                    .get(idx)
-                    .filter(|el| el.link == self.link_id)
-                    .and_then(|el| el.entered_at)
-                    .map(|entered_at| {
-                        let link = self.link_id;
-                        OffsetVehicle {
-                            vehicle,
-                            offset,
-                            link,
-                            entered_at,
-                        }
+                vehicle.route().get(idx).and_then(|el| {
+                    el.entered_at.map(|entered_at| OffsetVehicle {
+                        vehicle,
+                        offset,
+                        link: el.link,
+                        entered_at,
                     })
+                })
             })
         })
+        .map_while(|veh| veh)
         .skip_while(|veh| veh.pos_rear() > self.max_pos - self.min_pos)
+        .filter(|veh| veh.link == self.link_id)
     }
 }
 
@@ -161,6 +157,11 @@ impl<'a> OffsetVehicle<'a> {
 
     fn pos_rear(&self) -> f64 {
         self.vehicle.pos_rear() - self.offset
+    }
+
+    /// The minimum stopping position of the front of the vehicle.
+    fn pos_stop(&self) -> f64 {
+        self.pos_front() + self.vehicle.stopping_distance()
     }
 
     fn vel(&self) -> f64 {
