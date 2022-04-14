@@ -50,8 +50,6 @@ pub enum TrafficControl {
     Open,
     /// Traffic must yield before entering.
     Yield {
-        /// Higher numbers indicate higher priority.
-        priority: u8,
         /// The minimum distance from the stop line before a vehicle can enter.
         distance: f64,
         /// Whether a vehicle needs to come to a stop before entering.
@@ -191,20 +189,35 @@ impl Link {
                 }
                 match &links[route.link].control {
                     TrafficControl::Open => {
-                        if vehicle.can_stop(self.length()) {
-                            break;
-                        } else {
+                        if !vehicle.can_stop(self.length()) {
                             vehicle.enter_link(1, now);
+                        } else {
+                            break;
+                        }
+                    }
+                    TrafficControl::Yield { distance, must_stop } => {
+                        let close_enough = self.length() - vehicle.pos_front() < *distance;
+                        let stopped = !must_stop || vehicle.has_stopped();
+                        if close_enough && stopped && Self::vehicle_can_enter(links, vehicle, 1) {
+                            vehicle.enter_link(1, now);
+                        } else {
+                            vehicle.stop_at_line(self.length());
+                            break;
                         }
                     }
                     TrafficControl::Closed => {
                         vehicle.stop_at_line(self.length());
                         break;
                     }
-                    _ => unimplemented!(),
                 }
             }
         }
+    }
+
+    /// Determines whether a vehicle can enter a link
+    fn vehicle_can_enter(links: &LinkSet, vehicle: &Vehicle, idx: usize) -> bool {
+        // todo
+        true
     }
 
     /// Applies the speed limit to the vehicles on and entering this link.

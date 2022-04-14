@@ -160,6 +160,11 @@ impl Vehicle {
         self.vel
     }
 
+    /// Whether the vehicle is stopped.
+    pub fn has_stopped(&self) -> bool {
+        self.vel < 0.1
+    }
+
     /// Gets the vehicle's route.
     pub(crate) fn route(&self) -> &[RouteElement] {
         &self.route
