@@ -1,11 +1,12 @@
+use crate::link::RelativeVehicle;
 use crate::math::project_point_onto_curve;
-use crate::{Link, LinkId, LinkSet, Vehicle, VehicleSet};
+use crate::{Link, LinkId, LinkSet, VehicleSet};
 use cgmath::prelude::*;
-use itertools::{unfold, Itertools};
+use std::ops::ControlFlow;
 
 const LINK_RADIUS: f64 = 1.8; // m
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug, Clone)]
 pub struct ConflictPoint {
     /// Data associated with each of the conflicting links.
     links: [ConflictingLink; 2],
@@ -13,19 +14,11 @@ pub struct ConflictPoint {
     same_dir: bool,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug, Clone, Copy)]
 struct ConflictingLink {
     link_id: LinkId,
     min_pos: f64,
     max_pos: f64,
-}
-
-#[derive(Clone, Copy)]
-struct OffsetVehicle<'a> {
-    vehicle: &'a Vehicle,
-    offset: f64,
-    link: LinkId,
-    entered_at: usize,
 }
 
 impl ConflictPoint {
@@ -46,28 +39,23 @@ impl ConflictPoint {
         })
     }
 
-    pub(crate) fn apply_car_following(&self, links: &LinkSet, vehicles: &VehicleSet) {
-        let v1 = self.links[0].iter_vehicles(links, vehicles);
-        let v2 = self.links[1].iter_vehicles(links, vehicles);
-        // let mut vehicles = v1.merge_by(v2, |a, b| a.entered_at < b.entered_at);
-        let mut vehicles = v1.merge_by(v2, |a, b| a.pos_stop() > b.pos_stop());
+    pub(crate) fn apply_accelerations<'a>(&self, links: &LinkSet, vehicles: &'a VehicleSet) {
+        let mut buffer = vec![]; // todo
+        self.links[0].find_vehicles(links, vehicles, &mut buffer);
+        self.links[1].find_vehicles(links, vehicles, &mut buffer);
+        buffer.sort_by(|a, b| b.pos_stop().partial_cmp(&a.pos_stop()).unwrap());
 
-        let mut prev = if let Some(vehicle) = vehicles.next() {
-            vehicle
-        } else {
-            return;
-        };
-        for curr in vehicles {
-            if prev.link != curr.link {
-                if self.same_dir && prev.pos_rear() > 0.0 {
-                    curr.vehicle
-                        .follow_obstacle(prev.vehicle.rear_coords(), prev.vel());
-                } else {
-                    curr.stop_at_line(0.0);
+        buffer.windows(2).for_each(|vehs| {
+            if let [leader, follower] = vehs {
+                if leader.link_id(0) != follower.link_id(0) {
+                    if self.same_dir && leader.pos_rear() > 0.0 {
+                        follower.follow_obstacle(leader.rear_coords(), leader.vel());
+                    } else {
+                        follower.stop_at_line(0.0);
+                    }
                 }
             }
-            prev = curr;
-        }
+        })
     }
 }
 
@@ -106,69 +94,24 @@ impl ConflictingLink {
         }
     }
 
-    fn iter_vehicles<'a>(
-        &'a self,
-        links: &'a LinkSet,
+    fn find_vehicles<'a>(
+        &self,
+        links: &LinkSet,
         vehicles: &'a VehicleSet,
-    ) -> impl Iterator<Item = OffsetVehicle<'a>> + 'a {
-        let init = (Some(&links[self.link_id]), self.min_pos);
-        unfold(init, |(m_link, offset)| {
-            if let Some(link) = m_link {
-                let out = (*link, *offset);
-                if let [prev] = link.links_in() {
-                    *link = &links[*prev];
-                    *offset += link.length();
-                } else {
-                    *m_link = None;
+        out: &mut Vec<RelativeVehicle<'a>>,
+    ) {
+        links[self.link_id].process_vehicles(
+            links,
+            vehicles,
+            &mut |veh| {
+                if veh.pos_rear() < self.max_pos - self.min_pos {
+                    out.push(veh);
                 }
-                Some(out)
-            } else {
-                None
-            }
-        })
-        .enumerate()
-        .flat_map(move |(idx, (link, offset))| {
-            link.iter_vehicles_rev().map(move |id| {
-                let vehicle = &vehicles[id];
-                vehicle.route().get(idx).and_then(|el| {
-                    el.entered_at.map(|entered_at| OffsetVehicle {
-                        vehicle,
-                        offset,
-                        link: el.link,
-                        entered_at,
-                    })
-                })
-            })
-        })
-        .map_while(|veh| veh)
-        .skip_while(|veh| veh.pos_rear() > self.max_pos - self.min_pos)
-        .filter(|veh| veh.link == self.link_id)
-    }
-}
-
-impl<'a> OffsetVehicle<'a> {
-    fn pos_front(&self) -> f64 {
-        self.vehicle.pos_front() - self.offset
-    }
-
-    fn pos_mid(&self) -> f64 {
-        self.vehicle.pos_mid() - self.offset
-    }
-
-    fn pos_rear(&self) -> f64 {
-        self.vehicle.pos_rear() - self.offset
-    }
-
-    /// The minimum stopping position of the front of the vehicle.
-    fn pos_stop(&self) -> f64 {
-        self.pos_front() + self.vehicle.stopping_distance()
-    }
-
-    fn vel(&self) -> f64 {
-        self.vehicle.vel()
-    }
-
-    fn stop_at_line(&self, pos: f64) {
-        self.vehicle.stop_at_line(pos + self.offset);
+                ControlFlow::Continue(())
+            },
+            (0, self.link_id),
+            self.min_pos,
+            0,
+        )
     }
 }

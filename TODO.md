@@ -1,11 +1,1 @@
-- Add "awake" flag to links
-  - Sets to `false` when there are no vehicles on or entering the link
-  - This is detected when `iter_vehicles_rev` is invoked on the link and nothing is found
-    - Can the 40m distance limit be removed?
-  - When a vehicle enters a link it sets the flag back to `true`
-  - A conflict point only needs to be processed if both its links are awake
-- Implement simulation step that applies per vehicle:
-  - Vehicle examines next un-entered link
-  - If it is a red light/stop etc. it applies decelleration
-  - It determines if it should enter the link and then does so
-- Check that vehicles have always entered the link they're currently on
+- Reduce the number of links a vehicle has to be projected onto?

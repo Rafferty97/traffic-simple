@@ -1,8 +1,9 @@
-use crate::math::{rot90, ParametricCurve2d, Point2d, Vector2d};
+use crate::math::{ParametricCurve2d, Point2d, Vector2d};
 use crate::obstacle::Obstacle;
-use crate::vehicle::Vehicle;
+use crate::vehicle::{OnRouteResult, Vehicle};
 use crate::{LinkId, LinkSet, VehicleId, VehicleSet};
 pub use curve::{LinkCurve, LinkSample};
+use std::ops::ControlFlow;
 
 mod curve;
 
@@ -181,72 +182,86 @@ impl Link {
 
     /// Allows vehicles to enter the link.
     pub(crate) fn apply_stoplines(&self, links: &LinkSet, vehicles: &mut VehicleSet, now: usize) {
-        for vehicle_id in self.vehicles.iter().rev() {
-            let vehicle = &mut vehicles[*vehicle_id];
-            if let Some(route) = vehicle.route().get(1) {
-                if route.entered_at.is_some() {
-                    continue;
+        self.process_vehicles(
+            links,
+            vehicles,
+            &mut |vehicle| {
+                let link_id = if let Some(link_id) = vehicle.link_id(1) {
+                    link_id
+                } else {
+                    return ControlFlow::Continue(());
+                };
+                if vehicle.has_entered(1) {
+                    return ControlFlow::Continue(());
                 }
-                match &links[route.link].control {
+                match &links[link_id].control {
                     TrafficControl::Open => {
-                        if !vehicle.can_stop(self.length()) {
-                            vehicle.enter_link(1, now);
+                        if !vehicle.can_stop(0.0) {
+                            vehicle.enter_link();
+                            ControlFlow::Continue(())
                         } else {
-                            break;
+                            ControlFlow::Break(())
                         }
                     }
                     TrafficControl::Yield {
                         distance,
                         must_stop,
                     } => {
-                        let close_enough = self.length() - vehicle.pos_front() < *distance;
+                        let close_enough = vehicle.pos_front() > -distance;
                         let stopped = !must_stop || vehicle.has_stopped();
-                        if close_enough && stopped && Self::vehicle_can_enter(links, vehicle, 1) {
-                            vehicle.enter_link(1, now);
+                        if close_enough && stopped && Self::vehicle_can_enter(links, &vehicle, 1) {
+                            vehicle.enter_link();
+                            ControlFlow::Continue(())
                         } else {
-                            vehicle.stop_at_line(self.length());
-                            break;
+                            vehicle.stop_at_line(0.0);
+                            ControlFlow::Break(())
                         }
                     }
                     TrafficControl::Closed => {
-                        vehicle.stop_at_line(self.length());
-                        break;
+                        vehicle.stop_at_line(0.0);
+                        ControlFlow::Break(())
                     }
                 }
-            }
-        }
+            },
+            (0, self.id),
+            self.length(),
+            0,
+        );
     }
 
     /// Determines whether a vehicle can enter a link
-    fn vehicle_can_enter(links: &LinkSet, vehicle: &Vehicle, idx: usize) -> bool {
+    fn vehicle_can_enter(links: &LinkSet, vehicle: &RelativeVehicle, idx: usize) -> bool {
         // todo
         true
     }
 
-    /// Applies the speed limit to the vehicles on and entering this link.
-    pub(crate) fn apply_speed_limit(&self, links: &LinkSet, vehicles: &VehicleSet) {
-        for vehicle_id in &self.vehicles {
-            vehicles[*vehicle_id].apply_current_speed_limit(self.speed_limit);
+    /// Applies the car following model and the link's speed limit to vehicles on this link and preceeding links.
+    pub(crate) fn apply_accelerations(&self, links: &LinkSet, vehicles: &VehicleSet) {
+        // Apply car following and speed limit to vehicles on this link
+        for ids in self.vehicles.windows(2) {
+            let [follower, leader] = [ids[0], ids[1]].map(|id| &vehicles[id]);
+            follower.follow_vehicle(leader.pos_rear(), leader.vel());
+            follower.apply_current_speed_limit(self.speed_limit);
         }
-        for link_id in &self.links_in {
-            let link = &links[*link_id];
-            if let Some(vehicle_id) = link.vehicles.last() {
-                vehicles[*vehicle_id].apply_speed_limit(self.speed_limit, link.length());
-            }
+        if let Some(id) = self.vehicles.last() {
+            vehicles[*id].apply_current_speed_limit(self.speed_limit);
         }
-    }
 
-    /// Applies the car following model to all vehicles following a vehicle on this link.
-    pub(crate) fn apply_car_following(&self, links: &LinkSet, vehicles: &VehicleSet) {
-        // Apply accelerations to vehicles on this link
-        let obstacles = self
-            .vehicles
-            .iter()
-            .rev()
-            .map(|id| vehicles[*id].local_obstacle());
-        for (idx, obstacle) in obstacles.enumerate() {
-            self.follow_obstacle(links, vehicles, obstacle, (0, self.id), idx + 1);
-        }
+        // Apply car following and speed limit to vehicles about to enter this link
+        self.process_vehicles(
+            links,
+            vehicles,
+            &mut |veh| {
+                veh.apply_speed_limit(self.speed_limit, 0.0);
+                if let Some(leader) = self.vehicles.first().map(|id| &vehicles[*id]) {
+                    veh.follow_vehicle(leader.pos_rear(), leader.vel());
+                }
+                ControlFlow::Break(())
+            },
+            (0, self.id),
+            0.0,
+            self.vehicles.len(),
+        );
 
         // Apply accelerations to vehicles on adjacent links
         for (link_idx, adj_link) in self.links_adj.iter().enumerate() {
@@ -255,39 +270,14 @@ impl Link {
                 .vehicles
                 .iter()
                 .rev()
-                .map(|id| vehicles[*id].adjacent_obstacle(link_idx, &link.approx_curve));
+                .map(|id| vehicles[*id].as_obstacle(link_idx, &link.approx_curve));
             link.follow_obstacles(links, vehicles, obstacles);
         }
     }
 
-    pub(crate) fn iter_vehicles_rev(&self) -> impl Iterator<Item = VehicleId> + '_ {
-        self.vehicles.iter().rev().copied()
-    }
-
-    pub fn debug<'a>(
-        &'a self,
-        links: &'a LinkSet,
-        vehicles: &'a VehicleSet,
-    ) -> impl Iterator<Item = [Point2d; 2]> + 'a {
-        self.links_adj
-            .iter()
-            .enumerate()
-            .flat_map(move |(link_idx, adj_link)| {
-                let link = &links[adj_link.link_id];
-                self.vehicles
-                    .iter()
-                    .rev()
-                    .map(move |id| vehicles[*id].adjacent_obstacle(link_idx, &link.approx_curve))
-                    .map(|o| {
-                        let s = link.curve().sample_centre(o.pos);
-                        o.lat.as_array().map(|l| s.pos + rot90(s.tan) * l)
-                    })
-            })
-    }
-
     /// Applies an acceleration to the vehicles on this and preceeding links
     /// that need to follow the given obstacles.
-    /// The obstacles must be in reverse order along the link (end to beginning).
+    /// The obstacles must be in reverse order (descreasing `pos`) along the link.
     fn follow_obstacles(
         &self,
         links: &LinkSet,
@@ -303,71 +293,162 @@ impl Link {
                 .iter()
                 .rev()
                 .skip(skip)
-                .map(|id| vehicles[*id].pos_mid())
-                .position(|pos| pos < obstacle.pos)
+                .position(|id| vehicles[*id].pos_mid() < obstacle.pos)
                 .map(|cnt| skip + cnt)
                 .unwrap_or(self.vehicles.len());
 
             // Follow the obstacle
-            self.follow_obstacle(links, vehicles, obstacle, (0, self.id), skip);
+            self.process_vehicles(
+                links,
+                vehicles,
+                &mut |veh| {
+                    if veh.can_pass(&obstacle) {
+                        return ControlFlow::Continue(());
+                    }
+                    veh.follow_vehicle(0.0, obstacle.vel);
+                    ControlFlow::Break(())
+                },
+                (0, self.id),
+                obstacle.pos,
+                skip,
+            );
         }
     }
 
-    /// Applies an acceleration to the vehicles on this and preceeding links
-    /// that need to follow the given obstacle.
+    /// Applies the passed function on each vehicle on the link and preceeding links
+    /// in reverse order, in a depth-first fashion.
+    /// If the inner function returns `false`, processing on that link stops.
     ///
     /// # Parameters
     /// * `links` - The links in the network
     /// * `vehicles` - The vehicles in the network
-    /// * `obstacle` - The obstacle to follow
-    /// * `route` - Only consider vehicles following this route
-    /// * `skip` - Do not consider this number of vehicles at the end of the link
-    fn follow_obstacle(
+    /// * `func` - The function to apply to each vehicle
+    /// * `route` - Only process vehicles on this route
+    /// * `pos` - The `pos` value that each vehicle's own `pos` will be relative to
+    /// * `skip` - Skips this number of vehicles at the end of the link
+    pub(crate) fn process_vehicles<'a, F: FnMut(RelativeVehicle<'a>) -> ControlFlow<()>>(
         &self,
         links: &LinkSet,
-        vehicles: &VehicleSet,
-        obstacle: Obstacle,
+        vehicles: &'a VehicleSet,
+        func: &mut F,
         route: (usize, LinkId),
+        pos: f64,
         skip: usize,
     ) {
-        let min_pos = obstacle.pos - MAX_LOOKAHEAD * self.speed_limit;
+        let min_pos = pos - MAX_LOOKAHEAD * self.speed_limit;
 
-        // Look for a following vehicle on this link
         for veh_id in self.vehicles.iter().rev().skip(skip) {
             let vehicle = &vehicles[*veh_id];
-            if !vehicle.on_route(route.0, route.1) {
-                continue;
+            if vehicle.pos_front() < min_pos {
+                return;
             }
-            if Self::can_pass(vehicle, &obstacle) {
-                continue;
+            match vehicle.on_route(route.0, route.1) {
+                OnRouteResult::Entered => {}
+                OnRouteResult::NotEntered => return,
+                OnRouteResult::NotOnRoute => continue,
             }
-            if vehicle.pos_front() > min_pos {
-                vehicle.follow_vehicle(obstacle.pos, obstacle.vel);
+            let result = (*func)(RelativeVehicle {
+                vehicle,
+                route_idx: route.0,
+                pos,
+            });
+            if result.is_break() {
+                return;
             }
-            return;
         }
 
-        // Limit search distance
         if min_pos >= 0.0 {
             return;
         }
 
-        // Look for a following vehicle on preceeding links
         let route = (route.0 + 1, route.1);
         for link_id in &self.links_in {
             let link = &links[*link_id];
-            let obstacle = Obstacle {
-                pos: obstacle.pos + link.length(),
-                ..obstacle
-            };
-            link.follow_obstacle(links, vehicles, obstacle, route, 0);
+            let pos = pos + link.length();
+            let skip = 0;
+            link.process_vehicles(links, vehicles, func, route, pos, skip);
         }
+    }
+}
+
+/// A reference to a vehicle with reference to another object on the network.
+pub(crate) struct RelativeVehicle<'a> {
+    vehicle: &'a Vehicle,
+    route_idx: usize,
+    pos: f64,
+}
+
+impl<'a> RelativeVehicle<'a> {
+    pub fn pos_front(&self) -> f64 {
+        self.vehicle.pos_front() - self.pos
+    }
+
+    pub fn pos_mid(&self) -> f64 {
+        self.vehicle.pos_mid() - self.pos
+    }
+
+    pub fn pos_rear(&self) -> f64 {
+        self.vehicle.pos_rear() - self.pos
+    }
+
+    /// The minimum stopping position of the front of the vehicle.
+    pub fn pos_stop(&self) -> f64 {
+        self.pos_front() + self.vehicle.stopping_distance()
+    }
+
+    pub fn can_stop(&self, pos: f64) -> bool {
+        self.vehicle.can_stop(self.pos + pos)
+    }
+
+    pub fn vel(&self) -> f64 {
+        self.vehicle.vel()
+    }
+
+    pub fn has_stopped(&self) -> bool {
+        self.vehicle.has_stopped()
+    }
+
+    pub fn rear_coords(&self) -> [Point2d; 2] {
+        self.vehicle.rear_coords()
+    }
+
+    pub fn apply_speed_limit(&self, speed_limit: f64, pos: f64) {
+        self.vehicle.apply_speed_limit(speed_limit, self.pos + pos);
+    }
+
+    pub fn follow_vehicle(&self, pos: f64, vel: f64) {
+        self.vehicle.follow_vehicle(self.pos + pos, vel);
+    }
+
+    pub fn stop_at_line(&self, pos: f64) {
+        self.vehicle.stop_at_line(self.pos + pos);
+    }
+
+    pub fn follow_obstacle(&self, coords: [Point2d; 2], vel: f64) {
+        self.vehicle.follow_obstacle(coords, vel);
+    }
+
+    pub fn enter_link(&self) {
+        self.vehicle.enter_link();
     }
 
     /// Determines whether the vehicle can pass the given obstacle.
-    fn can_pass(vehicle: &Vehicle, obstacle: &Obstacle) -> bool {
+    pub fn can_pass(&self, obstacle: &Obstacle) -> bool {
+        let vehicle = self.vehicle;
         let own_lat = vehicle.lat_extent_at(obstacle.pos - vehicle.half_length());
         let clearance = own_lat.clearance_with(&obstacle.lat);
         clearance >= LATERAL_CLEARANCE
+    }
+
+    pub fn on_route(&self, link_id: LinkId) -> OnRouteResult {
+        self.vehicle.on_route(self.route_idx, link_id)
+    }
+
+    pub fn link_id(&self, idx: usize) -> Option<LinkId> {
+        self.vehicle.route().get(self.route_idx + idx).copied()
+    }
+
+    pub fn has_entered(&self, idx: usize) -> bool {
+        self.vehicle.has_entered(self.route_idx + idx)
     }
 }

@@ -156,11 +156,10 @@ impl Simulation {
     /// Applies the car following model, speed limits, etc. to all vehicles.
     fn apply_link_accelerations(&mut self) {
         for (_, link) in &self.links {
-            link.apply_speed_limit(&self.links, &self.vehicles);
-            link.apply_car_following(&self.links, &self.vehicles);
+            link.apply_accelerations(&self.links, &self.vehicles);
         }
         for conflict in &self.conflicts {
-            conflict.apply_car_following(&self.links, &self.vehicles);
+            conflict.apply_accelerations(&self.links, &self.vehicles);
         }
     }
 
@@ -192,7 +191,7 @@ impl Simulation {
 
         for (vehicle_id, vehicle) in &mut self.vehicles {
             let link_id = vehicle.link_id().unwrap();
-            let did_advance = vehicle.advance(&self.links, self.frame);
+            let did_advance = vehicle.advance(&self.links);
 
             if did_advance {
                 self.links[link_id].remove_vehicle(vehicle_id);
