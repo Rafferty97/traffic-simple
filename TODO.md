@@ -1,1 +1,3 @@
 - Reduce the number of links a vehicle has to be projected onto?
+- Implement link wake/sleep
+- Lane arrows :D
