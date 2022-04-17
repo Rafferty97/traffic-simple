@@ -7,6 +7,9 @@ use std::ops::ControlFlow;
 
 mod curve;
 
+/// The maximum vehicle length
+const MAX_VEHICLE_LEN: f64 = 8.0;
+
 /// The minimum lateral clearance for own vehicle to pass another, in m.
 const LATERAL_CLEARANCE: f64 = 0.5;
 
@@ -196,7 +199,7 @@ impl Link {
                 }
                 match &links[link_id].control {
                     TrafficControl::Open => {
-                        if !vehicle.can_stop(0.0) {
+                        if !vehicle.can_stop(-0.5 * MAX_VEHICLE_LEN) {
                             vehicle.enter_link();
                             ControlFlow::Continue(())
                         } else {
