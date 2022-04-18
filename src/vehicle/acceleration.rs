@@ -9,7 +9,7 @@ const MIN_GAP: f64 = 2.5; // m
 const MAX_DECEL: f64 = -6.0; // m/s^2
 
 /// The acceleration model of a vehicle.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct AccelerationModel {
     max_acc: f64,
     comf_dec: f64,

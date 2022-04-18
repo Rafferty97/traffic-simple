@@ -11,7 +11,7 @@ use std::cell::Cell;
 mod acceleration;
 
 /// A simulated vehicle.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Vehicle {
     /// The vehicle's ID
     pub(crate) id: VehicleId,
@@ -30,7 +30,10 @@ pub struct Vehicle {
     /// The vehicle's route, including the link it's currently on.
     route: Vec<LinkId>,
     /// The number of links on the route already "entered".
-    entered: Cell<usize>,
+    entered: usize,
+    /// Whether the vehicle will enter the next link in the integration step.
+    #[serde(skip)]
+    will_enter: Cell<bool>,
     /// Whether the vehicle can exit at the end of its route.
     can_exit: bool,
     /// The in-progress lane change, if there is one.
@@ -59,7 +62,7 @@ pub struct VehicleAttributes {
 }
 
 /// Represents an in-progress lane change.
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, Serialize, Deserialize, Debug)]
 pub struct LaneChange {
     /// The longitudinal position at which the lane change is complete.
     pub end_pos: f64,
@@ -90,7 +93,8 @@ impl Vehicle {
             vel: 0.0,
             stop_cnt: 0,
             route: vec![],
-            entered: Cell::new(0),
+            entered: 0,
+            will_enter: Cell::new(false),
             can_exit: true,
             lane_change: None,
             world_pos: Point2d::new(0.0, 0.0),
@@ -188,7 +192,7 @@ impl Vehicle {
 
     /// Checks whether the vehicle has entered the given link on its route.
     pub(crate) fn has_entered(&self, idx: usize) -> bool {
-        self.entered.get() > idx
+        self.entered > idx
     }
 
     /// Determines whether the vehicle can comfortably stop before reaching `pos`.
@@ -204,7 +208,7 @@ impl Vehicle {
 
     /// Enters the next unentered link on the vehicle's route.
     pub(crate) fn enter_link(&self) {
-        self.entered.set(self.entered.get() + 1);
+        self.will_enter.set(true);
     }
 
     /// Applies an acceleration to the vehicle so it follows an obstacle.
@@ -308,6 +312,12 @@ impl Vehicle {
     /// # Parameters
     /// * `dt` - The time step in seconds
     pub(crate) fn integrate(&mut self, dt: f64) {
+        // Update entered links count
+        if self.will_enter.get() {
+            self.entered += 1;
+            self.will_enter.set(false);
+        }
+
         // Perform the integration
         let vel = f64::max(self.vel + dt * self.acc.acc(), 0.0);
         let pos = self.pos + 0.5 * (self.vel + vel) * dt;
@@ -342,7 +352,7 @@ impl Vehicle {
             let length = links[*link_id].length();
             if length < self.pos {
                 self.route.remove(0);
-                self.entered.set(usize::max(self.entered.get() - 1, 1));
+                self.entered = usize::max(self.entered - 1, 1);
                 self.pos -= length;
                 if let Some(lc) = self.lane_change.as_mut() {
                     lc.offset = lc.offset.translate_x(length);
@@ -359,7 +369,7 @@ impl Vehicle {
     /// This also clears the vehicle's route.
     pub(crate) fn set_location(&mut self, link: LinkId, pos: f64, lane_change: Option<LaneChange>) {
         self.route = vec![link];
-        self.entered.set(1);
+        self.entered = 1;
         self.pos = pos;
         self.lane_change = lane_change;
         self.can_exit = false;
@@ -370,7 +380,7 @@ impl Vehicle {
     pub(crate) fn set_route(&mut self, route: &[LinkId], can_exit: bool) {
         self.route.truncate(1);
         self.route.extend(route);
-        self.entered.set(1);
+        self.entered = 1;
         self.can_exit = can_exit;
     }
 
@@ -399,5 +409,12 @@ impl Vehicle {
         let rear_mid = pos - self.half_len * tan;
         let perp = rot90(tan);
         self.rear_coords = lats.map(|lat| rear_mid + lat * perp);
+    }
+
+    /// Sets the `active` flag for the links this vehicle has entered (including the one its currently on).
+    pub(crate) fn activate_links(&self, links: &mut LinkSet) {
+        for link_id in self.route.iter().take(self.entered) {
+            links[*link_id].activate();
+        }
     }
 }

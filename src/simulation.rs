@@ -1,10 +1,10 @@
-use serde::{Deserialize, Serialize};
-
 use crate::conflict::ConflictPoint;
 use crate::link::{Link, LinkAttributes, TrafficControl};
 use crate::math::{CubicFn, Point2d};
 use crate::vehicle::{LaneChange, Vehicle, VehicleAttributes};
 use crate::{LinkId, LinkSet, VehicleId, VehicleSet};
+use lz4_flex::compress_prepend_size;
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 
 thread_local! {
@@ -139,8 +139,12 @@ impl Simulation {
 
     /// Calculates the accelerations of the vehicles.
     fn apply_accelerations(&mut self) {
+        for (_, link) in &mut self.links {
+            link.deactivate();
+        }
         for (_, vehicle) in &mut self.vehicles {
             vehicle.reset();
+            vehicle.activate_links(&mut self.links);
         }
         self.apply_stoplines();
         self.apply_link_accelerations();
@@ -261,5 +265,10 @@ impl Simulation {
                 f(&line[..]);
             }
         });
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let raw = bson::to_vec(self).unwrap();
+        compress_prepend_size(&raw)
     }
 }

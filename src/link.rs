@@ -38,6 +38,8 @@ pub struct Link {
     vehicles: Vec<VehicleId>,
     /// The traffic control at the start of the link.
     control: TrafficControl,
+    /// A flag indicating whether any vehicles are on/entering this link.
+    active: bool,
 }
 
 /// The attributes of a link.
@@ -96,6 +98,7 @@ impl Link {
             speed_limit: attribs.speed_limit,
             vehicles: vec![],
             control: TrafficControl::Open,
+            active: false,
         }
     }
 
@@ -319,6 +322,16 @@ impl Link {
         }
     }
 
+    /// Resets the link's `active` flag
+    pub(crate) fn deactivate(&mut self) {
+        self.active = false;
+    }
+
+    /// Sets the link's `active` flag
+    pub(crate) fn activate(&mut self) {
+        self.active = true;
+    }
+
     /// Applies the passed function on each vehicle on the link and preceeding links
     /// in reverse order, in a depth-first fashion.
     /// If the inner function returns `false`, processing on that link stops.
@@ -339,6 +352,10 @@ impl Link {
         pos: f64,
         skip: usize,
     ) {
+        if !self.active {
+            return;
+        }
+
         let min_pos = pos - MAX_LOOKAHEAD * self.speed_limit;
 
         for veh_id in self.vehicles.iter().rev().skip(skip) {

@@ -42,8 +42,13 @@ impl ConflictPoint {
 
     pub(crate) fn apply_accelerations<'a>(&self, links: &LinkSet, vehicles: &'a VehicleSet) {
         let mut buffer = vec![]; // todo
-        self.links[0].find_vehicles(links, vehicles, &mut buffer);
-        self.links[1].find_vehicles(links, vehicles, &mut buffer);
+        for link in &self.links {
+            let cnt = buffer.len();
+            link.find_vehicles(links, vehicles, &mut buffer);
+            if buffer.len() == cnt {
+                return;
+            }
+        }
         buffer.sort_by(|a, b| b.pos_stop().partial_cmp(&a.pos_stop()).unwrap());
 
         buffer.windows(2).for_each(|vehs| {

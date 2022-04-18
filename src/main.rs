@@ -1,6 +1,5 @@
-use std::time::{Duration, Instant};
-
 use lz4_flex::decompress_size_prepended;
+use std::time::Instant;
 use traffic_sim::Simulation;
 
 fn main() {
@@ -9,7 +8,7 @@ fn main() {
     let mut sim: Simulation = bson::from_slice(&content).unwrap();
 
     println!("Simulating...");
-    let NUM_FRAMES = 1000;
+    const NUM_FRAMES: u32 = 100;
     loop {
         let start = Instant::now();
         for _ in 0..NUM_FRAMES {
