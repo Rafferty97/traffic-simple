@@ -1,5 +1,7 @@
 use std::cell::Cell;
 
+use serde::{Deserialize, Serialize};
+
 /// The minimum gap to maintain between vehicles in m.
 const MIN_GAP: f64 = 2.5; // m
 
@@ -7,7 +9,7 @@ const MIN_GAP: f64 = 2.5; // m
 const MAX_DECEL: f64 = -6.0; // m/s^2
 
 /// The acceleration model of a vehicle.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct AccelerationModel {
     max_acc: f64,
     comf_dec: f64,

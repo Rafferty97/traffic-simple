@@ -3,8 +3,9 @@ use crate::math::{
     ParametricCurve2d, Point2d, QuadraticBezier2d, Vector2d,
 };
 use cgmath::prelude::*;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct LinkCurve {
     scale: f64,
     length: f64,

@@ -4,10 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-slotmap = "1.0.6"
+slotmap = { version = "1.0.6", features = ["serde"] }
 cgmath = { version = "0.18.0", features = ["serde"] }
 serde = "1.0.117"
-serde_json = "1.0.59"
+bson = "2.2.0"
+lz4_flex = { version = "0.9.0" }
 assert_approx_eq = "1.1.0"
 rand = "0.8.4"
 smallvec = { version = "1.5.1", features = ["serde"] }

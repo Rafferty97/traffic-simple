@@ -2,11 +2,12 @@ use crate::link::RelativeVehicle;
 use crate::math::project_point_onto_curve;
 use crate::{Link, LinkId, LinkSet, VehicleSet};
 use cgmath::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::ops::ControlFlow;
 
 const LINK_RADIUS: f64 = 1.8; // m
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConflictPoint {
     /// Data associated with each of the conflicting links.
     links: [ConflictingLink; 2],
@@ -14,7 +15,7 @@ pub struct ConflictPoint {
     same_dir: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 struct ConflictingLink {
     link_id: LinkId,
     min_pos: f64,

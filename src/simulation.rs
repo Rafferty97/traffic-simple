@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use crate::conflict::ConflictPoint;
 use crate::link::{Link, LinkAttributes, TrafficControl};
 use crate::math::{CubicFn, Point2d};
@@ -10,7 +12,7 @@ thread_local! {
 }
 
 /// A traffic simulation.
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Serialize, Deserialize)]
 pub struct Simulation {
     /// The links in the network.
     links: LinkSet,

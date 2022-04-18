@@ -3,6 +3,7 @@ use crate::obstacle::Obstacle;
 use crate::vehicle::{OnRouteResult, Vehicle};
 use crate::{LinkId, LinkSet, VehicleId, VehicleSet};
 pub use curve::{LinkCurve, LinkSample};
+use serde::{Deserialize, Serialize};
 use std::ops::ControlFlow;
 
 mod curve;
@@ -17,7 +18,7 @@ const LATERAL_CLEARANCE: f64 = 0.5;
 const MAX_LOOKAHEAD: f64 = 5.0;
 
 /// A link represents a single lane of traffic.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Link {
     /// The link ID.
     id: LinkId,
@@ -48,7 +49,7 @@ pub struct LinkAttributes<'a> {
 }
 
 /// A traffic control.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum TrafficControl {
     /// Traffic can enter freely, e.g. green light or priority road.
     Open,
@@ -64,7 +65,7 @@ pub enum TrafficControl {
 }
 
 /// Information about a link which overlaps another link.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct AdjacentLink {
     /// The ID of the adjacent link
     link_id: LinkId,

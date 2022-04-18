@@ -5,12 +5,13 @@ use crate::obstacle::Obstacle;
 use crate::util::Interval;
 use crate::{LinkId, LinkSet, VehicleId};
 use cgmath::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 
 mod acceleration;
 
 /// A simulated vehicle.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Vehicle {
     /// The vehicle's ID
     pub(crate) id: VehicleId,
@@ -58,7 +59,7 @@ pub struct VehicleAttributes {
 }
 
 /// Represents an in-progress lane change.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct LaneChange {
     /// The longitudinal position at which the lane change is complete.
     pub end_pos: f64,
