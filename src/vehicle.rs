@@ -45,6 +45,7 @@ pub struct Vehicle {
     /// The two end points of a line behind the vehicle used for car following.
     rear_coords: [Point2d; 2],
     /// Tracks the vehicle's projection onto adjacent links, for performance.
+    #[serde(skip)]
     min_segments: [Cell<u16>; 8],
 }
 

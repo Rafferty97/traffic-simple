@@ -1,3 +1,5 @@
 - Reduce the number of links a vehicle has to be projected onto?
-- Implement link wake/sleep
-- Lane arrows :D
+- Give way and keep clear
+- Lane change decisions and routing?
+- Roundabouts!
+- Put sim on separate thread?

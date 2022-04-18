@@ -39,6 +39,7 @@ pub struct Link {
     /// The traffic control at the start of the link.
     control: TrafficControl,
     /// A flag indicating whether any vehicles are on/entering this link.
+    #[serde(skip)]
     active: bool,
 }
 
