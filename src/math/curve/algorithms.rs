@@ -127,6 +127,12 @@ pub fn subdivided_points_along_curve(curve: &impl ParametricCurve2d, dist: f64) 
     let mut out = vec![last_p];
     let mut stack = vec![];
 
+    // In case the curve is a closed loop
+    let mid_t = 0.5 * (next_t + last_t);
+    let mid_p = curve.sample(mid_t);
+    stack.push((next_t, next_p));
+    (next_t, next_p) = (mid_t, mid_p);
+
     loop {
         if (next_p - last_p).magnitude2() > dist2 {
             let mid_t = 0.5 * (next_t + last_t);
