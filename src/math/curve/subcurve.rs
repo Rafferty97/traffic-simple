@@ -1,7 +1,7 @@
 use super::ParametricCurve2d;
 use crate::Interval;
 
-pub struct Subcurve<C>
+pub struct SubCurve<C>
 where
     C: ParametricCurve2d,
 {
@@ -9,7 +9,7 @@ where
     bounds: Interval<f64>,
 }
 
-impl<C> Subcurve<C>
+impl<C> SubCurve<C>
 where
     C: ParametricCurve2d,
 {
@@ -21,7 +21,7 @@ where
     }
 }
 
-impl<C> ParametricCurve2d for Subcurve<C>
+impl<C> ParametricCurve2d for SubCurve<C>
 where
     C: ParametricCurve2d,
 {
