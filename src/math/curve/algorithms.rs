@@ -117,40 +117,60 @@ pub fn equidistant_points_along_curve(
     (points, length)
 }
 
-/// Approximates a curve by subdividing it until all segments are no longer than `dist` units in length.
-pub fn subdivided_points_along_curve(curve: &impl ParametricCurve2d, dist: f64) -> Vec<Point2d> {
-    let dist2 = dist.powi(2);
+/// Approximates a curve by subdividing it until all segments are no longer than `max_length` units in length.
+pub fn subdivided_points_along_curve(
+    curve: &impl ParametricCurve2d,
+    max_length: f64,
+) -> Vec<Point2d> {
+    SubdividedSamples::new(curve, max_length)
+        .map(|(_, p)| p)
+        .collect()
+}
 
-    let Interval { min, max } = curve.bounds();
-    let (mut last_t, mut last_p) = (min, curve.sample(min));
-    let (mut next_t, mut next_p) = (max, curve.sample(max));
-    let mut out = vec![last_p];
-    let mut stack = vec![];
+/// Approximates a curve by subdividing it until all segments are no longer than `max_length` units in length.
+pub fn subdivided_samples_along_curve(
+    curve: &impl ParametricCurve2d,
+    max_length: f64,
+) -> impl Iterator<Item = (f64, Point2d)> + '_ {
+    SubdividedSamples::new(curve, max_length)
+}
 
-    // In case the curve is a closed loop
-    let mid_t = 0.5 * (next_t + last_t);
-    let mid_p = curve.sample(mid_t);
-    stack.push((next_t, next_p));
-    (next_t, next_p) = (mid_t, mid_p);
+pub struct SubdividedSamples<'a, C> {
+    curve: &'a C,
+    stack: Vec<(f64, Point2d)>,
+    length2: f64,
+}
 
-    loop {
-        if (next_p - last_p).magnitude2() > dist2 {
-            let mid_t = 0.5 * (next_t + last_t);
-            let mid_p = curve.sample(mid_t);
-            stack.push((next_t, next_p));
-            (next_t, next_p) = (mid_t, mid_p);
-        } else {
-            out.push(next_p);
-            (last_t, last_p) = (next_t, next_p);
-            if let Some(v) = stack.pop() {
-                (next_t, next_p) = v;
-            } else {
-                break;
-            }
+impl<'a, C: ParametricCurve2d> SubdividedSamples<'a, C> {
+    fn new(curve: &'a C, max_length: f64) -> Self {
+        let Interval { min, max } = curve.bounds();
+        let mid = 0.5 * (min + max);
+        Self {
+            curve,
+            stack: vec![
+                (max, curve.sample(max)),
+                (mid, curve.sample(mid)),
+                (min, curve.sample(min)),
+            ],
+            length2: max_length.powi(2),
         }
     }
+}
 
-    out
+impl<'a, C: ParametricCurve2d> Iterator for SubdividedSamples<'a, C> {
+    type Item = (f64, Point2d);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (t1, p1) = self.stack.pop()?;
+        if let Some((mut t2, mut p2)) = self.stack.last().copied() {
+            while (p2 - p1).magnitude2() > self.length2 {
+                let mid_t = 0.5 * (t1 + t2);
+                (t2, p2) = (mid_t, self.curve.sample(mid_t));
+                self.stack.push((t2, p2));
+            }
+        }
+        Some((t1, p1))
+    }
 }
 
 #[cfg(test)]
