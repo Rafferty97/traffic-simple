@@ -3,11 +3,13 @@ use crate::util::Interval;
 pub use algorithms::*;
 pub use bezier::*;
 pub use offset::*;
+pub use reverse::*;
 pub use subcurve::*;
 
 mod algorithms;
 mod bezier;
 mod offset;
+mod reverse;
 mod subcurve;
 
 /// A parametric curve in 2D space.
