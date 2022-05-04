@@ -122,6 +122,11 @@ impl Simulation {
         self.frame
     }
 
+    /// Returns an iterator over all the links in the simulation.
+    pub fn iter_links(&self) -> impl Iterator<Item = &Link> {
+        self.links.iter().map(|(_, link)| link)
+    }
+
     /// Returns an iterator over all the vehicles in the simulation.
     pub fn iter_vehicles(&self) -> impl Iterator<Item = &Vehicle> {
         self.vehicles.iter().map(|(_, veh)| veh)
