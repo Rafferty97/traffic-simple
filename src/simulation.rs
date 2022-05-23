@@ -1,10 +1,12 @@
 use crate::conflict::ConflictPoint;
+use crate::light::TrafficLight;
 use crate::link::{Link, LinkAttributes, TrafficControl};
 use crate::math::{CubicFn, Point2d};
 use crate::vehicle::{LaneChange, Vehicle, VehicleAttributes};
-use crate::{LinkId, LinkSet, VehicleId, VehicleSet};
+use crate::{LinkId, LinkSet, TrafficLightId, VehicleId, VehicleSet};
 use lz4_flex::compress_prepend_size;
 use serde::{Deserialize, Serialize};
+use slotmap::SlotMap;
 use std::cell::RefCell;
 
 thread_local! {
@@ -16,6 +18,8 @@ thread_local! {
 pub struct Simulation {
     /// The links in the network.
     links: LinkSet,
+    /// The traffic lights.
+    lights: SlotMap<TrafficLightId, TrafficLight>,
     /// The vehicles being simulated.
     vehicles: VehicleSet,
     /// The conflict points.

@@ -7,6 +7,7 @@ pub use util::Interval;
 pub use vehicle::{Vehicle, VehicleAttributes};
 
 mod conflict;
+mod light;
 mod link;
 pub mod math;
 mod obstacle;
@@ -19,6 +20,8 @@ new_key_type! {
     pub struct LinkId;
     /// Unique ID of a [Vehicle].
     pub struct VehicleId;
+    /// Unique ID of a [TrafficLight].
+    pub struct TrafficLightId;
 }
 
 type LinkSet = SlotMap<LinkId, Link>;
