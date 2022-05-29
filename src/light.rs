@@ -1,4 +1,4 @@
-use crate::LinkId;
+use crate::{LinkId, TrafficControl};
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 
@@ -8,7 +8,7 @@ pub struct TrafficLight {
     /// The movements.
     movements: Vec<Movement>,
     /// The links controlled by each movement.
-    links: (LinkId, u8),
+    links: Vec<(u8, LinkId)>,
     /// The conflicts between the movements.
     conflicts: Vec<Conflict>,
 }
@@ -49,6 +49,28 @@ pub enum LightState {
 }
 
 impl TrafficLight {
+    /// Adds a movement to the traffic light.
+    pub fn add_movement(&mut self, amber_time: usize, links: impl Iterator<Item = LinkId>) {
+        let idx = self.movements.len() as u8;
+        self.movements.push(Movement {
+            state: LightState::Red,
+            next_state: Cell::new(LightState::Red),
+            active: false,
+            since: 0,
+            amber_time,
+        });
+        self.links.extend(links.map(|link| (idx, link)));
+    }
+
+    /// Adds a conflict between two movements to the traffic light.
+    pub fn add_conflit(&mut self, subject: usize, other: usize, wait: usize) {
+        self.conflicts.push(Conflict {
+            subject,
+            other,
+            wait,
+        });
+    }
+
     /// Advances the traffic light timing by one frame.
     pub fn step(&mut self) {
         for (idx, movement) in self.movements.iter().enumerate() {
@@ -64,6 +86,17 @@ impl TrafficLight {
         for movement in &mut self.movements {
             movement.step();
         }
+    }
+
+    pub fn get_states(&self) -> impl Iterator<Item = (LinkId, TrafficControl)> + '_ {
+        self.links.iter().map(|(idx, link)| {
+            let control = match self.movements[*idx as usize].state {
+                LightState::Red => TrafficControl::Closed,
+                LightState::Amber => TrafficControl::Closed,
+                LightState::Green => TrafficControl::Open,
+            };
+            (*link, control)
+        })
     }
 
     /// Checks that a movement is not blocked by any other movements.

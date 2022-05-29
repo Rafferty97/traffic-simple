@@ -72,6 +72,11 @@ impl Simulation {
         self.links[to].add_link_in(from);
     }
 
+    /// Adds a traffic light to the simulation.
+    pub fn add_traffic_light(&mut self, light: TrafficLight) -> TrafficLightId {
+        self.lights.insert(light)
+    }
+
     /// Adds a vehicle to the simulation.
     pub fn add_vehicle(&mut self, attributes: &VehicleAttributes, link: LinkId) -> VehicleId {
         let vehicle_id = self.vehicles.insert_with_key(|id| {
@@ -105,6 +110,7 @@ impl Simulation {
 
     /// Advances the simulation by `dt` seconds.
     pub fn step(&mut self, dt: f64) {
+        self.update_lights();
         self.apply_accelerations();
         self.integrate(dt);
         self.advance_vehicles();
@@ -115,6 +121,7 @@ impl Simulation {
     /// Advances the simulation by `dt` seconds,
     /// but only integrates vehicles positions.
     pub fn step_fast(&mut self, dt: f64) {
+        self.update_lights();
         self.integrate(dt);
         self.advance_vehicles();
         self.update_vehicle_coords();
@@ -144,6 +151,16 @@ impl Simulation {
     /// Gets a reference to the link with the given ID.
     pub fn set_link_control(&mut self, link_id: LinkId, control: TrafficControl) {
         self.links[link_id].set_control(control);
+    }
+
+    /// Updates the traffic lights.
+    fn update_lights(&mut self) {
+        for (_, light) in &mut self.lights {
+            light.step();
+            for (link_id, control) in light.get_states() {
+                self.links[link_id].set_control(control);
+            }
+        }
     }
 
     /// Calculates the accelerations of the vehicles.
