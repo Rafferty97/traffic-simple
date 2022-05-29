@@ -1,8 +1,9 @@
+use crate::LinkId;
+use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 
-use crate::LinkId;
-
 /// A set of coordinated traffic lights.
+#[derive(Serialize, Deserialize, Clone)]
 pub struct TrafficLight {
     /// The movements.
     movements: Vec<Movement>,
@@ -13,6 +14,7 @@ pub struct TrafficLight {
 }
 
 /// A single traffic light movement.
+#[derive(Serialize, Deserialize, Clone)]
 struct Movement {
     /// The current state.
     state: LightState,
@@ -27,6 +29,7 @@ struct Movement {
 }
 
 /// Represents one traffic light movement's conflict with another.
+#[derive(Serialize, Deserialize, Clone, Copy)]
 struct Conflict {
     /// The movement which is the subject of the conflict.
     subject: usize,
@@ -38,7 +41,7 @@ struct Conflict {
 }
 
 /// The state of a traffic light movement.
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
 pub enum LightState {
     Red,
     Amber,
