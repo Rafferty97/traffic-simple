@@ -110,7 +110,7 @@ impl Simulation {
 
     /// Advances the simulation by `dt` seconds.
     pub fn step(&mut self, dt: f64) {
-        self.update_lights();
+        self.update_lights(dt);
         self.apply_accelerations();
         self.integrate(dt);
         self.advance_vehicles();
@@ -121,7 +121,7 @@ impl Simulation {
     /// Advances the simulation by `dt` seconds,
     /// but only integrates vehicles positions.
     pub fn step_fast(&mut self, dt: f64) {
-        self.update_lights();
+        self.update_lights(dt);
         self.integrate(dt);
         self.advance_vehicles();
         self.update_vehicle_coords();
@@ -154,9 +154,9 @@ impl Simulation {
     }
 
     /// Updates the traffic lights.
-    fn update_lights(&mut self) {
+    fn update_lights(&mut self, dt: f64) {
         for (_, light) in &mut self.lights {
-            light.step();
+            light.step(dt);
             for (link_id, control) in light.get_states() {
                 self.links[link_id].set_control(control);
             }
