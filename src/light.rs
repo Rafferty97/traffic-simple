@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 
 /// A set of coordinated traffic lights.
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 pub struct TrafficLight {
     /// The movements.
     movements: Vec<Movement>,
@@ -11,6 +11,10 @@ pub struct TrafficLight {
     links: Vec<(u8, LinkId)>,
     /// The conflicts between the movements.
     conflicts: Vec<Conflict>,
+    /// The traffic light phases.
+    phases: Vec<Phase>,
+    /// The current traffic light phase.
+    phase: usize,
 }
 
 /// A single traffic light movement.
@@ -48,7 +52,21 @@ pub enum LightState {
     Green,
 }
 
+/// A traffic light phase.
+#[derive(Serialize, Deserialize, Clone, Copy)]
+pub struct Phase {
+    /// A bit mask denoting which movements should be green in this phase.
+    mask: u64,
+    /// The duration of the phase once all lights have turned green.
+    duration: f64,
+}
+
 impl TrafficLight {
+    /// Creates a new traffic light system.
+    pub fn new() -> Self {
+        Default::default()
+    }
+
     /// Adds a movement to the traffic light.
     pub fn add_movement(&mut self, amber_time: f64, links: impl Iterator<Item = LinkId>) {
         let idx = self.movements.len() as u8;
@@ -71,8 +89,17 @@ impl TrafficLight {
         });
     }
 
+    /// Adds a phase to the traffic light timing.
+    pub fn add_phase(&mut self, mask: u64, duration: f64) {
+        self.phases.push(Phase { mask, duration });
+    }
+
     /// Advances the traffic light timing by one frame.
     pub fn step(&mut self, dt: f64) {
+        self.update_phase();
+        self.apply_phase();
+
+        // Compute which movements should change state
         for (idx, movement) in self.movements.iter().enumerate() {
             use LightState::*;
             let next = match (movement.active, movement.state) {
@@ -83,8 +110,36 @@ impl TrafficLight {
             };
             movement.next_state.set(next);
         }
+
+        // Update each movement
         for movement in &mut self.movements {
             movement.step(dt);
+        }
+    }
+
+    /// Advances to the next traffic light phase if appropriate.
+    fn update_phase(&mut self) {
+        if self.phases.is_empty() {
+            return;
+        }
+
+        let Phase { duration, .. } = self.phases[self.phase];
+        let phase_complete = self
+            .movements
+            .iter()
+            .filter(|m| m.active)
+            .all(|m| m.state == LightState::Green && m.since >= duration);
+
+        if phase_complete {
+            self.phase = (self.phase + 1) % self.phases.len();
+        }
+    }
+
+    /// Applies the current traffic light phase to each movement.
+    fn apply_phase(&mut self) {
+        let Phase { mask, .. } = self.phases[self.phase];
+        for (idx, movement) in self.movements.iter_mut().enumerate() {
+            movement.active = (mask >> idx) & 1 != 0;
         }
     }
 
