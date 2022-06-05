@@ -8,6 +8,7 @@ use lz4_flex::compress_prepend_size;
 use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
 use std::cell::RefCell;
+use std::cmp::Ordering;
 
 thread_local! {
     pub(crate) static DEBUG_LINES: RefCell<Vec<Vec<Point2d>>> = RefCell::default();
@@ -28,6 +29,8 @@ pub struct Simulation {
     frozen_vehs: Vec<VehicleId>,
     /// The current frame of simulation.
     frame: usize,
+    /// The next sequence number.
+    seq: usize,
 }
 
 impl Simulation {
@@ -55,9 +58,16 @@ impl Simulation {
     }
 
     /// Specifies that two links may converge or cross.
-    pub fn add_link_convergance(&mut self, a: LinkId, b: LinkId) {
-        if let [Some(a), Some(b)] = [a, b].map(|i| self.links.get(i)) {
-            self.conflicts.extend(ConflictPoint::new(a, b));
+    /// The `priority` parameters indicates the whether the first link
+    /// has greater, equal, or lesser priority than the second.
+    pub fn add_link_convergance(&mut self, a: LinkId, b: LinkId, priority: Ordering) {
+        if let Some([a, b]) = self.links.get_disjoint_mut([a, b]) {
+            if let Some(conflict_point) = ConflictPoint::new(a, b, priority) {
+                for (link_id, link_conflict) in conflict_point.link_conflicts() {
+                    self.links[link_id].add_conflict(link_conflict);
+                }
+                self.conflicts.push(conflict_point);
+            }
         }
     }
 
@@ -181,7 +191,7 @@ impl Simulation {
     /// and allows vehicles to enter links.
     fn apply_stoplines(&mut self) {
         for (_, link) in &self.links {
-            link.apply_stoplines(&self.links, &mut self.vehicles, self.frame);
+            link.apply_stoplines(&self.links, &mut self.vehicles);
         }
     }
 
@@ -211,7 +221,7 @@ impl Simulation {
     /// then resets their accelerations.
     fn integrate(&mut self, dt: f64) {
         for (_, vehicle) in &mut self.vehicles {
-            vehicle.integrate(dt);
+            vehicle.integrate(dt, &mut self.seq);
         }
     }
 

@@ -85,8 +85,7 @@ impl ParametricCurve2d for QuadraticBezier2d {
             + 2.0 * t * self.points[2].to_vec()
     }
 
-    fn sample_dt2(&self, t: f64) -> Vector2d {
-        let t1 = 1.0 - t;
+    fn sample_dt2(&self, _t: f64) -> Vector2d {
         2.0 * self.points[0].to_vec() - 4.0 * self.points[1].to_vec()
             + 2.0 * self.points[2].to_vec()
     }

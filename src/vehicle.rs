@@ -31,9 +31,13 @@ pub struct Vehicle {
     route: Vec<LinkId>,
     /// The number of links on the route already "entered".
     entered: usize,
-    /// Whether the vehicle will enter the next link in the integration step.
+    /// Whether the vehicle has queued to enter the next link.
+    /// Contains a sequence number which helps determine vehicle priority.
+    queued: Option<usize>,
+    /// Whether the vehicle will queue into or enter the next unentered link on its route.
+    /// 0 = no change, 1 = enqueue, 2 = enter
     #[serde(skip)]
-    will_enter: Cell<bool>,
+    will_queue_or_enter: Cell<u8>,
     /// Whether the vehicle can exit at the end of its route.
     can_exit: bool,
     /// The in-progress lane change, if there is one.
@@ -71,11 +75,11 @@ pub struct LaneChange {
     pub offset: CubicFn,
 }
 
-/// The result of an `on_route` call.
+/// The result of an `get_route` call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OnRouteResult {
-    NotOnRoute,
+pub enum RouteState {
     NotEntered,
+    QueuedAt(usize),
     Entered,
 }
 
@@ -95,7 +99,8 @@ impl Vehicle {
             stop_cnt: 0,
             route: vec![],
             entered: 0,
-            will_enter: Cell::new(false),
+            queued: None,
+            will_queue_or_enter: Cell::new(0),
             can_exit: true,
             lane_change: None,
             world_pos: Point2d::new(0.0, 0.0),
@@ -175,25 +180,17 @@ impl Vehicle {
         self.vel < 0.1
     }
 
-    /// Gets the vehicle's route.
-    pub(crate) fn route(&self) -> &[LinkId] {
-        &self.route
-    }
-
-    /// Checks that the vehicle is on or entered the given link.
-    pub(crate) fn on_route(&self, idx: usize, link_id: LinkId) -> OnRouteResult {
-        let on_route = self.route.get(idx).copied() == Some(link_id);
-        let has_entered = self.has_entered(idx);
-        match (on_route, has_entered) {
-            (true, true) => OnRouteResult::Entered,
-            (true, false) => OnRouteResult::NotEntered,
-            (false, _) => OnRouteResult::NotOnRoute,
-        }
-    }
-
-    /// Checks whether the vehicle has entered the given link on its route.
-    pub(crate) fn has_entered(&self, idx: usize) -> bool {
-        self.entered > idx
+    /// Gets the status of a link on the vehicle's route.
+    pub(crate) fn get_route(&self, idx: usize) -> Option<(LinkId, RouteState)> {
+        self.route.get(idx).map(|link_id| {
+            use std::cmp::Ordering::*;
+            let state = match (self.entered.cmp(&idx), self.queued) {
+                (Greater, _) => RouteState::Entered,
+                (Equal, Some(f)) => RouteState::QueuedAt(f),
+                _ => RouteState::NotEntered,
+            };
+            (*link_id, state)
+        })
     }
 
     /// Determines whether the vehicle can comfortably stop before reaching `pos`.
@@ -207,9 +204,14 @@ impl Vehicle {
         self.acc.stopping_distance(self.vel)
     }
 
-    /// Enters the next unentered link on the vehicle's route.
+    /// Queues into the next unentered link on the vehicle's route.
+    pub(crate) fn queue_link(&self) {
+        self.will_queue_or_enter.set(1);
+    }
+
+    /// Queues into the next unentered link on the vehicle's route.
     pub(crate) fn enter_link(&self) {
-        self.will_enter.set(true);
+        self.will_queue_or_enter.set(2);
     }
 
     /// Applies an acceleration to the vehicle so it follows an obstacle.
@@ -311,13 +313,22 @@ impl Vehicle {
     /// Integrates the vehicle's velocity and position
     ///
     /// # Parameters
-    /// * `dt` - The time step in seconds
-    pub(crate) fn integrate(&mut self, dt: f64) {
-        // Update entered links count
-        if self.will_enter.get() {
-            self.entered += 1;
-            self.will_enter.set(false);
+    /// * `dt` - T he time step in seconds
+    pub(crate) fn integrate(&mut self, dt: f64, seq: &mut usize) {
+        // Enter/enqueue into next link
+        match self.will_queue_or_enter.get() {
+            0 => {}
+            1 => {
+                self.queued.get_or_insert(*seq);
+                *seq += 1;
+            }
+            2 => {
+                self.entered += 1;
+                self.queued = None;
+            }
+            _ => unreachable!(),
         }
+        self.will_queue_or_enter.set(0);
 
         // Perform the integration
         let vel = f64::max(self.vel + dt * self.acc.acc(), 0.0);

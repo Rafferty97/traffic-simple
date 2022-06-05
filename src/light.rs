@@ -105,7 +105,7 @@ impl TrafficLight {
             let next = match (movement.active, movement.state) {
                 (false, Green) => Amber,
                 (false, Amber) if movement.since >= movement.amber_time => Red,
-                (true, Red) if !self.can_turn_green(idx, dt) => Green,
+                (true, Red) if !self.can_turn_green(idx) => Green,
                 (_, state) => state,
             };
             movement.next_state.set(next);
@@ -155,7 +155,7 @@ impl TrafficLight {
     }
 
     /// Checks that a movement is not blocked by any other movements.
-    fn can_turn_green(&self, movement: usize, dt: f64) -> bool {
+    fn can_turn_green(&self, movement: usize) -> bool {
         self.conflicts
             .iter()
             .filter(|conflict| conflict.subject == movement)

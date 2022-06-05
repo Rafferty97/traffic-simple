@@ -1,6 +1,5 @@
 use super::ParametricCurve2d;
-use crate::{math::rot90, Interval};
-use cgmath::InnerSpace;
+use crate::Interval;
 
 pub struct ReversedCurve<C>
 where

@@ -180,7 +180,6 @@ impl ParametricCurve2d for LinkCurve {
 #[cfg(test)]
 mod test {
     use super::*;
-    use cgmath::prelude::*;
 
     #[test]
     fn curve_is_arclength_parameterised() {
