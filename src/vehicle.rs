@@ -180,6 +180,14 @@ impl Vehicle {
         self.vel < 0.1
     }
 
+    /// Calculates the time it would take the vehicle to reach the given `pos`
+    /// if it accelerates to the maximum speed at top acceleration.
+    pub fn min_reach_time(&self, pos: f64, max_vel: f64, rear: bool) -> f64 {
+        let dist = pos - (self.pos + if rear { self.half_len } else { -self.half_len });
+        let dist = f64::max(dist, 0.0);
+        self.acc.min_reach_time(self.vel, dist, max_vel)
+    }
+
     /// Gets the status of a link on the vehicle's route.
     pub(crate) fn get_route(&self, idx: usize) -> Option<(LinkId, RouteState)> {
         self.route.get(idx).map(|link_id| {

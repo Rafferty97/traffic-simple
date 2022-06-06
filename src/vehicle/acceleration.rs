@@ -49,6 +49,19 @@ impl AccelerationModel {
         self.acc.set(MAX_DECEL);
     }
 
+    /// Calculates the time it would take the vehicle to reach the given `pos`
+    /// if it maximally accelerated.
+    pub fn min_reach_time(&self, vel: f64, dist: f64, max_vel: f64) -> f64 {
+        let discr = 2.0 * self.max_acc * dist + vel.powi(2);
+        if discr < max_vel.powi(2) {
+            (discr.sqrt() - vel) / self.max_acc
+        } else {
+            let t = (max_vel - vel) / self.max_acc; // 5
+            let d = 0.5 * (vel + max_vel) * t;
+            t + (dist - d) / max_vel
+        }
+    }
+
     /// Calculates the acceleration needed to maintain the speed limit.
     /// # Arguments
     /// * `vel` - The velocity of the simulated vehicle (m/s).
@@ -121,5 +134,27 @@ impl AccelerationModel {
             let term = ss / net_dist;
             max_acc * (1. - (term * term))
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use assert_approx_eq::assert_approx_eq;
+
+    #[test]
+    fn min_reach_time() {
+        let acc = AccelerationModel::new(&ModelParams {
+            max_acceleration: 2.0,
+            comf_deceleration: 2.0,
+        });
+
+        assert_approx_eq!(acc.min_reach_time(0.0, 25.0, 50.0), 5.0);
+        assert_approx_eq!(acc.min_reach_time(0.0, 25.0, 10.0), 5.0);
+        assert_approx_eq!(acc.min_reach_time(0.0, 25.0, 9.0), 5.027777777777);
+
+        assert_approx_eq!(acc.min_reach_time(5.0, 50.0, 50.0), 5.0);
+        assert_approx_eq!(acc.min_reach_time(5.0, 50.0, 15.0), 5.0);
+        assert_approx_eq!(acc.min_reach_time(5.0, 50.0, 14.0), 5.01785714285);
     }
 }
