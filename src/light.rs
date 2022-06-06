@@ -18,7 +18,7 @@ pub struct TrafficLight {
 }
 
 /// A single traffic light movement.
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 struct Movement {
     /// The current state.
     state: LightState,
@@ -45,7 +45,7 @@ struct Conflict {
 }
 
 /// The state of a traffic light movement.
-#[derive(PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Clone, Copy, Serialize, Deserialize, Debug)]
 pub enum LightState {
     Red,
     Amber,
@@ -81,7 +81,7 @@ impl TrafficLight {
     }
 
     /// Adds a conflict between two movements to the traffic light.
-    pub fn add_conflit(&mut self, subject: usize, other: usize, wait: f64) {
+    pub fn add_conflict(&mut self, subject: usize, other: usize, wait: f64) {
         self.conflicts.push(Conflict {
             subject,
             other,
@@ -105,7 +105,8 @@ impl TrafficLight {
             let next = match (movement.active, movement.state) {
                 (false, Green) => Amber,
                 (false, Amber) if movement.since >= movement.amber_time => Red,
-                (true, Red) if !self.can_turn_green(idx) => Green,
+                (true, Amber) => Green,
+                (true, Red) if self.can_turn_green(idx) => Green,
                 (_, state) => state,
             };
             movement.next_state.set(next);
@@ -123,12 +124,13 @@ impl TrafficLight {
             return;
         }
 
-        let Phase { duration, .. } = self.phases[self.phase];
+        let Phase { duration, mask } = self.phases[self.phase];
         let phase_complete = self
             .movements
             .iter()
-            .filter(|m| m.active)
-            .all(|m| m.state == LightState::Green && m.since >= duration);
+            .enumerate()
+            .filter(|(index, _)| mask & (1 << index) != 0)
+            .all(|(_, m)| m.state == LightState::Green && m.since >= duration);
 
         if phase_complete {
             self.phase = (self.phase + 1) % self.phases.len();
