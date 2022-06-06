@@ -78,3 +78,9 @@ impl<T: Debug> Debug for Interval<T> {
         write!(f, "Interval({:?}, {:?})", &self.min, &self.max)
     }
 }
+
+pub fn rotated_range(count: usize, start: usize) -> impl Iterator<Item = usize> {
+    (0..count)
+        .map(move |i| i + start)
+        .map(move |i| if i >= count { i - count } else { i })
+}

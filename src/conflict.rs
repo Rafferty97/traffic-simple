@@ -3,7 +3,6 @@ use crate::math::project_point_onto_curve;
 use crate::{Link, LinkId, LinkSet, VehicleSet};
 use cgmath::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
 use std::ops::ControlFlow;
 
 const LINK_RADIUS: f64 = 1.8; // m
@@ -14,8 +13,6 @@ pub struct ConflictPoint {
     links: [ConflictPointLink; 2],
     /// Whether the links run in the same general direction.
     same_dir: bool,
-    /// The relative priority of the two links.
-    priority: i8,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -36,12 +33,10 @@ pub struct LinkConflict {
     pub min_pos: f64,
     /// The maximum `pos` on the other link conflicting with this one.
     pub max_pos: f64,
-    /// Whether the other link has priority over this one.
-    pub has_priority: bool,
 }
 
 impl ConflictPoint {
-    pub(crate) fn new(a: &Link, b: &Link, priority: Ordering) -> Option<Self> {
+    pub(crate) fn new(a: &Link, b: &Link) -> Option<Self> {
         let conflict_a = ConflictPointLink::new(a, b)?;
         let conflict_b = ConflictPointLink::new(b, a)?;
 
@@ -55,27 +50,21 @@ impl ConflictPoint {
         Some(Self {
             links: [conflict_a, conflict_b],
             same_dir,
-            priority: priority as i8,
         })
     }
 
     pub(crate) fn link_conflicts(&self) -> impl Iterator<Item = (LinkId, LinkConflict)> + '_ {
-        [(0, 1, self.priority), (1, 0, -self.priority)]
-            .into_iter()
-            .flat_map(|(i, j, priority)| {
-                (priority <= 0).then(|| {
-                    (
-                        self.links[i].link_id,
-                        LinkConflict {
-                            link_id: self.links[j].link_id,
-                            own_max_pos: self.links[i].max_pos,
-                            min_pos: self.links[j].min_pos,
-                            max_pos: self.links[j].max_pos,
-                            has_priority: priority < 0,
-                        },
-                    )
-                })
-            })
+        [(0, 1), (1, 0)].into_iter().map(|(i, j)| {
+            (
+                self.links[i].link_id,
+                LinkConflict {
+                    link_id: self.links[j].link_id,
+                    own_max_pos: self.links[i].max_pos,
+                    min_pos: self.links[j].min_pos,
+                    max_pos: self.links[j].max_pos,
+                },
+            )
+        })
     }
 
     pub(crate) fn apply_accelerations<'a>(&self, links: &LinkSet, vehicles: &'a VehicleSet) {
@@ -87,7 +76,7 @@ impl ConflictPoint {
                 return;
             }
         }
-        buffer.sort_by(|a, b| b.pos_stop().partial_cmp(&a.pos_stop()).unwrap());
+        buffer.sort_by(|a, b| b.pos_front().partial_cmp(&a.pos_front()).unwrap());
 
         buffer.windows(2).for_each(|vehs| {
             if let [leader, follower] = vehs {

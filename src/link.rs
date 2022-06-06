@@ -1,22 +1,25 @@
 use crate::conflict::LinkConflict;
 use crate::math::{ParametricCurve2d, Point2d, Vector2d};
 use crate::obstacle::Obstacle;
+use crate::util::rotated_range;
 use crate::vehicle::{RouteState, Vehicle};
 use crate::{LinkId, LinkSet, VehicleId, VehicleSet};
 pub use curve::{LinkCurve, LinkSample};
 use serde::{Deserialize, Serialize};
+use std::cell::Cell;
+use std::cmp::Ordering;
 use std::ops::ControlFlow;
 
 mod curve;
-
-/// The maximum vehicle length
-const MAX_VEHICLE_LEN: f64 = 8.0;
 
 /// The minimum lateral clearance for own vehicle to pass another, in m.
 const LATERAL_CLEARANCE: f64 = 0.5;
 
 /// The maximum lookahead for the car following model, in s.
 const MAX_LOOKAHEAD: f64 = 5.0;
+
+/// The buffer between reach times for gap acceptance, in s.
+const GAP_BUFFER: f64 = 0.5;
 
 /// A link represents a single lane of traffic.
 #[derive(Clone, Serialize, Deserialize)]
@@ -35,6 +38,8 @@ pub struct Link {
     links_adj: Vec<AdjacentLink>,
     /// The links that conflict with this one.
     conflicts: Vec<LinkConflict>,
+    /// The index of the last conflict with an insufficient gap; an optimisation.
+    last_conflict: Cell<usize>,
     /// Speed limit in m/s.
     speed_limit: f64,
     /// The vehicles on the link.
@@ -65,6 +70,8 @@ pub enum TrafficControl {
         distance: f64,
         /// Whether a vehicle needs to come to a stop before entering.
         must_stop: bool,
+        /// The relative priority of the movement.
+        priority: i8,
     },
     /// Traffic cannot enter, e.g. red light.
     Closed,
@@ -100,6 +107,7 @@ impl Link {
             links_out: vec![],
             links_adj: vec![],
             conflicts: vec![],
+            last_conflict: Cell::new(0),
             speed_limit: attribs.speed_limit,
             vehicles: vec![],
             control: TrafficControl::Open,
@@ -207,7 +215,7 @@ impl Link {
                 Some((link_id, state)) => match links[link_id].control {
                     TrafficControl::Open => {
                         // Enter the link if it can, otherwise stop processing
-                        if !vehicle.can_stop(-0.5 * MAX_VEHICLE_LEN) {
+                        if !vehicle.can_stop(-5.0) {
                             vehicle.enter_link();
                             ControlFlow::Continue(())
                         } else {
@@ -217,6 +225,7 @@ impl Link {
                     TrafficControl::Yield {
                         distance,
                         must_stop,
+                        priority,
                     } => match state {
                         RouteState::NotEntered => {
                             // Enqueue the vehicle if it can, and stop before the line
@@ -230,7 +239,13 @@ impl Link {
                         }
                         RouteState::QueuedAt(frame) => {
                             // Enter the link if it can, otherwise stop before the line
-                            if links[link_id].can_enter(links, vehicles, &vehicle, frame) {
+                            if links[link_id].can_enter(
+                                links,
+                                vehicles,
+                                &vehicle.offset(self.length()),
+                                frame,
+                                priority,
+                            ) {
                                 vehicle.enter_link();
                                 ControlFlow::Continue(())
                             } else {
@@ -261,57 +276,83 @@ impl Link {
         vehicles: &VehicleSet,
         vehicle: &RelativeVehicle,
         queued_at: usize,
+        priority: i8,
     ) -> bool {
-        // TODO: Optimisation
-        // TODO: Equal priority intersections
-        self.conflicts.iter().all(|conflict| {
-            let time = 3.0; // todo
-            let route = (0, conflict.link_id);
-            let queued_at = (!conflict.has_priority).then(|| queued_at);
-            links[conflict.link_id].check_gap(
+        for idx in rotated_range(self.conflicts.len(), self.last_conflict.get()) {
+            let conflict = &self.conflicts[idx];
+            let link = &links[conflict.link_id];
+            let queued_at = match link.control {
+                TrafficControl::Open => None,
+                TrafficControl::Yield { priority: p2, .. } => match priority.cmp(&p2) {
+                    Ordering::Less => None,
+                    Ordering::Equal => Some(queued_at),
+                    Ordering::Greater => Some(0),
+                },
+                TrafficControl::Closed => Some(0),
+            };
+            let max_pos = conflict.own_max_pos;
+            let has_gap = link.check_gap(
                 links,
                 vehicles,
-                conflict.min_pos,
-                time,
-                route,
+                [conflict.min_pos, conflict.max_pos],
+                vehicle.min_reach_time(max_pos, self.speed_limit) + GAP_BUFFER,
                 queued_at,
-            )
-        })
+                (0, conflict.link_id),
+                0.0,
+            );
+            if !has_gap {
+                self.last_conflict.set(idx);
+                return false;
+            }
+        }
+        true
     }
 
     /// Checks whether there is sufficient gap on this link.
+    #[allow(clippy::too_many_arguments)]
     fn check_gap(
         &self,
         links: &LinkSet,
         vehicles: &VehicleSet,
-        pos: f64,
+        pos: [f64; 2],
         time: f64,
-        route: (usize, LinkId),
         queued_at: Option<usize>,
+        route: (usize, LinkId),
+        max_vel: f64,
     ) -> bool {
-        // TODO: Skip vehicle's beyond `max_pos`
+        let max_vel = f64::max(max_vel, self.speed_limit);
 
-        for vehicle in self.vehicles.iter().map(|id| &vehicles[*id]).rev() {
+        let vehs_on_link = self
+            .vehicles
+            .iter()
+            .map(|id| &vehicles[*id])
+            .rev()
+            .skip_while(|veh| veh.pos_rear() > pos[1]);
+
+        for vehicle in vehs_on_link {
             // Check vehicle's route and priority
             match (vehicle.get_route(route.0), queued_at) {
                 // On another route
                 (None, _) => continue,
                 (Some((link_id, _)), _) if link_id != route.1 => continue,
-                // Own vehicle entered first and links have equal priority
+                // Vehicle has lower priority and hasn't entered the intersection yet
                 (Some((_, RouteState::NotEntered)), Some(_)) => return true,
                 (Some((_, RouteState::QueuedAt(a))), Some(b)) if a > b => return true,
-                // The other vehicle has priority, so check the gap
-                _ => return vehicle.pos_front() < pos - 40.0, // todo
+                // Otherwise, check if there is a sufficient gap
+                _ => return vehicle.min_reach_time(pos[0], max_vel) > time,
             }
         }
 
-        // TODO: Test whether to recurse or not
-        let route = (route.0 + 1, route.1);
-        self.links_in.iter().all(|link_id| {
-            let link = &links[*link_id];
-            let pos = pos + link.length();
-            link.check_gap(links, vehicles, pos, time, route, queued_at)
-        })
+        if pos[0] / max_vel > time {
+            true
+        } else {
+            let route = (route.0 + 1, route.1);
+            self.links_in.iter().all(|link_id| {
+                let link = &links[*link_id];
+                let pos = pos.map(|p| p + link.length());
+                link.check_gap(links, vehicles, pos, time, queued_at, route, max_vel)
+            })
+        }
     }
 
     /// Applies the car following model and the link's speed limit to vehicles on this link and preceeding links.
@@ -439,7 +480,11 @@ impl Link {
                 None => continue,
                 Some((link_id, _)) if link_id != route.1 => continue,
                 Some((_, RouteState::Entered)) => {}
-                Some((_, _)) => return,
+                Some((_, _)) => {
+                    if pos > self.length() {
+                        return;
+                    }
+                }
             }
             let result = (*func)(RelativeVehicle {
                 vehicle,
@@ -473,17 +518,20 @@ pub(crate) struct RelativeVehicle<'a> {
 }
 
 impl<'a> RelativeVehicle<'a> {
+    pub fn offset(&self, offset: f64) -> RelativeVehicle {
+        Self {
+            vehicle: self.vehicle,
+            pos: self.pos + offset,
+            route_idx: self.route_idx + 1,
+        }
+    }
+
     pub fn pos_front(&self) -> f64 {
         self.vehicle.pos_front() - self.pos
     }
 
     pub fn pos_rear(&self) -> f64 {
         self.vehicle.pos_rear() - self.pos
-    }
-
-    /// The minimum stopping position of the front of the vehicle.
-    pub fn pos_stop(&self) -> f64 {
-        self.pos_front() + self.vehicle.stopping_distance()
     }
 
     pub fn can_stop(&self, pos: f64) -> bool {
@@ -500,6 +548,10 @@ impl<'a> RelativeVehicle<'a> {
 
     pub fn rear_coords(&self) -> [Point2d; 2] {
         self.vehicle.rear_coords()
+    }
+
+    pub fn min_reach_time(&self, pos: f64, max_vel: f64) -> f64 {
+        self.vehicle.min_reach_time(self.pos + pos, max_vel)
     }
 
     pub fn apply_speed_limit(&self, speed_limit: f64, pos: f64) {

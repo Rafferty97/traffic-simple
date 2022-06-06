@@ -182,9 +182,8 @@ impl Vehicle {
 
     /// Calculates the time it would take the vehicle to reach the given `pos`
     /// if it accelerates to the maximum speed at top acceleration.
-    pub fn min_reach_time(&self, pos: f64, max_vel: f64, rear: bool) -> f64 {
-        let dist = pos - (self.pos + if rear { self.half_len } else { -self.half_len });
-        let dist = f64::max(dist, 0.0);
+    pub fn min_reach_time(&self, pos: f64, max_vel: f64) -> f64 {
+        let dist = f64::max(pos - self.pos, 0.0);
         self.acc.min_reach_time(self.vel, dist, max_vel)
     }
 
@@ -204,7 +203,7 @@ impl Vehicle {
     /// Determines whether the vehicle can comfortably stop before reaching `pos`.
     pub(crate) fn can_stop(&self, pos: f64) -> bool {
         let net_dist = pos - self.pos_front();
-        net_dist >= self.acc.stopping_distance(self.vel)
+        net_dist >= self.stopping_distance()
     }
 
     /// Determines the comfortable stopping distance of the vehicle.
@@ -327,8 +326,8 @@ impl Vehicle {
         match self.will_queue_or_enter.get() {
             0 => {}
             1 => {
-                self.queued.get_or_insert(*seq);
                 *seq += 1;
+                self.queued.get_or_insert(*seq);
             }
             2 => {
                 self.entered += 1;
