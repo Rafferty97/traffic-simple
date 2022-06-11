@@ -1,4 +1,5 @@
 use self::acceleration::AccelerationModel;
+use self::dynamics::calc_direction;
 use crate::link::LinkSample;
 use crate::math::{project_local, rot90, CubicFn, Point2d, Vector2d};
 use crate::obstacle::Obstacle;
@@ -9,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 
 mod acceleration;
+mod dynamics;
 
 /// A simulated vehicle.
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -19,6 +21,8 @@ pub struct Vehicle {
     half_wid: f64,
     /// Half the vehicle's length in m.
     half_len: f64,
+    /// Distance from vehicle's centre to centre of wheel axle.
+    wheel_base: f64,
     /// The acceleration model
     acc: AccelerationModel,
     /// The longitudinal position along the current link, in m.
@@ -60,6 +64,8 @@ pub struct VehicleAttributes {
     pub width: f64,
     /// The vehicle length in m.
     pub length: f64,
+    /// Distance from vehicle's centre to centre of wheel axle.
+    pub wheel_base: f64,
     /// The maximum acceleration of the vehicle, in m/s^2.
     pub max_acc: f64,
     /// The comfortable deceleration of the vehicle, a negative number in m/s^2.
@@ -90,6 +96,7 @@ impl Vehicle {
             id,
             half_wid: 0.5 * attributes.width,
             half_len: 0.5 * attributes.length,
+            wheel_base: attributes.wheel_base,
             acc: AccelerationModel::new(&acceleration::ModelParams {
                 max_acceleration: attributes.max_acc,
                 comf_deceleration: attributes.comf_dec,
@@ -407,7 +414,7 @@ impl Vehicle {
     pub(crate) fn update_coords(&mut self, links: &LinkSet) {
         let curve = &links[self.route[0]].curve();
 
-        let (pos, dir, tan, lats) = match self.lane_change {
+        let (pos, _, tan, lats) = match self.lane_change {
             Some(lc) => {
                 let (offset, slope) = lc.offset.y_and_dy(self.pos);
                 let LinkSample { pos, dir, tan } = curve.sample(self.pos, offset, slope);
@@ -422,6 +429,8 @@ impl Vehicle {
             }
         };
 
+        // TODO: Initial direction
+        let dir = calc_direction(self.world_pos, self.world_dir, pos, self.wheel_base);
         self.world_pos = pos;
         self.world_dir = dir;
 
