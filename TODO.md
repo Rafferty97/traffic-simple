@@ -1,5 +1,4 @@
-- Reduce the number of links a vehicle has to be projected onto?
-- Give way and keep clear
-- Lane change decisions and routing?
-- Roundabouts!
-- Put sim on separate thread?
+- Slow down around corners
+- Lane changing AI
+- Documentation and refactoring
+- Better gap acceptance
