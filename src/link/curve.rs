@@ -16,8 +16,6 @@ pub struct LinkCurve {
 pub struct LinkSample {
     /// The vehicle position
     pub pos: Point2d,
-    /// The vehicle direction unit vector
-    pub dir: Vector2d,
     /// The tangent unit vector of the link.
     pub tan: Vector2d,
 }
@@ -71,29 +69,22 @@ impl LinkCurve {
     /// # Parameters
     /// * `pos` - The longitudinal position along the curve
     /// * `offset` - The lateral offset from the centre line
-    /// * `slope` - The derivative of `offset` with respect to `pos`.
-    pub fn sample(&self, pos: f64, offset: f64, slope: f64) -> LinkSample {
+    pub fn sample(&self, pos: f64, offset: f64) -> LinkSample {
         // Calculate centre point and its derivatives
         let (segment, t) = self.sample_internal(pos);
         let c = segment.sample(t);
         let c_dp = segment.sample_dt(t);
-        let c_dp2 = segment.sample_dt2(t);
 
-        // Calculate tangent unit vector and its derivative
-        let (t, t_dp) = normalize_with_derivative(c_dp, c_dp2);
+        // Calculate tangent unit vector
+        let t = c_dp.normalize();
 
-        // Rotate to get perpendicular unit vector and its derivative
-        let [p, p_dp] = [t, t_dp].map(rot90);
+        // Rotate to get perpendicular unit vector
+        let p = rot90(t);
 
-        // Calculate offset point and its derivative
+        // Calculate offset point
         let o = c + p * offset;
-        let o_dp = c_dp + p_dp * offset + p * slope;
 
-        LinkSample {
-            pos: o,
-            dir: o_dp.normalize(),
-            tan: t,
-        }
+        LinkSample { pos: o, tan: t }
     }
 
     /// The inverse of the `sample` function.
@@ -126,14 +117,9 @@ impl LinkCurve {
     /// * `pos` - The longitudinal position along the curve
     pub fn sample_centre(&self, pos: f64) -> LinkSample {
         let (segment, t) = self.sample_internal(pos);
-        let c = segment.sample(t);
-        let c_dp = segment.sample_dt(t);
-        let tan = c_dp.normalize();
-        LinkSample {
-            pos: c,
-            dir: tan,
-            tan,
-        }
+        let pos = segment.sample(t);
+        let tan = segment.sample_dt(t).normalize();
+        LinkSample { pos, tan }
     }
 
     /// Samples the curve and returns the position, as well as the

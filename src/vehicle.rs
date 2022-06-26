@@ -414,22 +414,27 @@ impl Vehicle {
     pub(crate) fn update_coords(&mut self, links: &LinkSet) {
         let curve = &links[self.route[0]].curve();
 
-        let (pos, _, tan, lats) = match self.lane_change {
+        let (pos, tan, lats) = match self.lane_change {
             Some(lc) => {
-                let (offset, slope) = lc.offset.y_and_dy(self.pos);
-                let LinkSample { pos, dir, tan } = curve.sample(self.pos, offset, slope);
-                let wid = self.half_wid + self.half_len * dir.perp_dot(tan).abs();
+                let offset = lc.offset.y(self.pos);
+                let LinkSample { pos, tan } = curve.sample(self.pos, offset);
+                let wid = self.half_wid;
                 let lats = [f64::min(-offset, 0.0) - wid, f64::max(-offset, 0.0) + wid];
-                (pos, dir, tan, lats)
+                (pos, tan, lats)
             }
             None => {
-                let LinkSample { pos, dir, tan } = curve.sample_centre(self.pos);
+                let LinkSample { pos, tan } = curve.sample_centre(self.pos);
                 let lats = [-self.half_wid, self.half_wid];
-                (pos, dir, tan, lats)
+                (pos, tan, lats)
             }
         };
 
-        // TODO: Initial direction
+        // Default `world_dir` to be tangent to the link
+        if self.world_dir == Vector2d::new(0.0, 0.0) {
+            self.world_pos = pos - tan;
+            self.world_dir = tan;
+        }
+
         let dir = calc_direction(self.world_pos, self.world_dir, pos, self.wheel_base);
         self.world_pos = pos;
         self.world_dir = dir;
