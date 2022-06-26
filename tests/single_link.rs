@@ -19,6 +19,7 @@ fn vehicle_drives_forward() {
             width: 2.0,
             max_acc: 2.0,
             comf_dec: 2.0,
+            wheel_base: 1.5,
         },
         link,
     );
