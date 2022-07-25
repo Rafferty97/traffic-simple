@@ -1,16 +1,19 @@
 use self::acceleration::AccelerationModel;
 use self::dynamics::calc_direction;
+use crate::group::{LinkProjection, Obstacle};
 use crate::link::LinkSample;
-use crate::math::{project_local, rot90, CubicFn, Point2d, Vector2d};
-use crate::obstacle::Obstacle;
+use crate::math::{rot90, CubicFn, Point2d, Vector2d};
 use crate::util::Interval;
-use crate::{LinkId, LinkSet, VehicleId};
+use crate::{Link, LinkId, LinkSet, VehicleId};
 use cgmath::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 
 mod acceleration;
 mod dynamics;
+
+/// The minimum lateral clearance for own vehicle to pass another, in m.
+const LATERAL_CLEARANCE: f64 = 0.5;
 
 /// A simulated vehicle.
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -50,11 +53,10 @@ pub struct Vehicle {
     world_pos: Point2d,
     /// A world space vector tangent to the vehicle's heading.
     world_dir: Vector2d,
+    /// The lateral extents used to compute the `rear_coords`.
+    rear_lats: Interval<f64>,
     /// The two end points of a line behind the vehicle used for car following.
     rear_coords: [Point2d; 2],
-    /// Tracks the vehicle's projection onto adjacent links, for performance.
-    #[serde(skip)]
-    min_segments: [Cell<u16>; 8],
 }
 
 /// The attributes of a simulated vehicle.
@@ -89,6 +91,11 @@ pub enum RouteState {
     Entered,
 }
 
+pub enum ObstaclePassResult {
+    Pass,
+    Follow { pos: f64, vel: f64 },
+}
+
 impl Vehicle {
     /// Creates a new vehicle.
     pub(crate) fn new(id: VehicleId, attributes: &VehicleAttributes) -> Self {
@@ -112,24 +119,14 @@ impl Vehicle {
             lane_change: None,
             world_pos: Point2d::new(0.0, 0.0),
             world_dir: Vector2d::new(0.0, 0.0),
+            rear_lats: Default::default(),
             rear_coords: [Point2d::new(0.0, 0.0); 2],
-            min_segments: Default::default(),
         }
     }
 
     /// Gets the vehicle's ID.
     pub fn id(&self) -> VehicleId {
         self.id
-    }
-
-    /// Half the vehicle's width in m.
-    pub(crate) fn half_width(&self) -> f64 {
-        self.half_wid
-    }
-
-    /// Half the vehicle's length in m.
-    pub(crate) fn half_length(&self) -> f64 {
-        self.half_len
     }
 
     /// The vehicle's width in m.
@@ -266,37 +263,8 @@ impl Vehicle {
         self.acc.emergency_stop();
     }
 
-    /// Gets the vehicle represented as an obstacle.
-    pub(crate) fn as_obstacle(&self, idx: usize, curve: &[(f64, Point2d, Vector2d)]) -> Obstacle {
-        // Find the closest segment to the obstacle
-        let segment_idx = curve
-            .iter()
-            .skip(self.min_segments[idx].get() as usize)
-            .position(|(_, pos, tan)| self.rear_coords.iter().any(|c| (c - pos).dot(*tan) <= 0.0))
-            .map(|i| i + self.min_segments[idx].get() as usize)
-            .unwrap_or(curve.len())
-            .saturating_sub(1);
-
-        // Record the new segment index
-        self.min_segments[idx].set(segment_idx as u16);
-
-        // Get the local coordinate system around the obstacle
-        let (pos, origin, tan) = unsafe {
-            // SAFETY: Use of `position` above guarantees the index is in bounds.
-            *curve.get_unchecked(segment_idx)
-        };
-
-        // Project the obstacle's rear coordinates
-        let proj = self
-            .rear_coords
-            .map(|coord| project_local(coord, origin, rot90(tan), tan));
-
-        // Create the obstacle
-        Obstacle {
-            pos: pos + f64::min(proj[0].y, proj[1].y),
-            lat: Interval::new(proj[0].x, proj[1].x),
-            vel: self.vel,
-        }
+    pub(crate) fn project(&self, projection: &LinkProjection) -> Obstacle {
+        projection.project(self.rear_coords, self.pos, self.rear_lats, self.vel)
     }
 
     /// Gets the vehicle's lateral offset from the centre line
@@ -306,17 +274,6 @@ impl Vehicle {
             .filter(|lc| lc.end_pos > pos)
             .map(|lc| lc.offset.y(pos))
             .unwrap_or(0.0)
-    }
-
-    /// Gets the lateral extents of the vehicle
-    /// for the purpose of applying a car-following model,
-    /// at the given longitudinal position along the current link.
-    pub(crate) fn lat_extent_at(&self, pos: f64) -> Interval<f64> {
-        let offset = self.offset_at(pos);
-        Interval::new(
-            f64::min(offset, 0.0) - self.half_width(),
-            f64::max(offset, 0.0) + self.half_width(),
-        )
     }
 
     /// Resets internal model states in preparation for a new step of the simulation.
@@ -384,7 +341,6 @@ impl Vehicle {
                     lc.offset = lc.offset.translate_x(length);
                     lc.end_pos -= length;
                 }
-                self.min_segments.fill(Cell::new(0));
                 return true;
             }
         }
@@ -399,7 +355,6 @@ impl Vehicle {
         self.pos = pos;
         self.lane_change = lane_change;
         self.can_exit = false;
-        self.min_segments.fill(Cell::new(0));
     }
 
     /// Sets the vehicle's route.
@@ -412,8 +367,10 @@ impl Vehicle {
 
     /// Updates the vehicle's world coordinates
     pub(crate) fn update_coords(&mut self, links: &LinkSet) {
-        let curve = &links[self.route[0]].curve();
+        let link = &links[self.route[0]];
+        let curve = link.curve();
 
+        // Sample the curve
         let (pos, tan, lats) = match self.lane_change {
             Some(lc) => {
                 let offset = lc.offset.y(self.pos);
@@ -435,12 +392,18 @@ impl Vehicle {
             self.world_dir = tan;
         }
 
+        // Compute the vehicle's heading
         let dir = calc_direction(self.world_pos, self.world_dir, pos, self.wheel_base);
         self.world_pos = pos;
         self.world_dir = dir;
 
+        // Compute the vehicle's rear coordinates
         let rear_mid = pos - self.half_len * tan;
         let perp = rot90(tan);
+        self.rear_lats = Interval {
+            min: lats[0],
+            max: lats[1],
+        };
         self.rear_coords = lats.map(|lat| rear_mid + lat * perp);
     }
 
@@ -448,6 +411,21 @@ impl Vehicle {
     pub(crate) fn activate_links(&self, links: &mut LinkSet) {
         for link_id in self.route.iter().take(self.entered) {
             links[*link_id].activate();
+        }
+    }
+
+    /// Determines whether the vehicle can pass the given obstacle.
+    pub(crate) fn can_pass(&self, obstacle: &Obstacle, link: &Link) -> ObstaclePassResult {
+        let offset = self.offset_at(obstacle.pos - self.half_len);
+        let distance = obstacle.lat.distance(offset);
+        if distance > self.half_wid + LATERAL_CLEARANCE {
+            ObstaclePassResult::Pass
+        } else {
+            // TODO: Better check and calcs
+            ObstaclePassResult::Follow {
+                pos: obstacle.pos,
+                vel: obstacle.vel,
+            }
         }
     }
 }

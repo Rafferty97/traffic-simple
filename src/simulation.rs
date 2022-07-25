@@ -48,14 +48,6 @@ impl Simulation {
         &self.links[id]
     }
 
-    /// Specifies that two links are adjacent to each other.
-    pub fn add_link_adjacency(&mut self, a: LinkId, b: LinkId) {
-        if let Some([a, b]) = self.links.get_disjoint_mut([a, b]) {
-            a.add_adjacent_link(b);
-            b.add_adjacent_link(a);
-        }
-    }
-
     /// Specifies that two links may converge or cross.
     pub fn add_link_convergance(&mut self, a: LinkId, b: LinkId) {
         if let Some([a, b]) = self.links.get_disjoint_mut([a, b]) {
@@ -66,11 +58,6 @@ impl Simulation {
                 self.conflicts.push(conflict_point);
             }
         }
-    }
-
-    /// Permits lane changes from one link to another.
-    pub fn permit_lanechange(&mut self, from: LinkId, to: LinkId) {
-        self.links[from].permit_lanechange(to);
     }
 
     /// Specifies that the end of the `from` link connects to the start of the `to` link.

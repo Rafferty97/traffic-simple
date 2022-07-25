@@ -3,9 +3,10 @@
 use std::fmt::Debug;
 
 use cgmath::num_traits::Float;
+use serde::{Deserialize, Serialize};
 
 /// An interval on the real number line.
-#[derive(Copy, Clone, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Interval<T> {
     pub min: T,
     pub max: T,
@@ -64,12 +65,29 @@ impl<T: Float> Interval<T> {
         T::max(other.min - self.max, self.min - other.max)
     }
 
+    /// Computes the distance between a point and the interval.
+    /// Will be negative if the point is within the interval.
+    pub fn distance(&self, other: T) -> T {
+        T::max(other - self.max, self.min - other)
+    }
+
     pub fn lerp(&self, t: T) -> T {
         self.min + t * (self.max - self.min)
     }
 
     pub fn inv_lerp(&self, value: T) -> T {
         (value - self.min) / (self.max - self.min)
+    }
+}
+
+impl<T: Float> std::ops::Add<T> for Interval<T> {
+    type Output = Interval<T>;
+
+    fn add(self, rhs: T) -> Self::Output {
+        Self {
+            min: self.min + rhs,
+            max: self.max + rhs,
+        }
     }
 }
 

@@ -1,19 +1,17 @@
 use crate::conflict::LinkConflict;
-use crate::math::{ParametricCurve2d, Point2d, Vector2d};
-use crate::obstacle::Obstacle;
+use crate::group::Obstacle;
+use crate::math::{ParametricCurve2d, Point2d};
 use crate::util::rotated_range;
-use crate::vehicle::{RouteState, Vehicle};
-use crate::{LinkId, LinkSet, VehicleId, VehicleSet};
+use crate::vehicle::{ObstaclePassResult, RouteState, Vehicle};
+use crate::{LinkGroup, LinkId, LinkSet, VehicleId, VehicleSet};
 pub use curve::{LinkCurve, LinkSample};
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::ops::ControlFlow;
+use std::rc::Rc;
 
 mod curve;
-
-/// The minimum lateral clearance for own vehicle to pass another, in m.
-const LATERAL_CLEARANCE: f64 = 0.5;
 
 /// The maximum lookahead for the car following model, in s.
 const MAX_LOOKAHEAD: f64 = 5.0;
@@ -26,16 +24,15 @@ const GAP_BUFFER: f64 = 0.5;
 pub struct Link {
     /// The link ID.
     id: LinkId,
+    /// The link group.
+    #[serde(skip)]
+    group: Option<Rc<LinkGroup>>,
     /// The geometry of the link.
     curve: LinkCurve,
-    /// An approximate geometry of the link used for projecting vehicles onto it.
-    approx_curve: Vec<(f64, Point2d, Vector2d)>,
     /// The links that precede this one.
     links_in: Vec<LinkId>,
     /// The links that succeed this one.
     links_out: Vec<LinkId>,
-    /// The links adjacent to this one.
-    links_adj: Vec<AdjacentLink>,
     /// The links that conflict with this one.
     conflicts: Vec<LinkConflict>,
     /// The index of the last conflict with an insufficient gap; an optimisation.
@@ -47,7 +44,6 @@ pub struct Link {
     /// The traffic control at the start of the link.
     control: TrafficControl,
     /// A flag indicating whether any vehicles are on/entering this link.
-    #[serde(skip)]
     active: bool,
 }
 
@@ -77,35 +73,16 @@ pub enum TrafficControl {
     Closed,
 }
 
-/// Information about a link which overlaps another link.
-#[derive(Clone, Serialize, Deserialize)]
-struct AdjacentLink {
-    /// The ID of the adjacent link
-    link_id: LinkId,
-    /// Whether a vehicle on this link can change lanes into the adjacent link
-    can_lanechange: bool,
-}
-
 impl Link {
     /// Creates a new link.
     pub(crate) fn new(id: LinkId, attribs: &LinkAttributes) -> Self {
         let curve = LinkCurve::new(&attribs.curve);
-        let approx_curve = (0..)
-            .map(|i| i as f64)
-            .take_while(|pos| *pos < curve.length())
-            .map(|pos| {
-                let s = curve.sample_centre(pos);
-                (pos, s.pos, s.tan)
-            })
-            .collect();
-
         Self {
             id,
             curve,
-            approx_curve,
+            group: None,
             links_in: vec![],
             links_out: vec![],
-            links_adj: vec![],
             conflicts: vec![],
             last_conflict: Cell::new(0),
             speed_limit: attribs.speed_limit,
@@ -140,30 +117,9 @@ impl Link {
         &self.links_out
     }
 
-    /// Gets the links that a vehicle on this link is allowed to change into.
-    pub fn valid_lanechanges(&self) -> impl Iterator<Item = LinkId> + '_ {
-        self.links_adj
-            .iter()
-            .filter(|adj| adj.can_lanechange)
-            .map(|adj| adj.link_id)
-    }
-
-    /// Adds an adjacent link.
-    pub(crate) fn add_adjacent_link(&mut self, link: &Link) {
-        self.links_adj.push(AdjacentLink {
-            link_id: link.id,
-            can_lanechange: false,
-        })
-    }
-
-    /// Permits lane changes to an adjacent link.
-    pub(crate) fn permit_lanechange(&mut self, link_id: LinkId) {
-        let adj = self
-            .links_adj
-            .iter_mut()
-            .find(|adj| adj.link_id == link_id)
-            .expect("Cannot permit lane change to non-adjacent link.");
-        adj.can_lanechange = true;
+    /// Gets the link group.
+    pub(crate) fn group(&self) -> Option<&LinkGroup> {
+        self.group.as_deref()
     }
 
     /// Adds a successor link.
@@ -384,14 +340,15 @@ impl Link {
         );
 
         // Apply accelerations to vehicles on adjacent links
-        for (link_idx, adj_link) in self.links_adj.iter().enumerate() {
-            let link = &links[adj_link.link_id];
-            let obstacles = self
-                .vehicles
-                .iter()
-                .rev()
-                .map(|id| vehicles[*id].as_obstacle(link_idx, &link.approx_curve));
-            link.follow_obstacles(links, vehicles, obstacles);
+        if let Some(group) = self.group.as_deref() {
+            for proj in group.projections(self.id) {
+                let obstacles = self
+                    .vehicles
+                    .iter()
+                    .rev()
+                    .map(|id| vehicles[*id].project(proj));
+                links[proj.link_id()].follow_obstacles(links, vehicles, obstacles);
+            }
         }
     }
 
@@ -404,6 +361,8 @@ impl Link {
         vehicles: &VehicleSet,
         obstacles: impl Iterator<Item = Obstacle>,
     ) {
+        use ObstaclePassResult::*;
+
         let mut skip = 0;
 
         for obstacle in obstacles {
@@ -421,12 +380,12 @@ impl Link {
             self.process_vehicles(
                 links,
                 vehicles,
-                &mut |veh| {
-                    if veh.can_pass(&obstacle) {
-                        return ControlFlow::Continue(());
+                &mut |veh| match veh.can_pass(&obstacle, self) {
+                    Pass => ControlFlow::Continue(()),
+                    Follow { pos, vel } => {
+                        veh.follow_vehicle(pos - obstacle.pos, vel);
+                        ControlFlow::Break(())
                     }
-                    veh.follow_vehicle(0.0, obstacle.vel);
-                    ControlFlow::Break(())
                 },
                 (0, self.id),
                 obstacle.pos,
@@ -578,19 +537,16 @@ impl<'a> RelativeVehicle<'a> {
         self.vehicle.queue_link();
     }
 
-    /// Determines whether the vehicle can pass the given obstacle.
-    pub fn can_pass(&self, obstacle: &Obstacle) -> bool {
-        let vehicle = self.vehicle;
-        let own_lat = vehicle.lat_extent_at(obstacle.pos - vehicle.half_length());
-        let clearance = own_lat.clearance_with(&obstacle.lat);
-        clearance >= LATERAL_CLEARANCE
-    }
-
     pub fn get_route(&self, idx: usize) -> Option<(LinkId, RouteState)> {
         self.vehicle.get_route(self.route_idx + idx)
     }
 
     pub fn link_id(&self, idx: usize) -> Option<LinkId> {
         self.get_route(idx).map(|(link_id, _)| link_id)
+    }
+
+    /// Determines whether the vehicle can pass the given obstacle.
+    pub fn can_pass(&self, obstacle: &Obstacle, link: &Link) -> ObstaclePassResult {
+        self.vehicle.can_pass(obstacle, link)
     }
 }

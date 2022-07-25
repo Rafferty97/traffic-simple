@@ -1,4 +1,5 @@
 pub use cgmath;
+pub use group::LinkGroup;
 pub use light::TrafficLight;
 pub use link::{Link, LinkAttributes, TrafficControl};
 pub use simulation::Simulation;
@@ -8,10 +9,10 @@ pub use util::Interval;
 pub use vehicle::{Vehicle, VehicleAttributes};
 
 mod conflict;
+mod group;
 mod light;
 mod link;
 pub mod math;
-mod obstacle;
 mod simulation;
 mod util;
 mod vehicle;
