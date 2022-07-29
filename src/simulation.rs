@@ -3,11 +3,12 @@ use crate::light::TrafficLight;
 use crate::link::{Link, LinkAttributes, TrafficControl};
 use crate::math::{CubicFn, Point2d};
 use crate::vehicle::{LaneChange, Vehicle, VehicleAttributes};
-use crate::{LinkId, LinkSet, TrafficLightId, VehicleId, VehicleSet};
+use crate::{LinkGroup, LinkId, LinkSet, TrafficLightId, VehicleId, VehicleSet};
 use lz4_flex::compress_prepend_size;
 use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 thread_local! {
     pub(crate) static DEBUG_LINES: RefCell<Vec<Vec<Point2d>>> = RefCell::default();
@@ -46,6 +47,19 @@ impl Simulation {
     /// Gets a link.
     pub fn get_link(&self, id: LinkId) -> &Link {
         &self.links[id]
+    }
+
+    /// Specifies that these vehicles on these links may
+    /// interact with vehicles on other links in the group.
+    pub fn add_link_group(&mut self, link_ids: &[LinkId]) {
+        let links = link_ids
+            .iter()
+            .map(|id| &self.links[*id])
+            .collect::<Vec<_>>();
+        let group = Rc::new(LinkGroup::new(&links));
+        for id in link_ids {
+            self.links[*id].set_group(group.clone());
+        }
     }
 
     /// Specifies that two links may converge or cross.

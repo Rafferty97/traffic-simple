@@ -117,11 +117,6 @@ impl Link {
         &self.links_out
     }
 
-    /// Gets the link group.
-    pub(crate) fn group(&self) -> Option<&LinkGroup> {
-        self.group.as_deref()
-    }
-
     /// Adds a successor link.
     pub(crate) fn add_link_out(&mut self, link_id: LinkId) {
         self.links_out.push(link_id);
@@ -130,6 +125,11 @@ impl Link {
     /// Adds a predecessor link.
     pub(crate) fn add_link_in(&mut self, link_id: LinkId) {
         self.links_in.push(link_id);
+    }
+
+    /// Sets the link group.
+    pub(crate) fn set_group(&mut self, group: Rc<LinkGroup>) {
+        self.group = Some(group);
     }
 
     /// Adds a conflicting link.

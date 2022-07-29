@@ -263,8 +263,14 @@ impl Vehicle {
         self.acc.emergency_stop();
     }
 
+    /// Projects the vehicle onto another link.
     pub(crate) fn project(&self, projection: &LinkProjection) -> Obstacle {
-        projection.project(self.rear_coords, self.pos, self.rear_lats, self.vel)
+        projection.project(
+            self.rear_coords,
+            self.pos - self.half_len,
+            self.rear_lats,
+            self.vel,
+        )
     }
 
     /// Gets the vehicle's lateral offset from the centre line

@@ -42,7 +42,7 @@ struct ProjectedSample {
 }
 
 impl LinkGroup {
-    pub fn new(links: &[Link]) -> Self {
+    pub fn new(links: &[&Link]) -> Self {
         let segment_len = 2.0;
 
         let projections = iproduct!(links, links)
@@ -57,7 +57,7 @@ impl LinkGroup {
                     .map(|pos| src.curve().sample_centre(pos).pos)
                     .scan(Some(0.0), |pos, point| {
                         *pos = project_point_onto_curve(dst.curve(), point, 0.1, *pos);
-                        Some((point, pos.unwrap()))
+                        pos.map(|pos| (point, pos))
                     })
                     .map(|(point, pos)| {
                         let s = dst.curve().sample_centre(pos);
@@ -133,9 +133,11 @@ impl LinkProjection {
             // SAFETY: Way index is generated guarantees it's within bounds
             self.samples.get_unchecked(idx)
         };
+        // Account for a negative `pos` value
+        let behind = f64::max(pos, 0.0);
         Obstacle {
             rear_coords,
-            pos: sample.pos,
+            pos: sample.pos + behind,
             lat: lat + sample.lat,
             vel,
         }
