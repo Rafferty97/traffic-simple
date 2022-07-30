@@ -43,6 +43,10 @@ struct ProjectedSample {
 
 impl LinkGroup {
     pub fn new(links: &[&Link]) -> Self {
+        if links.len() < 2 {
+            panic!("Link group must contain atleast two links");
+        }
+
         let segment_len = 2.0;
 
         let projections = iproduct!(links, links)
