@@ -1,18 +1,14 @@
 use crate::conflict::ConflictPoint;
+use crate::debug::take_debug_frame;
 use crate::light::TrafficLight;
 use crate::link::{Link, LinkAttributes, TrafficControl};
-use crate::math::{CubicFn, Point2d};
+use crate::math::CubicFn;
 use crate::vehicle::{LaneChange, Vehicle, VehicleAttributes};
 use crate::{LinkGroup, LinkId, LinkSet, TrafficLightId, VehicleId, VehicleSet};
 use lz4_flex::compress_prepend_size;
 use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
-use std::cell::RefCell;
 use std::rc::Rc;
-
-thread_local! {
-    pub(crate) static DEBUG_LINES: RefCell<Vec<Vec<Point2d>>> = RefCell::default();
-}
 
 /// A traffic simulation.
 #[derive(Default, Clone, Serialize, Deserialize)]
@@ -31,6 +27,8 @@ pub struct Simulation {
     frame: usize,
     /// The next sequence number.
     seq: usize,
+    /// Debugging information from the previously simulated frame.
+    debug: serde_json::Value,
 }
 
 impl Simulation {
@@ -123,6 +121,7 @@ impl Simulation {
         self.integrate(dt);
         self.advance_vehicles();
         self.update_vehicle_coords();
+        self.take_debug_frame();
         self.frame += 1;
     }
 
@@ -133,6 +132,7 @@ impl Simulation {
         self.integrate(dt);
         self.advance_vehicles();
         self.update_vehicle_coords();
+        self.take_debug_frame();
         self.frame += 1;
     }
 
@@ -159,6 +159,16 @@ impl Simulation {
     /// Gets a reference to the link with the given ID.
     pub fn set_link_control(&mut self, link_id: LinkId, control: TrafficControl) {
         self.links[link_id].set_control(control);
+    }
+
+    /// Takes the debugging information from the global buffer.
+    fn take_debug_frame(&mut self) {
+        self.debug = take_debug_frame();
+    }
+
+    /// Gets the debugging information for the previously simulated frame.
+    pub fn debug(&mut self) -> serde_json::Value {
+        self.debug.take()
     }
 
     /// Updates the traffic lights.
@@ -291,14 +301,6 @@ impl Simulation {
 
     pub fn set_vehicle_route(&mut self, vehicle_id: VehicleId, route: &[LinkId]) {
         self.vehicles[vehicle_id].set_route(route, true);
-    }
-
-    pub fn debug_lines(mut f: impl FnMut(&[Point2d])) {
-        DEBUG_LINES.with(|lines| {
-            for line in lines.borrow().iter() {
-                f(&line[..]);
-            }
-        });
     }
 
     pub fn encode(&self) -> Vec<u8> {

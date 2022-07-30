@@ -9,6 +9,7 @@ pub use util::Interval;
 pub use vehicle::{Vehicle, VehicleAttributes};
 
 mod conflict;
+mod debug;
 mod group;
 mod light;
 mod link;

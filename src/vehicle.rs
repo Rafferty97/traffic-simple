@@ -1,8 +1,9 @@
 use self::acceleration::AccelerationModel;
 use self::dynamics::calc_direction;
+use crate::debug::debug_line;
 use crate::group::{LinkProjection, Obstacle};
 use crate::link::LinkSample;
-use crate::math::{rot90, CubicFn, Point2d, Vector2d};
+use crate::math::{project_local, rot90, CubicFn, Point2d, Vector2d};
 use crate::util::Interval;
 use crate::{Link, LinkId, LinkSet, VehicleId};
 use cgmath::prelude::*;
@@ -411,6 +412,7 @@ impl Vehicle {
             max: lats[1],
         };
         self.rear_coords = lats.map(|lat| rear_mid + lat * perp);
+        // debug_line("rear coords", self.rear_coords[0], self.rear_coords[1]);
     }
 
     /// Sets the `active` flag for the links this vehicle has entered (including the one its currently on).
@@ -421,13 +423,45 @@ impl Vehicle {
     }
 
     /// Determines whether the vehicle can pass the given obstacle.
-    pub(crate) fn can_pass(&self, obstacle: &Obstacle, link: &Link) -> ObstaclePassResult {
-        let offset = self.offset_at(obstacle.pos - self.half_len);
-        let distance = obstacle.lat.distance(offset);
-        if distance > self.half_wid + LATERAL_CLEARANCE {
+    pub(crate) fn can_pass(&self, mut obstacle: Obstacle, link: &Link) -> ObstaclePassResult {
+        let is_clear = |obstacle: Obstacle| {
+            let offset = self.offset_at(obstacle.pos - self.half_len);
+            let distance = obstacle.lat.distance(offset);
+            distance > self.half_wid + LATERAL_CLEARANCE
+        };
+
+        if is_clear(obstacle) {
+            // let p = link.curve().sample_centre(obstacle.pos);
+            // let l = obstacle.lat;
+            // debug_line("pass", p.offset(l.min), p.offset(l.max));
+            return ObstaclePassResult::Pass;
+        }
+
+        loop {
+            let sample = link.curve().sample_centre(obstacle.pos);
+            let ps = obstacle
+                .rear_coords
+                .map(|p| project_local(p, sample.pos, rot90(sample.tan), sample.tan));
+            let delta_pos = f64::min(ps[0].y, ps[1].y);
+            obstacle.pos += delta_pos;
+            if delta_pos < 0.1 {
+                obstacle.lat = Interval {
+                    min: ps[0].x,
+                    max: ps[1].x,
+                };
+                break;
+            }
+        }
+
+        if is_clear(obstacle) {
+            // let p = link.curve().sample_centre(obstacle.pos);
+            // let l = obstacle.lat;
+            // debug_line("pass adjust", p.offset(l.min), p.offset(l.max));
             ObstaclePassResult::Pass
         } else {
-            // TODO: Better check and calcs
+            // let p = link.curve().sample_centre(obstacle.pos);
+            // let l = obstacle.lat;
+            // debug_line("follow", p.offset(l.min), p.offset(l.max));
             ObstaclePassResult::Follow {
                 pos: obstacle.pos,
                 vel: obstacle.vel,

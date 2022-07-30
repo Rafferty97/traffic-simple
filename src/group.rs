@@ -138,7 +138,7 @@ impl LinkProjection {
             self.samples.get_unchecked(idx)
         };
         // Account for a negative `pos` value
-        let behind = f64::max(pos, 0.0);
+        let behind = f64::min(pos, 0.0);
         Obstacle {
             rear_coords,
             pos: sample.pos + behind,

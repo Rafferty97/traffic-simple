@@ -163,6 +163,12 @@ impl ParametricCurve2d for LinkCurve {
     }
 }
 
+impl LinkSample {
+    pub fn offset(&self, lat: f64) -> Point2d {
+        self.pos + rot90(self.tan) * lat
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;

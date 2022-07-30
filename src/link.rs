@@ -1,4 +1,5 @@
 use crate::conflict::LinkConflict;
+use crate::debug::debug_line;
 use crate::group::Obstacle;
 use crate::math::{ParametricCurve2d, Point2d};
 use crate::util::rotated_range;
@@ -347,6 +348,11 @@ impl Link {
                     .iter()
                     .rev()
                     .map(|id| vehicles[*id].project(proj));
+                // for obstacle in obstacles.clone() {
+                //     let p = links[proj.link_id()].curve().sample_centre(obstacle.pos);
+                //     let l = obstacle.lat;
+                //     debug_line("projected", p.offset(l.min), p.offset(l.max));
+                // }
                 links[proj.link_id()].follow_obstacles(links, vehicles, obstacles);
             }
         }
@@ -380,7 +386,7 @@ impl Link {
             self.process_vehicles(
                 links,
                 vehicles,
-                &mut |veh| match veh.can_pass(&obstacle, self) {
+                &mut |veh| match veh.can_pass(obstacle, self) {
                     Pass => ControlFlow::Continue(()),
                     Follow { pos, vel } => {
                         veh.follow_vehicle(pos - obstacle.pos, vel);
@@ -546,7 +552,7 @@ impl<'a> RelativeVehicle<'a> {
     }
 
     /// Determines whether the vehicle can pass the given obstacle.
-    pub fn can_pass(&self, obstacle: &Obstacle, link: &Link) -> ObstaclePassResult {
+    pub fn can_pass(&self, obstacle: Obstacle, link: &Link) -> ObstaclePassResult {
         self.vehicle.can_pass(obstacle, link)
     }
 }
