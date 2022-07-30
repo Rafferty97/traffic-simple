@@ -1,4 +1,3 @@
-- Slow down around corners
 - Lane changing AI
 - Documentation and refactoring
 - Better gap acceptance

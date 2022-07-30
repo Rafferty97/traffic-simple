@@ -1,7 +1,10 @@
 [package]
 name = "traffic-sim"
 version = "0.1.0"
+authors = ["Alexander Rafferty <hello@alexanderrafferty.com>"]
 edition = "2021"
+description = "A simple traffic simulation package focussed on performance and realism."
+license = "GPL-3.0-or-later"
 
 [dependencies]
 slotmap = { version = "1.0.6", features = ["serde"] }
