@@ -5,6 +5,7 @@ authors = ["Alexander Rafferty <hello@alexanderrafferty.com>"]
 edition = "2021"
 description = "A simple traffic simulation package focussed on performance and realism."
 license = "GPL-3.0-or-later"
+repository = "https://github.com/Rafferty97/traffic-simple"
 
 [dependencies]
 slotmap = { version = "1.0.6", features = ["serde"] }

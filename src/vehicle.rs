@@ -1,6 +1,5 @@
 use self::acceleration::AccelerationModel;
 use self::dynamics::calc_direction;
-use crate::debug::debug_line;
 use crate::group::{LinkProjection, Obstacle};
 use crate::link::LinkSample;
 use crate::math::{project_local, rot90, CubicFn, Point2d, Vector2d};

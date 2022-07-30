@@ -8,6 +8,7 @@ thread_local!(
     static DEBUG_FRAME: RefCell<Vec<serde_json::Value>> = Default::default();
 );
 
+#[allow(unused)]
 pub fn debug_line(name: &str, p1: Point2d, p2: Point2d) {
     DEBUG_FRAME.with(|frame| {
         frame.borrow_mut().push(json!({

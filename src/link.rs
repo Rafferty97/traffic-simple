@@ -1,5 +1,4 @@
 use crate::conflict::LinkConflict;
-use crate::debug::debug_line;
 use crate::group::Obstacle;
 use crate::math::{ParametricCurve2d, Point2d};
 use crate::util::rotated_range;
