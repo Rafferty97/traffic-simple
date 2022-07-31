@@ -6,6 +6,7 @@ use crate::vehicle::{ObstaclePassResult, RouteState, Vehicle};
 use crate::{LinkGroup, LinkId, LinkSet, VehicleId, VehicleSet};
 pub use curve::{LinkCurve, LinkSample};
 use serde::{Deserialize, Serialize};
+use smallvec::{smallvec, SmallVec};
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::ops::ControlFlow;
@@ -30,9 +31,11 @@ pub struct Link {
     /// The geometry of the link.
     curve: LinkCurve,
     /// The links that precede this one.
-    links_in: Vec<LinkId>,
+    links_in: SmallVec<[LinkId; 4]>,
     /// The links that succeed this one.
-    links_out: Vec<LinkId>,
+    links_out: SmallVec<[LinkId; 4]>,
+    /// The links that are adjacent to this one.
+    links_adjacent: SmallVec<[LinkId; 2]>,
     /// The links that conflict with this one.
     conflicts: Vec<LinkConflict>,
     /// The index of the last conflict with an insufficient gap; an optimisation.
@@ -81,8 +84,9 @@ impl Link {
             id,
             curve,
             group: None,
-            links_in: vec![],
-            links_out: vec![],
+            links_in: smallvec![],
+            links_out: smallvec![],
+            links_adjacent: smallvec![],
             conflicts: vec![],
             last_conflict: Cell::new(0),
             speed_limit: attribs.speed_limit,
@@ -107,14 +111,19 @@ impl Link {
         &self.curve
     }
 
-    /// Gets the links the precede this link.
+    /// Gets the links the precede this link, which vehicles may enter from.
     pub fn links_in(&self) -> &[LinkId] {
         &self.links_in
     }
 
-    /// Gets the links the succeed this link.
+    /// Gets the links the succeed this link, which vehicles may exit to.
     pub fn links_out(&self) -> &[LinkId] {
         &self.links_out
+    }
+
+    /// Gets the links that a vehicle on this link may change lanes to.
+    pub fn links_adjacent(&self) -> &[LinkId] {
+        &self.links_adjacent
     }
 
     /// Adds a successor link.
@@ -125,6 +134,11 @@ impl Link {
     /// Adds a predecessor link.
     pub(crate) fn add_link_in(&mut self, link_id: LinkId) {
         self.links_in.push(link_id);
+    }
+
+    /// Adds an adjacent link.
+    pub(crate) fn add_lane_change(&mut self, link_id: LinkId) {
+        self.links_adjacent.push(link_id);
     }
 
     /// Sets the link group.

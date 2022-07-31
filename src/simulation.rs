@@ -54,6 +54,12 @@ impl Simulation {
         }
     }
 
+    /// Permits vehicles to lane change from the `from` link to the `to` link.
+    /// Both links must belong to the same [LinkGroup].
+    pub fn add_lane_change(&mut self, from: LinkId, to: LinkId) {
+        self.links[from].add_lane_change(to);
+    }
+
     /// Specifies that two links may converge or cross.
     pub fn add_link_convergance(&mut self, a: LinkId, b: LinkId) {
         if let Some([a, b]) = self.links.get_disjoint_mut([a, b]) {
