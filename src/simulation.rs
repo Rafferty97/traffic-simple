@@ -5,7 +5,6 @@ use crate::link::{Link, LinkAttributes, TrafficControl};
 use crate::math::CubicFn;
 use crate::vehicle::{LaneChange, Vehicle, VehicleAttributes};
 use crate::{LinkGroup, LinkId, LinkSet, TrafficLightId, VehicleId, VehicleSet};
-use lz4_flex::compress_prepend_size;
 use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
 use std::rc::Rc;
@@ -40,11 +39,6 @@ impl Simulation {
     /// Adds a link to the network.
     pub fn add_link(&mut self, attributes: &LinkAttributes) -> LinkId {
         self.links.insert_with_key(|id| Link::new(id, attributes))
-    }
-
-    /// Gets a link.
-    pub fn get_link(&self, id: LinkId) -> &Link {
-        &self.links[id]
     }
 
     /// Specifies that these vehicles on these links may
@@ -95,12 +89,9 @@ impl Simulation {
         vehicle_id
     }
 
-    /// Freezes or unfreezes a vehicle.
-    pub fn get_vehicle_frozen(&mut self, vehicle_id: VehicleId) -> bool {
-        self.frozen_vehs.iter().any(|id| *id == vehicle_id)
-    }
-
-    /// Freezes or unfreezes a vehicle.
+    /// Sets the `frozen` attribute of a vehicle. When a vehicle is frozen,
+    /// it will maximally decelerate until its velocity is zero and remain stopped
+    /// until it is no longer frozen.
     pub fn set_vehicle_frozen(&mut self, vehicle_id: VehicleId, frozen: bool) {
         let idx = self.frozen_vehs.iter().position(|id| *id == vehicle_id);
         match (frozen, idx) {
@@ -114,7 +105,14 @@ impl Simulation {
         }
     }
 
+    /// Gets the `frozen` attribute of a vehicle. [Read more](Self::set_vehicle_frozen).
+    pub fn get_vehicle_frozen(&mut self, vehicle_id: VehicleId) -> bool {
+        self.frozen_vehs.iter().any(|id| *id == vehicle_id)
+    }
+
     /// Advances the simulation by `dt` seconds.
+    ///
+    /// For a realistic simulation, do not use a time step greater than around 0.2.
     pub fn step(&mut self, dt: f64) {
         self.update_lights(dt);
         self.apply_accelerations();
@@ -125,8 +123,12 @@ impl Simulation {
         self.frame += 1;
     }
 
-    /// Advances the simulation by `dt` seconds,
-    /// but only integrates vehicles positions.
+    /// Advances the simulation by `dt` seconds, but only integrates vehicles positions,
+    /// and doesn't recalculate more expensive aspects of the simulation.
+    ///
+    /// Use this to achieve better performance while retaining a smooth animation frame rate,
+    /// though beware that simulating too many consecutive frames with this method will result
+    /// in a noticeable degradation in simulation quality and realism.
     pub fn step_fast(&mut self, dt: f64) {
         self.update_lights(dt);
         self.integrate(dt);
@@ -157,18 +159,23 @@ impl Simulation {
     }
 
     /// Gets a reference to the link with the given ID.
+    pub fn get_link(&self, link_id: LinkId) -> &Link {
+        &self.links[link_id]
+    }
+
+    /// Sets the [TrafficControl] at the start of the given link.
     pub fn set_link_control(&mut self, link_id: LinkId, control: TrafficControl) {
         self.links[link_id].set_control(control);
+    }
+
+    /// Gets the debugging information for the previously simulated frame as JSON array.
+    pub fn debug(&mut self) -> serde_json::Value {
+        self.debug.take()
     }
 
     /// Takes the debugging information from the global buffer.
     fn take_debug_frame(&mut self) {
         self.debug = take_debug_frame();
-    }
-
-    /// Gets the debugging information for the previously simulated frame.
-    pub fn debug(&mut self) -> serde_json::Value {
-        self.debug.take()
     }
 
     /// Updates the traffic lights.
@@ -271,7 +278,8 @@ impl Simulation {
         }
     }
 
-    /// Causes a vehicle to change lanes.
+    /// Causes the given vehicle to change lanes from its current link to the specified link.
+    /// It will smoothly transition from one to the other over the given `distance` specified in metres.
     pub fn do_lane_change(&mut self, vehicle_id: VehicleId, link_id: LinkId, distance: f64) {
         let vehicle = &mut self.vehicles[vehicle_id];
 
@@ -299,12 +307,9 @@ impl Simulation {
         link.insert_vehicle(&self.vehicles, vehicle_id);
     }
 
+    /// Sets the route for the given vehicle, which is the list of links it will traverse
+    /// after it has exited its current link.
     pub fn set_vehicle_route(&mut self, vehicle_id: VehicleId, route: &[LinkId]) {
         self.vehicles[vehicle_id].set_route(route, true);
-    }
-
-    pub fn encode(&self) -> Vec<u8> {
-        let raw = bson::to_vec(self).unwrap();
-        compress_prepend_size(&raw)
     }
 }

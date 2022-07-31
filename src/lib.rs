@@ -1,3 +1,5 @@
+//! This is a simple traffic microsimulation library with a focus on performance and realism.
+
 pub use cgmath;
 pub use group::LinkGroup;
 pub use light::TrafficLight;
