@@ -1,7 +1,6 @@
 use self::acceleration::AccelerationModel;
 use self::dynamics::calc_direction;
 use crate::group::{LinkProjection, Obstacle};
-use crate::link::LinkSample;
 use crate::math::{project_local, rot90, CubicFn, Point2d, Vector2d};
 use crate::util::Interval;
 use crate::{Link, LinkId, LinkSet, VehicleId};
@@ -377,40 +376,40 @@ impl Vehicle {
         let curve = link.curve();
 
         // Sample the curve
-        let (pos, tan, lats) = match self.lane_change {
+        let sample = curve.sample_centre(self.pos);
+        let (pos, offset) = match self.lane_change {
             Some(lc) => {
                 let offset = lc.offset.y(self.pos);
-                let LinkSample { pos, tan } = curve.sample(self.pos, offset);
-                let wid = self.half_wid;
-                let lats = [f64::min(-offset, 0.0) - wid, f64::max(-offset, 0.0) + wid];
-                (pos, tan, lats)
+                let pos = sample.lat_offset(offset);
+                (pos, offset)
             }
-            None => {
-                let LinkSample { pos, tan } = curve.sample_centre(self.pos);
-                let lats = [-self.half_wid, self.half_wid];
-                (pos, tan, lats)
-            }
+            None => (sample.pos, 0.0),
         };
 
         // Default `world_dir` to be tangent to the link
         if self.world_dir == Vector2d::new(0.0, 0.0) {
-            self.world_pos = pos - tan;
-            self.world_dir = tan;
+            self.world_pos = pos - sample.tan;
+            self.world_dir = sample.tan;
         }
+
+        // `perp` is perpendicular to the link
+        let perp = rot90(sample.tan);
 
         // Compute the vehicle's heading
         let dir = calc_direction(self.world_pos, self.world_dir, pos, self.wheel_base);
         self.world_pos = pos;
         self.world_dir = dir;
 
-        // Compute the vehicle's rear coordinates
-        let rear_mid = pos - self.half_len * tan;
-        let perp = rot90(tan);
+        // Compute the vehicle's lateral extent, accounting for any rotation relative to the curve
+        let expand = -dir.dot(perp) * self.half_len;
         self.rear_lats = Interval {
-            min: lats[0],
-            max: lats[1],
+            min: f64::min(expand + offset, 0.0) - self.half_wid,
+            max: f64::max(expand + offset, 0.0) + self.half_wid,
         };
-        self.rear_coords = lats.map(|lat| rear_mid + lat * perp);
+
+        // Compute the vehicle's rear coordinates
+        let rear_mid = sample.long_offset(-self.half_len);
+        self.rear_coords = self.rear_lats.as_array().map(|lat| rear_mid + lat * perp);
         // debug_line("rear coords", self.rear_coords[0], self.rear_coords[1]);
     }
 
@@ -432,7 +431,7 @@ impl Vehicle {
         if is_clear(obstacle) {
             // let p = link.curve().sample_centre(obstacle.pos);
             // let l = obstacle.lat;
-            // debug_line("pass", p.offset(l.min), p.offset(l.max));
+            // debug_line("pass", p.lat_offset(l.min), p.lat_offset(l.max));
             return ObstaclePassResult::Pass;
         }
 
@@ -455,12 +454,12 @@ impl Vehicle {
         if is_clear(obstacle) {
             // let p = link.curve().sample_centre(obstacle.pos);
             // let l = obstacle.lat;
-            // debug_line("pass adjust", p.offset(l.min), p.offset(l.max));
+            // debug_line("pass adjust", p.lat_offset(l.min), p.lat_offset(l.max));
             ObstaclePassResult::Pass
         } else {
             // let p = link.curve().sample_centre(obstacle.pos);
             // let l = obstacle.lat;
-            // debug_line("follow", p.offset(l.min), p.offset(l.max));
+            // debug_line("follow", p.lat_offset(l.min), p.lat_offset(l.max));
             ObstaclePassResult::Follow {
                 pos: obstacle.pos,
                 vel: obstacle.vel,

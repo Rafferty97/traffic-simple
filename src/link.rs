@@ -151,6 +151,22 @@ impl Link {
         self.conflicts.push(link_conflict);
     }
 
+    /// Checks that a vehicle could be inserted into the link without collision.
+    pub(crate) fn can_insert_vehicle(&self, vehicles: &VehicleSet, pos: f64, len: f64) -> bool {
+        for id in &self.vehicles {
+            let other = &vehicles[*id];
+            let gap = other.pos_mid() - pos;
+            let needed = 0.5 * (len + other.length());
+            if gap.abs() < needed {
+                return false;
+            }
+            if gap > 0.0 {
+                break;
+            }
+        }
+        return true;
+    }
+
     /// Inserts the vehicle with the given ID into the link.
     pub(crate) fn insert_vehicle(&mut self, vehicles: &VehicleSet, id: VehicleId) {
         let veh_pos = vehicles[id].pos_mid();
@@ -361,11 +377,6 @@ impl Link {
                     .iter()
                     .rev()
                     .map(|id| vehicles[*id].project(proj));
-                // for obstacle in obstacles.clone() {
-                //     let p = links[proj.link_id()].curve().sample_centre(obstacle.pos);
-                //     let l = obstacle.lat;
-                //     debug_line("projected", p.offset(l.min), p.offset(l.max));
-                // }
                 links[proj.link_id()].follow_obstacles(links, vehicles, obstacles);
             }
         }

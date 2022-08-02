@@ -91,6 +91,17 @@ impl<T: Float> std::ops::Add<T> for Interval<T> {
     }
 }
 
+impl<T: Float> std::ops::Sub<T> for Interval<T> {
+    type Output = Interval<T>;
+
+    fn sub(self, rhs: T) -> Self::Output {
+        Self {
+            min: self.min - rhs,
+            max: self.max - rhs,
+        }
+    }
+}
+
 impl<T: Debug> Debug for Interval<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Interval({:?}, {:?})", &self.min, &self.max)

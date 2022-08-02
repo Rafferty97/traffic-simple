@@ -164,8 +164,12 @@ impl ParametricCurve2d for LinkCurve {
 }
 
 impl LinkSample {
-    pub fn offset(&self, lat: f64) -> Point2d {
+    pub fn lat_offset(&self, lat: f64) -> Point2d {
         self.pos + rot90(self.tan) * lat
+    }
+
+    pub fn long_offset(&self, long: f64) -> Point2d {
+        self.pos + self.tan * long
     }
 }
 
