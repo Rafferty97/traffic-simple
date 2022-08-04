@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// A cubic function.
+/// A cubic function, which is a polynomial of the form ax^3 + bx^2 + cx + d.
 #[derive(Clone, Copy, Serialize, Deserialize, Debug)]
 pub struct CubicFn {
     coeffs: [f64; 4],
@@ -10,6 +10,7 @@ pub struct CubicFn {
 }
 
 impl CubicFn {
+    /// Creates a cubic function which outputs the fixed value `y` for any input.
     pub const fn constant(y: f64) -> Self {
         Self {
             coeffs: [0.0, 0.0, 0.0, y],
@@ -17,6 +18,8 @@ impl CubicFn {
         }
     }
 
+    /// Creates a cubic function which passes through the two specified points,
+    /// and which has the specified derivates at those two points.
     pub fn fit(x1: f64, y1: f64, dydx1: f64, x2: f64, y2: f64, dydx2: f64) -> Self {
         let w = x2 - x1;
         let a = 2. * y1 - 2. * y2 + w * dydx1 + w * dydx2;
@@ -29,15 +32,6 @@ impl CubicFn {
         }
     }
 
-    pub fn from_ends(x1: f64, y1: f64, x2: f64, y2: f64) -> Self {
-        let (x, y) = (x2 - x1, y2 - y1);
-        let a = -2.0 * y * x.powi(-3);
-        let b = 3.0 * y * x.powi(-2);
-        let coeffs = [a, b, 0.0, y1];
-        let offset = -x1;
-        Self { coeffs, offset }
-    }
-
     /// Returns a copy of this `CubicFn` translated to the left by `amount` units.
     pub fn translate_x(&self, amount: f64) -> CubicFn {
         Self {
@@ -46,14 +40,17 @@ impl CubicFn {
         }
     }
 
+    /// Evaluates the function at `x`.
     pub fn y(&self, x: f64) -> f64 {
         self.y_and_dy(x).0
     }
 
+    /// Evaluates the derivative of the function at `x`.
     pub fn dy(&self, x: f64) -> f64 {
         self.y_and_dy(x).1
     }
 
+    /// Evaluates the value of the function, and the derivative of the function, at `x`.
     pub fn y_and_dy(&self, x: f64) -> (f64, f64) {
         let c = &self.coeffs;
         let x = x + self.offset;
@@ -72,12 +69,13 @@ mod test {
     use rand::{Rng, SeedableRng};
 
     #[test]
-    pub fn from_ends() {
-        let cubic = CubicFn::from_ends(10., 20., 45.0, 5.0);
+    pub fn fit_horizontal() {
+        let cubic = CubicFn::fit(10., 20., 0.0, 45.0, 5.0, 0.0);
         assert_approx_eq!(cubic.y(10.), 20., 0.01);
         assert_approx_eq!(cubic.dy(10.), 0., 0.01);
         assert_approx_eq!(cubic.y(45.), 5., 0.01);
         assert_approx_eq!(cubic.dy(45.), 0., 0.01);
+        assert_approx_eq!(cubic.y(27.5), 12.5, 0.01);
     }
 
     #[test]

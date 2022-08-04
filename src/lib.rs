@@ -1,3 +1,5 @@
+#![warn(missing_docs)]
+
 //! This is a simple traffic microsimulation library with a focus on performance and realism.
 //!
 //! # Hello world

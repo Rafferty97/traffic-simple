@@ -59,6 +59,7 @@ pub struct QuadraticBezier2d {
 }
 
 impl QuadraticBezier2d {
+    /// Creates a new cubic bezier curve that passes through the provided control points.
     pub const fn new(points: &[Point2d; 3]) -> Self {
         Self { points: *points }
     }
@@ -98,10 +99,12 @@ pub struct CubicBezier2d {
 }
 
 impl CubicBezier2d {
+    /// Creates a new cubic bezier curve that passes through the provided control points.
     pub const fn new(points: &[Point2d; 4]) -> Self {
         Self { points: *points }
     }
 
+    /// Creates a cubic bezier curve which is a straight line passing through the given endpoints.
     pub fn line(start: Point2d, end: Point2d) -> Self {
         let s = start.to_vec();
         let e = end.to_vec();
@@ -111,6 +114,8 @@ impl CubicBezier2d {
         }
     }
 
+    /// Creates a cubic bezier curve which is identical to the quadratic bezier curve
+    /// that passes through the provided control points.
     pub fn quadratic(points: &[Point2d; 3]) -> Self {
         let points = [
             points[0],
@@ -121,6 +126,7 @@ impl CubicBezier2d {
         Self { points }
     }
 
+    /// Subdivide the curve into two sub curves at the value `t`.
     pub fn subdivide(&self, t: f64) -> [CubicBezier2d; 2] {
         let [p00, p01, p02, p03] = self.points.map(|x| x.to_vec());
         let p10 = p00.lerp(p01, t);
@@ -135,6 +141,8 @@ impl CubicBezier2d {
         })
     }
 
+    /// Reverses the order of the control points in the bezier curve,
+    /// such that the point which at `t=0` is now at `t=1` and vise versa.
     pub fn reverse(&mut self) {
         self.points.reverse()
     }

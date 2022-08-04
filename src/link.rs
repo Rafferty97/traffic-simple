@@ -165,7 +165,7 @@ impl Link {
                 break;
             }
         }
-        return true;
+        true
     }
 
     /// Inserts the vehicle with the given ID into the link.

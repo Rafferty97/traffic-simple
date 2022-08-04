@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 /// An interval on the real number line.
 #[derive(Copy, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Interval<T> {
+    /// The smallest value in the interval.
     pub min: T,
+    /// The largest value in the interval.
     pub max: T,
 }
 
@@ -71,10 +73,14 @@ impl<T: Float> Interval<T> {
         T::max(other - self.max, self.min - other)
     }
 
+    /// Interpolates between the two endpoints of the interval,
+    /// where `t=0` will yield `self.min` and `t=1` will yield `self.max`.
     pub fn lerp(&self, t: T) -> T {
         self.min + t * (self.max - self.min)
     }
 
+    /// Performs the inverse operation of [`Self::lerp`], such that providing
+    /// an input of `self.min` will yield `0` and an input of `self.max` will yield `1`.
     pub fn inv_lerp(&self, value: T) -> T {
         (value - self.min) / (self.max - self.min)
     }

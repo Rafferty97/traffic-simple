@@ -135,7 +135,8 @@ pub fn subdivided_samples_along_curve(
     SubdividedSamples::new(curve, max_length)
 }
 
-pub struct SubdividedSamples<'a, C> {
+/// See [subdivided_samples_along_curve].
+struct SubdividedSamples<'a, C> {
     curve: &'a C,
     stack: Vec<(f64, Point2d)>,
     length2: f64,

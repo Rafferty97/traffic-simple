@@ -67,7 +67,12 @@ impl TrafficLight {
         Default::default()
     }
 
-    /// Adds a movement to the traffic light.
+    /// Adds a movement to the traffic light, which is a group of one or more links
+    /// controlled by the same signal head(s) and so go and stop together.
+    ///
+    /// # Parameters
+    /// * `amber_time` - The duration of the amber phase of this movement, in seconds.
+    /// * `links` - An iterator which produces the set of links that belong to this movement.
     pub fn add_movement(&mut self, amber_time: f64, links: impl Iterator<Item = LinkId>) {
         let idx = self.movements.len() as u8;
         self.movements.push(Movement {
@@ -145,6 +150,7 @@ impl TrafficLight {
         }
     }
 
+    /// Gets the current state of each link
     pub fn get_states(&self) -> impl Iterator<Item = (LinkId, TrafficControl)> + '_ {
         self.links.iter().map(|(idx, link)| {
             let control = match self.movements[*idx as usize].state {

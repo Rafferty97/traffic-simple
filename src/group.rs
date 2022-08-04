@@ -42,7 +42,7 @@ struct ProjectedSample {
 }
 
 impl LinkGroup {
-    pub fn new(links: &[&Link]) -> Self {
+    pub(crate) fn new(links: &[&Link]) -> Self {
         if links.len() < 2 {
             panic!("Link group must contain atleast two links");
         }
