@@ -152,6 +152,7 @@ impl Link {
     }
 
     /// Checks that a vehicle could be inserted into the link without collision.
+    #[allow(unused)]
     pub(crate) fn can_insert_vehicle(&self, vehicles: &VehicleSet, pos: f64, len: f64) -> bool {
         for id in &self.vehicles {
             let other = &vehicles[*id];
