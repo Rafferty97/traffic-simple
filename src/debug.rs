@@ -1,13 +1,15 @@
 use crate::math::Point2d;
+#[cfg(feature = "debug")]
 use serde_json::json;
-use std::cell::RefCell;
 
+#[cfg(feature = "debug")]
 thread_local!(
-    static DEBUG_FRAME: RefCell<Vec<serde_json::Value>> = Default::default();
+    static DEBUG_FRAME: std::cell::RefCell<Vec<serde_json::Value>> = Default::default();
 );
 
 #[allow(unused)]
 pub fn debug_line(name: &str, p1: Point2d, p2: Point2d) {
+    #[cfg(feature = "debug")]
     DEBUG_FRAME.with(|frame| {
         frame.borrow_mut().push(json!({
             "type": "line",
@@ -20,6 +22,7 @@ pub fn debug_line(name: &str, p1: Point2d, p2: Point2d) {
 
 #[allow(unused)]
 pub fn debug_circle(name: &str, centre: Point2d, radius: f64) {
+    #[cfg(feature = "debug")]
     DEBUG_FRAME.with(|frame| {
         frame.borrow_mut().push(json!({
             "type": "line",
@@ -30,6 +33,7 @@ pub fn debug_circle(name: &str, centre: Point2d, radius: f64) {
     })
 }
 
+#[cfg(feature = "debug")]
 pub fn take_debug_frame() -> serde_json::Value {
     json!(DEBUG_FRAME.with(|frame| frame.take()))
 }

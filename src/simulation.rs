@@ -1,4 +1,5 @@
 use crate::conflict::ConflictPoint;
+#[cfg(feature = "debug")]
 use crate::debug::take_debug_frame;
 use crate::light::TrafficLight;
 use crate::link::{Link, LinkAttributes, TrafficControl};
@@ -27,6 +28,7 @@ pub struct Simulation {
     /// The next sequence number.
     seq: usize,
     /// Debugging information from the previously simulated frame.
+    #[cfg(feature = "debug")]
     debug: serde_json::Value,
 }
 
@@ -137,7 +139,8 @@ impl Simulation {
         self.integrate(dt);
         self.advance_vehicles();
         self.update_vehicle_coords();
-        self.take_debug_frame();
+        #[cfg(feature = "debug")]
+        take_debug_frame();
         self.frame += 1;
     }
 
@@ -152,7 +155,6 @@ impl Simulation {
         self.integrate(dt);
         self.advance_vehicles();
         self.update_vehicle_coords();
-        self.take_debug_frame();
         self.frame += 1;
     }
 
@@ -187,13 +189,9 @@ impl Simulation {
     }
 
     /// Gets the debugging information for the previously simulated frame as JSON array.
+    #[cfg(feature = "debug")]
     pub fn debug(&mut self) -> serde_json::Value {
-        self.debug.take()
-    }
-
-    /// Takes the debugging information from the global buffer.
-    fn take_debug_frame(&mut self) {
-        self.debug = take_debug_frame();
+        self.debug.clone()
     }
 
     /// Updates the traffic lights.

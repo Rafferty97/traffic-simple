@@ -8,10 +8,10 @@ license = "GPL-3.0-or-later"
 repository = "https://github.com/Rafferty97/traffic-simple"
 
 [dependencies]
-slotmap = { version = "1.0.6", features = ["serde"] }
-cgmath = { version = "0.18.0", features = ["serde"] }
-smallvec = { version = "1.5.1", features = ["serde"] }
-serde = "1.0.117"
+slotmap = { version = "1.0.6" }
+cgmath = { version = "0.18.0" }
+smallvec = { version = "1.5.1" }
+serde = { version = "1.0.117", optional = true, features = ["derive"] }
 assert_approx_eq = "1.1.0"
 rand = "0.8.5"
 once_cell = "1.10.0"
@@ -19,3 +19,7 @@ log = "0.4.14"
 itertools = "0.10.3"
 serde_json = "1.0.82"
 rand_distr = "0.4.3"
+
+[features]
+serde = ["dep:serde", "cgmath/serde"]
+debug = ["serde"]

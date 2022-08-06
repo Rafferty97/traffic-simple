@@ -1,11 +1,13 @@
 //! Miscellaneous utility structs and functions.
 
 use cgmath::num_traits::Float;
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 
 /// An interval on the real number line.
-#[derive(Copy, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Interval<T> {
     /// The smallest value in the interval.
     pub min: T,

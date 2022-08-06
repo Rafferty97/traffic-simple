@@ -1,6 +1,7 @@
 use super::{ParametricCurve2d, Point2d, Vector2d};
 use crate::util::Interval;
 use cgmath::prelude::*;
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 /// A line segment
@@ -53,7 +54,8 @@ impl ParametricCurve2d for LineSegment2d {
 }
 
 /// A quadratic bezier curve
-#[derive(Copy, Clone, Serialize, Deserialize)]
+#[derive(Copy, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct QuadraticBezier2d {
     points: [Point2d; 3],
 }

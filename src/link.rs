@@ -456,7 +456,7 @@ impl Link {
         if !self.active {
             // No vehicles are on or have entered this link,
             // so stop processing.
-            return;
+            return; // REMOVE FOR MERGES
         }
 
         let min_pos = pos - MAX_LOOKAHEAD * self.speed_limit;
@@ -477,7 +477,7 @@ impl Link {
                 Some(_) => {
                     // The obstacle is beyond the end of the link, so stop processing
                     if pos > self.length() {
-                        return;
+                        return; // REMOVE FOR MERGES
                     }
                 }
             }

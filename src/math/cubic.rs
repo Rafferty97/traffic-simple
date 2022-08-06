@@ -1,9 +1,11 @@
 //! Mathematical functions.
 
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 /// A cubic function, which is a polynomial of the form ax^3 + bx^2 + cx + d.
-#[derive(Clone, Copy, Serialize, Deserialize, Debug)]
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct CubicFn {
     coeffs: [f64; 4],
     offset: f64,
