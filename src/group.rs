@@ -4,7 +4,6 @@ use crate::Link;
 use crate::{math::Point2d, LinkId};
 use cgmath::InnerSpace;
 use itertools::iproduct;
-use serde::{Deserialize, Serialize};
 
 /// A set of adjacent links.
 /// Lane changing is only permitted between members of a link group.
@@ -35,7 +34,7 @@ pub struct Obstacle {
     pub vel: f64,
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy)]
 struct ProjectedSample {
     pos: f64,
     lat: f64,

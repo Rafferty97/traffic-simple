@@ -5,7 +5,6 @@ use crate::util::rotated_range;
 use crate::vehicle::{ObstaclePassResult, RouteState, Vehicle};
 use crate::{LinkGroup, LinkId, LinkSet, VehicleId, VehicleSet};
 pub use curve::{LinkCurve, LinkSample};
-use serde::{Deserialize, Serialize};
 use smallvec::{smallvec, SmallVec};
 use std::cell::Cell;
 use std::cmp::Ordering;
@@ -21,12 +20,11 @@ const MAX_LOOKAHEAD: f64 = 5.0;
 const GAP_BUFFER: f64 = 0.5;
 
 /// A link represents a single lane of traffic.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
 pub struct Link {
     /// The link ID.
     id: LinkId,
     /// The link group.
-    #[serde(skip)]
     group: Option<Rc<LinkGroup>>,
     /// The geometry of the link.
     curve: LinkCurve,
@@ -59,7 +57,7 @@ pub struct LinkAttributes<'a> {
 }
 
 /// A traffic control.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug)]
 pub enum TrafficControl {
     /// Traffic can enter freely, e.g. green light or priority road.
     Open,
@@ -437,7 +435,7 @@ impl Link {
 
     /// Applies the passed function on each vehicle on the link and preceeding links
     /// in reverse order, in a depth-first fashion.
-    /// If the inner function returns `false`, processing on that link stops.
+    /// If the inner function returns [ControlFlow::Break], processing on that link stops.
     ///
     /// # Parameters
     /// * `links` - The links in the network
@@ -456,6 +454,8 @@ impl Link {
         skip: usize,
     ) {
         if !self.active {
+            // No vehicles are on or have entered this link,
+            // so stop processing.
             return;
         }
 
@@ -467,10 +467,15 @@ impl Link {
                 return;
             }
             match vehicle.get_route(route.0) {
+                // This link is not on the vehicle's route, so skip it
                 None => continue,
+                // This link is not on the vehicle's route, so skip it
                 Some((link_id, _)) if link_id != route.1 => continue,
+                // The vehicle has entered this link, so process it
                 Some((_, RouteState::Entered)) => {}
-                Some((_, _)) => {
+                // The vehicle hasn't entered the link
+                Some(_) => {
+                    // The obstacle is beyond the end of the link, so stop processing
                     if pos > self.length() {
                         return;
                     }

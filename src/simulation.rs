@@ -5,21 +5,21 @@ use crate::link::{Link, LinkAttributes, TrafficControl};
 use crate::math::CubicFn;
 use crate::vehicle::{LaneChange, Vehicle, VehicleAttributes};
 use crate::{LinkGroup, LinkId, LinkSet, TrafficLightId, VehicleId, VehicleSet};
-use serde::{Deserialize, Serialize};
+use rand_distr::Distribution;
 use slotmap::SlotMap;
 use std::rc::Rc;
 
 /// A traffic simulation.
-#[derive(Default, Clone, Serialize, Deserialize)]
+#[derive(Default, Clone)]
 pub struct Simulation {
     /// The links in the network.
     links: LinkSet,
     /// The traffic lights.
     lights: SlotMap<TrafficLightId, TrafficLight>,
-    /// The vehicles being simulated.
-    vehicles: VehicleSet,
     /// The conflict points.
     conflicts: Vec<ConflictPoint>,
+    /// The vehicles being simulated.
+    vehicles: VehicleSet,
     /// The set of "frozen" vehicles, which will not move.
     frozen_vehs: Vec<VehicleId>,
     /// The current frame of simulation.
@@ -93,6 +93,18 @@ impl Simulation {
         });
         self.links[link].insert_vehicle(&self.vehicles, vehicle_id);
         vehicle_id
+    }
+
+    /// Randomly assigns a desired velocity adjustment factor to each vehicle,
+    /// which is sampled from a normal distribution with a mean of 1 (no adjustment)
+    /// and standard deviation of `stddev`.
+    pub fn randomise_velocity_adjusts(&mut self, stddev: f64) {
+        let mut rand = rand::thread_rng();
+        let distr = rand_distr::Normal::new(1.0, stddev).expect("Invalid standard deviation");
+        for (_, vehicle) in &mut self.vehicles {
+            let factor = distr.sample(&mut rand).clamp(0.75, 1.25);
+            vehicle.set_velocity_adjust(factor);
+        }
     }
 
     /// Sets the `frozen` attribute of a vehicle. When a vehicle is frozen,

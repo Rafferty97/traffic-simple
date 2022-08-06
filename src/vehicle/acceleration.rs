@@ -1,7 +1,5 @@
 use std::cell::Cell;
 
-use serde::{Deserialize, Serialize};
-
 /// The minimum gap to maintain between vehicles in m.
 const MIN_GAP: f64 = 2.5; // m
 
@@ -9,10 +7,11 @@ const MIN_GAP: f64 = 2.5; // m
 const MAX_DECEL: f64 = -6.0; // m/s^2
 
 /// The acceleration model of a vehicle.
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Debug)]
 pub struct AccelerationModel {
     max_acc: f64,
     comf_dec: f64,
+    vel_adj: f64,
     acc: Cell<f64>,
 }
 
@@ -30,8 +29,14 @@ impl AccelerationModel {
         AccelerationModel {
             max_acc: params.max_acceleration,
             comf_dec: params.comf_deceleration,
+            vel_adj: 1.0,
             acc: Cell::new(params.max_acceleration),
         }
+    }
+
+    /// Set the desired velocity adjustment factor.
+    pub fn set_velocity_adjust(&mut self, factor: f64) {
+        self.vel_adj = factor;
     }
 
     /// Resets the acceleration model. Use at the start of an update.
@@ -67,6 +72,7 @@ impl AccelerationModel {
     /// * `vel` - The velocity of the simulated vehicle (m/s).
     /// * `speed_limit` - The current speed limit (m/s).
     pub fn apply_current_speed_limit(&self, vel: f64, speed_limit: f64) {
+        let speed_limit = self.vel_adj * speed_limit;
         let max_acc = self.max_acc;
         let this_acc = max_acc * (1. - (vel / speed_limit).powi(4));
         self.acc.set(f64::min(self.acc.get(), this_acc));
@@ -83,6 +89,7 @@ impl AccelerationModel {
             return self.apply_current_speed_limit(vel, speed_limit);
         }
 
+        let speed_limit = self.vel_adj * speed_limit;
         let comf_acc = -self.comf_dec;
         let this_acc = (speed_limit.powi(2) - vel.powi(2)) / (2. * distance);
         if this_acc <= comf_acc {

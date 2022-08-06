@@ -1,9 +1,8 @@
 //! Miscellaneous utility structs and functions.
 
-use std::fmt::Debug;
-
 use cgmath::num_traits::Float;
 use serde::{Deserialize, Serialize};
+use std::fmt::Debug;
 
 /// An interval on the real number line.
 #[derive(Copy, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

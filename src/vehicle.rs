@@ -5,7 +5,6 @@ use crate::math::{project_local, rot90, CubicFn, Point2d, Vector2d};
 use crate::util::Interval;
 use crate::{Link, LinkId, LinkSet, VehicleId};
 use cgmath::prelude::*;
-use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 
 mod acceleration;
@@ -15,7 +14,7 @@ mod dynamics;
 const LATERAL_CLEARANCE: f64 = 0.5;
 
 /// A simulated vehicle.
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Debug)]
 pub struct Vehicle {
     /// The vehicle's ID
     pub(crate) id: VehicleId,
@@ -42,7 +41,6 @@ pub struct Vehicle {
     queued: Option<usize>,
     /// Whether the vehicle will queue into or enter the next unentered link on its route.
     /// 0 = no change, 1 = enqueue, 2 = enter
-    #[serde(skip)]
     will_queue_or_enter: Cell<u8>,
     /// Whether the vehicle can exit at the end of its route.
     can_exit: bool,
@@ -74,7 +72,7 @@ pub struct VehicleAttributes {
 }
 
 /// Represents an in-progress lane change.
-#[derive(Clone, Copy, Serialize, Deserialize, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct LaneChange {
     /// The longitudinal position at which the lane change is complete.
     pub end_pos: f64,
@@ -181,6 +179,13 @@ impl Vehicle {
     /// Whether the vehicle is stopped.
     pub fn has_stopped(&self) -> bool {
         self.vel < 0.1
+    }
+
+    /// Set the desired velocity adjustment factor for the vehicle, a scalar which is
+    /// multiplied with the speed limit prior to calculating the speed limit
+    /// acceleration of the vehicle each frame.
+    pub fn set_velocity_adjust(&mut self, factor: f64) {
+        self.acc.set_velocity_adjust(factor);
     }
 
     /// Calculates the time it would take the vehicle to reach the given `pos`

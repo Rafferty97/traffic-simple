@@ -1,8 +1,6 @@
-use std::cell::RefCell;
-
-use serde_json::json;
-
 use crate::math::Point2d;
+use serde_json::json;
+use std::cell::RefCell;
 
 thread_local!(
     static DEBUG_FRAME: RefCell<Vec<serde_json::Value>> = Default::default();
