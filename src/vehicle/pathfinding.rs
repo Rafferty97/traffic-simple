@@ -46,7 +46,7 @@ impl PathfindingModel {
             let lc_now_cost = if input.link_id == self.src {
                 0.0
             } else {
-                0.0001
+                0.002
             };
             // Cost of changing lanes later
             let lc_later_cost = dists.get_cost(input.pos);
@@ -97,7 +97,7 @@ impl PathfindingModel {
     /// Calculates a lane matrix from a path.
     fn calc_lane_matrix(&mut self, route: &[LinkId], links: &LinkSet) {
         let mut matrix = SparseSecondaryMap::new();
-        matrix.insert(*route.last().unwrap(), LaneDists::exit());
+        matrix.insert(self.dst, LaneDists::exit());
 
         for link_id in route.iter().rev() {
             let group = links[*link_id].group();

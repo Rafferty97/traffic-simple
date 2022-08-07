@@ -1,7 +1,6 @@
 - Documentation and refactoring
 - Lane changing AI
   - Improve lane cost function
-    - Fix bug?
     - Customisable?
   - Don't consider lane changes every `step`
   - Don't exit if `can_exit` is false
@@ -11,3 +10,4 @@
 - Better gap acceptance
   - Important for roundabouts
 - Smoother merging
+- Idea: Assign each end of a link a "node ID" rather than relying on `connect_links`?

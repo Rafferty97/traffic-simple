@@ -303,10 +303,8 @@ impl Simulation {
         for vehicle in self.vehicles.values() {
             if let Some(link_id) = vehicle.link_id() {
                 let stay_cost = vehicle.evaluate_link(link_id, &self.links);
-                log::debug!("stay={}", stay_cost);
                 for adj in self.links[link_id].links_adjacent() {
                     let move_cost = vehicle.evaluate_link(*adj, &self.links);
-                    log::debug!("move={} vs stay={}", move_cost, stay_cost);
                     if move_cost < stay_cost {
                         lanechanges.push((vehicle.id(), *adj, 30.0));
                         break;
