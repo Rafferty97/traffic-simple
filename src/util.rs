@@ -5,6 +5,13 @@ use cgmath::num_traits::Float;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 
+/// Either left or right.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Direction {
+    Left,
+    Right,
+}
+
 /// An interval on the real number line.
 #[derive(Copy, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]

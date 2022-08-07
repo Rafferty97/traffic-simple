@@ -11,7 +11,7 @@ use slotmap::SlotMap;
 use std::rc::Rc;
 
 /// A traffic simulation.
-#[derive(Default, Clone)]
+#[derive(Default)]
 pub struct Simulation {
     /// The links in the network.
     links: LinkSet,
@@ -45,21 +45,22 @@ impl Simulation {
 
     /// Specifies that these vehicles on these links may
     /// interact with vehicles on other links in the group.
-    pub fn add_link_group(&mut self, link_ids: &[LinkId]) {
+    ///
+    /// # Parameters
+    /// * `link_ids` - The links in the link group; must be ordered left-to-right.
+    /// * `lc_mask` - The "lane change mask".
+    pub fn add_link_group(&mut self, link_ids: &[LinkId], lc_mask: u32) {
         let links = link_ids
             .iter()
             .map(|id| &self.links[*id])
             .collect::<Vec<_>>();
-        let group = Rc::new(LinkGroup::new(&links));
+        let group = Rc::new(LinkGroup::new(&links, lc_mask));
         for id in link_ids {
             self.links[*id].set_group(group.clone());
         }
-    }
-
-    /// Permits vehicles to lane change from the `from` link to the `to` link.
-    /// Both links must belong to the same [LinkGroup].
-    pub fn add_lane_change(&mut self, from: LinkId, to: LinkId) {
-        self.links[from].add_lane_change(to);
+        for (from, to) in group.lane_changes() {
+            self.links[from].add_link_adjacent(to);
+        }
     }
 
     /// Specifies that two links may converge or cross.
@@ -89,7 +90,7 @@ impl Simulation {
     pub fn add_vehicle(&mut self, attributes: &VehicleAttributes, link: LinkId) -> VehicleId {
         let vehicle_id = self.vehicles.insert_with_key(|id| {
             let mut vehicle = Vehicle::new(id, attributes);
-            vehicle.set_location(link, 0.0, None);
+            vehicle.set_location(link, 0.0, None, &self.links);
             vehicle.update_coords(&self.links);
             vehicle
         });
@@ -130,18 +131,20 @@ impl Simulation {
         self.frozen_vehs.iter().any(|id| *id == vehicle_id)
     }
 
+    /// Sets the vehicle's destination link.
+    pub fn set_vehicle_destination(&mut self, vehicle_id: VehicleId, dst: LinkId) {
+        self.vehicles[vehicle_id].set_destination(dst, &self.links);
+    }
+
     /// Advances the simulation by `dt` seconds.
     ///
     /// For a realistic simulation, do not use a time step greater than around 0.2.
     pub fn step(&mut self, dt: f64) {
-        self.update_lights(dt);
+        self.do_lane_changes();
         self.apply_accelerations();
-        self.integrate(dt);
-        self.advance_vehicles();
-        self.update_vehicle_coords();
+        self.step_fast(dt);
         #[cfg(feature = "debug")]
         take_debug_frame();
-        self.frame += 1;
     }
 
     /// Advances the simulation by `dt` seconds, but only integrates vehicles positions,
@@ -294,6 +297,28 @@ impl Simulation {
         }
     }
 
+    /// Performs lane changes.
+    fn do_lane_changes(&mut self) {
+        let mut lanechanges = vec![];
+        for vehicle in self.vehicles.values() {
+            if let Some(link_id) = vehicle.link_id() {
+                let stay_cost = vehicle.evaluate_link(link_id, &self.links);
+                log::debug!("stay={}", stay_cost);
+                for adj in self.links[link_id].links_adjacent() {
+                    let move_cost = vehicle.evaluate_link(*adj, &self.links);
+                    log::debug!("move={} vs stay={}", move_cost, stay_cost);
+                    if move_cost < stay_cost {
+                        lanechanges.push((vehicle.id(), *adj, 30.0));
+                        break;
+                    }
+                }
+            }
+        }
+        for (vehicle_id, link_id, distance) in lanechanges {
+            self.do_lane_change(vehicle_id, link_id, distance);
+        }
+    }
+
     /// Causes the given vehicle to change lanes from its current link to the specified link.
     /// It will smoothly transition from one to the other over the given `distance` specified in metres.
     pub fn do_lane_change(&mut self, vehicle_id: VehicleId, link_id: LinkId, distance: f64) {
@@ -305,8 +330,7 @@ impl Simulation {
         }
 
         // Project the vehicle's position onto the new link
-        let link = &mut self.links[link_id];
-        let (pos, offset, slope) = link
+        let (pos, offset, slope) = self.links[link_id]
             .curve()
             .inverse_sample(vehicle.position(), vehicle.direction())
             .unwrap();
@@ -317,15 +341,9 @@ impl Simulation {
             end_pos,
             offset: CubicFn::fit(pos, offset, slope, end_pos, 0.0, 0.0),
         };
-        vehicle.set_location(link_id, pos, Some(lane_change));
+        vehicle.set_location(link_id, pos, Some(lane_change), &self.links);
 
         // Add the vehicle to the new link
-        link.insert_vehicle(&self.vehicles, vehicle_id);
-    }
-
-    /// Sets the route for the given vehicle, which is the list of links it will traverse
-    /// after it has exited its current link.
-    pub fn set_vehicle_route(&mut self, vehicle_id: VehicleId, route: &[LinkId]) {
-        self.vehicles[vehicle_id].set_route(route, true);
+        self.links[link_id].insert_vehicle(&self.vehicles, vehicle_id);
     }
 }

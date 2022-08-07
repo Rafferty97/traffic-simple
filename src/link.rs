@@ -4,6 +4,7 @@ use crate::math::{ParametricCurve2d, Point2d};
 use crate::util::rotated_range;
 use crate::vehicle::{ObstaclePassResult, RouteState, Vehicle};
 use crate::{LinkGroup, LinkId, LinkSet, VehicleId, VehicleSet};
+use arrayvec::ArrayVec;
 pub use curve::{LinkCurve, LinkSample};
 use smallvec::{smallvec, SmallVec};
 use std::cell::Cell;
@@ -32,8 +33,8 @@ pub struct Link {
     links_in: SmallVec<[LinkId; 4]>,
     /// The links that succeed this one.
     links_out: SmallVec<[LinkId; 4]>,
-    /// The links that are adjacent to this one.
-    links_adjacent: SmallVec<[LinkId; 2]>,
+    /// The links that can be lane changed into.
+    links_adjacent: ArrayVec<LinkId, 2>,
     /// The links that conflict with this one.
     conflicts: Vec<LinkConflict>,
     /// The index of the last conflict with an insufficient gap; an optimisation.
@@ -84,7 +85,7 @@ impl Link {
             group: None,
             links_in: smallvec![],
             links_out: smallvec![],
-            links_adjacent: smallvec![],
+            links_adjacent: ArrayVec::new(),
             conflicts: vec![],
             last_conflict: Cell::new(0),
             speed_limit: attribs.speed_limit,
@@ -104,6 +105,11 @@ impl Link {
         self.curve.length()
     }
 
+    /// Gets the speed limit of the link in m/s.
+    pub fn speed_limit(&self) -> f64 {
+        self.speed_limit
+    }
+
     /// Gets the curve representing the link's centre line.
     pub fn curve(&self) -> &LinkCurve {
         &self.curve
@@ -119,9 +125,27 @@ impl Link {
         &self.links_out
     }
 
-    /// Gets the links that a vehicle on this link may change lanes to.
+    /// Gets the links that vehicles on this link may lane change into.
     pub fn links_adjacent(&self) -> &[LinkId] {
         &self.links_adjacent
+    }
+
+    /// Gets all the links reachable from this one via lane changes, including the link itself.
+    pub fn reachable_lanes(&self) -> &[LinkId] {
+        self.group
+            .as_ref()
+            .map(|group| {
+                let src = group.find_link(self.id).unwrap();
+                group.reachable_lanes(src)
+            })
+            .unwrap_or_else(|| core::slice::from_ref(&self.id))
+    }
+
+    /// Determines whether the given link can be reached from this link by changing lanes,
+    /// or if it is the same link.
+    pub fn can_reach_lane(&self, dst: LinkId) -> bool {
+        // TODO: This is too slow
+        self.reachable_lanes().contains(&dst)
     }
 
     /// Adds a successor link.
@@ -135,13 +159,18 @@ impl Link {
     }
 
     /// Adds an adjacent link.
-    pub(crate) fn add_lane_change(&mut self, link_id: LinkId) {
+    pub(crate) fn add_link_adjacent(&mut self, link_id: LinkId) {
         self.links_adjacent.push(link_id);
     }
 
     /// Sets the link group.
     pub(crate) fn set_group(&mut self, group: Rc<LinkGroup>) {
         self.group = Some(group);
+    }
+
+    /// Gets the link group.
+    pub(crate) fn group(&self) -> Option<&LinkGroup> {
+        self.group.as_ref().map(|group| group.as_ref())
     }
 
     /// Adds a conflicting link.

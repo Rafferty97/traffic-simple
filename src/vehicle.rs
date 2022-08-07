@@ -1,5 +1,6 @@
 use self::acceleration::AccelerationModel;
 use self::dynamics::calc_direction;
+use self::pathfinding::{EvaluateLinkInput, PathfindingModel};
 use crate::group::{LinkProjection, Obstacle};
 use crate::math::{project_local, rot90, CubicFn, Point2d, Vector2d};
 use crate::util::Interval;
@@ -9,6 +10,7 @@ use std::cell::Cell;
 
 mod acceleration;
 mod dynamics;
+mod pathfinding;
 
 /// The minimum lateral clearance for own vehicle to pass another, in m.
 const LATERAL_CLEARANCE: f64 = 0.5;
@@ -26,13 +28,15 @@ pub struct Vehicle {
     wheel_base: f64,
     /// The acceleration model
     acc: AccelerationModel,
+    /// The pathfinding model
+    pathfind: PathfindingModel,
     /// The longitudinal position along the current link, in m.
     pos: f64,
     /// The velocity in m/s.
     vel: f64,
     /// The number of frames that the vehicle has been stopped.
     stop_cnt: usize,
-    /// The vehicle's route, including the link it's currently on.
+    /// The vehicle's current path, including the link it's currently on.
     route: Vec<LinkId>,
     /// The number of links on the route already "entered".
     entered: usize,
@@ -105,6 +109,7 @@ impl Vehicle {
                 max_acceleration: attributes.max_acc,
                 comf_deceleration: attributes.comf_dec,
             }),
+            pathfind: Default::default(),
             pos: 0.0,
             vel: 0.0,
             stop_cnt: 0,
@@ -345,6 +350,9 @@ impl Vehicle {
             let length = links[*link_id].length();
             if length < self.pos {
                 self.route.remove(0);
+                if let Some(link_id) = self.route.first() {
+                    self.pathfind.set_origin(*link_id, links);
+                }
                 self.entered = usize::max(self.entered - 1, 1);
                 self.pos -= length;
                 if let Some(lc) = self.lane_change.as_mut() {
@@ -357,21 +365,46 @@ impl Vehicle {
         false
     }
 
-    /// Sets the vehicle's position in the network.
-    /// This also clears the vehicle's route.
-    pub(crate) fn set_location(&mut self, link: LinkId, pos: f64, lane_change: Option<LaneChange>) {
-        self.route = vec![link];
+    /// Moves the vehicle to a new position in the road network,
+    /// which may be the result of a lane change, or a simple teleport.
+    pub(crate) fn set_location(
+        &mut self,
+        link_id: LinkId,
+        pos: f64,
+        lane_change: Option<LaneChange>,
+        links: &LinkSet,
+    ) {
+        let (route, can_exit) = self.pathfind.calc_path(link_id, links);
+        self.route = vec![link_id];
+        self.route.extend(route);
+        self.pathfind.set_origin(link_id, links);
         self.entered = 1;
         self.pos = pos;
         self.lane_change = lane_change;
-        self.can_exit = false;
+        self.can_exit = can_exit;
     }
 
-    /// Sets the vehicle's route.
-    pub(crate) fn set_route(&mut self, route: &[LinkId], can_exit: bool) {
-        self.route.truncate(1);
+    /// Sets the vehicle's destination link.
+    pub(crate) fn set_destination(&mut self, link_id: LinkId, links: &LinkSet) {
+        self.pathfind.set_destination(link_id, links);
+        self.recalc_path(links);
+    }
+
+    /// Evaluates the desirability of being on a given link.
+    pub(crate) fn evaluate_link(&self, link_id: LinkId, links: &LinkSet) -> f64 {
+        self.pathfind.evaluate_link(EvaluateLinkInput {
+            link_id,
+            links,
+            pos: self.pos,
+        })
+    }
+
+    /// Recalculates the vehicle's path.
+    pub(crate) fn recalc_path(&mut self, links: &LinkSet) {
+        let src = self.route[self.entered - 1];
+        let (route, can_exit) = self.pathfind.calc_path(src, links);
+        self.route.truncate(self.entered);
         self.route.extend(route);
-        self.entered = 1;
         self.can_exit = can_exit;
     }
 

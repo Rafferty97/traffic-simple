@@ -1,3 +1,13 @@
-- Lane changing AI
 - Documentation and refactoring
+- Lane changing AI
+  - Improve lane cost function
+    - Fix bug?
+    - Customisable?
+  - Don't consider lane changes every `step`
+  - Don't exit if `can_exit` is false
+  - Better implementation of `can_reach_link`
+  - Allow re-routing if the vehicle gets stuck
+  - Use `fast_paths` crate?
 - Better gap acceptance
+  - Important for roundabouts
+- Smoother merging

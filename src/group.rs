@@ -1,21 +1,22 @@
 use crate::math::{project_point_onto_curve, rot90};
-use crate::util::Interval;
+use crate::util::{Direction, Interval};
 use crate::Link;
 use crate::{math::Point2d, LinkId};
 use cgmath::InnerSpace;
 use itertools::iproduct;
+use smallvec::SmallVec;
 
 /// A set of adjacent links.
 /// Lane changing is only permitted between members of a link group.
 #[derive(Clone)]
 pub struct LinkGroup {
-    num_links: usize,
+    links: SmallVec<[LinkId; 8]>,
     projections: Vec<LinkProjection>,
+    lc_mask: u32,
 }
 
 #[derive(Clone)]
 pub(crate) struct LinkProjection {
-    src: LinkId,
     dst: LinkId,
     inv_segment_len: f64,
     samples: Vec<ProjectedSample>,
@@ -41,7 +42,7 @@ struct ProjectedSample {
 }
 
 impl LinkGroup {
-    pub(crate) fn new(links: &[&Link]) -> Self {
+    pub(crate) fn new(links: &[&Link], lc_mask: u32) -> Self {
         if links.len() < 2 {
             panic!("Link group must contain atleast two links");
         }
@@ -51,7 +52,6 @@ impl LinkGroup {
         let projections = iproduct!(links, links)
             .filter(|(src, dst)| src.id() != dst.id())
             .map(|(src, dst)| LinkProjection {
-                src: src.id(),
                 dst: dst.id(),
                 inv_segment_len: 1.0 / segment_len,
                 samples: (0..)
@@ -72,48 +72,63 @@ impl LinkGroup {
             .collect();
 
         Self {
-            num_links: links.len(),
+            links: links.iter().map(|l| l.id()).collect(),
             projections,
+            lc_mask,
         }
     }
 
-    pub(crate) fn link_ids(&self) -> impl Iterator<Item = LinkId> + '_ {
-        let n = self.num_links - 1;
-        (0..self.num_links).map(move |i| self.projections[n * i].src)
+    pub(crate) fn link_ids(&self) -> &[LinkId] {
+        &self.links
     }
 
-    pub(crate) fn projections(&self, src_link: LinkId) -> &[LinkProjection] {
-        let idx = self
-            .link_ids()
-            .position(|id| id == src_link)
-            .expect("Link ID is not in group.");
-        let n = self.num_links - 1;
+    pub(crate) fn projections(&self, src: LinkId) -> &[LinkProjection] {
+        let idx = self.find_link(src).expect("Link is not in group.");
+        let n = self.links.len() - 1;
         &self.projections[(n * idx)..(n * (idx + 1))]
     }
 
-    // pub(crate) fn project(&self, rear_coords: [Point2d; 2], vel: f64, out: &mut GroupPosition) {
-    //     // Update the segment index
-    //     out.segment = self
-    //         .segments
-    //         .iter()
-    //         .skip(out.segment)
-    //         .position(|(pos, tan)| rear_coords.iter().any(|c| (c - pos).dot(*tan) <= 0.0))
-    //         .map(|i| i + out.segment)
-    //         .unwrap_or(self.segments.len())
-    //         .saturating_sub(1);
+    /// Gets the index of the `link` in this link group.
+    pub(crate) fn find_link(&self, link_id: LinkId) -> Option<usize> {
+        self.links.iter().position(|id| *id == link_id)
+    }
 
-    //     // Get the local coordinate system around the vehicle
-    //     let (pos, tan) = unsafe {
-    //         // SAFETY: Use of `position` above guarantees the index is in bounds.
-    //         *self.segments.get_unchecked(out.segment)
-    //     };
+    /// Gets all the lanes reachable from the `src` lane by performing lane changes,
+    /// including the `src` lane itself.
+    pub(crate) fn reachable_lanes(&self, src: usize) -> &[LinkId] {
+        let mut left = src;
+        while left > 0 && self.lc_bit(left, Direction::Left) {
+            left -= 1;
+        }
+        let mut right = src;
+        while right < self.links.len() - 1 && self.lc_bit(right, Direction::Right) {
+            right += 1;
+        }
+        &self.links[left..=right]
+    }
 
-    //     // Project the vehicle's rear coordinates and save
-    //     let proj = rear_coords.map(|c| project_local(c, pos, rot90(tan), tan));
-    //     out.pos = f64::min(proj[0].y, proj[1].y);
-    //     out.lat = Interval::new(proj[0].x, proj[1].x);
-    //     out.vel = vel;
-    // }
+    /// All the permissable lane changes in the link group, in a particular order.
+    pub(crate) fn lane_changes(&self) -> impl Iterator<Item = (LinkId, LinkId)> + '_ {
+        let right = (0..self.links.len() - 1)
+            .rev()
+            .filter(|idx| self.lc_bit(*idx, Direction::Right))
+            .map(|idx| (self.links[idx], self.links[idx + 1]));
+        let left = (1..self.links.len())
+            .filter(|idx| self.lc_bit(*idx, Direction::Left))
+            .map(|idx| (self.links[idx], self.links[idx - 1]));
+        right.chain(left)
+    }
+
+    /// Gets the value of the lane change bit for the given index and direction.
+    #[inline(always)]
+    fn lc_bit(&self, idx: usize, dir: Direction) -> bool {
+        let bit = (2 * idx)
+            + match dir {
+                Direction::Left => 0,
+                Direction::Right => 1,
+            };
+        (self.lc_mask >> bit) & 1 != 0
+    }
 }
 
 impl LinkProjection {
