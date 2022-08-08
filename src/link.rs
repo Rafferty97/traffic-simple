@@ -141,11 +141,15 @@ impl Link {
             .unwrap_or_else(|| core::slice::from_ref(&self.id))
     }
 
-    /// Determines whether the given link can be reached from this link by changing lanes,
-    /// or if it is the same link.
-    pub fn can_reach_lane(&self, dst: LinkId) -> bool {
-        // TODO: This is too slow
-        self.reachable_lanes().contains(&dst)
+    /// Gets all the links this one is reachable from via lane changes, including the link itself.
+    pub fn reachable_from_lanes(&self) -> &[LinkId] {
+        self.group
+            .as_ref()
+            .map(|group| {
+                let src = group.find_link(self.id).unwrap();
+                group.reachable_from_lanes(src)
+            })
+            .unwrap_or_else(|| core::slice::from_ref(&self.id))
     }
 
     /// Adds a successor link.

@@ -107,6 +107,20 @@ impl LinkGroup {
         &self.links[left..=right]
     }
 
+    /// Gets all the lanes the `dst` lane is reachable from by performing lane changes,
+    /// including the `src` lane itself.
+    pub(crate) fn reachable_from_lanes(&self, dst: usize) -> &[LinkId] {
+        let mut left = dst;
+        while left > 0 && self.lc_bit(left - 1, Direction::Right) {
+            left -= 1;
+        }
+        let mut right = dst;
+        while right < self.links.len() - 1 && self.lc_bit(right + 1, Direction::Left) {
+            right += 1;
+        }
+        &self.links[left..=right]
+    }
+
     /// All the permissable lane changes in the link group, in a particular order.
     pub(crate) fn lane_changes(&self) -> impl Iterator<Item = (LinkId, LinkId)> + '_ {
         let right = (0..self.links.len() - 1)

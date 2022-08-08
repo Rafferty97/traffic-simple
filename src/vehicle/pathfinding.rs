@@ -63,10 +63,11 @@ impl PathfindingModel {
             return;
         }
 
+        let dsts = links[self.dst].reachable_from_lanes();
         let result = pathfinding::directed::dijkstra::dijkstra(
             &self.src,
             |id| successors(*id, links),
-            |id| links[*id].can_reach_lane(self.dst),
+            |id| dsts.contains(id),
         );
         if let Some((route, _)) = result {
             self.calc_lane_matrix(&route, links);
