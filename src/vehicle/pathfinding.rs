@@ -74,7 +74,8 @@ impl PathfindingModel {
         }
     }
 
-    /// Determines which links to follow after the vehicle has exited its current link.
+    /// Finds a path (series of links) for the vehicle to follow after it succeeds it current link
+    /// which allows it to travel as far as possible towards its goal link without needing to change lanes.
     pub fn calc_path(&self, src: LinkId, links: &LinkSet) -> (Vec<LinkId>, bool) {
         if self.dst.is_null() {
             return (vec![], false);
@@ -142,10 +143,9 @@ impl PathfindingModel {
 
 fn successors(link_id: LinkId, links: &LinkSet) -> impl Iterator<Item = (LinkId, usize)> + '_ {
     let lanes = links[link_id].reachable_lanes();
-    let own_idx = lanes.iter().position(|id| *id == link_id).unwrap();
-    lanes.iter().enumerate().flat_map(move |(idx, link_id)| {
+    lanes.iter().flat_map(move |link_id| {
         let link = &links[*link_id];
-        let cost = (10. * link.length() / link.speed_limit()) as usize + 5 * idx.abs_diff(own_idx);
+        let cost = (10. * link.length() / link.speed_limit()) as _;
         link.links_out().iter().map(move |id| (*id, cost))
     })
 }

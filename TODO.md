@@ -2,9 +2,10 @@
 - Lane changing AI
   - Improve lane cost function
     - Customisable?
+    - Move out of `pathfinding`, it just reports the "dead lane distances"
   - Don't consider lane changes every `step`
-  - Don't exit if `can_exit` is false
   - Allow re-routing if the vehicle gets stuck
+  - Don't exit if `can_exit` is false
   - Use `fast_paths` crate?
 - Better gap acceptance
   - Important for roundabouts
