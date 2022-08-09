@@ -17,9 +17,10 @@ fn vehicle_drives_forward() {
         &VehicleAttributes {
             length: 5.0,
             width: 2.0,
+            wheel_base: 1.5,
+            headway: 1.5,
             max_acc: 2.0,
             comf_dec: 2.0,
-            wheel_base: 1.5,
         },
         link,
     );

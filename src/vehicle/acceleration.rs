@@ -1,14 +1,15 @@
 use std::cell::Cell;
 
 /// The minimum gap to maintain between vehicles in m.
-const MIN_GAP: f64 = 2.5; // m
+const MIN_GAP: f64 = 2.0; // m
 
-/// The maximum deceleration of all vehicles in m/s^2.
+/// The maximum deceleration of all vehicles in ms<sup>-2</sup>.
 const MAX_DECEL: f64 = -6.0; // m/s^2
 
 /// The acceleration model of a vehicle.
 #[derive(Clone, Debug)]
 pub struct AccelerationModel {
+    headway: f64,
     max_acc: f64,
     comf_dec: f64,
     vel_adj: f64,
@@ -17,6 +18,8 @@ pub struct AccelerationModel {
 
 /// The parameters of the acceleration model.
 pub struct ModelParams {
+    /// The desired gap between this and the vehicle ahead in seconds.
+    pub time_headway: f64,
     /// The vehicle's maximum acceleration in m/s<sup>2</sup>.
     pub max_acceleration: f64,
     /// The comfortable decelleration in m/s<sup>2</sup>.
@@ -27,6 +30,7 @@ impl AccelerationModel {
     /// Creates a new acceleration model.
     pub fn new(params: &ModelParams) -> Self {
         AccelerationModel {
+            headway: params.time_headway,
             max_acc: params.max_acceleration,
             comf_dec: params.comf_deceleration,
             vel_adj: 1.0,
@@ -128,7 +132,6 @@ impl AccelerationModel {
 
     /// Computes an acceleration using the intelligent driver model.
     fn idm(&self, net_dist: f64, my_vel: f64, their_vel: f64) -> f64 {
-        let headway = 1.5; // s
         let comf_dec = self.comf_dec; // m.s^-2
         let max_acc = self.max_acc; // m.s^-2
 
@@ -137,7 +140,7 @@ impl AccelerationModel {
         } else {
             let appr = my_vel - their_vel;
             let factor = 1. / (2. * (max_acc * comf_dec).sqrt());
-            let ss = MIN_GAP + (my_vel * headway) + (my_vel * appr * factor);
+            let ss = MIN_GAP + (my_vel * self.headway) + (my_vel * appr * factor);
             let term = ss / net_dist;
             max_acc * (1. - (term * term))
         }
@@ -152,6 +155,7 @@ mod test {
     #[test]
     fn min_reach_time() {
         let acc = AccelerationModel::new(&ModelParams {
+            time_headway: 1.5,
             max_acceleration: 2.0,
             comf_deceleration: 2.0,
         });

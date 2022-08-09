@@ -40,6 +40,7 @@
 //!     width: 2.0, // m
 //!     length: 5.0, // m
 //!     wheel_base: 1.5, // m
+//!     headway: 1.5, // s
 //!     max_acc: 2.0, // m
 //!     comf_dec: 2.0, // m
 //! }, link_id);

@@ -69,6 +69,8 @@ pub struct VehicleAttributes {
     pub length: f64,
     /// Distance from vehicle's centre to centre of wheel axle.
     pub wheel_base: f64,
+    /// The desired gap between this and the vehicle ahead in seconds.
+    pub headway: f64,
     /// The maximum acceleration of the vehicle, in m/s^2.
     pub max_acc: f64,
     /// The comfortable deceleration of the vehicle, a negative number in m/s^2.
@@ -106,6 +108,7 @@ impl Vehicle {
             half_len: 0.5 * attributes.length,
             wheel_base: attributes.wheel_base,
             acc: AccelerationModel::new(&acceleration::ModelParams {
+                time_headway: attributes.headway,
                 max_acceleration: attributes.max_acc,
                 comf_deceleration: attributes.comf_dec,
             }),
