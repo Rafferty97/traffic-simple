@@ -1,6 +1,6 @@
 use self::acceleration::AccelerationModel;
 use self::dynamics::calc_direction;
-use self::pathfinding::{EvaluateLinkInput, PathfindingModel};
+use self::pathfinding::{Path, PathfindingModel};
 use crate::group::{LinkProjection, Obstacle};
 use crate::math::{project_local, rot90, CubicFn, Point2d, Vector2d};
 use crate::util::Interval;
@@ -216,6 +216,11 @@ impl Vehicle {
         })
     }
 
+    /// Whether the vehicle can exit the simulation at the end of its current path.
+    pub(crate) fn can_exit(&self) -> bool {
+        self.can_exit
+    }
+
     /// Determines whether the vehicle can comfortably stop before reaching `pos`.
     pub(crate) fn can_stop(&self, pos: f64) -> bool {
         let net_dist = pos - self.pos_front();
@@ -377,38 +382,70 @@ impl Vehicle {
         lane_change: Option<LaneChange>,
         links: &LinkSet,
     ) {
-        let (route, can_exit) = self.pathfind.calc_path(link_id, links);
         self.route = vec![link_id];
-        self.route.extend(route);
         self.pathfind.set_origin(link_id, links);
         self.entered = 1;
         self.pos = pos;
         self.lane_change = lane_change;
-        self.can_exit = can_exit;
+        self.can_exit = false;
     }
 
     /// Sets the vehicle's destination link.
     pub(crate) fn set_destination(&mut self, link_id: LinkId, links: &LinkSet) {
         self.pathfind.set_destination(link_id, links);
-        self.recalc_path(links);
+        self.can_exit = false;
     }
 
-    /// Evaluates the desirability of being on a given link.
-    pub(crate) fn evaluate_link(&self, link_id: LinkId, links: &LinkSet) -> f64 {
-        self.pathfind.evaluate_link(EvaluateLinkInput {
-            link_id,
-            links,
-            pos: self.pos,
-        })
+    /// Gets the vehicle's current destination link.
+    pub fn destination(&self) -> LinkId {
+        self.pathfind.destination()
     }
 
-    /// Recalculates the vehicle's path.
-    pub(crate) fn recalc_path(&mut self, links: &LinkSet) {
-        let src = self.route[self.entered - 1];
-        let (route, can_exit) = self.pathfind.calc_path(src, links);
-        self.route.truncate(self.entered);
-        self.route.extend(route);
-        self.can_exit = can_exit;
+    /// Evaluates the available paths and chooses the best, which may involve a lane change.
+    /// If the path the vehicle is currently on is the best, then `None` is returned.
+    pub(crate) fn choose_path(&self, links: &LinkSet) -> Option<&Path> {
+        if self.lane_change.is_some() {
+            // Don't lane change while already lane changing
+            return None;
+        }
+
+        self.pathfind
+            .paths()
+            .iter()
+            .min_by_key(|path| self.evaluate_path(path, links))
+            .filter(|path| !path.links.iter().eq(&self.route))
+    }
+
+    /// Evaluates the desirability of being on a given path,
+    /// where a lower value indicates a more desirable path to be on.
+    fn evaluate_path(&self, path: &Path, links: &LinkSet) -> usize {
+        let curr_link = self.route[0];
+        let new_link = path.links[0];
+        let cost = if curr_link == new_link {
+            1000.0 * path.dists.cost(self.pos)
+        } else {
+            let pos = links[curr_link].project_approx(new_link, self.pos);
+            // TODO: Check that lane change is feasible
+            // Add a small lane change "penalty"
+            1000.0 * path.dists.cost(pos) + 5.0
+        };
+        cost as _
+    }
+
+    /// Sets the vehicle's path, which is the set of links it will traverse, including the one it's currently on.
+    /// The first [`LinkId`] in `path` must be the one the vehicle is currently on.
+    pub(crate) fn set_path(&mut self, path: &Path) {
+        let matched = self
+            .route
+            .iter()
+            .zip(&path.links)
+            .take_while(|(a, b)| a == b)
+            .count();
+
+        self.route.clear();
+        self.route.extend_from_slice(&path.links);
+        self.entered = usize::min(self.entered, matched);
+        self.can_exit = path.can_exit;
     }
 
     /// Updates the vehicle's world coordinates

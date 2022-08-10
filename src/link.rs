@@ -34,13 +34,15 @@ pub struct Link {
     /// The links that succeed this one.
     links_out: SmallVec<[LinkId; 4]>,
     /// The links that can be lane changed into.
-    links_adjacent: ArrayVec<LinkId, 2>,
+    lane_changes: ArrayVec<LinkId, 2>,
     /// The links that conflict with this one.
     conflicts: Vec<LinkConflict>,
     /// The index of the last conflict with an insufficient gap; an optimisation.
     last_conflict: Cell<usize>,
     /// Speed limit in m/s.
     speed_limit: f64,
+    /// The cost in units of 0.1s.
+    cost: usize,
     /// The vehicles on the link.
     vehicles: Vec<VehicleId>,
     /// The traffic control at the start of the link.
@@ -79,16 +81,18 @@ impl Link {
     /// Creates a new link.
     pub(crate) fn new(id: LinkId, attribs: &LinkAttributes) -> Self {
         let curve = LinkCurve::new(&attribs.curve);
+        let cost = (10.0 * curve.length() / attribs.speed_limit) as _;
         Self {
             id,
             curve,
             group: None,
             links_in: smallvec![],
             links_out: smallvec![],
-            links_adjacent: ArrayVec::new(),
+            lane_changes: ArrayVec::new(),
             conflicts: vec![],
             last_conflict: Cell::new(0),
             speed_limit: attribs.speed_limit,
+            cost,
             vehicles: vec![],
             control: TrafficControl::Open,
             active: false,
@@ -110,6 +114,11 @@ impl Link {
         self.speed_limit
     }
 
+    /// Gets the link cost, which is the minimum travel time of the link in units of 0.1s.
+    pub fn cost(&self) -> usize {
+        self.cost
+    }
+
     /// Gets the curve representing the link's centre line.
     pub fn curve(&self) -> &LinkCurve {
         &self.curve
@@ -126,8 +135,8 @@ impl Link {
     }
 
     /// Gets the links that vehicles on this link may lane change into.
-    pub fn links_adjacent(&self) -> &[LinkId] {
-        &self.links_adjacent
+    pub fn lane_changes(&self) -> &[LinkId] {
+        &self.lane_changes
     }
 
     /// Gets all the links reachable from this one via lane changes, including the link itself.
@@ -162,14 +171,14 @@ impl Link {
         self.links_in.push(link_id);
     }
 
-    /// Adds an adjacent link.
-    pub(crate) fn add_link_adjacent(&mut self, link_id: LinkId) {
-        self.links_adjacent.push(link_id);
-    }
-
     /// Sets the link group.
     pub(crate) fn set_group(&mut self, group: Rc<LinkGroup>) {
         self.group = Some(group);
+    }
+
+    /// Adds a lane change.
+    pub(crate) fn add_lane_change(&mut self, link_id: LinkId) {
+        self.lane_changes.push(link_id);
     }
 
     /// Gets the link group.
@@ -279,7 +288,15 @@ impl Link {
                         ControlFlow::Break(())
                     }
                 },
-                None => ControlFlow::Continue(()),
+                None => {
+                    if vehicle.can_exit() {
+                        ControlFlow::Continue(())
+                    } else {
+                        // Stop before the line
+                        vehicle.stop_at_line(0.0);
+                        ControlFlow::Break(())
+                    }
+                }
             },
             (0, self.id),
             self.length(),
@@ -403,7 +420,7 @@ impl Link {
 
         // Apply accelerations to vehicles on adjacent links
         if let Some(group) = self.group.as_deref() {
-            for proj in group.projections(self.id) {
+            for proj in group.projections_from_link(self.id) {
                 let obstacles = self
                     .vehicles
                     .iter()
@@ -536,6 +553,14 @@ impl Link {
             link.process_vehicles(links, vehicles, func, route, pos, skip);
         }
     }
+
+    pub(crate) fn project_approx(&self, dst: LinkId, pos: f64) -> f64 {
+        self.group
+            .as_ref()
+            .unwrap()
+            .projection(self.id, dst)
+            .project_approx(pos)
+    }
 }
 
 /// A reference to a vehicle with reference to another object on the network.
@@ -608,6 +633,10 @@ impl<'a> RelativeVehicle<'a> {
 
     pub fn get_route(&self, idx: usize) -> Option<(LinkId, RouteState)> {
         self.vehicle.get_route(self.route_idx + idx)
+    }
+
+    pub fn can_exit(&self) -> bool {
+        self.vehicle.can_exit()
     }
 
     pub fn link_id(&self, idx: usize) -> Option<LinkId> {

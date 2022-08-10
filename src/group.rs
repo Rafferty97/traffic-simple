@@ -82,10 +82,17 @@ impl LinkGroup {
         &self.links
     }
 
-    pub(crate) fn projections(&self, src: LinkId) -> &[LinkProjection] {
+    pub(crate) fn projections_from_link(&self, src: LinkId) -> &[LinkProjection] {
         let idx = self.find_link(src).expect("Link is not in group.");
         let n = self.links.len() - 1;
         &self.projections[(n * idx)..(n * (idx + 1))]
+    }
+
+    pub(crate) fn projection(&self, src: LinkId, dst: LinkId) -> &LinkProjection {
+        let src_idx = self.find_link(src).expect("Link is not in group.");
+        let dst_idx = self.find_link(dst).expect("Link is not in group.");
+        let n = self.links.len() - 1;
+        &self.projections[(n * src_idx) + dst_idx]
     }
 
     /// Gets the index of the `link` in this link group.
@@ -157,14 +164,7 @@ impl LinkProjection {
         lat: Interval<f64>,
         vel: f64,
     ) -> Obstacle {
-        let idx = usize::min(
-            (pos * self.inv_segment_len) as usize,
-            self.samples.len() - 1,
-        );
-        let sample = unsafe {
-            // SAFETY: Way index is generated guarantees it's within bounds
-            self.samples.get_unchecked(idx)
-        };
+        let sample = self.sample(pos);
         // Account for a negative `pos` value
         let behind = f64::min(pos, 0.0);
         Obstacle {
@@ -172,6 +172,21 @@ impl LinkProjection {
             pos: sample.pos + behind,
             lat: lat + sample.lat,
             vel,
+        }
+    }
+
+    pub fn project_approx(&self, pos: f64) -> f64 {
+        self.sample(pos).pos
+    }
+
+    fn sample(&self, pos: f64) -> &ProjectedSample {
+        let idx = usize::min(
+            (pos * self.inv_segment_len) as usize,
+            self.samples.len() - 1,
+        );
+        unsafe {
+            // SAFETY: Way index is generated guarantees it's within bounds
+            self.samples.get_unchecked(idx)
         }
     }
 }

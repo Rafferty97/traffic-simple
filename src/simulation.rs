@@ -10,6 +10,12 @@ use rand_distr::Distribution;
 use slotmap::SlotMap;
 use std::rc::Rc;
 
+/// Update vehicle accelerations at least once per this interval.
+const ACCELERATION_UPDATE_SEC: f64 = 0.1; // s
+
+/// Perform lane changing calculations at least once per this interval.
+const LANE_CHANGE_UPDATE_SEC: f64 = 0.3; // s
+
 /// A traffic simulation.
 #[derive(Default)]
 pub struct Simulation {
@@ -27,6 +33,10 @@ pub struct Simulation {
     frame: usize,
     /// The next sequence number.
     seq: usize,
+    /// The time since the last accelerations update in s.
+    acc_update: f64,
+    /// The time since the last lane change update in s.
+    lc_update: f64,
     /// Debugging information from the previously simulated frame.
     #[cfg(feature = "debug")]
     debug: serde_json::Value,
@@ -59,7 +69,7 @@ impl Simulation {
             self.links[*id].set_group(group.clone());
         }
         for (from, to) in group.lane_changes() {
-            self.links[from].add_link_adjacent(to);
+            self.links[from].add_lane_change(to);
         }
     }
 
@@ -140,25 +150,20 @@ impl Simulation {
     ///
     /// For a realistic simulation, do not use a time step greater than around 0.2.
     pub fn step(&mut self, dt: f64) {
-        self.do_lane_changes();
+        self.calculate_lane_changes();
         self.apply_accelerations();
-        self.step_fast(dt);
-        #[cfg(feature = "debug")]
-        take_debug_frame();
-    }
-
-    /// Advances the simulation by `dt` seconds, but only integrates vehicles positions,
-    /// and doesn't recalculate more expensive aspects of the simulation.
-    ///
-    /// Use this to achieve better performance while retaining a smooth animation frame rate,
-    /// though beware that simulating too many consecutive frames with this method will result
-    /// in a noticeable degradation in simulation quality and realism.
-    pub fn step_fast(&mut self, dt: f64) {
         self.update_lights(dt);
         self.integrate(dt);
         self.advance_vehicles();
         self.update_vehicle_coords();
         self.frame += 1;
+        self.acc_update += dt;
+        self.lc_update += dt;
+
+        #[cfg(feature = "debug")]
+        {
+            self.debug = take_debug_frame();
+        }
     }
 
     /// Gets the current simulation frame index.
@@ -207,8 +212,44 @@ impl Simulation {
         }
     }
 
+    /// Performs lane changes.
+    fn calculate_lane_changes(&mut self) {
+        if self.lc_update < LANE_CHANGE_UPDATE_SEC {
+            return;
+        } else {
+            self.lc_update = 0.0;
+        }
+
+        let mut lanechanges = vec![];
+
+        for vehicle in self.vehicles.values_mut() {
+            if let Some(path) = vehicle.choose_path(&self.links) {
+                let path = path.clone();
+                if vehicle.link_id().unwrap() != path.links[0] {
+                    // Queue a lane change
+                    lanechanges.push((vehicle.id(), path));
+                } else {
+                    // Just alter the vehicle's path
+                    vehicle.set_path(&path);
+                }
+            }
+        }
+
+        // Perform the queued lane changes
+        for (vehicle_id, path) in lanechanges {
+            self.do_lane_change(vehicle_id, path.links[0], 30.0);
+            self.vehicles[vehicle_id].set_path(&path);
+        }
+    }
+
     /// Calculates the accelerations of the vehicles.
     fn apply_accelerations(&mut self) {
+        if self.acc_update < ACCELERATION_UPDATE_SEC {
+            return;
+        } else {
+            self.acc_update = 0.0;
+        }
+
         for (_, link) in &mut self.links {
             link.deactivate();
         }
@@ -294,26 +335,6 @@ impl Simulation {
     fn update_vehicle_coords(&mut self) {
         for (_, vehicle) in &mut self.vehicles {
             vehicle.update_coords(&self.links);
-        }
-    }
-
-    /// Performs lane changes.
-    fn do_lane_changes(&mut self) {
-        let mut lanechanges = vec![];
-        for vehicle in self.vehicles.values() {
-            if let Some(link_id) = vehicle.link_id() {
-                let stay_cost = vehicle.evaluate_link(link_id, &self.links);
-                for adj in self.links[link_id].links_adjacent() {
-                    let move_cost = vehicle.evaluate_link(*adj, &self.links);
-                    if move_cost < stay_cost {
-                        lanechanges.push((vehicle.id(), *adj, 30.0));
-                        break;
-                    }
-                }
-            }
-        }
-        for (vehicle_id, link_id, distance) in lanechanges {
-            self.do_lane_change(vehicle_id, link_id, distance);
         }
     }
 

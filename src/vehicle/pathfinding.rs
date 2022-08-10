@@ -1,27 +1,29 @@
 use crate::{LinkId, LinkSet};
-use itertools::unfold;
+use arrayvec::ArrayVec;
 use slotmap::{Key, SparseSecondaryMap};
+
+const PLAN_DIST: f64 = 200.0;
 
 /// The path finding model of a vehicle.
 /// This can be conceptualised as the vehicle's GPS navigation unit.
 #[derive(Clone, Debug, Default)]
-pub struct PathfindingModel {
+pub(crate) struct PathfindingModel {
     /// The link the vehicle is currently on.
     src: LinkId,
     /// The destination link the vehicle would like to reach.
     dst: LinkId,
     /// A matrix used to determine the desirability of each link.
     matrix: SparseSecondaryMap<LinkId, LaneDists>,
+    /// The current set of available paths.
+    paths: Vec<Path>,
 }
 
-/// Inputs into the [`PathfindingModel::evaluate_link`] method.
-pub struct EvaluateLinkInput<'a> {
-    /// The link to evaluate.
-    pub link_id: LinkId,
-    /// The vehicle's position along the link.
-    pub pos: f64,
-    /// The links in the network.
-    pub links: &'a LinkSet,
+/// A series of links that advances the vehicle towards its goal link.
+#[derive(Clone, Debug)]
+pub(crate) struct Path {
+    pub links: ArrayVec<LinkId, 8>,
+    pub dists: LaneDists,
+    pub can_exit: bool,
 }
 
 impl PathfindingModel {
@@ -31,33 +33,29 @@ impl PathfindingModel {
         if !self.matrix.contains_key(link_id) {
             self.reroute(links);
         }
+        self.make_paths(links);
     }
 
     /// Updates the link's destination link.
     pub fn set_destination(&mut self, link_id: LinkId, links: &LinkSet) {
         self.dst = link_id;
         self.reroute(links);
+        self.make_paths(links);
     }
 
-    /// Evaluates the desirability of being on a given link.
-    pub fn evaluate_link(&self, input: EvaluateLinkInput) -> f64 {
-        if let Some(dists) = self.matrix.get(input.link_id) {
-            // Cost of changing lanes now
-            let lc_now_cost = if input.link_id == self.src {
-                0.0
-            } else {
-                0.002
-            };
-            // Cost of changing lanes later
-            let lc_later_cost = dists.get_cost(input.pos);
-            lc_now_cost + lc_later_cost
-        } else {
-            f64::INFINITY
-        }
+    /// Gets the paths the vehicle could traverse either from its current link
+    /// or an adjacent link it's allowed to lane change to.
+    pub fn paths(&self) -> &[Path] {
+        &self.paths
+    }
+
+    /// Gets the vehicle's current destination link.
+    pub fn destination(&self) -> LinkId {
+        self.dst
     }
 
     /// Finds the best route to the vehicle's destination, if one exists.
-    pub fn reroute(&mut self, links: &LinkSet) {
+    fn reroute(&mut self, links: &LinkSet) {
         if self.src.is_null() || self.dst.is_null() {
             self.matrix = Default::default();
             return;
@@ -72,28 +70,6 @@ impl PathfindingModel {
         if let Some((route, _)) = result {
             self.calc_lane_matrix(&route, links);
         }
-    }
-
-    /// Finds a path (series of links) for the vehicle to follow after it succeeds it current link
-    /// which allows it to travel as far as possible towards its goal link without needing to change lanes.
-    pub fn calc_path(&self, src: LinkId, links: &LinkSet) -> (Vec<LinkId>, bool) {
-        if self.dst.is_null() {
-            return (vec![], false);
-        }
-
-        let path = unfold(src, |link_id| {
-            *link_id = links[*link_id]
-                .links_out()
-                .iter()
-                .flat_map(|id| self.matrix.get(*id).map(|d| (*id, d.0[0])))
-                .max_by(|a, b| a.1.cmp(&b.1))
-                .map(|(id, _)| id)?;
-            Some(*link_id)
-        });
-        let path = path.take(16).collect::<Vec<_>>();
-        let can_exit = path.last().copied() == Some(self.dst);
-
-        (path, can_exit)
     }
 
     /// Calculates a lane matrix from a path.
@@ -139,14 +115,66 @@ impl PathfindingModel {
 
         self.matrix = matrix;
     }
+
+    fn make_paths(&mut self, links: &LinkSet) {
+        self.paths.clear();
+        let mut path = ArrayVec::new();
+
+        path.push(self.src);
+        self.make_paths_inner(links, &mut path, 0.0);
+
+        for link_id in links[self.src].lane_changes() {
+            path[0] = *link_id;
+            self.make_paths_inner(links, &mut path, 0.0);
+        }
+    }
+
+    fn make_paths_inner(
+        &mut self,
+        links: &LinkSet,
+        path: &mut ArrayVec<LinkId, 8>,
+        dist: f64,
+    ) -> bool {
+        let link_id = *path.last_mut().unwrap();
+
+        let dists = if let Some(dists) = self.matrix.get(link_id) {
+            dists.offset(dist)
+        } else {
+            return false;
+        };
+
+        let mut found = false;
+
+        if !path.is_full() && dist < PLAN_DIST {
+            let link = &links[link_id];
+            let dist = dist + link.length();
+            let last_idx = path.len();
+            path.push(LinkId::null());
+            for succ in links[link_id].links_out() {
+                path[last_idx] = *succ;
+                found |= self.make_paths_inner(links, path, dist);
+            }
+            path.pop();
+        }
+
+        if !found {
+            let can_exit = link_id == self.dst;
+            self.paths.push(Path {
+                links: path.clone(),
+                dists,
+                can_exit,
+            });
+        }
+
+        true
+    }
 }
 
 fn successors(link_id: LinkId, links: &LinkSet) -> impl Iterator<Item = (LinkId, usize)> + '_ {
     let lanes = links[link_id].reachable_lanes();
     lanes.iter().flat_map(move |link_id| {
         let link = &links[*link_id];
-        let cost = (10. * link.length() / link.speed_limit()) as _;
-        link.links_out().iter().map(move |id| (*id, cost))
+        link.links_out().iter().map(move |id| (*id, link.cost()))
     })
 }
 
@@ -162,22 +190,26 @@ impl LaneDists {
         Self([u32::MAX; 4])
     }
 
-    pub fn offset(&self, dist: f64) -> Self {
-        Self(self.0.map(|x| x.saturating_add(Self::make_dist(dist))))
+    /// Add an amount to all distances.
+    pub fn offset(&self, distance: f64) -> Self {
+        Self(self.0.map(|x| x.saturating_add(Self::make_dist(distance))))
     }
 
+    /// Offsets all distances by one lane.
     pub fn shift(&self) -> Self {
         Self([0, self.0[0], self.0[1], self.0[2]])
     }
 
+    /// Combines two `LaneDist`s.
     pub fn combine(&self, other: &Self) -> Self {
         Self([0, 1, 2, 3].map(|i| u32::max(self.0[i], other.0[i])))
     }
 
-    pub fn get_cost(&self, pos: f64) -> f64 {
+    /// Computes the cost of being on this link at the given `pos`.
+    pub fn cost(&self, pos: f64) -> f64 {
         self.0
             .iter()
-            .map(|dist| 0.1 * *dist as f64 - pos)
+            .map(|dist| (0.1 * *dist as f64) - pos)
             .enumerate()
             .map(|(idx, dist)| (idx + 1) as f64 / dist)
             .reduce(|a, b| a.max(b))
