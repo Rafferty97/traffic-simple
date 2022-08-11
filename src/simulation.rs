@@ -173,12 +173,17 @@ impl Simulation {
 
     /// Returns an iterator over all the links in the simulation.
     pub fn iter_links(&self) -> impl Iterator<Item = &Link> {
-        self.links.iter().map(|(_, link)| link)
+        self.links.values()
     }
 
     /// Returns an iterator over all the vehicles in the simulation.
     pub fn iter_vehicles(&self) -> impl Iterator<Item = &Vehicle> {
-        self.vehicles.iter().map(|(_, veh)| veh)
+        self.vehicles.values()
+    }
+
+    /// Returns an iterator over all the traffic lights in the simulation.
+    pub fn iter_lights(&self) -> impl Iterator<Item = (TrafficLightId, &TrafficLight)> {
+        self.lights.iter()
     }
 
     /// Gets a reference to the vehicle with the given ID.

@@ -55,7 +55,7 @@
 
 pub use cgmath;
 pub use group::LinkGroup;
-pub use light::TrafficLight;
+pub use light::{LightState, TrafficLight};
 pub use link::{Link, LinkAttributes, TrafficControl};
 pub use simulation::Simulation;
 use slotmap::{new_key_type, SlotMap};

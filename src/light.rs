@@ -46,8 +46,11 @@ struct Conflict {
 /// The state of a traffic light movement.
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum LightState {
+    /// Red light
     Red,
+    /// Amber light
     Amber,
+    /// Green light
     Green,
 }
 
@@ -96,6 +99,11 @@ impl TrafficLight {
     /// Adds a phase to the traffic light timing.
     pub fn add_phase(&mut self, mask: u64, duration: f64) {
         self.phases.push(Phase { mask, duration });
+    }
+
+    /// Gets the state of each link in the traffic light.
+    pub fn state(&self) -> impl Iterator<Item = (usize, LightState)> + '_ {
+        self.movements.iter().map(|m| m.state).enumerate()
     }
 
     /// Advances the traffic light timing by one frame.
