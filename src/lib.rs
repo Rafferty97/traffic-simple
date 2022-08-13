@@ -58,8 +58,8 @@ pub use group::LinkGroup;
 pub use light::{LightState, TrafficLight};
 pub use link::{Link, LinkAttributes, TrafficControl};
 pub use simulation::Simulation;
+pub use slotmap;
 use slotmap::{new_key_type, SlotMap};
-pub use slotmap::{Key, KeyData};
 pub use util::Interval;
 pub use vehicle::{Vehicle, VehicleAttributes};
 
