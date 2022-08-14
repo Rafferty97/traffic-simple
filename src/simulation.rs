@@ -108,6 +108,16 @@ impl Simulation {
         vehicle_id
     }
 
+    /// Removes a vehicle from the simulation.
+    pub fn remove_vehicle(&mut self, id: VehicleId) {
+        let vehicle = self.vehicles.remove(id);
+        if let Some(vehicle) = vehicle {
+            if let Some(link_id) = vehicle.link_id() {
+                self.links[link_id].remove_vehicle(vehicle.id());
+            }
+        }
+    }
+
     /// Randomly assigns a desired velocity adjustment factor to each vehicle,
     /// which is sampled from a normal distribution with a mean of 1 (no adjustment)
     /// and standard deviation of `stddev`.
