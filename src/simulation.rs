@@ -91,6 +91,27 @@ impl Simulation {
         self.links[to].add_link_in(from);
     }
 
+    /// Returns all routes in the netowrk.
+    pub fn all_routes(&self) -> impl Iterator<Item = (LinkId, LinkId)> + '_ {
+        let srcs = self
+            .links
+            .values()
+            .filter(|link| link.links_in().is_empty());
+        srcs.map(|link| link.id()).flat_map(move |src| {
+            let f = self.links[src].reachable_lanes().iter().copied();
+            let s = pathfinding::directed::dfs::dfs_reach(src, move |id| {
+                let lanes = self.links[*id].reachable_lanes();
+                lanes.iter().flat_map(move |link_id| {
+                    let link = &self.links[*link_id];
+                    link.links_out().iter().copied()
+                })
+            });
+            f.chain(s)
+                .filter(|id| self.links[*id].links_out().is_empty())
+                .map(move |dst| (src, dst))
+        })
+    }
+
     /// Adds a traffic light to the simulation.
     pub fn add_traffic_light(&mut self, light: TrafficLight) -> TrafficLightId {
         self.lights.insert(light)
