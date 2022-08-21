@@ -51,6 +51,8 @@ impl LinkCurve {
             })
             .collect::<Vec<_>>();
 
+        assert!(!segments.is_empty(), "There are no segments.");
+
         Self {
             scale: 0.5 / step,
             length,
