@@ -8,8 +8,6 @@ pub struct TrafficLight {
     movements: Vec<Movement>,
     /// The links controlled by each movement.
     links: Vec<(u8, LinkId)>,
-    /// The conflicts between the movements.
-    conflicts: Vec<Conflict>,
     /// The traffic light phases.
     phases: Vec<Phase>,
     /// The current traffic light phase.
@@ -29,18 +27,11 @@ struct Movement {
     since: f64,
     /// The duration of the amber phase in seconds.
     amber_time: f64,
-}
-
-/// Represents one traffic light movement's conflict with another.
-#[derive(Clone, Copy)]
-struct Conflict {
-    /// The movement which is the subject of the conflict.
-    subject: usize,
-    /// The movement which conflicts with the subject.
-    other: usize,
-    /// The number of seconds that the conflicting movement must be red
-    /// before the subject movement is allowed to turn green.
-    wait: f64,
+    /// Conflicting movements cannot go green until this movement
+    /// has been red for at least this duration, in seconds.
+    red_time: f64,
+    /// Bitmask used for determing conflicting movements.
+    conflict: u64,
 }
 
 /// The state of a traffic light movement.
@@ -73,9 +64,16 @@ impl TrafficLight {
     /// controlled by the same signal head(s) and so go and stop together.
     ///
     /// # Parameters
+    /// * `conflict` - Bitmask for determining movement conflicts.
     /// * `amber_time` - The duration of the amber phase of this movement, in seconds.
     /// * `links` - An iterator which produces the set of links that belong to this movement.
-    pub fn add_movement(&mut self, amber_time: f64, links: impl Iterator<Item = LinkId>) {
+    pub fn add_movement(
+        &mut self,
+        conflict: u64,
+        amber_time: f64,
+        red_time: f64,
+        links: impl Iterator<Item = LinkId>,
+    ) {
         let idx = self.movements.len() as u8;
         self.movements.push(Movement {
             state: LightState::Red,
@@ -83,17 +81,10 @@ impl TrafficLight {
             active: false,
             since: 0.0,
             amber_time,
+            red_time,
+            conflict,
         });
         self.links.extend(links.map(|link| (idx, link)));
-    }
-
-    /// Adds a conflict between two movements to the traffic light.
-    pub fn add_conflict(&mut self, subject: usize, other: usize, wait: f64) {
-        self.conflicts.push(Conflict {
-            subject,
-            other,
-            wait,
-        });
     }
 
     /// Adds a phase to the traffic light timing.
@@ -171,13 +162,11 @@ impl TrafficLight {
 
     /// Checks that a movement is not blocked by any other movements.
     fn can_turn_green(&self, movement: usize) -> bool {
-        self.conflicts
+        let mask = 1 << movement;
+        self.movements
             .iter()
-            .filter(|conflict| conflict.subject == movement)
-            .all(|conflict| {
-                let movement = &self.movements[conflict.other];
-                movement.state == LightState::Red && movement.since >= conflict.wait
-            })
+            .filter(|other| other.conflict & mask != 0)
+            .all(|other| other.state == LightState::Red && other.since > other.red_time)
     }
 }
 
