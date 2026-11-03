@@ -1,3 +1,4 @@
+mod debug;
 mod geometry;
 mod math;
 mod simulation;
