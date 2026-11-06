@@ -1,14 +1,13 @@
-use glam::DVec2;
 use thiserror::Error;
 
-use crate::geometry::Lane;
+use crate::geometry::{Lane, LaneError};
 use crate::network::{Network, Path, PathSegment};
 use crate::simulation::{Link, Simulation};
 
 #[derive(Error, Debug)]
 pub enum NetworkError {
     #[error("invalid path: {0}")]
-    InvalidPath(&'static str),
+    LaneError(LaneError),
 }
 
 impl Simulation {
@@ -35,5 +34,11 @@ fn create_lane(path: &Path, width: f64) -> Result<Lane, NetworkError> {
         }
     }
 
-    Lane::new(&points, width).map_err(|err| NetworkError::InvalidPath(err))
+    Ok(Lane::new(&points, width)?)
+}
+
+impl From<LaneError> for NetworkError {
+    fn from(err: LaneError) -> Self {
+        Self::LaneError(err)
+    }
 }

@@ -4,7 +4,7 @@ use itertools::Itertools;
 use slotmap::{new_key_type, SlotMap};
 
 use crate::debug::{DebugSink, ObjectSink};
-use crate::geometry::{Lane, LaneCoord};
+use crate::geometry::{Lane, LanePos};
 use crate::math::{sinc, wrap_angle};
 
 pub mod parse_network;
@@ -46,8 +46,8 @@ pub struct Vehicle {
     steer: f64,
     /// Vehicle's route, including the link it's currently on.
     links: Vec<LinkId>,
-    /// The current segment index that the vehicle is on.
-    segment_idx: usize,
+    /// The vehicle's position in lane-space.
+    lane_pos: LanePos,
     debug_target: DVec2,
 }
 
@@ -80,13 +80,9 @@ impl Simulation {
         };
 
         let (link_id, link) = self.links.iter().next().context("network is empty")?;
-        let pos = link
-            .lane
-            .lane_to_world_old(LaneCoord { index: 0, s: 0.0, t: 0.0 });
-        let pos2 = link
-            .lane
-            .lane_to_world_old(LaneCoord { index: 0, s: 0.1, t: 0.0 });
-        let dir = (pos2 - pos).to_angle();
+        let lane_pos = link.lane.lane_pos(0.0, 0.0);
+        let pos = link.lane.lane_to_world(lane_pos);
+        let dir = link.lane.tangent_at(lane_pos).to_angle();
 
         let id = self.vehicles.insert_with_key(|id| Vehicle {
             id,
@@ -97,7 +93,7 @@ impl Simulation {
             acc: 0.0,
             steer: 0.0,
             links: vec![link_id],
-            segment_idx: 0,
+            lane_pos,
             debug_target: pos,
         });
 
@@ -109,13 +105,8 @@ impl Simulation {
             vehicle.acc = 2.0;
 
             let link = &self.links[vehicle.links[0]];
-            vehicle.segment_idx = link
-                .lane
-                .find_segment_with_hint(vehicle.pos, vehicle.segment_idx);
-            let curr = link.lane.world_to_lane(vehicle.pos);
-            let target = link
-                .lane
-                .lane_to_world(curr.s + 5.0, 0.0, vehicle.segment_idx);
+            let target_s = vehicle.lane_pos.s + 5.5;
+            let target = link.lane.lane_to_world(link.lane.lane_pos(target_s, 0.0));
             vehicle.debug_target = target;
             vehicle.steer = pure_pursuit(&vehicle.attrs, vehicle.pos, vehicle.dir, target);
         }
@@ -125,6 +116,9 @@ impl Simulation {
     fn integrate(&mut self, dt: f64) {
         for (_, vehicle) in &mut self.vehicles {
             vehicle.integrate(dt);
+
+            let link = &self.links[vehicle.links[0]];
+            vehicle.lane_pos = link.lane.world_to_lane_near(vehicle.pos, vehicle.lane_pos);
         }
     }
 
