@@ -1,3 +1,4 @@
+use glam::DVec2;
 use thiserror::Error;
 
 use crate::geometry::{Lane, LaneError};
@@ -30,6 +31,15 @@ fn create_lane(path: &Path, width: f64) -> Result<Lane, NetworkError> {
             PathSegment::Line { from, to } => {
                 points.push(from.into());
                 points.push(to.into());
+            }
+            PathSegment::Arc { center, radius, start_angle, sweep } => {
+                const MAX_STEP: f64 = 0.05;
+                let center: DVec2 = center.into();
+                let n = (sweep.abs() / MAX_STEP).ceil().max(1.0) as usize;
+                points.extend((0..=n).map(|i| {
+                    let a = start_angle + sweep * (i as f64 / n as f64);
+                    center + radius * DVec2::from_angle(a)
+                }));
             }
         }
     }

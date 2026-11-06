@@ -20,7 +20,16 @@ pub struct Path(pub Vec<PathSegment>);
 #[serde(tag = "t")]
 #[serde(rename_all = "snake_case")]
 pub enum PathSegment {
-    Line { from: Pos, to: Pos },
+    Line {
+        from: Pos,
+        to: Pos,
+    },
+    Arc {
+        center: Pos,
+        radius: f64,
+        start_angle: f64,
+        sweep: f64,
+    },
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize, Debug)]
