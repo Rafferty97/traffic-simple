@@ -88,7 +88,11 @@ impl Lane {
         LaneCoord { index, s, t }
     }
 
-    pub fn lane_to_world(&self, coords: LaneCoord) -> DVec2 {
+    pub fn lane_to_world(&self, s: f64, t: f64, hint: usize) -> DVec2 {
+        self.segs[self.s_to_segment(s, hint)].lane_to_world(s, t)
+    }
+
+    pub fn lane_to_world_old(&self, coords: LaneCoord) -> DVec2 {
         self.segs[coords.index].lane_to_world(coords.s, coords.t)
     }
 
@@ -118,6 +122,18 @@ impl Lane {
         idx
     }
 
+    pub fn s_to_segment(&self, s: f64, hint: usize) -> usize {
+        let last = self.segs.len() - 1;
+        let mut idx = hint.min(last);
+        while idx > 0 && !self.segs[idx].test_s(s) {
+            idx -= 1;
+        }
+        while idx < last && self.segs[idx + 1].test_s(s) {
+            idx += 1;
+        }
+        idx
+    }
+
     pub fn outline(&self) -> impl Iterator<Item = DVec2> + '_ {
         let hw = self.width / 2.0;
         let left = self.segs.iter().map(move |s| s.lane_to_world(s.cum_s, hw));
@@ -135,6 +151,10 @@ impl Segment {
         let x = dir.dot(pos - start);
         let y = dir.perp_dot(pos - start);
         (x + y * adj.0) >= 0.0
+    }
+
+    pub fn test_s(&self, s: f64) -> bool {
+        s >= self.cum_s
     }
 
     pub fn world_to_lane(&self, pos: DVec2) -> (f64, f64) {
@@ -192,7 +212,7 @@ mod test {
         fn round_trip(lane in arb_lane(), seg in any::<Index>(), u in 0.0f64..1.0, v in -1.0f64..1.0) {
             let i = seg.index(lane.segs.len());
             let c = coord_in(&lane, i, u, v);
-            let (s, t) = lane.segs[i].world_to_lane(lane.lane_to_world(c));
+            let (s, t) = lane.segs[i].world_to_lane(lane.lane_to_world_old(c));
             prop_assert!((s - c.s).abs() < EPS && (t - c.t).abs() < EPS);
         }
 
@@ -213,7 +233,7 @@ mod test {
         ) {
             let i = seg.index(lane.segs.len());
             let c = coord_in(&lane, i, u, v);
-            let p = lane.lane_to_world(c);
+            let p = lane.lane_to_world_old(c);
             let hint = (i as i64 + offset).max(0) as usize;
             let j = lane.find_segment_with_hint(p, hint);
             let (s, t) = lane.segs[j].world_to_lane( p);

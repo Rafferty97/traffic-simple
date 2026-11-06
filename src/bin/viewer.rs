@@ -1,5 +1,5 @@
 use eframe::egui::{self, Color32, Pos2, Sense, Stroke};
-use egui::{lerp, Painter, Rect, Ui, Vec2};
+use egui::{lerp, Align2, FontId, Painter, Rect, Ui, Vec2};
 use glam::{DAffine2, DVec2};
 use itertools::Itertools;
 use traffic_sim::{
@@ -218,6 +218,13 @@ struct EguiDebug<'a> {
     label: Option<String>,
 }
 
+impl<'a> EguiDebug<'a> {
+    fn transform(&self, point: DVec2) -> Pos2 {
+        let point = self.transform.transform_point2(point);
+        Pos2::new(point.x as f32, point.y as f32)
+    }
+}
+
 impl<'a> DebugSink for EguiDebug<'a> {
     type Object<'b>
         = EguiDebug<'b>
@@ -240,12 +247,8 @@ impl<'a> DebugSink for EguiDebug<'a> {
 }
 
 impl<'a> ObjectSink for EguiDebug<'a> {
-    fn polyline(&mut self, points: &[glam::prelude::DVec2], closed: bool) {
-        let mut points = points
-            .into_iter()
-            .map(|&p| self.transform.transform_point2(p))
-            .map(|DVec2 { x, y }| Pos2::new(x as f32, y as f32))
-            .collect_vec();
+    fn polyline(&mut self, points: &[glam::prelude::DVec2], closed: bool, label: Option<&str>) {
+        let mut points = points.into_iter().map(|&p| self.transform(p)).collect_vec();
         if closed {
             points.push(*points.first().unwrap());
         }
@@ -263,7 +266,15 @@ impl<'a> ObjectSink for EguiDebug<'a> {
     }
 
     fn point(&mut self, point: glam::prelude::DVec2, label: Option<&str>) {
-        // todo
+        let point = self.transform(point);
+        self.painter.circle_filled(point, 3.0, Color32::CYAN);
+        if let Some(label) = label {
+            let point = point + Vec2::new(5.0, 0.0);
+            let align = Align2::LEFT_CENTER;
+            let font = FontId::monospace(12.0);
+            let color = Color32::WHITE;
+            self.painter.text(point, align, label, font, color);
+        }
     }
 
     fn datum(&mut self, key: &str, value: &str) {

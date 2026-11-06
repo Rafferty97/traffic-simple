@@ -46,6 +46,9 @@ pub struct Vehicle {
     steer: f64,
     /// Vehicle's route, including the link it's currently on.
     links: Vec<LinkId>,
+    /// The current segment index that the vehicle is on.
+    segment_idx: usize,
+    debug_target: DVec2,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -58,6 +61,8 @@ pub struct VehicleAttributes {
     front_len: f64,
     /// The distance between the rear and front axle's in metres.
     wheel_base: f64,
+    /// The maximum steering angle.
+    max_steer: f64,
 }
 
 impl Simulation {
@@ -66,16 +71,21 @@ impl Simulation {
     }
 
     pub fn insert_vehicle(&mut self) -> anyhow::Result<VehicleId> {
-        let attrs =
-            VehicleAttributes { half_wid: 0.89, rear_len: 0.98, front_len: 3.65, wheel_base: 2.70 };
+        let attrs = VehicleAttributes {
+            half_wid: 0.89,
+            rear_len: 0.98,
+            front_len: 3.65,
+            wheel_base: 2.70,
+            max_steer: 0.1,
+        };
 
         let (link_id, link) = self.links.iter().next().context("network is empty")?;
         let pos = link
             .lane
-            .lane_to_world(LaneCoord { index: 0, s: 0.0, t: 0.0 });
+            .lane_to_world_old(LaneCoord { index: 0, s: 0.0, t: 0.0 });
         let pos2 = link
             .lane
-            .lane_to_world(LaneCoord { index: 0, s: 0.1, t: 0.0 });
+            .lane_to_world_old(LaneCoord { index: 0, s: 0.1, t: 0.0 });
         let dir = (pos2 - pos).to_angle();
 
         let id = self.vehicles.insert_with_key(|id| Vehicle {
@@ -87,6 +97,8 @@ impl Simulation {
             acc: 0.0,
             steer: 0.0,
             links: vec![link_id],
+            segment_idx: 0,
+            debug_target: pos,
         });
 
         Ok(id)
@@ -95,6 +107,17 @@ impl Simulation {
     pub fn step(&mut self, dt: f64) {
         for (_, vehicle) in &mut self.vehicles {
             vehicle.acc = 2.0;
+
+            let link = &self.links[vehicle.links[0]];
+            vehicle.segment_idx = link
+                .lane
+                .find_segment_with_hint(vehicle.pos, vehicle.segment_idx);
+            let curr = link.lane.world_to_lane(vehicle.pos);
+            let target = link
+                .lane
+                .lane_to_world(curr.s + 5.0, 0.0, vehicle.segment_idx);
+            vehicle.debug_target = target;
+            vehicle.steer = pure_pursuit(&vehicle.attrs, vehicle.pos, vehicle.dir, target);
         }
         self.integrate(dt);
     }
@@ -119,7 +142,7 @@ impl Link {
     fn debug(&self, sink: &mut impl DebugSink) {
         let points = self.lane.outline().collect_vec();
         let mut obj = sink.object(&self.name);
-        obj.polyline(&points, true);
+        obj.polyline(&points, true, Some("lane"));
     }
 }
 
@@ -150,6 +173,16 @@ impl Vehicle {
         ];
 
         let mut obj = sink.object(&format!("veh:{:?}", self.id));
-        obj.polyline(&points, true);
+        obj.polyline(&points, true, Some("body"));
+        obj.point(self.debug_target, Some("target"));
     }
+}
+
+fn pure_pursuit(attrs: &VehicleAttributes, rear: DVec2, heading: f64, target: DVec2) -> f64 {
+    let to_target = target - rear;
+    let ld = to_target.length().max(1e-6);
+    let fwd = DVec2::from_angle(heading);
+    let alpha = fwd.perp_dot(to_target).atan2(fwd.dot(to_target));
+    let curvature = 2.0 * alpha.sin() / ld; // rad/m, positive = turning left (CCW)
+    curvature.clamp(-attrs.max_steer, attrs.max_steer)
 }

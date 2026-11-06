@@ -13,7 +13,7 @@ pub trait DebugSink {
 }
 
 pub trait ObjectSink {
-    fn polyline(&mut self, points: &[DVec2], closed: bool);
+    fn polyline(&mut self, points: &[DVec2], closed: bool, label: Option<&str>);
 
     fn point(&mut self, point: DVec2, label: Option<&str>);
 
