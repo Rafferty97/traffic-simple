@@ -43,19 +43,18 @@ impl Lane {
     pub fn new(points: &[DVec2], width: f64) -> Result<Self, &'static str> {
         let max_tan_half = (0.5 * MAX_TURN).tan();
 
+        let mut points = points.to_vec();
+        points.dedup_by(|a, b| a.distance_squared(*b) < 1e-12);
         if points.len() < 2 {
-            return Err("a lane needs at least two points");
+            return Err("a lane needs at least two distinct points");
         }
+
         let lens: Vec<f64> = points.windows(2).map(|w| w[0].distance(w[1])).collect();
-        if lens.iter().any(|&l| !(l > 1e-6)) {
-            return Err("zero-length segment");
-        }
         let dirs: Vec<DVec2> = points
             .windows(2)
             .map(|w| (w[1] - w[0]).normalize())
             .collect();
 
-        // tan(θ/2) for the turn at each vertex; the end ribs are square.
         let n = dirs.len();
         let mut tan_half = vec![0.0; n + 1];
         for i in 1..n {
@@ -84,12 +83,13 @@ impl Lane {
     }
 
     pub fn world_to_lane(&self, pos: DVec2) -> LaneCoord {
-        let idx = self.find_segment(pos);
-        self.segs[idx].world_to_lane(idx, pos)
+        let index = self.find_segment(pos);
+        let (s, t) = self.segs[index].world_to_lane(pos);
+        LaneCoord { index, s, t }
     }
 
     pub fn lane_to_world(&self, coords: LaneCoord) -> DVec2 {
-        self.segs[coords.index].lane_to_world(coords)
+        self.segs[coords.index].lane_to_world(coords.s, coords.t)
     }
 
     pub fn find_segment(&self, pos: DVec2) -> usize {
@@ -117,6 +117,15 @@ impl Lane {
         }
         idx
     }
+
+    pub fn outline(&self) -> impl Iterator<Item = DVec2> + '_ {
+        let hw = self.width / 2.0;
+        let left = self.segs.iter().map(move |s| s.lane_to_world(s.cum_s, hw));
+        let right = self.segs.iter().map(move |s| s.lane_to_world(s.cum_s, -hw));
+        let last_seg = self.segs.last().unwrap();
+        let end = [hw, -hw].map(|t| last_seg.lane_to_world(self.length, t));
+        left.chain(end).chain(right.rev())
+    }
 }
 
 impl Segment {
@@ -128,18 +137,17 @@ impl Segment {
         (x + y * adj.0) >= 0.0
     }
 
-    pub fn world_to_lane(&self, index: usize, pos: DVec2) -> LaneCoord {
+    pub fn world_to_lane(&self, pos: DVec2) -> (f64, f64) {
         let Self { start, dir, cum_s, adj, .. } = *self;
         let x = dir.dot(pos - start);
         let y = dir.perp_dot(pos - start);
         let s = cum_s + (x + y * adj.0) / (1.0 + y * adj.1);
         let t = y;
-        LaneCoord { index, s, t }
+        (s, t)
     }
 
-    pub fn lane_to_world(&self, coord: LaneCoord) -> DVec2 {
+    pub fn lane_to_world(&self, s: f64, t: f64) -> DVec2 {
         let Self { start, dir, cum_s, adj, .. } = *self;
-        let LaneCoord { s, t, .. } = coord;
         let y = t;
         let x = (s - cum_s) * (1.0 + y * adj.1) - y * adj.0;
         start + x * dir + y * dir.perp()
@@ -184,8 +192,8 @@ mod test {
         fn round_trip(lane in arb_lane(), seg in any::<Index>(), u in 0.0f64..1.0, v in -1.0f64..1.0) {
             let i = seg.index(lane.segs.len());
             let c = coord_in(&lane, i, u, v);
-            let back = lane.segs[i].world_to_lane(i, lane.lane_to_world(c));
-            prop_assert!((back.s - c.s).abs() < EPS && (back.t - c.t).abs() < EPS);
+            let (s, t) = lane.segs[i].world_to_lane(lane.lane_to_world(c));
+            prop_assert!((s - c.s).abs() < EPS && (t - c.t).abs() < EPS);
         }
 
         #[test]
@@ -193,8 +201,8 @@ mod test {
             prop_assume!(lane.segs.len() > 1);
             let i = 1 + rib.index(lane.segs.len() - 1);
             let (s, t) = (lane.segs[i].cum_s, v * 0.5 * WIDTH);
-            let a = lane.segs[i - 1].lane_to_world(LaneCoord { index: i - 1, s, t });
-            let b = lane.segs[i].lane_to_world(LaneCoord { index: i, s, t });
+            let a = lane.segs[i - 1].lane_to_world(s, t);
+            let b = lane.segs[i].lane_to_world(s, t);
             prop_assert!(a.distance(b) < EPS);
         }
 
@@ -208,8 +216,8 @@ mod test {
             let p = lane.lane_to_world(c);
             let hint = (i as i64 + offset).max(0) as usize;
             let j = lane.find_segment_with_hint(p, hint);
-            let found = lane.segs[j].world_to_lane(j, p);
-            prop_assert!((found.s - c.s).abs() < EPS && (found.t - c.t).abs() < EPS);
+            let (s, t) = lane.segs[j].world_to_lane( p);
+            prop_assert!((s - c.s).abs() < EPS && (t - c.t).abs() < EPS);
         }
     }
 

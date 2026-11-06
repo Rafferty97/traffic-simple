@@ -1,7 +1,12 @@
 use glam::DVec2;
+use itertools::Itertools;
 use slotmap::{new_key_type, SlotMap};
 
+use crate::debug::{DebugSink, ObjectSink};
+use crate::geometry::Lane;
 use crate::math::{sinc, wrap_angle};
+
+pub mod parse_network;
 
 new_key_type! {
     /// Unique ID of a [Link].
@@ -12,7 +17,15 @@ new_key_type! {
 
 #[derive(Debug)]
 pub struct Simulation {
+    links: SlotMap<LinkId, Link>,
     vehicles: SlotMap<VehicleId, Vehicle>,
+}
+
+#[derive(Debug)]
+pub struct Link {
+    id: LinkId,
+    name: String,
+    lane: Lane,
 }
 
 #[derive(Debug)]
@@ -47,10 +60,28 @@ pub struct VehicleAttributes {
 }
 
 impl Simulation {
+    pub fn new() -> Self {
+        Self { links: SlotMap::with_key(), vehicles: SlotMap::with_key() }
+    }
+
     fn integrate(&mut self, dt: f64) {
         for (_, vehicle) in &mut self.vehicles {
             vehicle.integrate(dt);
         }
+    }
+
+    pub fn debug(&self, sink: &mut impl DebugSink) {
+        for (_, link) in &self.links {
+            link.debug(sink);
+        }
+    }
+}
+
+impl Link {
+    fn debug(&self, sink: &mut impl DebugSink) {
+        let points = self.lane.outline().collect_vec();
+        let mut obj = sink.object(&self.name);
+        obj.polyline(&points, true);
     }
 }
 

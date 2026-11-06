@@ -1,5 +1,12 @@
 use eframe::egui::{self, Color32, Pos2, Sense, Stroke};
-use egui::{lerp, Rect, Vec2};
+use egui::{lerp, Painter, Rect, Ui, Vec2};
+use glam::{DAffine2, DVec2};
+use itertools::Itertools;
+use traffic_sim::{
+    debug::{DebugSink, ObjectSink},
+    load_network_file,
+    simulation::Simulation,
+};
 
 fn main() -> eframe::Result {
     eframe::run_native(
@@ -10,18 +17,33 @@ fn main() -> eframe::Result {
 }
 
 struct Viewer {
+    sim: Simulation,
     center: Vec2, // world-space point at screen centre
     scale: f32,   // pixels per world unit
+    error: Option<String>,
 }
 
 impl Default for Viewer {
     fn default() -> Self {
-        Self { center: Vec2::new(0.0, 0.0), scale: 1.0 }
+        Self { sim: Simulation::new(), center: Vec2::new(0.0, 0.0), scale: 5.0, error: None }
     }
 }
 
 impl eframe::App for Viewer {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        egui::Panel::top("controls").show(ui, |ui| {
+            if ui.button("Load network").clicked() {
+                match load_network_file("networks/basic.json") {
+                    Ok(sim) => {
+                        self.sim = sim;
+                    }
+                    Err(err) => {
+                        self.error = Some(err.to_string());
+                    }
+                }
+            }
+        });
+
         egui::CentralPanel::default().show(ui, |ui| {
             let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
             let rect = resp.rect;
@@ -33,12 +55,20 @@ impl eframe::App for Viewer {
                 self.scale *= (z * 0.01).exp();
             }
 
-            let to_screen = |p: Pos2| rect.center() + (p.to_vec2() - self.center) * self.scale;
-
             // Grid lines
             for (s, e, c) in grid_lines(rect, self.center, self.scale, 10.0) {
                 painter.line_segment([s, e], Stroke::new(1.0, c));
             }
+
+            // Debug geometry
+            let translation = rect.center() - self.scale * self.center;
+            let transform = DAffine2::from_scale_angle_translation(
+                DVec2::splat(self.scale as f64),
+                0.0,
+                DVec2::new(translation.x as f64, translation.y as f64),
+            );
+            self.sim
+                .debug(&mut EguiDebug { ui, painter: &painter, transform });
 
             // Roads
             // for road in self.sim.roads() {
@@ -48,10 +78,10 @@ impl eframe::App for Viewer {
             //     );
             // }
             // Vehicles
-            for (i, v) in [(0, Pos2::new(10.0, 10.0))] {
-                let col = Color32::LIGHT_BLUE;
-                painter.circle_filled(to_screen(v.into()), 4.0, col);
-            }
+            // for (i, v) in [(0, Pos2::new(10.0, 10.0))] {
+            //     let col = Color32::LIGHT_BLUE;
+            //     painter.circle_filled(to_screen(v.into()), 4.0, col);
+            // }
 
             // Click to select the nearest vehicle
             // if resp.clicked() {
@@ -69,6 +99,23 @@ impl eframe::App for Viewer {
             //     }
             // }
         });
+
+        let mut dismiss = false;
+        if let Some(msg) = &self.error {
+            egui::Window::new("Error")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ui, |ui| {
+                    ui.colored_label(ui.visuals().error_fg_color, msg);
+                    if ui.button("OK").clicked() {
+                        dismiss = true;
+                    }
+                });
+        }
+        if dismiss {
+            self.error = None;
+        }
     }
 }
 
@@ -118,4 +165,48 @@ fn grid_lines(
     });
 
     h_lines.chain(v_lines)
+}
+
+struct EguiDebug<'a> {
+    ui: &'a mut Ui,
+    painter: &'a Painter,
+    transform: DAffine2,
+}
+
+impl<'a> DebugSink for EguiDebug<'a> {
+    type Object<'b>
+        = EguiDebug<'b>
+    where
+        Self: 'b;
+
+    fn advance_frame(&mut self) {}
+
+    fn object<'b>(&'b mut self, label: &str) -> EguiDebug<'b>
+    where
+        Self: 'b,
+    {
+        EguiDebug { ui: &mut *self.ui, painter: self.painter, transform: self.transform }
+    }
+}
+
+impl<'a> ObjectSink for EguiDebug<'a> {
+    fn polyline(&mut self, points: &[glam::prelude::DVec2], closed: bool) {
+        let mut points = points
+            .into_iter()
+            .map(|&p| self.transform.transform_point2(p))
+            .map(|DVec2 { x, y }| Pos2::new(x as f32, y as f32))
+            .collect_vec();
+        if closed {
+            points.push(*points.first().unwrap());
+        }
+        self.painter.line(points, Stroke::new(1.0, Color32::WHITE));
+    }
+
+    fn point(&mut self, point: glam::prelude::DVec2, label: Option<&str>) {
+        // todo
+    }
+
+    fn datum(&mut self, key: &str, value: &str) {
+        // todo
+    }
 }
