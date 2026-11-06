@@ -16,7 +16,7 @@ impl Simulation {
         for road in &network.roads {
             let lane = create_lane(&road.path, road.width)?;
             self.links
-                .insert_with_key(|id| Link { id, name: format!("road:{}", road.id), lane });
+                .insert_with_key(|id| Link { id, name: format!("link:{}", road.id), lane });
         }
 
         Ok(())

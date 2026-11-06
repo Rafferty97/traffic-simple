@@ -1,9 +1,10 @@
+use anyhow::Context;
 use glam::DVec2;
 use itertools::Itertools;
 use slotmap::{new_key_type, SlotMap};
 
 use crate::debug::{DebugSink, ObjectSink};
-use crate::geometry::Lane;
+use crate::geometry::{Lane, LaneCoord};
 use crate::math::{sinc, wrap_angle};
 
 pub mod parse_network;
@@ -64,6 +65,40 @@ impl Simulation {
         Self { links: SlotMap::with_key(), vehicles: SlotMap::with_key() }
     }
 
+    pub fn insert_vehicle(&mut self) -> anyhow::Result<VehicleId> {
+        let attrs =
+            VehicleAttributes { half_wid: 0.89, rear_len: 0.98, front_len: 3.65, wheel_base: 2.70 };
+
+        let (link_id, link) = self.links.iter().next().context("network is empty")?;
+        let pos = link
+            .lane
+            .lane_to_world(LaneCoord { index: 0, s: 0.0, t: 0.0 });
+        let pos2 = link
+            .lane
+            .lane_to_world(LaneCoord { index: 0, s: 0.1, t: 0.0 });
+        let dir = (pos2 - pos).to_angle();
+
+        let id = self.vehicles.insert_with_key(|id| Vehicle {
+            id,
+            attrs,
+            pos,
+            dir,
+            vel: 0.0,
+            acc: 0.0,
+            steer: 0.0,
+            links: vec![link_id],
+        });
+
+        Ok(id)
+    }
+
+    pub fn step(&mut self, dt: f64) {
+        for (_, vehicle) in &mut self.vehicles {
+            vehicle.acc = 2.0;
+        }
+        self.integrate(dt);
+    }
+
     fn integrate(&mut self, dt: f64) {
         for (_, vehicle) in &mut self.vehicles {
             vehicle.integrate(dt);
@@ -73,6 +108,9 @@ impl Simulation {
     pub fn debug(&self, sink: &mut impl DebugSink) {
         for (_, link) in &self.links {
             link.debug(sink);
+        }
+        for (_, vehicle) in &self.vehicles {
+            vehicle.debug(sink);
         }
     }
 }
@@ -94,5 +132,24 @@ impl Vehicle {
         let theta = self.steer * dist;
         self.pos += dist * sinc(0.5 * theta) * DVec2::from_angle(self.dir + 0.5 * theta);
         self.dir = wrap_angle(self.dir + theta);
+    }
+
+    fn debug(&self, sink: &mut impl DebugSink) {
+        let h = DVec2::from_angle(self.dir); // forward
+        let n = h.perp(); // left
+        let VehicleAttributes { half_wid, rear_len, front_len, .. } = self.attrs;
+
+        let rear = self.pos - rear_len * h;
+        let front = self.pos + front_len * h;
+
+        let points = [
+            rear - half_wid * n,
+            front - half_wid * n,
+            front + half_wid * n,
+            rear + half_wid * n,
+        ];
+
+        let mut obj = sink.object(&format!("veh:{:?}", self.id));
+        obj.polyline(&points, true);
     }
 }

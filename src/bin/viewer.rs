@@ -18,6 +18,9 @@ fn main() -> eframe::Result {
 
 struct Viewer {
     sim: Simulation,
+    running: bool,
+    speed: f64,
+    accum: f64,
     center: Vec2, // world-space point at screen centre
     scale: f32,   // pixels per world unit
     error: Option<String>,
@@ -25,23 +28,64 @@ struct Viewer {
 
 impl Default for Viewer {
     fn default() -> Self {
-        Self { sim: Simulation::new(), center: Vec2::new(0.0, 0.0), scale: 5.0, error: None }
+        Self {
+            sim: Simulation::new(),
+            running: true,
+            speed: 1.0,
+            accum: 0.0,
+            center: Vec2::new(0.0, 0.0),
+            scale: 5.0,
+            error: None,
+        }
     }
 }
 
 impl eframe::App for Viewer {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.running {
+            self.accum += self.speed * (ctx.input(|i| i.stable_dt) as f64);
+            const DT: f64 = 1.0 / 60.0;
+            while self.accum >= DT {
+                self.sim.step(DT);
+                self.accum -= DT;
+            }
+            ctx.request_repaint();
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::Panel::top("controls").show(ui, |ui| {
-            if ui.button("Load network").clicked() {
-                match load_network_file("networks/basic.json") {
-                    Ok(sim) => {
-                        self.sim = sim;
-                    }
-                    Err(err) => {
-                        self.error = Some(err.to_string());
+            ui.horizontal(|ui| {
+                if ui.button("Load network").clicked() {
+                    match load_network_file("networks/basic.json") {
+                        Ok(sim) => {
+                            self.sim = sim;
+                        }
+                        Err(err) => {
+                            self.error = Some(err.to_string());
+                        }
                     }
                 }
-            }
+
+                if ui.button("Insert vehicle").clicked() {
+                    match self.sim.insert_vehicle() {
+                        Ok(_) => {}
+                        Err(err) => {
+                            self.error = Some(err.to_string());
+                        }
+                    }
+                }
+
+                let label = match self.running {
+                    true => "Stop",
+                    false => "Start",
+                };
+                if ui.button(label).clicked() {
+                    self.running = !self.running;
+                }
+
+                ui.add(egui::Slider::new(&mut self.speed, 0.5..=5.0).text("Speed"));
+            });
         });
 
         egui::CentralPanel::default().show(ui, |ui| {
@@ -68,7 +112,7 @@ impl eframe::App for Viewer {
                 DVec2::new(translation.x as f64, translation.y as f64),
             );
             self.sim
-                .debug(&mut EguiDebug { ui, painter: &painter, transform });
+                .debug(&mut EguiDebug { ui, painter: &painter, transform, label: None });
 
             // Roads
             // for road in self.sim.roads() {
@@ -171,6 +215,7 @@ struct EguiDebug<'a> {
     ui: &'a mut Ui,
     painter: &'a Painter,
     transform: DAffine2,
+    label: Option<String>,
 }
 
 impl<'a> DebugSink for EguiDebug<'a> {
@@ -185,7 +230,12 @@ impl<'a> DebugSink for EguiDebug<'a> {
     where
         Self: 'b,
     {
-        EguiDebug { ui: &mut *self.ui, painter: self.painter, transform: self.transform }
+        EguiDebug {
+            ui: &mut *self.ui,
+            painter: self.painter,
+            transform: self.transform,
+            label: Some(label.into()),
+        }
     }
 }
 
@@ -199,7 +249,17 @@ impl<'a> ObjectSink for EguiDebug<'a> {
         if closed {
             points.push(*points.first().unwrap());
         }
-        self.painter.line(points, Stroke::new(1.0, Color32::WHITE));
+        let color = match self
+            .label
+            .as_deref()
+            .and_then(|l| l.split(':').next())
+            .unwrap_or_default()
+        {
+            "link" => Color32::WHITE,
+            "veh" => Color32::CYAN,
+            _ => Color32::RED,
+        };
+        self.painter.line(points, Stroke::new(1.0, color));
     }
 
     fn point(&mut self, point: glam::prelude::DVec2, label: Option<&str>) {
