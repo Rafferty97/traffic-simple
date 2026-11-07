@@ -20,6 +20,7 @@ new_key_type! {
 pub struct Simulation {
     links: SlotMap<LinkId, Link>,
     vehicles: SlotMap<VehicleId, Vehicle>,
+    next_link: usize,
 }
 
 #[derive(Debug)]
@@ -67,7 +68,7 @@ pub struct VehicleAttributes {
 
 impl Simulation {
     pub fn new() -> Self {
-        Self { links: SlotMap::with_key(), vehicles: SlotMap::with_key() }
+        Self { links: SlotMap::with_key(), vehicles: SlotMap::with_key(), next_link: 0 }
     }
 
     pub fn insert_vehicle(&mut self) -> anyhow::Result<VehicleId> {
@@ -79,7 +80,13 @@ impl Simulation {
             max_steer: 0.1,
         };
 
-        let (link_id, link) = self.links.iter().next().context("network is empty")?;
+        let (link_id, link) = self
+            .links
+            .iter()
+            .cycle()
+            .nth(self.next_link)
+            .context("network is empty")?;
+        self.next_link += 1;
         let lane_pos = link.lane.lane_pos(0.0, 0.0);
         let pos = link.lane.lane_to_world(lane_pos);
         let dir = link.lane.tangent_at(lane_pos).to_angle();
