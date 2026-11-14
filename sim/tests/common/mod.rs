@@ -70,9 +70,13 @@ pub fn fill_lane<D: traffic_sim::DebugSink>(sim: &mut Simulation<D>, lane: LaneI
     }
 }
 
-/// A sink that keeps the last longitudinal update's acceleration terms.
+/// A sink that keeps the last longitudinal update's acceleration terms (`.0`)
+/// and each vehicle's last lane-change evaluations (`.1`).
 #[derive(Default)]
-pub struct Terms(pub Vec<(traffic_sim::VehicleId, traffic_sim::AccelSource, f64)>);
+pub struct Terms(
+    pub Vec<(traffic_sim::VehicleId, traffic_sim::AccelSource, f64)>,
+    pub Vec<(traffic_sim::VehicleId, traffic_sim::LaneChangeEval)>,
+);
 
 impl traffic_sim::DebugSink for Terms {
     fn record(&mut self, event: impl FnOnce() -> traffic_sim::DebugEvent) {
@@ -82,6 +86,10 @@ impl traffic_sim::DebugSink for Terms {
             DebugEvent::AccelTerm { vehicle, source, accel } => {
                 self.0.push((vehicle, source, accel))
             }
+            DebugEvent::RecomputeDecision { vehicle } | DebugEvent::VehicleRemoved { vehicle } => {
+                self.1.retain(|e| e.0 != vehicle)
+            }
+            DebugEvent::LaneChangeEval { vehicle, eval } => self.1.push((vehicle, eval)),
             DebugEvent::RecomputeMotion | DebugEvent::Lookahead { .. } => {}
         }
     }

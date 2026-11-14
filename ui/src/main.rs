@@ -6,8 +6,8 @@ use std::f64::consts::TAU;
 use eframe::egui::{self, Color32, Pos2, Rect, Shape, Stroke};
 use glam::DVec2;
 use traffic_sim::{
-    AccelSource, DebugEvent, DebugSink, Lane, LaneChangeError, LaneId, Placement, Side, SimNetwork,
-    Simulation, Vehicle, VehicleId, VehicleSpec,
+    AccelSource, DebugEvent, DebugSink, Lane, LaneChangeError, LaneChangeEval, LaneId, Placement,
+    Side, SimNetwork, Simulation, Vehicle, VehicleId, VehicleSpec,
 };
 
 /// The inner lane's circumference, as in Sugiyama et al. (2008).
@@ -267,6 +267,22 @@ impl App {
                 }
                 None => row("changing", "no".into()),
             }
+            match v.intent() {
+                Some(intent) => {
+                    let reply = |r: Option<traffic_sim::Response>| match r {
+                        Some(r) => format!("{:+.2} → {:+.2}", r.before, r.after),
+                        None => "no reply".into(),
+                    };
+                    let since = self.sim.time() - intent.since;
+                    row(
+                        "indicating",
+                        format!("{} for {since:.1} s", side(Some(intent.side))),
+                    );
+                    row("new follower", reply(intent.new_follower));
+                    row("old follower", reply(intent.old_follower));
+                }
+                None => row("indicating", "no".into()),
+            }
             let path: Vec<_> = v.path().iter().map(|l| l.0.to_string()).collect();
             row("path", path.join(" → "));
             row("s", format!("{:.2} m", pos.s));
@@ -278,6 +294,37 @@ impl App {
             row("accel", format!("{:+.2} m/s²", v.accel()));
             row("curvature", format!("{:+.4} /m", v.curvature()));
         });
+
+        ui.separator();
+        ui.label("Last lane-change decision (MOBIL)");
+        let evals = self.sim.sink().decisions.get(&id).cloned().unwrap_or_default();
+        egui::Grid::new("decision").num_columns(2).show(ui, |ui| {
+            for eval in &evals {
+                let side = match eval.side {
+                    Side::Left => "left",
+                    Side::Right => "right",
+                };
+                let replies = match (eval.new_follower, eval.old_follower) {
+                    (None, None) => String::new(),
+                    (new, old) => format!(
+                        ", followers {} / {}",
+                        new.map_or("?".into(), |x| format!("{x:+.2}")),
+                        old.map_or("?".into(), |x| format!("{x:+.2}"))
+                    ),
+                };
+                ui.label(format!("{side}: {:?}", eval.outcome));
+                ui.small(format!(
+                    "gain {:+.2}{replies}, net {:+.2}{}",
+                    eval.own_gain,
+                    eval.incentive,
+                    if eval.safe { "" } else { ", unsafe" }
+                ));
+                ui.end_row();
+            }
+        });
+        if evals.is_empty() {
+            ui.small("No permitted lane to either side.");
+        }
 
         ui.separator();
         ui.label("Acceleration terms (minimum binds)");
@@ -443,6 +490,32 @@ fn draw_pretty(painter: &egui::Painter, sim: &Simulation<DebugState>, selected: 
             Color32::from_rgb(200, 40, 40),
             outline,
         ));
+        draw_indicators(painter, sim, v);
+    }
+}
+
+/// Blinking indicators on the side a vehicle is indicating to, or changing
+/// toward, at about 1.5 Hz.
+fn draw_indicators(painter: &egui::Painter, sim: &Simulation<DebugState>, v: &Vehicle) {
+    let side = v
+        .intent()
+        .map(|i| i.side)
+        .or(v.lane_change().and(v.old_side()).map(Side::opposite));
+    let Some(side) = side else {
+        return;
+    };
+    if (sim.time() * 1.5).fract() >= 0.5 {
+        return;
+    }
+    // Corners: rear left, rear right, front right, front left.
+    let [rear_left, rear_right, front_right, front_left] = v.corners();
+    let (rear, front) = match side {
+        Side::Left => (rear_left, front_left),
+        Side::Right => (rear_right, front_right),
+    };
+    let color = Color32::from_rgb(255, 170, 0);
+    for p in [rear, front] {
+        painter.circle_filled(to_scene(p), 0.35, color);
     }
 }
 
@@ -500,7 +573,8 @@ fn draw_debug(
         if layers.on(Layer::Occupants) {
             for occupant in sim.occupants(lane_id) {
                 let p = lane.lane_to_world(lane.lane_pos(occupant.s, 0.0));
-                painter.circle_filled(to_scene(p), 0.25, OCCUPANT);
+                let color = if occupant.ghost { GHOST } else { OCCUPANT };
+                painter.circle_filled(to_scene(p), 0.25, color);
             }
         }
     }
@@ -572,6 +646,7 @@ const CENTERLINE: Color32 = Color32::from_gray(110);
 const MAY_CHANGE: Color32 = Color32::from_rgb(80, 200, 80);
 const MAY_NOT_CHANGE: Color32 = Color32::from_rgb(220, 70, 70);
 const OCCUPANT: Color32 = Color32::from_rgb(200, 160, 255);
+const GHOST: Color32 = Color32::from_rgb(255, 150, 40);
 const VEHICLE: Color32 = Color32::from_rgb(240, 90, 90);
 const LANE_CHANGE: Color32 = Color32::from_rgb(250, 160, 60);
 const LEADER_BINDING: Color32 = Color32::from_rgb(120, 230, 120);
@@ -622,8 +697,8 @@ impl Layer {
             ),
             Layer::Occupants => (
                 "Occupants",
-                &[OCCUPANT],
-                "Each occupant record, on the centerline at its s",
+                &[OCCUPANT, GHOST],
+                "Each occupant record, on the centerline at its s; orange for the ghost of a vehicle indicating into that lane",
             ),
             Layer::Vehicles => (
                 "Vehicles",
@@ -688,6 +763,8 @@ struct DebugState {
     accel_terms: Vec<(VehicleId, AccelSource, f64)>,
     /// The last motion update's lookahead points.
     lookaheads: Vec<(VehicleId, DVec2)>,
+    /// Each vehicle's evaluations from its last lane-change decision.
+    decisions: HashMap<VehicleId, Vec<LaneChangeEval>>,
 }
 
 impl DebugSink for DebugState {
@@ -699,6 +776,15 @@ impl DebugSink for DebugState {
             }
             DebugEvent::RecomputeMotion => self.lookaheads.clear(),
             DebugEvent::Lookahead { vehicle, point } => self.lookaheads.push((vehicle, point)),
+            DebugEvent::RecomputeDecision { vehicle } => {
+                self.decisions.entry(vehicle).or_default().clear()
+            }
+            DebugEvent::LaneChangeEval { vehicle, eval } => {
+                self.decisions.entry(vehicle).or_default().push(eval)
+            }
+            DebugEvent::VehicleRemoved { vehicle } => {
+                self.decisions.remove(&vehicle);
+            }
         }
     }
 }

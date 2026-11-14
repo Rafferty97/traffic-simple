@@ -83,6 +83,38 @@ pub struct Vehicle {
     pub(crate) old_side: Option<Side>,
     /// The lane change in progress, if any.
     pub(crate) lane_change: Option<LaneChange>,
+    /// The lane change the vehicle is indicating, if any.
+    pub(crate) intent: Option<Intent>,
+}
+
+/// A lane change a vehicle is indicating. It has a ghost record in the target
+/// lane's occupants until it is cancelled or carried out.
+#[derive(Clone, Copy, Debug)]
+pub struct Intent {
+    /// The side of the vehicle's lane it wants to move to.
+    pub side: Side,
+    /// When it started indicating, in simulated seconds.
+    pub since: f64,
+    /// From the nearest follower on the target lane, which would end up behind it.
+    pub new_follower: Option<Response>,
+    /// From the follower on its current lane, which would lose it as a leader.
+    pub old_follower: Option<Response>,
+}
+
+/// A follower's acceleration now and if the indicating vehicle changed lanes.
+/// Recomputed at each longitudinal update.
+#[derive(Clone, Copy, Debug)]
+pub struct Response {
+    pub follower: VehicleId,
+    pub before: f64,
+    pub after: f64,
+}
+
+impl Response {
+    /// How much the change would help (positive) or hinder (negative) the follower.
+    pub fn change(&self) -> f64 {
+        self.after - self.before
+    }
 }
 
 impl Vehicle {
@@ -136,6 +168,11 @@ impl Vehicle {
     /// The lane change in progress, if any.
     pub fn lane_change(&self) -> Option<LaneChange> {
         self.lane_change
+    }
+
+    /// The lane change the vehicle is indicating, if any.
+    pub fn intent(&self) -> Option<Intent> {
+        self.intent
     }
 
     /// The center of the body.

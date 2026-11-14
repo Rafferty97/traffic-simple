@@ -133,43 +133,69 @@ fn recorded_terms_reach_each_acceleration() {
 }
 
 #[test]
-fn three_lane_ring_keeps_to_its_lanes() {
+fn three_lane_ring_occupancy_stays_consistent() {
     let mut sim = Simulation::new(ring_road(230.0, 3, SPEED_LIMIT), Terms::default());
-    for lane in 0..3 {
-        fill_lane(&mut sim, LaneId(lane), 22);
+    // Densest inside and sparsest outside, so drivers have reason to move out.
+    // Different counts also keep the lanes' cars from starting side by side.
+    for (lane, count) in [(0, 26), (1, 20), (2, 12)] {
+        fill_lane(&mut sim, LaneId(lane), count);
     }
-    let start: Vec<_> = sim.vehicles().map(|(id, v)| (id, v.lane())).collect();
+    let mut changes = 0;
+    let mut lanes: Vec<_> = sim.vehicles().map(|(id, v)| (id, v.lane())).collect();
+    let mut frame = 0;
     run(&mut sim, 120.0, |sim| {
-        for &(id, lane) in &start {
-            let v = sim.get(id).unwrap();
-            assert_eq!(v.lane(), lane, "{id:?} changed lane");
-            assert!(
-                v.lane_pos().t.abs() < 0.1,
-                "{id:?} drifted {} m",
-                v.lane_pos().t
-            );
-        }
-        for lane in 0..3 {
-            let list = sim.occupants(LaneId(lane));
-            assert!(
-                list.windows(2).all(|w| w[0].s <= w[1].s),
-                "lane {lane} out of order"
-            );
-            // Only this lane's own cars, though a car crossing the seam briefly has two records.
-            for o in list {
-                assert_eq!(
-                    sim.get(o.id).unwrap().lane(),
-                    LaneId(lane),
-                    "foreign record on lane {lane}"
-                );
+        frame += 1;
+        for (id, lane) in &mut lanes {
+            let now = sim.get(*id).unwrap().lane();
+            if now != *lane {
+                changes += 1;
+                *lane = now;
             }
         }
-        for &(id, lane) in &start {
-            let list = sim.occupants(lane);
+        for lane_id in (0..3).map(LaneId) {
+            let list = sim.occupants(lane_id);
             assert!(
-                list.iter().any(|o| o.id == id),
+                list.windows(2).all(|w| w[0].s <= w[1].s),
+                "{lane_id:?} out of order"
+            );
+            for o in list {
+                let v = sim.get(o.id).unwrap();
+                let beside = |side| sim.network().lane(v.lane()).adj(side).map(|n| n.lane);
+                if o.ghost {
+                    // A ghost belongs to a vehicle indicating into this lane.
+                    let side = v.intent().expect("ghost without an intent").side;
+                    assert_eq!(beside(side), Some(lane_id), "stray ghost on {lane_id:?}");
+                } else {
+                    // A record belongs to a vehicle following this lane, or
+                    // straddling out of it after a lane change.
+                    let straddling = v.old_side().and_then(beside) == Some(lane_id);
+                    assert!(
+                        v.lane() == lane_id || straddling,
+                        "foreign record on {lane_id:?}"
+                    );
+                }
+            }
+        }
+        for (id, v) in sim.vehicles() {
+            let own = sim.occupants(v.lane());
+            assert!(
+                own.iter().any(|o| o.id == id && !o.ghost),
                 "{id:?} missing from its lane"
             );
         }
+        // Bodies never overlap. Checked every tenth frame, as it's quadratic.
+        if frame % 10 == 0 {
+            let all: Vec<_> = sim.vehicles().collect();
+            for (i, &(a, va)) in all.iter().enumerate() {
+                for &(b, vb) in &all[i + 1..] {
+                    if va.center().distance(vb.center()) < 6.0 {
+                        let touching = vb.corners().iter().any(|&c| va.distance_to(c) == 0.0)
+                            || va.corners().iter().any(|&c| vb.distance_to(c) == 0.0);
+                        assert!(!touching, "{a:?} and {b:?} collided");
+                    }
+                }
+            }
+        }
     });
+    assert!(changes > 0, "nobody changed lanes");
 }

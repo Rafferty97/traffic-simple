@@ -174,14 +174,15 @@ fn changing_out_of_a_queue_keeps_clear_of_the_old_leader() {
     network.set_adjacent(LaneId(0), LaneId(1), true, true);
     let mut sim = Simulation::new(network, NoopSink);
 
-    // A held car with another queued up behind it.
+    // A held car with another stopped 2 m behind it: the leader's rear is 1 m
+    // behind its rear axle, and the follower's front 3.6 m ahead of its own.
     let leader = sim.insert(car(), Placement { lane: LaneId(1), s: 60.0, speed: 0.0 });
     sim.hold(leader);
-    let id = sim.insert(car(), Placement { lane: LaneId(1), s: 20.0, speed: 0.0 });
-    run(&mut sim, 30.0, |_| {});
-    assert!(sim.get(id).unwrap().speed() < 0.01, "never queued");
+    let id = sim.insert(car(), Placement { lane: LaneId(1), s: 53.4, speed: 0.0 });
 
-    // Too close to complete the change: it pulls forward but stops short.
+    // Too close to complete the change: it pulls forward but stops short. Changed
+    // at once, before the car's own decisions get a say: an empty lane beside it
+    // would otherwise tempt it over earlier.
     sim.change_lane(id, Side::Left).unwrap();
     let mut closest = f64::INFINITY;
     run(&mut sim, 20.0, |sim| {

@@ -13,11 +13,11 @@ mod occupancy;
 mod simulation;
 mod vehicle;
 
-pub use debug::{AccelSource, DebugEvent, DebugSink, NoopSink};
+pub use debug::{AccelSource, DebugEvent, DebugSink, LaneChangeEval, NoopSink, Outcome};
 pub use lane::{Lane, LaneError, LanePos, MAX_SUCCESSORS};
 pub use models::acceleration::SAFE_BRAKING;
 pub use models::lateral::LaneChange;
 pub use network::{LaneId, Neighbor, Side, SimNetwork};
 pub use occupancy::Occupant;
 pub use simulation::{InsertError, LaneChangeError, Simulation};
-pub use vehicle::{PATH_LEN, Placement, Vehicle, VehicleId, VehicleSpec};
+pub use vehicle::{Intent, PATH_LEN, Placement, Response, Vehicle, VehicleId, VehicleSpec};

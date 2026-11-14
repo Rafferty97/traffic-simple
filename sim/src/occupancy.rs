@@ -6,6 +6,10 @@
 //! record's `s` is the smaller of its rear corners' `s`. On a loop shorter than a
 //! vehicle's rear overhang plus a lane, a vehicle can be in the same lane's list
 //! twice, briefly, at two different `s`.
+//!
+//! A vehicle indicating a lane change also has a ghost record in the target
+//! lane's list. Ghosts are kept up to date like any record but are only removed
+//! explicitly, when the intent is cancelled or carried out.
 
 use slotmap::SlotMap;
 
@@ -24,12 +28,19 @@ pub struct Occupant {
     pub id: VehicleId,
     /// Lane coordinates of that rear corner, a hint for the next projection.
     hint: LanePos,
+    /// Whether this is the ghost of a vehicle indicating a change into this lane.
+    pub ghost: bool,
 }
 
 impl Occupant {
     /// Projects a vehicle's rear corners onto `lane`, searching from `hint`.
     pub fn new(lane: &Lane, id: VehicleId, vehicle: &Vehicle, hint: LanePos) -> Self {
         Self::project(lane, id, vehicle, hint).0
+    }
+
+    /// As [`Occupant::new`], as the ghost of a vehicle indicating a change into `lane`.
+    pub fn ghost(lane: &Lane, id: VehicleId, vehicle: &Vehicle, hint: LanePos) -> Self {
+        Self { ghost: true, ..Self::new(lane, id, vehicle, hint) }
     }
 
     /// As [`Occupant::new`], also saying where each rear corner is relative to the lane.
@@ -47,7 +58,10 @@ impl Occupant {
             beside: p.t.abs() > 0.5 * lane.width(),
         };
         let hint = if left.s <= right.s { left } else { right };
-        (Self { s: hint.s, id, hint }, [corner(left), corner(right)])
+        (
+            Self { s: hint.s, id, hint, ghost: false },
+            [corner(left), corner(right)],
+        )
     }
 }
 
@@ -62,6 +76,7 @@ struct Corner {
 /// Refreshes every occupant's `s`, drops those whose rear corners are both
 /// outside their lane, and restores the order.
 ///
+/// - Ghosts are refreshed but never dropped here.
 /// - A record on the lane a vehicle is following is never dropped for being
 ///   beside it, only for being past its end.
 /// - Vehicles whose rear passes the end of the lane they follow, when it has no
@@ -82,7 +97,10 @@ pub fn update(
         list.retain_mut(|occupant| {
             let vehicle = &vehicles[occupant.id];
             let (updated, corners) = Occupant::project(lane, occupant.id, vehicle, occupant.hint);
-            *occupant = updated;
+            *occupant = Occupant { ghost: occupant.ghost, ..updated };
+            if occupant.ghost {
+                return true;
+            }
             let following = vehicle.path[0] == lane_id;
             let outside = |c: &Corner| c.past_end || (c.beside && !following);
             if !corners.iter().all(outside) {
@@ -112,12 +130,33 @@ fn insertion_sort(list: &mut [Occupant]) {
     }
 }
 
+/// How a leader search treats ghost records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ghosts {
+    /// Ghosts are passed over, but the nearest one before the leader is reported:
+    /// the searching vehicle is that ghost's would-be follower.
+    Report,
+    /// Ghosts count as leaders, as when a vehicle weighs up changing lanes: a
+    /// vehicle already indicating into the gap ahead goes first.
+    Lead,
+}
+
+/// What a leader search found, each with the bumper-to-bumper gap to it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Search {
+    pub leader: Option<(VehicleId, f64)>,
+    /// The nearest ghost before the leader, with [`Ghosts::Report`].
+    pub ghost: Option<(VehicleId, f64)>,
+}
+
 /// The nearest vehicle ahead along `lanes`, within the leader horizon, and the
 /// bumper-to-bumper gap to it. `axle_s` is the vehicle's rear axle's `s` on the
 /// first lane.
 ///
 /// On the first lane, only occupants whose rear is ahead of the rear axle count.
-/// On later lanes, every occupant counts.
+/// On later lanes, every occupant counts. The vehicle's own records are skipped,
+/// as are `skip`'s, for asking what if that vehicle weren't there.
+#[allow(clippy::too_many_arguments)]
 pub fn find_leader(
     network: &SimNetwork,
     occupants: &[Vec<Occupant>],
@@ -125,8 +164,11 @@ pub fn find_leader(
     vehicle: &Vehicle,
     lanes: &[LaneId],
     axle_s: f64,
-) -> Option<(VehicleId, f64)> {
+    ghosts: Ghosts,
+    skip: Option<VehicleId>,
+) -> Search {
     let front = axle_s + vehicle.spec.length - vehicle.spec.rear_axle;
+    let mut found = Search::default();
     // Start of the current lane, measured along `lanes` from the start of the first.
     let mut offset = 0.0;
     let mut after = axle_s;
@@ -136,14 +178,25 @@ pub fn find_leader(
         }
         let list = &occupants[lane.0 as usize];
         let start = list.partition_point(|o| o.s <= after);
-        if let Some(o) = list[start..].iter().find(|o| o.id != id) {
+        for o in &list[start..] {
+            if o.id == id || Some(o.id) == skip {
+                continue;
+            }
             let gap = offset + o.s - front;
-            return (gap <= LEADER_HORIZON).then_some((o.id, gap));
+            if gap > LEADER_HORIZON {
+                return found;
+            }
+            if o.ghost && ghosts == Ghosts::Report {
+                found.ghost = found.ghost.or(Some((o.id, gap)));
+                continue;
+            }
+            found.leader = Some((o.id, gap));
+            return found;
         }
         offset += network.lane(lane).length();
         after = f64::NEG_INFINITY;
     }
-    None
+    found
 }
 
 #[cfg(test)]
@@ -156,7 +209,12 @@ mod test {
         let lane = Lane::new(&[glam::DVec2::ZERO, glam::DVec2::X * 10.0], 3.5, 14.0).unwrap();
         let mut list: Vec<_> = [3.0, 1.0, 2.0, 0.5]
             .into_iter()
-            .map(|s| Occupant { s, id: ids.insert(()), hint: lane.lane_pos(s, 0.0) })
+            .map(|s| Occupant {
+                s,
+                id: ids.insert(()),
+                hint: lane.lane_pos(s, 0.0),
+                ghost: false,
+            })
             .collect();
         insertion_sort(&mut list);
         let order: Vec<_> = list.iter().map(|o| o.s).collect();

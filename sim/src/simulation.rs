@@ -2,19 +2,26 @@ use arrayvec::ArrayVec;
 use glam::DVec2;
 use slotmap::SlotMap;
 
-use crate::debug::{AccelSource, DebugEvent, DebugSink, NoopSink};
+use crate::debug::{AccelSource, DebugEvent, DebugSink, LaneChangeEval, NoopSink, Outcome};
 use crate::kinematics;
 use crate::math::wrap_angle;
-use crate::models::acceleration;
 use crate::models::lateral::{self, LaneChange};
+use crate::models::{acceleration, lane_change};
 use crate::network::{LaneId, Side, SimNetwork};
-use crate::occupancy::{self, Occupant};
-use crate::vehicle::{PATH_LEN, Placement, Vehicle, VehicleId, VehicleSpec};
+use crate::occupancy::{self, Ghosts, Occupant};
+use crate::vehicle::{Intent, PATH_LEN, Placement, Response, Vehicle, VehicleId, VehicleSpec};
 
 /// Longest substep in seconds. Longer frames are split.
 const MAX_SUBSTEP: f64 = 1.0 / 60.0;
 /// Period of the longitudinal model update in seconds.
 const ACCEL_PERIOD: f64 = 1.0 / 20.0;
+
+/// The longest vehicle the alongside check allows for, in meters.
+const MAX_VEHICLE_LENGTH: f64 = 20.0;
+
+/// How often each vehicle makes its lane-change decision, in seconds. Decisions
+/// are staggered across vehicles.
+const DECISION_PERIOD: f64 = 0.2;
 
 // The acceleration clock fires at most once per substep.
 const _: () = assert!(MAX_SUBSTEP <= ACCEL_PERIOD);
@@ -35,7 +42,34 @@ pub struct Simulation<D: DebugSink = NoopSink> {
     leavers: Vec<VehicleId>,
     /// Scratch space for vehicles that have finished leaving an old lane.
     left_sideways: Vec<VehicleId>,
+    /// Simulated time, in seconds.
+    time: f64,
+    /// Where staggered lane-change decisions resume: a position in the
+    /// vehicles' iteration order.
+    decision_cursor: usize,
+    /// Decisions owed but not yet made: grows by `n · dt / DECISION_PERIOD`.
+    decision_budget: f64,
+    /// Scratch space for lane-change decisions, reused between substeps.
+    lane_decisions: Vec<(VehicleId, LaneDecision)>,
+    /// Scratch space for followers' responses to intents, reused between updates.
+    responses: Vec<(VehicleId, Role, Response)>,
     sink: D,
+}
+
+/// What a vehicle's lane-change decision asks for.
+#[derive(Clone, Copy, Debug)]
+enum LaneDecision {
+    Nothing,
+    Indicate(Side),
+    Cancel,
+    Change(Side),
+}
+
+/// Which follower a response comes from.
+#[derive(Clone, Copy, Debug)]
+enum Role {
+    NewFollower,
+    OldFollower,
 }
 
 /// Why [`Simulation::try_insert`] refused.
@@ -70,12 +104,22 @@ impl<D: DebugSink> Simulation<D> {
             decisions: Vec::new(),
             leavers: Vec::new(),
             left_sideways: Vec::new(),
+            time: 0.0,
+            decision_cursor: 0,
+            decision_budget: 0.0,
+            lane_decisions: Vec::new(),
+            responses: Vec::new(),
             sink,
         }
     }
 
     pub fn network(&self) -> &SimNetwork {
         &self.network
+    }
+
+    /// Simulated time since the simulation was created, in seconds.
+    pub fn time(&self) -> f64 {
+        self.time
     }
 
     pub fn sink(&self) -> &D {
@@ -122,9 +166,17 @@ impl<D: DebugSink> Simulation<D> {
 
         let axle_s = vehicle.lane_pos.s;
         let path = vehicle.path.clone();
-        let leader =
-            occupancy::find_leader(&self.network, &self.occupants, id, &vehicle, &path, axle_s);
-        if let Some((leader, gap)) = leader {
+        let leader = occupancy::find_leader(
+            &self.network,
+            &self.occupants,
+            id,
+            &vehicle,
+            &path,
+            axle_s,
+            Ghosts::Lead,
+            None,
+        );
+        if let Some((leader, gap)) = leader.leader {
             let leader_speed = self.vehicles[leader].speed;
             vehicle.speed = vehicle.speed.min(leader_speed);
             let accel = acceleration::interaction(&spec, vehicle.speed, gap, leader_speed);
@@ -169,6 +221,7 @@ impl<D: DebugSink> Simulation<D> {
             lane_pos,
             old_side: None,
             lane_change: None,
+            intent: None,
         }
     }
 
@@ -191,6 +244,7 @@ impl<D: DebugSink> Simulation<D> {
             list.retain(|o| o.id != id);
         }
         self.held.retain(|&h| h != id);
+        self.sink.record(|| DebugEvent::VehicleRemoved { vehicle: id });
         self.vehicles.remove(id)
     }
 
@@ -241,7 +295,14 @@ impl<D: DebugSink> Simulation<D> {
     /// Its pose doesn't move: it is now off-center on its new lane, and path
     /// tracking steers it onto the centerline along a cubic. It stays on its old
     /// lane's occupants until its rear has left that lane.
+    ///
+    /// If the vehicle was indicating a change to this side, its ghost becomes its
+    /// record on the new lane. An intent to the other side is cancelled.
     pub fn change_lane(&mut self, id: VehicleId, side: Side) -> Result<(), LaneChangeError> {
+        let indicating = self.vehicles.get(id).and_then(|v| v.intent).map(|i| i.side);
+        if indicating.is_some_and(|s| s != side) {
+            self.cancel_intent(id);
+        }
         let vehicle = self.vehicles.get_mut(id).ok_or(LaneChangeError::NoVehicle)?;
         if vehicle.lane_change.is_some() {
             return Err(LaneChangeError::InProgress);
@@ -275,12 +336,52 @@ impl<D: DebugSink> Simulation<D> {
         vehicle.lane_pos = lane_pos;
         vehicle.old_side = Some(side.opposite());
         vehicle.lane_change = Some(LaneChange::new(start.s, start.t, slope, vehicle.speed));
+        vehicle.intent = None;
 
-        let occupant = Occupant::new(target, id, &self.vehicles[id], lane_pos);
         let list = &mut self.occupants[neighbor.lane.0 as usize];
-        let index = list.partition_point(|o| o.s <= occupant.s);
-        list.insert(index, occupant);
+        if let Some(ghost) = list.iter_mut().find(|o| o.id == id && o.ghost) {
+            ghost.ghost = false;
+        } else {
+            let occupant = Occupant::new(target, id, &self.vehicles[id], lane_pos);
+            let index = list.partition_point(|o| o.s <= occupant.s);
+            list.insert(index, occupant);
+        }
         Ok(())
+    }
+
+    /// Starts a vehicle indicating a change to `side`: it gets a ghost record in
+    /// the target lane's occupants.
+    fn indicate(&mut self, id: VehicleId, side: Side) {
+        let vehicle = &self.vehicles[id];
+        let current = self.network.lane(vehicle.path[0]);
+        let Some(neighbor) = current.adj(side) else {
+            return;
+        };
+        let target = self.network.lane(neighbor.lane);
+        let hint = target.lane_pos(vehicle.lane_pos.s / current.length() * target.length(), 0.0);
+        let ghost = Occupant::ghost(target, id, vehicle, hint);
+        let list = &mut self.occupants[neighbor.lane.0 as usize];
+        let index = list.partition_point(|o| o.s <= ghost.s);
+        list.insert(index, ghost);
+        self.vehicles[id].intent = Some(Intent {
+            side,
+            since: self.time,
+            new_follower: None,
+            old_follower: None,
+        });
+    }
+
+    /// Stops a vehicle indicating, removing its ghost.
+    fn cancel_intent(&mut self, id: VehicleId) {
+        let Some(vehicle) = self.vehicles.get_mut(id) else {
+            return;
+        };
+        let Some(intent) = vehicle.intent.take() else {
+            return;
+        };
+        if let Some(neighbor) = self.network.lane(vehicle.path[0]).adj(intent.side) {
+            remove_ghost(&mut self.occupants, neighbor.lane, id);
+        }
     }
 
     /// Advances the simulation by `dt` seconds.
@@ -293,6 +394,13 @@ impl<D: DebugSink> Simulation<D> {
     }
 
     fn substep(&mut self, dt: f64) {
+        self.time += dt;
+        self.decision_budget += self.vehicles.len() as f64 * dt / DECISION_PERIOD;
+        let count = self.decision_budget as usize;
+        if count > 0 {
+            self.decision_budget -= count as f64;
+            self.update_decisions(count);
+        }
         self.accel_clock += dt;
         if self.accel_clock >= ACCEL_PERIOD {
             self.accel_clock -= ACCEL_PERIOD;
@@ -302,21 +410,61 @@ impl<D: DebugSink> Simulation<D> {
         self.update_occupancy();
     }
 
+    /// Lane-change decisions for the next `count` vehicles, resuming where the last
+    /// substep left off and wrapping around. Decisions are computed from a
+    /// read-only view of the state, then applied in order.
+    fn update_decisions(&mut self, count: usize) {
+        let Self { network, vehicles, occupants, lane_decisions, sink, .. } = self;
+        let n = vehicles.len();
+        if n == 0 {
+            return;
+        }
+        let count = count.min(n);
+        let start = self.decision_cursor % n;
+        lane_decisions.clear();
+        for (id, vehicle) in vehicles.iter().chain(vehicles.iter()).skip(start).take(count) {
+            sink.record(|| DebugEvent::RecomputeDecision { vehicle: id });
+            let decision = decide(network, occupants, vehicles, sink, self.time, id, vehicle);
+            lane_decisions.push((id, decision));
+        }
+        self.decision_cursor = (start + count) % n;
+
+        for i in 0..self.lane_decisions.len() {
+            let (id, decision) = self.lane_decisions[i];
+            match decision {
+                LaneDecision::Nothing => {}
+                LaneDecision::Indicate(side) => self.indicate(id, side),
+                LaneDecision::Cancel => self.cancel_intent(id),
+                LaneDecision::Change(side) => {
+                    // Already checked: the decision only asks for permitted changes.
+                    let _ = self.change_lane(id, side);
+                }
+            }
+        }
+    }
+
     /// Longitudinal model: sets each vehicle's held acceleration.
     ///
     /// The acceleration is the minimum over every term the model considers; each
     /// term is recorded to the debug sink as it is computed. Decisions are computed
     /// from a read-only view of the state, then applied.
+    ///
+    /// The same searches answer intents. A vehicle whose nearest record ahead is a
+    /// ghost is that vehicle's would-be new follower, and one whose leader is
+    /// indicating is its old follower; each reports its acceleration now and if the
+    /// change went ahead.
     fn update_accels(&mut self) {
-        let Self { network, vehicles, occupants, decisions, sink, .. } = self;
+        let Self { network, vehicles, occupants, decisions, responses, sink, .. } = self;
         sink.record(|| DebugEvent::RecomputeAccels);
         decisions.clear();
+        responses.clear();
         for (id, vehicle) in vehicles.iter() {
             let lane = network.lane(vehicle.path[0]);
             let desired_speed = vehicle.spec.desired_speed(lane.speed_limit());
-            let mut accel = acceleration::free_road(&vehicle.spec, vehicle.speed, desired_speed);
+            let free = acceleration::free_road(&vehicle.spec, vehicle.speed, desired_speed);
             let source = AccelSource::FreeRoad { desired_speed };
-            sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel });
+            sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: free });
+            let mut accel = free;
 
             let mut react = |leader: VehicleId, gap: f64| {
                 let leader_speed = vehicles[leader].speed;
@@ -325,14 +473,25 @@ impl<D: DebugSink> Simulation<D> {
                 let source = AccelSource::Leader { id: leader, gap };
                 sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
                 accel = accel.min(term);
+                term
             };
 
             let axle_s = vehicle.lane_pos.s;
-            if let Some((leader, gap)) =
-                occupancy::find_leader(network, occupants, id, vehicle, &vehicle.path, axle_s)
-            {
+            let path = &vehicle.path;
+            let search = occupancy::find_leader(
+                network,
+                occupants,
+                id,
+                vehicle,
+                path,
+                axle_s,
+                Ghosts::Report,
+                None,
+            );
+            if let Some((leader, gap)) = search.leader {
                 react(leader, gap);
             }
+            let mut old_side_term = f64::INFINITY;
 
             // Still straddling after a lane change: also search the old side, along
             // the neighbors of the vehicle's path, from its position on the old lane.
@@ -349,18 +508,81 @@ impl<D: DebugSink> Simulation<D> {
                     let fraction = vehicle.lane_pos.s / lane.length();
                     let hint = old.lane_pos(fraction * old.length(), 0.0);
                     let axle_s = old.world_to_lane_near(vehicle.pos, hint).s;
-                    if let Some((leader, gap)) =
-                        occupancy::find_leader(network, occupants, id, vehicle, &old_path, axle_s)
-                    {
-                        react(leader, gap);
+                    let search = occupancy::find_leader(
+                        network,
+                        occupants,
+                        id,
+                        vehicle,
+                        &old_path,
+                        axle_s,
+                        Ghosts::Report,
+                        None,
+                    );
+                    if let Some((leader, gap)) = search.leader {
+                        old_side_term = react(leader, gap);
                     }
                 }
             }
             decisions.push((id, accel));
+
+            // The would-be new follower of an indicating vehicle.
+            if let Some((owner, gap)) = search.ghost {
+                let owner_speed = vehicles[owner].speed;
+                let term =
+                    acceleration::interaction(&vehicle.spec, vehicle.speed, gap, owner_speed);
+                let after = accel.min(term);
+                responses.push((
+                    owner,
+                    Role::NewFollower,
+                    Response { follower: id, before: accel, after },
+                ));
+            }
+            // The old follower of an indicating leader: what if it weren't there?
+            if let Some((leader, _)) = search.leader
+                && vehicles[leader].intent.is_some()
+            {
+                let without = occupancy::find_leader(
+                    network,
+                    occupants,
+                    id,
+                    vehicle,
+                    path,
+                    axle_s,
+                    Ghosts::Report,
+                    Some(leader),
+                );
+                let mut after = free.min(old_side_term);
+                if let Some((next, gap)) = without.leader {
+                    let next_speed = vehicles[next].speed;
+                    let term =
+                        acceleration::interaction(&vehicle.spec, vehicle.speed, gap, next_speed);
+                    after = after.min(term);
+                }
+                responses.push((
+                    leader,
+                    Role::OldFollower,
+                    Response { follower: id, before: accel, after },
+                ));
+            }
         }
 
         for &(id, accel) in &self.decisions {
             self.vehicles[id].accel = accel;
+        }
+        for vehicle in self.vehicles.values_mut() {
+            if let Some(intent) = &mut vehicle.intent {
+                intent.new_follower = None;
+                intent.old_follower = None;
+            }
+        }
+        for &(owner, role, response) in &self.responses {
+            let Some(intent) = self.vehicles.get_mut(owner).and_then(|v| v.intent.as_mut()) else {
+                continue;
+            };
+            match role {
+                Role::NewFollower => intent.new_follower = Some(response),
+                Role::OldFollower => intent.old_follower = Some(response),
+            }
         }
         for &id in &self.held {
             let vehicle = &mut self.vehicles[id];
@@ -404,6 +626,7 @@ impl<D: DebugSink> Simulation<D> {
                 if vehicle.lane_pos.s < length {
                     break;
                 }
+                let previous = vehicle.path[0];
                 vehicle.path.remove(0);
                 extend_path(network, &mut vehicle.path);
                 let next = network.lane(vehicle.path[0]);
@@ -423,6 +646,22 @@ impl<D: DebugSink> Simulation<D> {
                     let occupant = Occupant::new(old_lane, id, vehicle, hint);
                     occupants[old.lane.0 as usize].push(occupant);
                 }
+                // Indicating: the ghost moves to the new lane's neighbor, or the
+                // intent is cancelled if there's none to change into.
+                if let Some(intent) = vehicle.intent {
+                    if let Some(old) = network.lane(previous).adj(intent.side) {
+                        remove_ghost(occupants, old.lane, id);
+                    }
+                    match next.adj(intent.side).filter(|n| n.can_change) {
+                        Some(n) => {
+                            let target = network.lane(n.lane);
+                            let hint = target.lane_pos(vehicle.lane_pos.s, 0.0);
+                            occupants[n.lane.0 as usize]
+                                .push(Occupant::ghost(target, id, vehicle, hint));
+                        }
+                        None => vehicle.intent = None,
+                    }
+                }
             }
 
             if vehicle.lane_change.is_some_and(|change| vehicle.lane_pos.s >= change.end()) {
@@ -440,10 +679,13 @@ impl<D: DebugSink> Simulation<D> {
                 vehicle.old_side = None;
             }
         }
-        for id in self.leavers.drain(..) {
-            self.vehicles.remove(id);
-            self.held.retain(|&h| h != id);
+        // Through `remove`, so ghosts and any other records go too.
+        let leavers = std::mem::take(&mut self.leavers);
+        for &id in &leavers {
+            self.remove(id);
         }
+        self.leavers = leavers;
+        self.leavers.clear();
     }
 }
 
@@ -468,6 +710,248 @@ fn find_follower(
         .filter(|(_, l)| l.successors().contains(&lane))
         .filter_map(|(id, l)| occupants[id.0 as usize].last().map(|o| gap(o, l.length())))
         .min_by(|a, b| a.1.total_cmp(&b.1))
+}
+
+/// Removes a vehicle's ghost from a lane's occupants.
+fn remove_ghost(occupants: &mut [Vec<Occupant>], lane: LaneId, id: VehicleId) {
+    occupants[lane.0 as usize].retain(|o| !(o.id == id && o.ghost));
+}
+
+/// A vehicle's lane-change decision, under MOBIL.
+///
+/// - Not indicating: it weighs up each permitted side from its own gain alone,
+///   and starts indicating to the better one if that is worth it and safe.
+/// - Indicating: it cancels once its own gain is no longer worth it. Otherwise,
+///   with its followers' responses, it changes once MOBIL's net gain is worth it,
+///   it is safe and it has indicated long enough, and until then keeps
+///   indicating, waiting for a gap.
+///
+/// A vehicle partway through a change, or still straddling, doesn't decide.
+fn decide<D: DebugSink>(
+    network: &SimNetwork,
+    occupants: &[Vec<Occupant>],
+    vehicles: &SlotMap<VehicleId, Vehicle>,
+    sink: &mut D,
+    time: f64,
+    id: VehicleId,
+    vehicle: &Vehicle,
+) -> LaneDecision {
+    if vehicle.lane_change.is_some() || vehicle.old_side.is_some() {
+        return match vehicle.intent {
+            Some(_) => LaneDecision::Cancel,
+            None => LaneDecision::Nothing,
+        };
+    }
+    let lane = network.lane(vehicle.path[0]);
+    let now = accel_along(
+        network,
+        occupants,
+        vehicles,
+        id,
+        vehicle,
+        &vehicle.path,
+        vehicle.lane_pos.s,
+        Ghosts::Report,
+    );
+    let mut record = |eval: LaneChangeEval| {
+        sink.record(|| DebugEvent::LaneChangeEval { vehicle: id, eval });
+    };
+
+    let Some(intent) = vehicle.intent else {
+        // Weigh up both sides, then indicate to the better one if any.
+        let mut evals = [Side::Left, Side::Right].map(|side| {
+            let target = lane.adj(side).filter(|n| n.can_change)?;
+            let (own_after, axle_s) =
+                accel_in(network, occupants, vehicles, id, vehicle, target.lane);
+            let own_gain = own_after - now;
+            let safe = lane_change::safe(own_after)
+                && !alongside(occupants, vehicles, target.lane, id, vehicle, axle_s);
+            let outcome = match () {
+                _ if !safe => Outcome::Unsafe,
+                _ if !lane_change::worth_it(own_gain) => Outcome::NotWorthIt,
+                _ => Outcome::Indicate,
+            };
+            let incentive = own_gain;
+            let (new_follower, old_follower) = (None, None);
+            Some(LaneChangeEval {
+                side,
+                own_after,
+                own_gain,
+                new_follower,
+                old_follower,
+                incentive,
+                safe,
+                outcome,
+            })
+        });
+        if let [Some(left), Some(right)] = &mut evals
+            && left.outcome == Outcome::Indicate
+            && right.outcome == Outcome::Indicate
+        {
+            let worse = if left.own_gain >= right.own_gain {
+                right
+            } else {
+                left
+            };
+            worse.outcome = Outcome::OtherSide;
+        }
+        let mut decision = LaneDecision::Nothing;
+        for eval in evals.into_iter().flatten() {
+            if eval.outcome == Outcome::Indicate {
+                decision = LaneDecision::Indicate(eval.side);
+            }
+            record(eval);
+        }
+        return decision;
+    };
+
+    let Some(target) = lane.adj(intent.side).filter(|n| n.can_change) else {
+        return LaneDecision::Cancel;
+    };
+    let (own_after, axle_s) = accel_in(network, occupants, vehicles, id, vehicle, target.lane);
+    let own_gain = own_after - now;
+    let new_follower = intent.new_follower.map(|r| r.change());
+    let old_follower = intent.old_follower.map(|r| r.change());
+    let incentive = lane_change::incentive(
+        own_gain,
+        new_follower.unwrap_or(0.0),
+        old_follower.unwrap_or(0.0),
+    );
+    let indicated = time - intent.since;
+    let follower_safe = match intent.new_follower {
+        Some(response) => lane_change::safe(response.after),
+        // No reply: safe only if nobody is directly behind the ghost, and replies
+        // have had time to arrive.
+        None => indicated >= 2.0 * ACCEL_PERIOD && !anyone_behind_ghost(occupants, target.lane, id),
+    };
+    let safe = lane_change::safe(own_after)
+        && follower_safe
+        && !alongside(occupants, vehicles, target.lane, id, vehicle, axle_s);
+    // Cancelling is decided on the driver's own gain, like starting, but with a
+    // lower bar so the indicator doesn't flicker. Politeness and safety only hold
+    // back the change.
+    let outcome = match () {
+        _ if !lane_change::still_worth_it(own_gain) => Outcome::Cancel,
+        _ if lane_change::worth_it(incentive)
+            && safe
+            && indicated >= lane_change::MIN_INDICATING =>
+        {
+            Outcome::Change
+        }
+        _ => Outcome::Wait,
+    };
+    record(LaneChangeEval {
+        side: intent.side,
+        own_after,
+        own_gain,
+        new_follower,
+        old_follower,
+        incentive,
+        safe,
+        outcome,
+    });
+    match outcome {
+        Outcome::Cancel => LaneDecision::Cancel,
+        Outcome::Change => LaneDecision::Change(intent.side),
+        _ => LaneDecision::Nothing,
+    }
+}
+
+/// Whether a record sits directly behind a vehicle's ghost in a lane's occupants.
+fn anyone_behind_ghost(occupants: &[Vec<Occupant>], lane: LaneId, id: VehicleId) -> bool {
+    let list = &occupants[lane.0 as usize];
+    list.iter().position(|o| o.id == id && o.ghost).is_some_and(|i| i > 0)
+}
+
+/// A vehicle's acceleration under the longitudinal model from its rear axle at
+/// `axle_s` on the first of `lanes`, against the free road and its leader there.
+#[allow(clippy::too_many_arguments)]
+fn accel_along(
+    network: &SimNetwork,
+    occupants: &[Vec<Occupant>],
+    vehicles: &SlotMap<VehicleId, Vehicle>,
+    id: VehicleId,
+    vehicle: &Vehicle,
+    lanes: &[LaneId],
+    axle_s: f64,
+    ghosts: Ghosts,
+) -> f64 {
+    let desired = vehicle.spec.desired_speed(network.lane(lanes[0]).speed_limit());
+    let mut accel = acceleration::free_road(&vehicle.spec, vehicle.speed, desired);
+    let search =
+        occupancy::find_leader(network, occupants, id, vehicle, lanes, axle_s, ghosts, None);
+    if let Some((leader, gap)) = search.leader {
+        let leader_speed = vehicles[leader].speed;
+        accel = accel.min(acceleration::interaction(
+            &vehicle.spec,
+            vehicle.speed,
+            gap,
+            leader_speed,
+        ));
+    }
+    accel
+}
+
+/// A vehicle's acceleration if it were on the neighboring lane `target`, level
+/// with where it is now, and its rear axle's `s` there. Other vehicles' ghosts
+/// there count as leaders.
+fn accel_in(
+    network: &SimNetwork,
+    occupants: &[Vec<Occupant>],
+    vehicles: &SlotMap<VehicleId, Vehicle>,
+    id: VehicleId,
+    vehicle: &Vehicle,
+    target: LaneId,
+) -> (f64, f64) {
+    let current = network.lane(vehicle.path[0]);
+    let lane = network.lane(target);
+    // Adjacent lanes start and end together, so the same fraction is a good hint.
+    let hint = lane.lane_pos(vehicle.lane_pos.s / current.length() * lane.length(), 0.0);
+    let axle_s = lane.world_to_lane_near(vehicle.pos, hint).s;
+    let mut path = ArrayVec::<LaneId, PATH_LEN>::new();
+    path.push(target);
+    extend_path(network, &mut path);
+    let accel = accel_along(
+        network,
+        occupants,
+        vehicles,
+        id,
+        vehicle,
+        &path,
+        axle_s,
+        Ghosts::Lead,
+    );
+    (accel, axle_s)
+}
+
+/// Whether another vehicle, or another vehicle's ghost, is alongside: whether any
+/// record on `lane` overlaps the stretch the vehicle would take up there, from
+/// its rear to its front, with its rear axle at `axle_s`.
+///
+/// Leader search looks ahead of the rear axle and a follower's search ahead of
+/// its own, so a vehicle directly alongside is seen by neither. This closes that
+/// gap: MOBIL's requirement that both new gaps be positive. It reads only the
+/// records next to that stretch in one sorted list.
+fn alongside(
+    occupants: &[Vec<Occupant>],
+    vehicles: &SlotMap<VehicleId, Vehicle>,
+    lane: LaneId,
+    id: VehicleId,
+    vehicle: &Vehicle,
+    axle_s: f64,
+) -> bool {
+    let rear = axle_s - vehicle.spec.rear_axle;
+    let front = rear + vehicle.spec.length;
+    let list = &occupants[lane.0 as usize];
+    // Records start at their rear, so only those starting before our front can
+    // overlap; of those, walk back while their rear is within a vehicle length.
+    let end = list.partition_point(|o| o.s < front);
+    list[..end]
+        .iter()
+        .rev()
+        .filter(|o| o.id != id)
+        .take_while(|o| o.s > rear - MAX_VEHICLE_LENGTH)
+        .any(|o| o.s + vehicles[o.id].spec.length > rear)
 }
 
 /// Fills `path` up to capacity by following each lane's first successor.
