@@ -5,7 +5,8 @@ use std::f64::consts::TAU;
 use eframe::egui::{self, Color32, Pos2, Rect, Shape, Stroke};
 use glam::DVec2;
 use traffic_sim::{
-    DebugEvent, Lane, LaneId, Placement, SimNetwork, Simulation, Vehicle, VehicleId, VehicleSpec,
+    AccelSource, DebugEvent, DebugSink, Lane, LaneId, Placement, SimNetwork, Simulation, Vehicle,
+    VehicleId, VehicleSpec,
 };
 
 /// Sugiyama et al. (2008): 22 cars on a 230 m ring.
@@ -31,7 +32,7 @@ enum View {
 }
 
 struct App {
-    sim: Simulation<Vec<DebugEvent>>,
+    sim: Simulation<DebugState>,
     view: View,
     paused: bool,
     /// Simulated seconds per real second.
@@ -60,7 +61,6 @@ impl App {
     }
 
     fn step(&mut self, dt: f64) {
-        self.sim.sink_mut().clear();
         self.sim.step(dt);
     }
 
@@ -110,14 +110,35 @@ impl App {
             );
             row("accel", format!("{:+.2} m/s²", v.accel()));
             row("steer", format!("{:+.2}°", v.steer().to_degrees()));
-            match v.leader() {
-                Some(leader) => row(
-                    "leader",
-                    format!("{:?}, gap {:.2} m", leader.id, leader.gap),
-                ),
-                None => row("leader", "none".into()),
+        });
+
+        ui.separator();
+        ui.label("Acceleration terms (minimum binds)");
+        let terms: Vec<_> = self.sim.sink().terms(id).collect();
+        egui::Grid::new("terms").num_columns(2).show(ui, |ui| {
+            for &(source, accel) in &terms {
+                let name = match source {
+                    AccelSource::FreeRoad { desired_speed } => {
+                        format!("free road, v0 {desired_speed:.1} m/s")
+                    }
+                    AccelSource::Leader { id, gap } => format!("leader {id:?}, gap {gap:.2} m"),
+                    AccelSource::Hold => "hold".into(),
+                };
+                let text = egui::RichText::new(format!("{accel:+.2} m/s²")).monospace();
+                ui.label(name);
+                if accel == v.accel() {
+                    ui.label(text.strong().color(SELECTED));
+                } else {
+                    ui.label(text);
+                }
+                ui.end_row();
             }
         });
+        // The vehicle's acceleration is the minimum of its terms, so if none
+        // matches, an input to the model wasn't recorded.
+        if !terms.is_empty() && !terms.iter().any(|&(_, accel)| accel == v.accel()) {
+            ui.colored_label(Color32::RED, "No recorded term matches the acceleration.");
+        }
 
         ui.separator();
         // A click-only button stops counting as pressed once the press is too long
@@ -153,12 +174,16 @@ impl eframe::App for App {
         // Always shown at a fixed width, so selecting a vehicle doesn't move the scene.
         egui::Panel::right("inspector")
             .resizable(false)
-            .exact_size(280.0)
+            .exact_size(320.0)
             .show(ui, |ui| {
-                if let Some(id) = self.selected {
-                    ui.heading("Vehicle");
-                    self.inspector(ui, id);
-                }
+                // Content that is too wide scrolls instead of widening the panel,
+                // which would shift the scene.
+                egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
+                    if let Some(id) = self.selected {
+                        ui.heading("Vehicle");
+                        self.inspector(ui, id);
+                    }
+                });
             });
 
         if !self.paused {
@@ -191,11 +216,7 @@ impl eframe::App for App {
     }
 }
 
-fn draw_pretty(
-    painter: &egui::Painter,
-    sim: &Simulation<Vec<DebugEvent>>,
-    selected: Option<VehicleId>,
-) {
+fn draw_pretty(painter: &egui::Painter, sim: &Simulation<DebugState>, selected: Option<VehicleId>) {
     for (_, lane) in sim.network().lanes() {
         painter.add(lane_surface(lane, Color32::from_gray(60)));
     }
@@ -214,11 +235,7 @@ fn draw_pretty(
     }
 }
 
-fn draw_debug(
-    painter: &egui::Painter,
-    sim: &Simulation<Vec<DebugEvent>>,
-    selected: Option<VehicleId>,
-) {
+fn draw_debug(painter: &egui::Painter, sim: &Simulation<DebugState>, selected: Option<VehicleId>) {
     let thin = Stroke::new(0.08, Color32::from_gray(160));
     for (lane_id, lane) in sim.network().lanes() {
         painter.add(Shape::closed_line(
@@ -258,29 +275,69 @@ fn draw_debug(
         let corners = v.corners().map(to_scene).to_vec();
         painter.add(Shape::closed_line(corners, Stroke::new(0.1, colour)));
         painter.circle_filled(to_scene(v.pos()), 0.2, colour);
-
-        // Leader link: from the front bumper to the leader's rear bumper.
-        if let Some(leader) = v.leader().and_then(|l| sim.get(l.id)) {
-            let colour = Color32::from_rgb(120, 230, 120);
-            painter.line_segment(
-                [to_scene(front(v)), to_scene(rear(leader))],
-                Stroke::new(0.08, colour),
-            );
-        }
     }
 
-    for event in sim.sink() {
-        match *event {
-            DebugEvent::Lookahead { vehicle, point } => {
-                let Some(v) = sim.get(vehicle) else { continue };
-                let colour = Color32::from_rgb(90, 200, 240);
-                painter.line_segment(
-                    [to_scene(v.pos()), to_scene(point)],
-                    Stroke::new(0.04, colour),
-                );
-                painter.circle_filled(to_scene(point), 0.2, colour);
+    // Leader links, from the front bumper to the leader's rear bumper. Bright
+    // when that leader's term is the one the acceleration came from.
+    for &(id, source, accel) in &sim.sink().accel_terms {
+        let AccelSource::Leader { id: leader, .. } = source else {
+            continue;
+        };
+        let (Some(v), Some(leader)) = (sim.get(id), sim.get(leader)) else {
+            continue;
+        };
+        let colour = if accel == v.accel() {
+            Color32::from_rgb(120, 230, 120)
+        } else {
+            Color32::from_rgb(60, 110, 60)
+        };
+        painter.line_segment(
+            [to_scene(front(v)), to_scene(rear(leader))],
+            Stroke::new(0.08, colour),
+        );
+    }
+
+    for &(id, point) in &sim.sink().lookaheads {
+        let Some(v) = sim.get(id) else { continue };
+        let colour = Color32::from_rgb(90, 200, 240);
+        painter.line_segment(
+            [to_scene(v.pos()), to_scene(point)],
+            Stroke::new(0.04, colour),
+        );
+        painter.circle_filled(to_scene(point), 0.2, colour);
+    }
+}
+
+/// Accumulates the simulation's debug events. Each group is cleared by its reset
+/// event, so it always holds exactly what the last update of that group used.
+#[derive(Default)]
+struct DebugState {
+    /// The last longitudinal update's terms: vehicle, what it reacted to, acceleration.
+    accel_terms: Vec<(VehicleId, AccelSource, f64)>,
+    /// The last motion update's lookahead points.
+    lookaheads: Vec<(VehicleId, DVec2)>,
+}
+
+impl DebugSink for DebugState {
+    fn record(&mut self, event: impl FnOnce() -> DebugEvent) {
+        match event() {
+            DebugEvent::RecomputeAccels => self.accel_terms.clear(),
+            DebugEvent::AccelTerm { vehicle, source, accel } => {
+                self.accel_terms.push((vehicle, source, accel))
             }
+            DebugEvent::RecomputeMotion => self.lookaheads.clear(),
+            DebugEvent::Lookahead { vehicle, point } => self.lookaheads.push((vehicle, point)),
         }
+    }
+}
+
+impl DebugState {
+    /// One vehicle's terms from the last longitudinal update.
+    fn terms(&self, id: VehicleId) -> impl Iterator<Item = (AccelSource, f64)> + '_ {
+        self.accel_terms
+            .iter()
+            .filter(move |t| t.0 == id)
+            .map(|&(_, source, accel)| (source, accel))
     }
 }
 
@@ -323,8 +380,8 @@ fn to_scene(p: DVec2) -> Pos2 {
 }
 
 /// The Sugiyama ring with its cars evenly spaced and at rest.
-fn new_sim() -> Simulation<Vec<DebugEvent>> {
-    let mut sim = Simulation::new(ring(RING_CIRCUMFERENCE, 50.0 / 3.6), Vec::new());
+fn new_sim() -> Simulation<DebugState> {
+    let mut sim = Simulation::new(ring(RING_CIRCUMFERENCE, 50.0 / 3.6), DebugState::default());
     let length = sim.network().lane(LaneId(0)).length();
     for i in 0..RING_CARS {
         let s = length * i as f64 / RING_CARS as f64;

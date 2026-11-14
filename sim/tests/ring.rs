@@ -1,14 +1,16 @@
 //! Vehicles on a ring road: a single lane that is its own successor.
 
-use traffic_sim::{LaneId, NoopSink, Placement, Simulation};
+use traffic_sim::{LaneId, Placement, Simulation};
 
 mod common;
-use common::{car, fill_ring, ring};
+use common::{Terms, car, fill_ring, ring};
+
+type Sim = Simulation<Terms>;
 
 const DT: f64 = 1.0 / 60.0;
 const SPEED_LIMIT: f64 = 14.0;
 
-fn run(sim: &mut Simulation, seconds: f64, mut each: impl FnMut(&Simulation)) {
+fn run(sim: &mut Sim, seconds: f64, mut each: impl FnMut(&Sim)) {
     for _ in 0..(seconds / DT) as usize {
         sim.step(DT);
         each(sim);
@@ -16,7 +18,7 @@ fn run(sim: &mut Simulation, seconds: f64, mut each: impl FnMut(&Simulation)) {
 }
 
 /// Every vehicle is in its own lane's list, and every list is sorted.
-fn check_occupancy(sim: &Simulation) {
+fn check_occupancy(sim: &Sim) {
     let list = sim.occupants(LaneId(0));
     assert!(
         list.windows(2).all(|w| w[0].s <= w[1].s),
@@ -32,12 +34,12 @@ fn check_occupancy(sim: &Simulation) {
 
 #[test]
 fn lone_car_laps_forever_without_a_leader() {
-    let mut sim = Simulation::new(ring(230.0, SPEED_LIMIT), NoopSink);
+    let mut sim = Simulation::new(ring(230.0, SPEED_LIMIT), Terms::default());
     let id = sim.insert(car(), Placement { lane: LaneId(0), s: 0.0, speed: 0.0 });
     let mut max_t = 0.0f64;
     run(&mut sim, 120.0, |sim| {
         let v = sim.get(id).expect("car left the ring");
-        assert!(v.leader().is_none(), "found itself as a leader");
+        assert!(sim.sink().leader(id).is_none(), "found itself as a leader");
         max_t = max_t.max(v.lane_pos().t.abs());
         check_occupancy(sim);
     });
@@ -48,15 +50,14 @@ fn lone_car_laps_forever_without_a_leader() {
 
 #[test]
 fn crowded_ring_never_collides() {
-    let mut sim = Simulation::new(ring(230.0, SPEED_LIMIT), NoopSink);
+    let mut sim = Simulation::new(ring(230.0, SPEED_LIMIT), Terms::default());
     fill_ring(&mut sim, 22);
     run(&mut sim, 300.0, |sim| {
         assert_eq!(sim.vehicles().count(), 22);
-        for (_, v) in sim.vehicles() {
-            let leader = v.leader();
+        for (id, _) in sim.vehicles() {
             // No leader only before the first longitudinal update.
-            if let Some(leader) = leader {
-                assert!(leader.gap > 0.5, "gap closed to {} m", leader.gap);
+            if let Some((_, gap)) = sim.sink().leader(id) {
+                assert!(gap > 0.5, "gap closed to {gap} m");
             }
         }
         check_occupancy(sim);
@@ -65,21 +66,21 @@ fn crowded_ring_never_collides() {
 
 #[test]
 fn leaders_form_a_single_cycle() {
-    let mut sim = Simulation::new(ring(230.0, SPEED_LIMIT), NoopSink);
+    let mut sim = Simulation::new(ring(230.0, SPEED_LIMIT), Terms::default());
     fill_ring(&mut sim, 22);
     run(&mut sim, 30.0, |_| {});
     // Following leaders from any car visits every car once and comes back.
     let start = sim.vehicles().next().unwrap().0;
     let mut id = start;
     for _ in 0..22 {
-        id = sim.get(id).unwrap().leader().expect("every car has a leader").id;
+        id = sim.sink().leader(id).expect("every car has a leader").0;
     }
     assert_eq!(id, start);
 }
 
 #[test]
 fn held_car_stops_and_its_follower_queues() {
-    let mut sim = Simulation::new(ring(230.0, SPEED_LIMIT), NoopSink);
+    let mut sim = Simulation::new(ring(230.0, SPEED_LIMIT), Terms::default());
     fill_ring(&mut sim, 10);
     run(&mut sim, 30.0, |_| {});
 
@@ -87,9 +88,13 @@ fn held_car_stops_and_its_follower_queues() {
     sim.hold(held);
     run(&mut sim, 20.0, |_| {});
     assert_eq!(sim.get(held).unwrap().speed(), 0.0);
-    let follower = sim.vehicles().find(|(_, v)| v.leader().unwrap().id == held).unwrap().1;
-    assert!(follower.speed() < 0.1);
-    assert!(follower.leader().unwrap().gap > 1.0);
+    let follower = sim
+        .vehicles()
+        .map(|(id, _)| id)
+        .find(|&id| sim.sink().leader(id).unwrap().0 == held);
+    let follower = follower.unwrap();
+    assert!(sim.get(follower).unwrap().speed() < 0.1);
+    assert!(sim.sink().leader(follower).unwrap().1 > 1.0);
 
     sim.release(held);
     run(&mut sim, 5.0, |_| {});
@@ -98,7 +103,7 @@ fn held_car_stops_and_its_follower_queues() {
 
 #[test]
 fn picking_prefers_the_nearest_body() {
-    let mut sim = Simulation::new(ring(230.0, SPEED_LIMIT), NoopSink);
+    let mut sim = Simulation::new(ring(230.0, SPEED_LIMIT), Terms::default());
     fill_ring(&mut sim, 4);
     let (id, v) = sim.vehicles().next().unwrap();
     let centre = v.centre();
@@ -107,4 +112,22 @@ fn picking_prefers_the_nearest_body() {
     let side = centre + 1.5 * glam::DVec2::from_angle(v.heading()).perp();
     assert_eq!(sim.vehicle_at(side, 0.1), None);
     assert_eq!(sim.vehicle_at(side, 1.0), Some(id));
+}
+
+#[test]
+fn recorded_terms_reach_each_acceleration() {
+    let mut sim = Simulation::new(ring(230.0, SPEED_LIMIT), Terms::default());
+    fill_ring(&mut sim, 22);
+    let held = sim.vehicles().next().unwrap().0;
+    sim.hold(held);
+    run(&mut sim, 30.0, |sim| {
+        for (id, v) in sim.vehicles() {
+            let terms = sim.sink().0.iter().filter(|t| t.0 == id).map(|t| t.2);
+            let min = terms.fold(f64::INFINITY, f64::min);
+            // Before the first longitudinal update there are no terms yet.
+            if min.is_finite() {
+                assert_eq!(min, v.accel(), "terms don't reach {id:?}'s acceleration");
+            }
+        }
+    });
 }

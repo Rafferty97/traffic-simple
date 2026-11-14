@@ -2,13 +2,13 @@ use arrayvec::ArrayVec;
 use glam::DVec2;
 use slotmap::SlotMap;
 
-use crate::debug::{DebugEvent, DebugSink, NoopSink};
+use crate::debug::{AccelSource, DebugEvent, DebugSink, NoopSink};
 use crate::kinematics;
 use crate::math::wrap_angle;
 use crate::models::{acceleration, lateral};
 use crate::network::{LaneId, SimNetwork};
 use crate::occupancy::{self, Occupant};
-use crate::vehicle::{Leader, PATH_LEN, Placement, Vehicle, VehicleId, VehicleSpec};
+use crate::vehicle::{PATH_LEN, Placement, Vehicle, VehicleId, VehicleSpec};
 
 /// Longest substep in seconds. Longer frames are split.
 const MAX_SUBSTEP: f64 = 1.0 / 60.0;
@@ -29,7 +29,7 @@ pub struct Simulation<D: DebugSink = NoopSink> {
     /// Time since the last longitudinal model update, in seconds.
     accel_clock: f64,
     /// Scratch space for the longitudinal update's decisions, reused between updates.
-    decisions: Vec<(VehicleId, f64, Option<Leader>)>,
+    decisions: Vec<(VehicleId, f64)>,
     /// Scratch space for vehicles leaving the network, reused between substeps.
     leavers: Vec<VehicleId>,
     sink: D,
@@ -80,7 +80,6 @@ impl<D: DebugSink> Simulation<D> {
             steer: 0.0,
             path,
             lane_pos,
-            leader: None,
         };
         let id = self.vehicles.insert(vehicle);
 
@@ -162,36 +161,40 @@ impl<D: DebugSink> Simulation<D> {
 
     /// Longitudinal model: sets each vehicle's held acceleration.
     ///
-    /// Decisions are computed from a read-only view of the state, then applied.
+    /// The acceleration is the minimum over every term the model considers; each
+    /// term is recorded to the debug sink as it is computed. Decisions are computed
+    /// from a read-only view of the state, then applied.
     fn update_accels(&mut self) {
-        let Self { network, vehicles, occupants, decisions, .. } = self;
+        let Self { network, vehicles, occupants, decisions, sink, .. } = self;
+        sink.record(|| DebugEvent::RecomputeAccels);
         decisions.clear();
         for (id, vehicle) in vehicles.iter() {
             let lane = network.lane(vehicle.path[0]);
             let desired_speed = vehicle.spec.max_speed.min(lane.speed_limit());
             let mut accel = acceleration::free_road(&vehicle.spec, vehicle.speed, desired_speed);
-            let leader = occupancy::find_leader(network, occupants, id, vehicle);
-            if let Some(leader) = leader {
-                let leader_speed = vehicles[leader.id].speed;
-                let interaction = acceleration::interaction(
-                    &vehicle.spec,
-                    vehicle.speed,
-                    leader.gap,
-                    leader_speed,
-                );
-                accel = accel.min(interaction);
+            let source = AccelSource::FreeRoad { desired_speed };
+            sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel });
+
+            if let Some((leader, gap)) = occupancy::find_leader(network, occupants, id, vehicle) {
+                let leader_speed = vehicles[leader].speed;
+                let term =
+                    acceleration::interaction(&vehicle.spec, vehicle.speed, gap, leader_speed);
+                let source = AccelSource::Leader { id: leader, gap };
+                sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
+                accel = accel.min(term);
             }
-            decisions.push((id, accel, leader));
+            decisions.push((id, accel));
         }
 
-        for &(id, accel, leader) in &self.decisions {
-            let vehicle = &mut self.vehicles[id];
-            vehicle.accel = accel;
-            vehicle.leader = leader;
+        for &(id, accel) in &self.decisions {
+            self.vehicles[id].accel = accel;
         }
         for &id in &self.held {
             let vehicle = &mut self.vehicles[id];
-            vehicle.accel = vehicle.accel.min(-vehicle.spec.comfy_decel);
+            let term = -vehicle.spec.comfy_decel;
+            let source = AccelSource::Hold;
+            self.sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
+            vehicle.accel = vehicle.accel.min(term);
         }
     }
 
@@ -199,6 +202,7 @@ impl<D: DebugSink> Simulation<D> {
     /// onto its next lane once its rear axle passes the end of its current one.
     fn update_motion(&mut self, dt: f64) {
         let Self { network, vehicles, occupants, sink, .. } = self;
+        sink.record(|| DebugEvent::RecomputeMotion);
         for (id, vehicle) in vehicles.iter_mut() {
             let wheelbase = vehicle.spec.wheelbase();
 

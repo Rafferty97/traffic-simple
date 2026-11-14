@@ -75,7 +75,6 @@ All vehicles live in one global `SlotMap`. Each lane keeps a list of occupant re
 - World pose (x, y, heading), speed, steering state
 - Acceleration, held between longitudinal updates rather than recomputed each frame
 - Path: the assigned lane followed by the next few lanes it will take, in a fixed-capacity inline list. Leader search and path tracking look along it across lane boundaries.
-- Leader found by the last longitudinal update, with its gap. Interim, and to be removed: it can't represent more than one leader, and the debug view will read accumulated debug events instead (see Debug instrumentation).
 - Barrier commitments
 - Static attributes: vehicle class, dimensions, driver-model parameters
 
@@ -98,7 +97,7 @@ Work runs at three rates. Discrete decisions run at 5–10 Hz, acceleration at a
 | Rate        | Runs                                                       | Writes to vehicle state                |
 | ----------- | ---------------------------------------------------------- | -------------------------------------- |
 | 5–10 Hz     | Lane-change decisions, barrier commitment, routing choices | Target lane, commitments, route cursor |
-| ~20 Hz      | Longitudinal model (IDM+)                                  | Acceleration, leader                   |
+| ~20 Hz      | Longitudinal model (IDM+)                                  | Acceleration                           |
 | Every frame | Path tracking (pure pursuit), bicycle-model integration    | Pose, speed, steering                  |
 
 **Data flow**
@@ -267,7 +266,7 @@ Each milestone is a demo that can be finished on its own; anything after it is o
 
 1. Workspace skeleton: one straight lane, IDM, kinematics, the pretty and debug views. **Done.**
 2. A ring road showing emergent stop-and-go waves, as in the Sugiyama experiment. **Done.**
-3. A multi-lane freeway with MOBIL, continuous lane changes and multi-lane membership. It starts with the accumulating debug events described under Debug instrumentation, which replace the vehicle's stored leader.
+3. A multi-lane freeway with MOBIL, continuous lane changes and multi-lane membership. Began with the accumulating debug events described under Debug instrumentation, which replaced the vehicle's stored leader.
 4. An on-ramp merge and an off-ramp diverge, using conflicts and mandatory lane changes.
 5. A single signalised intersection with barriers and a fixed signal cycle.
 6. Hook turns.

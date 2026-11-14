@@ -47,3 +47,32 @@ pub fn fill_ring<D: traffic_sim::DebugSink>(sim: &mut Simulation<D>, count: usiz
         sim.insert(car(), Placement { lane: LaneId(0), s, speed: 0.0 });
     }
 }
+
+/// A sink that keeps the last longitudinal update's acceleration terms.
+#[derive(Default)]
+pub struct Terms(pub Vec<(traffic_sim::VehicleId, traffic_sim::AccelSource, f64)>);
+
+impl traffic_sim::DebugSink for Terms {
+    fn record(&mut self, event: impl FnOnce() -> traffic_sim::DebugEvent) {
+        use traffic_sim::DebugEvent;
+        match event() {
+            DebugEvent::RecomputeAccels => self.0.clear(),
+            DebugEvent::AccelTerm { vehicle, source, accel } => {
+                self.0.push((vehicle, source, accel))
+            }
+            DebugEvent::RecomputeMotion | DebugEvent::Lookahead { .. } => {}
+        }
+    }
+}
+
+impl Terms {
+    /// The leader a vehicle reacted to in the last longitudinal update, and the gap.
+    pub fn leader(&self, id: traffic_sim::VehicleId) -> Option<(traffic_sim::VehicleId, f64)> {
+        self.0.iter().find_map(|&(vehicle, source, _)| match source {
+            traffic_sim::AccelSource::Leader { id: leader, gap } if vehicle == id => {
+                Some((leader, gap))
+            }
+            _ => None,
+        })
+    }
+}

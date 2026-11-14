@@ -10,7 +10,7 @@ use slotmap::SlotMap;
 
 use crate::lane::{Lane, LanePos};
 use crate::network::{LaneId, SimNetwork};
-use crate::vehicle::{Leader, Vehicle, VehicleId};
+use crate::vehicle::{Vehicle, VehicleId};
 
 /// How far ahead of its front bumper a vehicle looks for a leader, in metres.
 const LEADER_HORIZON: f64 = 200.0;
@@ -77,7 +77,8 @@ fn insertion_sort(list: &mut [Occupant]) {
     }
 }
 
-/// The nearest vehicle ahead along `vehicle`'s path, within the leader horizon.
+/// The nearest vehicle ahead along `vehicle`'s path, within the leader horizon,
+/// and the bumper-to-bumper gap to it.
 ///
 /// On the vehicle's own lane, only occupants whose rear is ahead of its rear axle
 /// count. On later lanes in its path, every occupant counts.
@@ -86,7 +87,7 @@ pub fn find_leader(
     occupants: &[Vec<Occupant>],
     id: VehicleId,
     vehicle: &Vehicle,
-) -> Option<Leader> {
+) -> Option<(VehicleId, f64)> {
     let front = vehicle.lane_pos.s + vehicle.spec.length - vehicle.spec.rear_axle;
     // Start of the current path lane, measured along the path from the start of
     // the vehicle's own lane.
@@ -100,7 +101,7 @@ pub fn find_leader(
         let start = list.partition_point(|o| o.s <= after);
         if let Some(o) = list[start..].iter().find(|o| o.id != id) {
             let gap = offset + o.s - front;
-            return (gap <= LEADER_HORIZON).then_some(Leader { id: o.id, gap });
+            return (gap <= LEADER_HORIZON).then_some((o.id, gap));
         }
         offset += network.lane(lane).length();
         after = f64::NEG_INFINITY;

@@ -69,16 +69,6 @@ pub struct Vehicle {
     pub(crate) path: ArrayVec<LaneId, PATH_LEN>,
     /// The rear axle's position on `path[0]`.
     pub(crate) lane_pos: LanePos,
-    /// The leader found by the last longitudinal update.
-    pub(crate) leader: Option<Leader>,
-}
-
-/// The vehicle ahead that a vehicle is reacting to.
-#[derive(Clone, Copy, Debug)]
-pub struct Leader {
-    pub id: VehicleId,
-    /// Bumper-to-bumper gap in metres, measured along the follower's path.
-    pub gap: f64,
 }
 
 impl Vehicle {
@@ -117,11 +107,6 @@ impl Vehicle {
     /// The lane the vehicle is following, then the lanes it will take next.
     pub fn path(&self) -> &[LaneId] {
         &self.path
-    }
-
-    /// The leader found by the last longitudinal update.
-    pub fn leader(&self) -> Option<Leader> {
-        self.leader
     }
 
     /// The rear axle's position on [`Vehicle::lane`].
