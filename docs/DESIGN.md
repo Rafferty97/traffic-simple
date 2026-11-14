@@ -66,26 +66,26 @@ The simulation has no roads, only lanes. Lanes may overlap, merge, diverge or cr
 
 ## Simulation state and data layout
 
-All vehicles live in one global `SlotMap`. Each lane keeps a list of vehicle ids sorted by s, and a vehicle appears in every lane it geometrically intersects.
+All vehicles live in one global `SlotMap`. Each lane keeps a list of occupant records sorted by s, and a vehicle appears in every lane it occupies.
 
 **Vehicle state (sketch)**
 
 - World pose (x, y, heading), speed, steering state
 - Acceleration, held between longitudinal updates rather than recomputed each frame
-- Assigned lane and route cursor
-- One membership record per occupied lane: lane id, s, cached segment index, time it appeared on that lane
+- Path: the assigned lane followed by the next few lanes it will take, in a fixed-capacity inline list. Leader search and path tracking look along it across lane boundaries.
+- Leader found by the last longitudinal update, with its gap
 - Barrier commitments
 - Static attributes: vehicle class, dimensions, driver-model parameters
 
 **Per-lane occupancy**
 
-- Updated every frame, and cheaply, because the sim knows which vehicles could enter or leave a lane on a given frame: a vehicle is inserted when it starts to intersect a lane and removed once it is geometrically clear.
-- Order is restored by insertion sort, which is O(n) on sorted input and cheap for nearly sorted input.
+- Each record is `(s, vehicle id, projection hint)` and lives in the lane's list, not on the vehicle. There is one copy of s, so lists and vehicles can't drift apart, and sorting and leader search never touch the `SlotMap`.
+- A record's s is the smaller of the vehicle's two rear corners' s on that lane. Followers care about where a vehicle's rear is. Lateral coordinates are discarded for now.
+- **Joining:** a vehicle joins a lane when it advances onto it, which is when its rear axle passes the end of the previous lane.
+- **Leaving:** it leaves a lane once both rear corners are past the lane's end. Leaving a lane with no successors removes the vehicle from the network.
+- A vehicle on a loop can briefly have two records in the same lane, at two different s values. This is geometrically true and needs no special handling.
+- Updated every substep, and cheaply: each record is re-projected from its hint, cleared records are dropped, and order is restored by insertion sort, which is O(n) on sorted input and cheap for nearly sorted input.
 - Multi-lane membership is the general form of SUMO's "shadow lane" for a vehicle partway through a lane change.
-
-**Intersection test:** a vehicle intersects a lane when either rear corner is inside the lane's geometry. The rear corners are projected into lane coordinates anyway, so the test is nearly free. It also tests the part that matters: followers in a lane care about where a vehicle's rear is.
-
-**Suggestion:** store `(s, key)` pairs in each lane's list, not bare keys, so sorting and leader search never touch the `SlotMap`.
 
 **Suggestion:** start with an array of structs in the `SlotMap`. If profiling shows frame-rate work is memory-bound, split the hot per-frame fields (pose, speed, acceleration) into a dense struct of arrays.
 
@@ -96,7 +96,7 @@ Work runs at three rates. Discrete decisions run at 5–10 Hz, acceleration at a
 | Rate        | Runs                                                       | Writes to vehicle state                |
 | ----------- | ---------------------------------------------------------- | -------------------------------------- |
 | 5–10 Hz     | Lane-change decisions, barrier commitment, routing choices | Target lane, commitments, route cursor |
-| ~20 Hz      | Longitudinal model (IDM)                                   | Acceleration                           |
+| ~20 Hz      | Longitudinal model (IDM+)                                  | Acceleration, leader                   |
 | Every frame | Path tracking (pure pursuit), bicycle-model integration    | Pose, speed, steering                  |
 
 **Data flow**
@@ -128,9 +128,10 @@ Vehicles move by a kinematic bicycle model, steered by pure pursuit toward a tar
 
 ## Longitudinal model
 
-The Intelligent Driver Model (IDM) computes each vehicle's acceleration at about 20 Hz, behind a module boundary so it can be replaced.
+IDM+ (Schakel, van Arem and Netten, 2010) computes each vehicle's acceleration at about 20 Hz, behind a module boundary so it can be replaced. IDM+ splits IDM into a free-road term and an interaction term and takes the minimum instead of the sum. That gives a more realistic capacity, and it extends naturally to several leaders: the acceleration is the minimum over the free-road term and one interaction term per leader.
 
-- **What it reacts to:** the nearest leader across every lane the vehicle occupies, vehicles in active conflicts projected into its own lane, and the nearest barrier it has not committed to. The most restrictive one wins.
+- **What it reacts to:** the nearest leader along the vehicle's path, vehicles in active conflicts projected into its own lane, and the nearest barrier it has not committed to. The most restrictive one wins.
+- **Desired speed:** the smaller of the vehicle's maximum speed and its lane's speed limit.
 - **Barriers as virtual leaders:** an uncommitted barrier is treated as a stationary vehicle at the barrier line. This is standard IDM practice from Treiber's work.
 - **Lane-change onset:** the model can see when each vehicle appeared on a lane. A newly appeared leader (a cut-in) does not cause sudden braking.
 - **Heterogeneity:** IDM parameters (desired speed, time headway, maximum acceleration, comfortable deceleration, minimum gap) come from each vehicle's attributes.
@@ -194,10 +195,14 @@ Demand and routing live outside the `sim` crate. The simulation exposes vehicle 
 - **Insert** a vehicle from a spec: class, dimensions, driver-model parameters, starting lane and s, and its routing model.
 - **Find** vehicles by key, by lane and s-range, and spatially (point or box) for picking in the UI.
 - **Remove** a vehicle by key.
+- **Hold** a vehicle: it brakes at its comfortable deceleration to a stop and waits until released. Held vehicles are kept in a short list on the simulation, not as a flag on every vehicle.
+- **Pick** the vehicle nearest a point, within a tolerance, for the UI. Linear scan for now.
 - **Routing model:** answers which lane to take next. Implementations include shortest path to a destination (Dijkstra or A*) and a random walk through the network.
 - **Heterogeneity** comes from inserting vehicles with varied attributes. Distributions are the caller's concern, not the core's.
 
 **Suggestion:** let insertion fail when there is no safe room at the requested position and speed. This stops vehicles popping into existence on top of others.
+
+**Routing (interim):** until a routing model exists, a vehicle's path follows each lane's first successor.
 
 **Suggestion:** the routing interface needs lookahead (the lanes required several links ahead), not just the next lane. Mandatory lane changes have to start well before the diverge; SUMO calls this "best lanes".
 
@@ -242,7 +247,7 @@ The hardest problems are junction geometry and dense merging. Both have defeated
 
 **Open questions**
 
-None at the moment.
+- How a vehicle joins its target lane during a lane change (milestone 3). Successor transitions join on advance, as above.
 
 ## Milestones
 

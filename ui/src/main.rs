@@ -1,8 +1,20 @@
 //! egui app with a pretty view and a debug view of the simulation.
 
+use std::f64::consts::TAU;
+
 use eframe::egui::{self, Color32, Pos2, Rect, Shape, Stroke};
 use glam::DVec2;
-use traffic_sim::{DebugEvent, Lane, LaneId, Placement, SimNetwork, Simulation, VehicleSpec};
+use traffic_sim::{
+    DebugEvent, Lane, LaneId, Placement, SimNetwork, Simulation, Vehicle, VehicleId, VehicleSpec,
+};
+
+/// Sugiyama et al. (2008): 22 cars on a 230 m ring.
+const RING_CIRCUMFERENCE: f64 = 230.0;
+const RING_CARS: usize = 22;
+/// How far outside a vehicle a click still selects it, in screen points.
+const PICK_TOLERANCE: f32 = 6.0;
+
+const SELECTED: Color32 = Color32::from_rgb(250, 210, 60);
 
 fn main() -> eframe::Result {
     eframe::run_native(
@@ -26,62 +38,128 @@ struct App {
     speed: f64,
     /// Visible region of the world, in scene coordinates (see [`to_scene`]).
     scene_rect: Rect,
+    selected: Option<VehicleId>,
+    /// Whether the inspector's brake button is held down.
+    braking: bool,
 }
 
 impl App {
     fn new() -> Self {
-        let lane = demo_lane();
+        let sim = new_sim();
+        let lane = sim.network().lane(LaneId(0));
         let scene_rect = Rect::from_points(&lane.outline().map(to_scene).collect::<Vec<_>>());
         Self {
-            sim: Simulation::new(SimNetwork::new(vec![lane]), Vec::new()),
+            sim,
             view: View::Pretty,
             paused: false,
             speed: 1.0,
-            scene_rect: scene_rect.expand(20.0),
+            scene_rect: scene_rect.expand(10.0),
+            selected: None,
+            braking: false,
         }
     }
 
     fn step(&mut self, dt: f64) {
-        // Keep the demo looping: a new car once the last one has left.
-        if self.sim.vehicles().next().is_none() {
-            // Rear bumper at the start of the lane.
-            let car = demo_car();
-            let at = Placement { lane: LaneId(0), s: car.rear_axle, speed: 0.0 };
-            self.sim.insert(car, at);
-        }
         self.sim.sink_mut().clear();
         self.sim.step(dt);
+    }
+
+    fn controls(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.view, View::Pretty, "Pretty");
+            ui.selectable_value(&mut self.view, View::Debug, "Debug");
+            ui.separator();
+            let label = if self.paused { "Play" } else { "Pause" };
+            if ui.button(label).clicked() {
+                self.paused = !self.paused;
+            }
+            if ui.add_enabled(self.paused, egui::Button::new("Step")).clicked() {
+                self.step(1.0 / 60.0);
+            }
+            ui.add(egui::Slider::new(&mut self.speed, 0.1..=10.0).logarithmic(true).text("×"));
+            ui.separator();
+            if ui.button("Reset").clicked() {
+                self.sim = new_sim();
+                self.selected = None;
+                self.braking = false;
+            }
+        });
+    }
+
+    fn inspector(&mut self, ui: &mut egui::Ui, id: VehicleId) {
+        let Some(v) = self.sim.get(id) else {
+            ui.label("Vehicle has left the network.");
+            return;
+        };
+        let pos = v.lane_pos();
+        egui::Grid::new("inspector").num_columns(2).show(ui, |ui| {
+            let mut row = |name: &str, value: String| {
+                ui.label(name);
+                ui.monospace(value);
+                ui.end_row();
+            };
+            row("id", format!("{id:?}"));
+            row("lane", format!("{}", v.lane().0));
+            let path: Vec<_> = v.path().iter().map(|l| l.0.to_string()).collect();
+            row("path", path.join(" → "));
+            row("s", format!("{:.2} m", pos.s));
+            row("t", format!("{:+.3} m", pos.t));
+            row(
+                "speed",
+                format!("{:.2} m/s ({:.0} km/h)", v.speed(), v.speed() * 3.6),
+            );
+            row("accel", format!("{:+.2} m/s²", v.accel()));
+            row("steer", format!("{:+.2}°", v.steer().to_degrees()));
+            match v.leader() {
+                Some(leader) => row(
+                    "leader",
+                    format!("{:?}, gap {:.2} m", leader.id, leader.gap),
+                ),
+                None => row("leader", "none".into()),
+            }
+        });
+
+        ui.separator();
+        // A click-only button stops counting as pressed once the press is too long
+        // to be a click (0.8 s); sensing drags keeps it pressed until release.
+        let button = egui::Button::new("Hold to brake").sense(egui::Sense::click_and_drag());
+        let response = ui.add(button);
+        let down = response.is_pointer_button_down_on();
+        if down != self.braking {
+            self.braking = down;
+            if down {
+                self.sim.hold(id);
+            } else {
+                self.sim.release(id);
+            }
+        }
+    }
+
+    /// Selects the vehicle under `point` (scene coordinates), or clears the selection.
+    fn pick(&mut self, point: Pos2, tolerance: f64) {
+        if let Some(id) = self.selected.take() {
+            self.sim.release(id);
+            self.braking = false;
+        }
+        let world = DVec2::new(point.x as f64, -point.y as f64);
+        self.selected = self.sim.vehicle_at(world, tolerance);
     }
 }
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::Panel::top("controls").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.view, View::Pretty, "Pretty");
-                ui.selectable_value(&mut self.view, View::Debug, "Debug");
-                ui.separator();
-                let label = if self.paused { "Play" } else { "Pause" };
-                if ui.button(label).clicked() {
-                    self.paused = !self.paused;
-                }
-                if ui.add_enabled(self.paused, egui::Button::new("Step")).clicked() {
-                    self.step(1.0 / 60.0);
-                }
-                ui.add(egui::Slider::new(&mut self.speed, 0.1..=10.0).logarithmic(true).text("×"));
-                if let Some((_, v)) = self.sim.vehicles().next() {
-                    ui.separator();
-                    let pos = v.lane_pos();
-                    ui.monospace(format!(
-                        "s {:6.1} m  t {:+.2} m  v {:4.1} m/s  a {:+.2} m/s²",
-                        pos.s,
-                        pos.t,
-                        v.speed(),
-                        v.accel()
-                    ));
+        egui::Panel::top("controls").show(ui, |ui| self.controls(ui));
+
+        // Always shown at a fixed width, so selecting a vehicle doesn't move the scene.
+        egui::Panel::right("inspector")
+            .resizable(false)
+            .exact_size(280.0)
+            .show(ui, |ui| {
+                if let Some(id) = self.selected {
+                    ui.heading("Vehicle");
+                    self.inspector(ui, id);
                 }
             });
-        });
 
         if !self.paused {
             let dt = ui.input(|i| i.stable_dt).min(0.1) as f64;
@@ -96,38 +174,60 @@ impl eframe::App for App {
             };
             ui.painter().rect_filled(ui.max_rect(), 0.0, background);
             let scene = egui::Scene::new().zoom_range(0.1..=200.0).scroll_zooms(true);
-            scene.show(ui, &mut self.scene_rect, |ui| match self.view {
-                View::Pretty => draw_pretty(ui.painter(), &self.sim),
-                View::Debug => draw_debug(ui.painter(), &self.sim),
-            });
+            let response = scene
+                .show(ui, &mut self.scene_rect, |ui| match self.view {
+                    View::Pretty => draw_pretty(ui.painter(), &self.sim, self.selected),
+                    View::Debug => draw_debug(ui.painter(), &self.sim, self.selected),
+                })
+                .response;
+            if response.clicked()
+                && let Some(point) = response.hover_pos()
+            {
+                let to_global = ui.ctx().layer_transform_to_global(response.layer_id);
+                let scale = to_global.map_or(1.0, |t| t.scaling);
+                self.pick(point, (PICK_TOLERANCE / scale) as f64);
+            }
         });
     }
 }
 
-fn draw_pretty(painter: &egui::Painter, sim: &Simulation<Vec<DebugEvent>>) {
+fn draw_pretty(
+    painter: &egui::Painter,
+    sim: &Simulation<Vec<DebugEvent>>,
+    selected: Option<VehicleId>,
+) {
     for (_, lane) in sim.network().lanes() {
         painter.add(lane_surface(lane, Color32::from_gray(60)));
     }
-    for (_, v) in sim.vehicles() {
+    for (id, v) in sim.vehicles() {
         let corners = v.corners().map(to_scene).to_vec();
+        let outline = if Some(id) == selected {
+            Stroke::new(0.25, SELECTED)
+        } else {
+            Stroke::NONE
+        };
         painter.add(Shape::convex_polygon(
             corners,
             Color32::from_rgb(200, 40, 40),
-            Stroke::NONE,
+            outline,
         ));
     }
 }
 
-fn draw_debug(painter: &egui::Painter, sim: &Simulation<Vec<DebugEvent>>) {
+fn draw_debug(
+    painter: &egui::Painter,
+    sim: &Simulation<Vec<DebugEvent>>,
+    selected: Option<VehicleId>,
+) {
     let thin = Stroke::new(0.08, Color32::from_gray(160));
-    for (_, lane) in sim.network().lanes() {
+    for (lane_id, lane) in sim.network().lanes() {
         painter.add(Shape::closed_line(
             lane.outline().map(to_scene).collect(),
             thin,
         ));
         let centreline: Vec<_> = lane.centreline().map(to_scene).collect();
         for &p in &centreline {
-            painter.circle_filled(p, 0.15, Color32::from_gray(200));
+            painter.circle_filled(p, 0.1, Color32::from_gray(200));
         }
         painter.add(Shape::line(
             centreline,
@@ -141,15 +241,32 @@ fn draw_debug(painter: &egui::Painter, sim: &Simulation<Vec<DebugEvent>>) {
             let ends = [hw, -hw].map(|t| to_scene(lane.lane_to_world(lane.lane_pos(s, t))));
             painter.line_segment(ends, thin);
         }
+
+        // Each occupant record, on the centreline at its `s`.
+        for occupant in sim.occupants(lane_id) {
+            let p = lane.lane_to_world(lane.lane_pos(occupant.s, 0.0));
+            painter.circle_filled(to_scene(p), 0.25, Color32::from_rgb(200, 160, 255));
+        }
     }
 
-    for (_, v) in sim.vehicles() {
+    for (id, v) in sim.vehicles() {
+        let colour = if Some(id) == selected {
+            SELECTED
+        } else {
+            Color32::from_rgb(240, 90, 90)
+        };
         let corners = v.corners().map(to_scene).to_vec();
-        painter.add(Shape::closed_line(
-            corners,
-            Stroke::new(0.1, Color32::from_rgb(240, 90, 90)),
-        ));
-        painter.circle_filled(to_scene(v.pos()), 0.2, Color32::from_rgb(240, 90, 90));
+        painter.add(Shape::closed_line(corners, Stroke::new(0.1, colour)));
+        painter.circle_filled(to_scene(v.pos()), 0.2, colour);
+
+        // Leader link: from the front bumper to the leader's rear bumper.
+        if let Some(leader) = v.leader().and_then(|l| sim.get(l.id)) {
+            let colour = Color32::from_rgb(120, 230, 120);
+            painter.line_segment(
+                [to_scene(front(v)), to_scene(rear(leader))],
+                Stroke::new(0.08, colour),
+            );
+        }
     }
 
     for event in sim.sink() {
@@ -159,12 +276,24 @@ fn draw_debug(painter: &egui::Painter, sim: &Simulation<Vec<DebugEvent>>) {
                 let colour = Color32::from_rgb(90, 200, 240);
                 painter.line_segment(
                     [to_scene(v.pos()), to_scene(point)],
-                    Stroke::new(0.06, colour),
+                    Stroke::new(0.04, colour),
                 );
-                painter.circle_filled(to_scene(point), 0.3, colour);
+                painter.circle_filled(to_scene(point), 0.2, colour);
             }
         }
     }
+}
+
+/// Midpoint of the front bumper.
+fn front(v: &Vehicle) -> DVec2 {
+    let [_, _, front_right, front_left] = v.corners();
+    0.5 * (front_right + front_left)
+}
+
+/// Midpoint of the rear bumper.
+fn rear(v: &Vehicle) -> DVec2 {
+    let [rear_left, rear_right, ..] = v.corners();
+    0.5 * (rear_left + rear_right)
 }
 
 /// The lane's surface as a triangle strip between its left and right edges.
@@ -193,17 +322,34 @@ fn to_scene(p: DVec2) -> Pos2 {
     Pos2::new(p.x as f32, -p.y as f32)
 }
 
-/// 100 m straight, a 60° bend of radius about 100 m, then 100 m straight.
-fn demo_lane() -> Lane {
-    let (steps, turn) = (20, 60f64.to_radians());
-    let mut p = DVec2::new(100.0, 0.0);
-    let mut pts = vec![DVec2::ZERO, p];
-    for i in 0..steps {
-        p += 5.0 * DVec2::from_angle(turn * (i as f64 + 0.5) / steps as f64);
-        pts.push(p);
+/// The Sugiyama ring with its cars evenly spaced and at rest.
+fn new_sim() -> Simulation<Vec<DebugEvent>> {
+    let mut sim = Simulation::new(ring(RING_CIRCUMFERENCE, 50.0 / 3.6), Vec::new());
+    let length = sim.network().lane(LaneId(0)).length();
+    for i in 0..RING_CARS {
+        let s = length * i as f64 / RING_CARS as f64;
+        sim.insert(demo_car(), Placement { lane: LaneId(0), s, speed: 0.0 });
     }
-    pts.push(p + 100.0 * DVec2::from_angle(turn));
-    Lane::new(&pts, 3.5, 50.0 / 3.6).expect("demo lane is valid")
+    sim
+}
+
+/// A circular lane that is its own successor.
+///
+/// Chords are sized for at most 1 cm of sagitta. The lane starts and ends at the
+/// midpoint of one chord, so there is no kink at the seam.
+fn ring(circumference: f64, speed_limit: f64) -> SimNetwork {
+    let radius = circumference / TAU;
+    let max_chord = (8.0 * radius * 0.01).sqrt();
+    let n = (circumference / max_chord).ceil() as usize;
+    let vertex = |i: usize| radius * DVec2::from_angle(TAU * i as f64 / n as f64);
+    let seam = 0.5 * (vertex(n - 1) + vertex(0));
+    let mut points = vec![seam];
+    points.extend((0..n).map(vertex));
+    points.push(seam);
+    let lane = Lane::new(&points, 3.5, speed_limit).expect("ring lane is valid");
+    let mut network = SimNetwork::new(vec![lane]);
+    network.connect(LaneId(0), LaneId(0));
+    network
 }
 
 fn demo_car() -> VehicleSpec {
@@ -211,8 +357,10 @@ fn demo_car() -> VehicleSpec {
         length: 4.6,
         width: 1.9,
         max_speed: 30.0,
-        max_accel: 1.5,
-        comfy_decel: 2.0,
+        max_accel: 1.0,
+        comfy_decel: 1.5,
+        time_headway: 1.0,
+        min_gap: 1.5,
         rear_axle: 1.0,
         front_axle: 3.7,
     }

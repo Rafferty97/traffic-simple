@@ -1,7 +1,11 @@
+use arrayvec::ArrayVec;
 use glam::DVec2;
 
 use crate::lane::LanePos;
 use crate::network::LaneId;
+
+/// How many lanes a vehicle's path holds: its current lane and the next few.
+pub const PATH_LEN: usize = 4;
 
 slotmap::new_key_type! {
     /// Identifies a vehicle in the simulation.
@@ -17,8 +21,12 @@ pub struct VehicleSpec {
     /// The fastest the driver will go; the lane's speed limit may cap it further.
     pub max_speed: f64,
     pub max_accel: f64,
-    /// Positive. Not used until vehicles have leaders.
+    /// Comfortable deceleration, positive.
     pub comfy_decel: f64,
+    /// Desired time gap to the leader, in seconds (IDM's T).
+    pub time_headway: f64,
+    /// Bumper-to-bumper gap kept when stopped (IDM's s0).
+    pub min_gap: f64,
     /// Distance from the rear bumper to the rear axle.
     pub rear_axle: f64,
     /// Distance from the rear bumper to the front axle.
@@ -57,10 +65,20 @@ pub struct Vehicle {
     pub(crate) accel: f64,
     /// Front-wheel steering angle in radians, positive to the left.
     pub(crate) steer: f64,
-    /// The lane the vehicle is following.
-    pub(crate) lane: LaneId,
-    /// The rear axle's position on `lane`.
+    /// The lane the vehicle is following, then the lanes it will take next.
+    pub(crate) path: ArrayVec<LaneId, PATH_LEN>,
+    /// The rear axle's position on `path[0]`.
     pub(crate) lane_pos: LanePos,
+    /// The leader found by the last longitudinal update.
+    pub(crate) leader: Option<Leader>,
+}
+
+/// The vehicle ahead that a vehicle is reacting to.
+#[derive(Clone, Copy, Debug)]
+pub struct Leader {
+    pub id: VehicleId,
+    /// Bumper-to-bumper gap in metres, measured along the follower's path.
+    pub gap: f64,
 }
 
 impl Vehicle {
@@ -93,12 +111,35 @@ impl Vehicle {
 
     /// The lane the vehicle is following.
     pub fn lane(&self) -> LaneId {
-        self.lane
+        self.path[0]
+    }
+
+    /// The lane the vehicle is following, then the lanes it will take next.
+    pub fn path(&self) -> &[LaneId] {
+        &self.path
+    }
+
+    /// The leader found by the last longitudinal update.
+    pub fn leader(&self) -> Option<Leader> {
+        self.leader
     }
 
     /// The rear axle's position on [`Vehicle::lane`].
     pub fn lane_pos(&self) -> LanePos {
         self.lane_pos
+    }
+
+    /// The centre of the body.
+    pub fn centre(&self) -> DVec2 {
+        let offset = 0.5 * self.spec.length - self.spec.rear_axle;
+        self.pos + offset * DVec2::from_angle(self.heading)
+    }
+
+    /// Distance from `point` to the body, or zero if it is inside.
+    pub fn distance_to(&self, point: DVec2) -> f64 {
+        let local = DVec2::from_angle(-self.heading).rotate(point - self.centre());
+        let half = 0.5 * DVec2::new(self.spec.length, self.spec.width);
+        (local.abs() - half).max(DVec2::ZERO).length()
     }
 
     /// The body's corners: rear left, rear right, front right, front left.

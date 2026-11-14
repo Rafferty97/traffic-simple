@@ -1,22 +1,13 @@
 //! One vehicle drives the length of a single lane from rest.
 
 use glam::DVec2;
-use traffic_sim::{Lane, LaneId, NoopSink, Placement, SimNetwork, Simulation, VehicleSpec};
+use traffic_sim::{Lane, LaneId, NoopSink, Placement, SimNetwork, Simulation};
+
+mod common;
+use common::car;
 
 const SPEED_LIMIT: f64 = 14.0;
 const DT: f64 = 1.0 / 60.0;
-
-fn car() -> VehicleSpec {
-    VehicleSpec {
-        length: 4.6,
-        width: 1.9,
-        max_speed: 30.0,
-        max_accel: 1.5,
-        comfy_decel: 2.0,
-        rear_axle: 1.0,
-        front_axle: 3.7,
-    }
-}
 
 /// 100 m straight, then `turn` radians of bend at 5 m chords, then 100 m straight.
 fn lane(turn: f64) -> Lane {

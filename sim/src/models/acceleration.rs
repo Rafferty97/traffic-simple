@@ -1,26 +1,94 @@
-//! The Intelligent Driver Model (Treiber, Hennecke and Helbing, 2000).
+//! The longitudinal model: IDM+ (Schakel, van Arem and Netten, 2010).
+//!
+//! IDM+ splits the Intelligent Driver Model's acceleration into a free-road term
+//! and an interaction term and takes the minimum, rather than summing them as
+//! IDM does. Each term is a separate function here, so the simulation can take
+//! the minimum over the free-road term and one interaction term per leader.
+
+use crate::vehicle::VehicleSpec;
 
 /// The acceleration exponent δ.
 const DELTA: i32 = 4;
 
-/// IDM acceleration on a free road: `a · (1 − (v / v0)^δ)`.
+/// The hardest a vehicle can brake, in m/s². Caps both terms, which are
+/// unbounded below when a vehicle is far over its desired speed or almost
+/// touching its leader.
+pub const MAX_BRAKING: f64 = 9.0;
+
+/// Free-road term: `a · (1 − (v / v0)^δ)`.
+pub fn free_road(spec: &VehicleSpec, speed: f64, desired_speed: f64) -> f64 {
+    let accel = spec.max_accel * (1.0 - (speed / desired_speed).powi(DELTA));
+    accel.max(-MAX_BRAKING)
+}
+
+/// Interaction term for one leader: `a · (1 − (s* / s)²)`, where the desired gap is
+/// `s* = s0 + max(0, v·T + v·Δv / (2·√(a·b)))`.
 ///
-/// The interaction term, `−a · (s* / s)²`, is added once vehicles have leaders.
-pub fn free_road_accel(speed: f64, desired_speed: f64, max_accel: f64) -> f64 {
-    max_accel * (1.0 - (speed / desired_speed).powi(DELTA))
+/// `gap` is bumper to bumper, and `leader_speed` is the leader's speed.
+pub fn interaction(spec: &VehicleSpec, speed: f64, gap: f64, leader_speed: f64) -> f64 {
+    // A gap of zero or less means the vehicles touch: brake as hard as possible.
+    if gap <= 0.0 {
+        return -MAX_BRAKING;
+    }
+    let approach = speed - leader_speed;
+    let dynamic = speed * spec.time_headway
+        + speed * approach / (2.0 * (spec.max_accel * spec.comfy_decel).sqrt());
+    let desired_gap = spec.min_gap + dynamic.max(0.0);
+    let accel = spec.max_accel * (1.0 - (desired_gap / gap).powi(2));
+    accel.max(-MAX_BRAKING)
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
 
-    #[test]
-    fn full_accel_from_rest() {
-        assert_eq!(free_road_accel(0.0, 14.0, 1.5), 1.5);
+    fn spec() -> VehicleSpec {
+        VehicleSpec {
+            length: 4.6,
+            width: 1.9,
+            max_speed: 30.0,
+            max_accel: 1.5,
+            comfy_decel: 2.0,
+            time_headway: 1.2,
+            min_gap: 2.0,
+            rear_axle: 1.0,
+            front_axle: 3.7,
+        }
     }
 
     #[test]
-    fn none_at_desired_speed() {
-        assert_eq!(free_road_accel(14.0, 14.0, 1.5), 0.0);
+    fn full_accel_from_rest() {
+        assert_eq!(free_road(&spec(), 0.0, 14.0), 1.5);
+    }
+
+    #[test]
+    fn no_accel_at_desired_speed() {
+        assert_eq!(free_road(&spec(), 14.0, 14.0), 0.0);
+    }
+
+    #[test]
+    fn no_accel_at_equilibrium_gap() {
+        // Same speed as the leader, at exactly s0 + v·T.
+        let (v, gap) = (10.0, 2.0 + 10.0 * 1.2);
+        assert!(interaction(&spec(), v, gap, v).abs() < 1e-12);
+    }
+
+    #[test]
+    fn brakes_when_closing_in() {
+        let (v, gap) = (10.0, 14.0);
+        assert!(interaction(&spec(), v, gap, 5.0) < interaction(&spec(), v, gap, v));
+        assert!(interaction(&spec(), v, gap, 5.0) < 0.0);
+    }
+
+    #[test]
+    fn approaches_max_accel_far_from_leader() {
+        assert!(interaction(&spec(), 10.0, 1e6, 10.0) > 1.5 - 1e-6);
+    }
+
+    #[test]
+    fn braking_is_capped() {
+        assert_eq!(interaction(&spec(), 30.0, 0.5, 0.0), -MAX_BRAKING);
+        assert_eq!(interaction(&spec(), 30.0, -1.0, 0.0), -MAX_BRAKING);
+        assert_eq!(free_road(&spec(), 30.0, 10.0), -MAX_BRAKING);
     }
 }
