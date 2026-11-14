@@ -311,7 +311,7 @@ Each milestone is a demo that can be finished on its own; anything after it is o
 
 1. Workspace skeleton: one straight lane, IDM, kinematics, the pretty and debug views. **Done.**
 2. A ring road showing emergent stop-and-go waves, as in the Sugiyama experiment. **Done.**
-3. A multi-lane freeway with MOBIL, continuous lane changes and multi-lane membership. Began with the accumulating debug events described under Debug instrumentation, which replaced the vehicle's stored leader.
+3. A multi-lane freeway with MOBIL, continuous lane changes and multi-lane membership. Began with the accumulating debug events described under Debug instrumentation, which replaced the vehicle's stored leader. The demo is a three-lane ring that starts empty: the UI spawns vehicles into the outer lane and despawns them from the inner lane, each at a rate, so congestion on the outside drives lane changes leftward. `sim/tests/scenario.rs` runs the same scenario headless.
 4. An on-ramp merge and an off-ramp diverge, using conflicts and mandatory lane changes.
 5. A single signalised intersection with barriers and a fixed signal cycle.
 6. Hook turns.

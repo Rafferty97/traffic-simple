@@ -84,7 +84,7 @@ struct Harness {
 impl Default for Harness {
     fn default() -> Self {
         Self {
-            spawn_rate: 0.5,
+            spawn_rate: 1.0,
             despawn_rate: 0.3,
             spawn_credit: 0.0,
             despawn_credit: 0.0,
