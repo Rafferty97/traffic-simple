@@ -48,6 +48,8 @@ One source-of-truth network description compiles into two products: a `SimNetwor
 - **Render output:** road and junction surfaces, lane markings, stop lines and keep-clear markings.
 - **Compile-time work:** generating connector lanes through junctions, computing conflicts and placing barriers.
 
+**Suggestion:** sample curves into lane polylines by tolerance, not at a fixed spacing: at most about 1–2 cm of sagitta (chord error, `c² / 8R`) and about 3° of turn per vertex. Gentle curves get long chords and tight junction connectors get short ones. This is how vector renderers flatten curves.
+
 **Suggestion:** author at road level (roads with lane counts and offsets, junctions with turn movements), as OpenDRIVE and SUMO's edge/lane/connection model do, and expand to bare lanes during compilation. That is how people think about roads, and it keeps the sim free of road concepts.
 
 Generating junction geometry (connector curves and junction surfaces) is the hardest part of this crate. SUMO's netconvert is largely heuristics for it; procedural networks keep it tractable.
@@ -73,7 +75,7 @@ All vehicles live in one global `SlotMap`. Each lane keeps a list of occupant re
 - World pose (x, y, heading), speed, steering state
 - Acceleration, held between longitudinal updates rather than recomputed each frame
 - Path: the assigned lane followed by the next few lanes it will take, in a fixed-capacity inline list. Leader search and path tracking look along it across lane boundaries.
-- Leader found by the last longitudinal update, with its gap
+- Leader found by the last longitudinal update, with its gap. Interim, and to be removed: it can't represent more than one leader, and the debug view will read accumulated debug events instead (see Debug instrumentation).
 - Barrier commitments
 - Static attributes: vehicle class, dimensions, driver-model parameters
 
@@ -133,8 +135,11 @@ IDM+ (Schakel, van Arem and Netten, 2010) computes each vehicle's acceleration a
 - **What it reacts to:** the nearest leader along the vehicle's path, vehicles in active conflicts projected into its own lane, and the nearest barrier it has not committed to. The most restrictive one wins.
 - **Desired speed:** the smaller of the vehicle's maximum speed and its lane's speed limit.
 - **Barriers as virtual leaders:** an uncommitted barrier is treated as a stationary vehicle at the barrier line. This is standard IDM practice from Treiber's work.
+- **Evaluation:** the acceleration is a running minimum over the terms as they are computed. No list of leaders, conflicts or barriers is built.
 - **Lane-change onset:** the model can see when each vehicle appeared on a lane. A newly appeared leader (a cut-in) does not cause sudden braking.
 - **Heterogeneity:** IDM parameters (desired speed, time headway, maximum acceleration, comfortable deceleration, minimum gap) come from each vehicle's attributes.
+
+**Suggestion:** keep the time a vehicle appeared on a lane on its occupant record, so a leader's record says how recently it appeared, and smoothing needs no per-vehicle leader state.
 
 **Suggestion:** MOBIL's safety criterion already limits how hard a lane change can make the new follower brake. The appearance time then only has to smooth what is left, for example by easing from the previous leader's gap to the new one over 1–2 s.
 
@@ -219,7 +224,14 @@ The generic was chosen: the UI runs with a recording sink and benchmarks with th
 
 **Suggestion:** pass closures (`sink.record(|| …)`) so building an event's data is skipped entirely when the sink does nothing.
 
-**Events worth recording:** leader links and gaps, conflict activations, barrier commitments, lane-change decisions with their MOBIL scores, target paths and lookahead points. Clear them each step for the debug view to read.
+**Events worth recording:** leader links and gaps, conflict activations, barrier commitments, lane-change decisions with their MOBIL scores, target paths and lookahead points.
+
+The debug view shows what the simulation actually used, never a recomputation. Events are grouped by the update that produces them, and they accumulate in the sink:
+
+- **Reset events:** each update first records a reset for its group ("recompute accelerations", "recompute motion" and, later, "recompute decisions"), which clears that group's earlier events. The UI never clears the sink itself.
+- **Acceleration terms:** each term is its own event: the free-road term, each leader, conflict and barrier, and overrides such as holding. Every input to the final acceleration must be recorded, or the debug view's minimum won't match. The binding term is the one equal to the vehicle's stored acceleration, so a vehicle whose terms don't reach it shows that an event is missing.
+- **Several updates in one step:** each update resets and refills its own group, and the UI reads only after `step` returns, so it always sees the last complete set.
+- **Reset scope:** resets are global while every vehicle updates on the same tick, and removed vehicles' events vanish at the next reset. When an update is staggered across vehicles, its reset becomes per vehicle and the sink also needs a vehicle-removed event.
 
 ## UI
 
@@ -253,9 +265,9 @@ The hardest problems are junction geometry and dense merging. Both have defeated
 
 Each milestone is a demo that can be finished on its own; anything after it is optional.
 
-1. Workspace skeleton: one straight lane, IDM, kinematics, the pretty and debug views.
-2. A ring road showing emergent stop-and-go waves, as in the Sugiyama experiment.
-3. A multi-lane freeway with MOBIL, continuous lane changes and multi-lane membership.
+1. Workspace skeleton: one straight lane, IDM, kinematics, the pretty and debug views. **Done.**
+2. A ring road showing emergent stop-and-go waves, as in the Sugiyama experiment. **Done.**
+3. A multi-lane freeway with MOBIL, continuous lane changes and multi-lane membership. It starts with the accumulating debug events described under Debug instrumentation, which replace the vehicle's stored leader.
 4. An on-ramp merge and an off-ramp diverge, using conflicts and mandatory lane changes.
 5. A single signalised intersection with barriers and a fixed signal cycle.
 6. Hook turns.
