@@ -1,0 +1,10 @@
+[package]
+name = "traffic-sim"
+description = "Core traffic simulation: lanes, vehicles and the update pipeline."
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

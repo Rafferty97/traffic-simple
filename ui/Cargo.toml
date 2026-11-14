@@ -1,0 +1,12 @@
+[package]
+name = "ui"
+description = "egui app with pretty and debug views of the traffic simulation."
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+eframe = "0.37.0"
+traffic-sim.workspace = true

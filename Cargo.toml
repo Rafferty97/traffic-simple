@@ -1,8 +1,13 @@
-[package]
-name = "traffic-sim"
+[workspace]
+resolver = "3"
+members = ["sim", "ui"]
+
+[workspace.package]
 version = "0.0.0"
 authors = ["Alexander Rafferty <hello@alexanderrafferty.com>"]
 edition = "2024"
-description = "A simple traffic simulation package focussed on performance and realism."
 license = "GPL-3.0-or-later"
 repository = "https://github.com/Rafferty97/traffic-simple"
+
+[workspace.dependencies]
+traffic-sim = { path = "sim" }
