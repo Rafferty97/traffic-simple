@@ -26,8 +26,8 @@ pub fn ring(circumference: f64, speed_limit: f64) -> SimNetwork {
 }
 
 /// A ring road of concentric lanes, each its own successor, with lane changes
-/// allowed both ways between neighbours. Lane 0 is the innermost, with the given
-/// circumference. Travel is anticlockwise, so lane `i` is on the left of lane `i + 1`.
+/// allowed both ways between neighbors. Lane 0 is the innermost, with the given
+/// circumference. Travel is counterclockwise, so lane `i` is on the left of lane `i + 1`.
 ///
 /// Chords are sized for at most 1 cm of sagitta. Every lane starts and ends at
 /// angle 0, at the midpoint of a chord, so there is no kink at the seam and the

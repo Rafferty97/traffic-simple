@@ -4,7 +4,7 @@ use glam::DVec2;
 
 use crate::math::{sinc, wrap_angle};
 
-/// Moves the rear axle `dist` metres along the arc set by the steering angle.
+/// Moves the rear axle `dist` meters along the arc set by the steering angle.
 ///
 /// Exact for a constant steering angle: the rear axle travels on a circle of
 /// curvature `tan(steer) / wheelbase`, and the chord of that arc is
@@ -31,12 +31,12 @@ mod test {
     fn stays_on_the_turning_circle() {
         let (wheelbase, steer) = (2.7, 0.3);
         let r = wheelbase / f64::tan(steer);
-        let centre = DVec2::new(0.0, r);
+        let center = DVec2::new(0.0, r);
         let (mut pos, mut heading) = (DVec2::ZERO, 0.0);
         for _ in 0..100 {
             (pos, heading) = advance(pos, heading, steer, wheelbase, 0.5);
         }
-        assert!((pos.distance(centre) - r).abs() < 1e-9);
+        assert!((pos.distance(center) - r).abs() < 1e-9);
         assert!((heading - wrap_angle(50.0 / r)).abs() < 1e-9);
     }
 }

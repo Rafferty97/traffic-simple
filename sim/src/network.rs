@@ -22,7 +22,7 @@ impl Side {
 
 /// The lane beside another, and whether vehicles may change into it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Neighbour {
+pub struct Neighbor {
     pub lane: LaneId,
     /// Whether vehicles may change from the lane this is stored on into `lane`.
     pub can_change: bool,
@@ -30,9 +30,9 @@ pub struct Neighbour {
 
 /// The compiled network the simulation runs on.
 ///
-/// Each lane holds its own successors and neighbours. Adjacent lanes start and
+/// Each lane holds its own successors and neighbors. Adjacent lanes start and
 /// end together, like the lanes of a SUMO edge or an OpenDRIVE lane section, so
-/// the neighbour of a lane's successor is the successor of its neighbour. This
+/// the neighbor of a lane's successor is the successor of its neighbor. This
 /// isn't checked.
 #[derive(Clone, Debug)]
 pub struct SimNetwork {
@@ -59,10 +59,10 @@ impl SimNetwork {
         successors.push(to);
     }
 
-    /// Makes `left` and `right` neighbours, `left` on the left of `right`, with a
+    /// Makes `left` and `right` neighbors, `left` on the left of `right`, with a
     /// lane-change permission for each direction.
     ///
-    /// Replaces any neighbours they already had on those sides.
+    /// Replaces any neighbors they already had on those sides.
     pub fn set_adjacent(
         &mut self,
         left: LaneId,
@@ -70,9 +70,9 @@ impl SimNetwork {
         left_to_right: bool,
         right_to_left: bool,
     ) {
-        assert!(left != right, "a lane can't neighbour itself");
-        let to_right = Neighbour { lane: right, can_change: left_to_right };
-        let to_left = Neighbour { lane: left, can_change: right_to_left };
+        assert!(left != right, "a lane can't neighbor itself");
+        let to_right = Neighbor { lane: right, can_change: left_to_right };
+        let to_left = Neighbor { lane: left, can_change: right_to_left };
         self.lanes[left.0 as usize].adj_right = Some(to_right);
         self.lanes[right.0 as usize].adj_left = Some(to_left);
     }
@@ -106,11 +106,11 @@ mod test {
         net.set_adjacent(a, b, true, false);
         assert_eq!(
             net.lane(a).adj_right(),
-            Some(Neighbour { lane: b, can_change: true })
+            Some(Neighbor { lane: b, can_change: true })
         );
         assert_eq!(
             net.lane(b).adj_left(),
-            Some(Neighbour { lane: a, can_change: false })
+            Some(Neighbor { lane: a, can_change: false })
         );
         assert_eq!(net.lane(a).adj_left(), None);
         assert_eq!(net.lane(b).adj_right(), None);

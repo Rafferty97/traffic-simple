@@ -55,11 +55,11 @@ fn straight_lane_is_driven_end_to_end() {
     let (time, max_t) = drive(lane(0.0));
     // Lower bound: the whole lane at the speed limit.
     assert!(time > lane(0.0).length() / SPEED_LIMIT);
-    assert!(max_t < 1e-9, "drifted {max_t} m off the centreline");
+    assert!(max_t < 1e-9, "drifted {max_t} m off the centerline");
 }
 
 #[test]
 fn bent_lane_is_tracked_closely() {
     let (_, max_t) = drive(lane(1.0));
-    assert!(max_t < 0.1, "drifted {max_t} m off the centreline");
+    assert!(max_t < 0.1, "drifted {max_t} m off the centerline");
 }

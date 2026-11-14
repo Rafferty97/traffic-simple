@@ -3,7 +3,7 @@ use std::f64::consts::TAU;
 use arrayvec::ArrayVec;
 use glam::DVec2;
 
-use crate::network::{LaneId, Neighbour, Side};
+use crate::network::{LaneId, Neighbor, Side};
 
 /// The most successors a lane can have.
 pub const MAX_SUCCESSORS: usize = 4;
@@ -11,34 +11,34 @@ pub const MAX_SUCCESSORS: usize = 4;
 /// The sharpest turn allowed at a single vertex: 1/16 of a revolution.
 const MAX_TURN: f64 = TAU / 16.0;
 
-/// A lane described by a polyline centreline, a constant width and a speed limit,
+/// A lane described by a polyline centerline, a constant width and a speed limit,
 /// plus its links to other lanes, which [`SimNetwork`](crate::SimNetwork) sets.
 ///
 /// Positions are expressed in lane coordinates `(s, t)`: `s` is the distance in
-/// metres along the centreline and `t` is the lateral offset in metres, positive
+/// meters along the centerline and `t` is the lateral offset in meters, positive
 /// to the left. The mapping is continuous across vertices, so a vehicle can move
 /// along the lane without `s` jumping.
 #[derive(Clone, Debug)]
 pub struct Lane {
     /// The segments comprising the lane.
     segs: Vec<Segment>,
-    /// Width of the lane in metres.
+    /// Width of the lane in meters.
     width: f64,
-    /// Length of the lane in metres.
+    /// Length of the lane in meters.
     length: f64,
-    /// Speed limit in metres per second.
+    /// Speed limit in meters per second.
     speed_limit: f64,
     /// The lanes this one connects to, end to start.
     pub(crate) successors: ArrayVec<LaneId, MAX_SUCCESSORS>,
     /// The lane beside this one on the left, if any.
-    pub(crate) adj_left: Option<Neighbour>,
+    pub(crate) adj_left: Option<Neighbor>,
     /// The lane beside this one on the right, if any.
-    pub(crate) adj_right: Option<Neighbour>,
+    pub(crate) adj_right: Option<Neighbor>,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct Segment {
-    /// Position of the centreline at the start of the segment.
+    /// Position of the centerline at the start of the segment.
     start: DVec2,
     /// Unit direction vector of the segment.
     dir: DVec2,
@@ -56,9 +56,9 @@ struct Segment {
 /// query slower, never wrong.
 #[derive(Clone, Copy, Debug)]
 pub struct LanePos {
-    /// Longitudinal position along the centreline in metres.
+    /// Longitudinal position along the centerline in meters.
     pub s: f64,
-    /// Lateral offset from the centreline in metres, positive to the left.
+    /// Lateral offset from the centerline in meters, positive to the left.
     pub t: f64,
     seg: u32,
 }
@@ -75,8 +75,8 @@ pub enum LaneError {
 }
 
 impl Lane {
-    /// Builds a lane from its centreline polyline, a constant width in metres and a
-    /// speed limit in metres per second.
+    /// Builds a lane from its centerline polyline, a constant width in meters and a
+    /// speed limit in meters per second.
     ///
     /// Consecutive duplicate points are removed before the lane is built.
     pub fn new(points: &[DVec2], width: f64, speed_limit: f64) -> Result<Self, LaneError> {
@@ -127,17 +127,17 @@ impl Lane {
         })
     }
 
-    /// Length of the centreline in metres.
+    /// Length of the centerline in meters.
     pub fn length(&self) -> f64 {
         self.length
     }
 
-    /// Width of the lane in metres.
+    /// Width of the lane in meters.
     pub fn width(&self) -> f64 {
         self.width
     }
 
-    /// Speed limit in metres per second.
+    /// Speed limit in meters per second.
     pub fn speed_limit(&self) -> f64 {
         self.speed_limit
     }
@@ -148,17 +148,17 @@ impl Lane {
     }
 
     /// The lane beside this one on the left, if any.
-    pub fn adj_left(&self) -> Option<Neighbour> {
+    pub fn adj_left(&self) -> Option<Neighbor> {
         self.adj_left
     }
 
     /// The lane beside this one on the right, if any.
-    pub fn adj_right(&self) -> Option<Neighbour> {
+    pub fn adj_right(&self) -> Option<Neighbor> {
         self.adj_right
     }
 
     /// The lane beside this one on the given side, if any.
-    pub fn adj(&self, side: Side) -> Option<Neighbour> {
+    pub fn adj(&self, side: Side) -> Option<Neighbor> {
         match side {
             Side::Left => self.adj_left,
             Side::Right => self.adj_right,
@@ -175,9 +175,9 @@ impl Lane {
         self.segs[pos.seg as usize].lane_to_world(pos.s, pos.t)
     }
 
-    /// Unit direction of the centreline at `s`.
+    /// Unit direction of the centerline at `s`.
     ///
-    /// The centreline is piecewise straight, so this jumps at vertices.
+    /// The centerline is piecewise straight, so this jumps at vertices.
     pub fn tangent_at(&self, pos: LanePos) -> DVec2 {
         self.segs[pos.seg as usize].dir
     }
@@ -186,7 +186,7 @@ impl Lane {
     ///
     /// Use this for the first query; afterwards prefer [`Lane::world_to_lane_near`].
     /// The result is only meaningful for points within roughly the lane's width of
-    /// the centreline, since the lines of constant `s` can cross further out.
+    /// the centerline, since the lines of constant `s` can cross further out.
     pub fn world_to_lane(&self, pos: DVec2) -> LanePos {
         let seg = self.nearest_start(pos);
         self.world_to_lane_near(pos, LanePos { s: 0.0, t: 0.0, seg: seg as u32 })
@@ -200,8 +200,8 @@ impl Lane {
         LanePos { s, t, seg: seg as u32 }
     }
 
-    /// The centreline vertices, from start to end.
-    pub fn centreline(&self) -> impl Iterator<Item = DVec2> + '_ {
+    /// The centerline vertices, from start to end.
+    pub fn centerline(&self) -> impl Iterator<Item = DVec2> + '_ {
         let seg = (self.segs.len() - 1) as u32;
         let end = self.lane_to_world(LanePos { seg, s: self.length, t: 0.0 });
         self.segs.iter().map(|s| s.start).chain(std::iter::once(end))
@@ -362,7 +362,7 @@ mod test {
     }
 
     #[test]
-    fn centreline_s_is_arc_length() {
+    fn centerline_s_is_arc_length() {
         let pts = [DVec2::ZERO, DVec2::new(8.0, 0.0), DVec2::new(16.0, 0.5)];
         let lane = Lane::new(&pts, WIDTH, SPEED_LIMIT).unwrap();
         let p = DVec2::new(12.0, 0.25); // midway along the second chord
@@ -373,10 +373,10 @@ mod test {
     }
 
     #[test]
-    fn centreline_iterator_matches_input() {
+    fn centerline_iterator_matches_input() {
         let pts = [DVec2::ZERO, DVec2::new(8.0, 0.0), DVec2::new(16.0, 0.5)];
         let lane = Lane::new(&pts, WIDTH, SPEED_LIMIT).unwrap();
-        let got: Vec<_> = lane.centreline().collect();
+        let got: Vec<_> = lane.centerline().collect();
         assert_eq!(got.len(), pts.len());
         for (a, b) in got.iter().zip(pts) {
             assert!(a.distance(b) < EPS);

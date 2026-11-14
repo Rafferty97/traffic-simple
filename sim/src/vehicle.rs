@@ -13,7 +13,7 @@ slotmap::new_key_type! {
     pub struct VehicleId;
 }
 
-/// A vehicle's static attributes. Lengths in metres, speeds in m/s,
+/// A vehicle's static attributes. Lengths in meters, speeds in m/s,
 /// accelerations in m/s².
 #[derive(Clone, Copy, Debug)]
 pub struct VehicleSpec {
@@ -45,7 +45,7 @@ impl VehicleSpec {
 #[derive(Clone, Copy, Debug)]
 pub struct Placement {
     pub lane: LaneId,
-    /// Position of the rear axle along the lane's centreline, as in [`Vehicle::lane_pos`].
+    /// Position of the rear axle along the lane's centerline, as in [`Vehicle::lane_pos`].
     pub s: f64,
     pub speed: f64,
 }
@@ -59,7 +59,7 @@ pub struct Vehicle {
     pub(crate) spec: VehicleSpec,
     /// World position of the midpoint of the rear axle.
     pub(crate) pos: DVec2,
-    /// Heading in radians, anticlockwise from +x, in [0, 2π).
+    /// Heading in radians, counterclockwise from +x, in [0, 2π).
     pub(crate) heading: f64,
     pub(crate) speed: f64,
     /// Held between longitudinal updates.
@@ -71,7 +71,7 @@ pub struct Vehicle {
     /// The rear axle's position on `path[0]`.
     pub(crate) lane_pos: LanePos,
     /// After a lane change, the side its old lane is on, until the vehicle has
-    /// left the old lane. The old lanes are the neighbours of `path` on this side.
+    /// left the old lane. The old lanes are the neighbors of `path` on this side.
     pub(crate) old_side: Option<Side>,
     /// The lane change in progress, if any.
     pub(crate) lane_change: Option<LaneChange>,
@@ -87,7 +87,7 @@ impl Vehicle {
         self.pos
     }
 
-    /// Heading in radians, anticlockwise from +x.
+    /// Heading in radians, counterclockwise from +x.
     pub fn heading(&self) -> f64 {
         self.heading
     }
@@ -130,15 +130,15 @@ impl Vehicle {
         self.lane_change
     }
 
-    /// The centre of the body.
-    pub fn centre(&self) -> DVec2 {
+    /// The center of the body.
+    pub fn center(&self) -> DVec2 {
         let offset = 0.5 * self.spec.length - self.spec.rear_axle;
         self.pos + offset * DVec2::from_angle(self.heading)
     }
 
     /// Distance from `point` to the body, or zero if it is inside.
     pub fn distance_to(&self, point: DVec2) -> f64 {
-        let local = DVec2::from_angle(-self.heading).rotate(point - self.centre());
+        let local = DVec2::from_angle(-self.heading).rotate(point - self.center());
         let half = 0.5 * DVec2::new(self.spec.length, self.spec.width);
         (local.abs() - half).max(DVec2::ZERO).length()
     }

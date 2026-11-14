@@ -10,12 +10,12 @@ use traffic_sim::{NoopSink, Simulation};
 mod common;
 
 const DT: f64 = 1.0 / 60.0;
-const METRES_PER_CAR: f64 = 230.0 / 22.0;
+const METERS_PER_CAR: f64 = 230.0 / 22.0;
 
 fn ring_step(c: &mut Criterion) {
     let mut group = c.benchmark_group("ring_step");
     for cars in [100, 1_000, 10_000] {
-        let network = common::ring(cars as f64 * METRES_PER_CAR, 50.0 / 3.6);
+        let network = common::ring(cars as f64 * METERS_PER_CAR, 50.0 / 3.6);
         let mut sim = Simulation::new(network, NoopSink);
         common::fill_ring(&mut sim, cars);
         // Settle into moving traffic before measuring.

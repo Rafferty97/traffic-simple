@@ -1,12 +1,12 @@
 //! Pure pursuit path tracking: steer the rear axle along an arc through a point
 //! a speed-dependent distance ahead on the target path. During a lane change, the
-//! target path is offset from the lane's centreline along a cubic.
+//! target path is offset from the lane's centerline along a cubic.
 
 use glam::DVec2;
 
 use crate::math::angle_diff;
 
-/// Shortest lookahead distance in metres, used at low speed.
+/// Shortest lookahead distance in meters, used at low speed.
 const MIN_LOOKAHEAD: f64 = 2.0;
 /// Lookahead distance added per m/s of speed, in seconds.
 const LOOKAHEAD_TIME: f64 = 0.3;
@@ -16,19 +16,19 @@ const MAX_STEER: f64 = 0.6;
 /// How long a lane change takes, in seconds. Peak lateral acceleration is about
 /// `6 · offset / T²`: about 1.3 m/s² across a 3.5 m lane.
 const LANE_CHANGE_TIME: f64 = 4.0;
-/// Shortest lane change in metres, used at low speed.
+/// Shortest lane change in meters, used at low speed.
 const MIN_LANE_CHANGE_LENGTH: f64 = 15.0;
 
 /// A lane change in progress. The target path's offset from the new lane's
-/// centreline follows a cubic in `u = s − s0`, from the vehicle's offset and slope
+/// centerline follows a cubic in `u = s − s0`, from the vehicle's offset and slope
 /// at the start to zero offset and zero slope at `u = length`.
 #[derive(Clone, Copy, Debug)]
 pub struct LaneChange {
     /// Where the change started, as `s` along the vehicle's current lane.
     pub s0: f64,
-    /// Distance over which the offset returns to zero, in metres.
+    /// Distance over which the offset returns to zero, in meters.
     pub length: f64,
-    /// Lateral offset at the start, in metres, positive to the left.
+    /// Lateral offset at the start, in meters, positive to the left.
     pub offset: f64,
     /// Rate of change of the offset at the start, dt/ds.
     pub slope: f64,
@@ -54,13 +54,13 @@ impl LaneChange {
     }
 }
 
-/// How far ahead along the path to aim, in metres.
+/// How far ahead along the path to aim, in meters.
 pub fn lookahead_distance(speed: f64) -> f64 {
     MIN_LOOKAHEAD + LOOKAHEAD_TIME * speed
 }
 
 /// The steering angle that puts the rear axle on an arc through `target`.
-pub fn steer_towards(pos: DVec2, heading: f64, wheelbase: f64, target: DVec2) -> f64 {
+pub fn steer_toward(pos: DVec2, heading: f64, wheelbase: f64, target: DVec2) -> f64 {
     let d = target - pos;
     let alpha = angle_diff(d.to_angle(), heading);
     let curvature = 2.0 * alpha.sin() / d.length();
@@ -96,14 +96,14 @@ mod test {
 
     #[test]
     fn straight_ahead_needs_no_steering() {
-        let steer = steer_towards(DVec2::ZERO, 0.0, 2.7, DVec2::new(10.0, 0.0));
+        let steer = steer_toward(DVec2::ZERO, 0.0, 2.7, DVec2::new(10.0, 0.0));
         assert_eq!(steer, 0.0);
     }
 
     #[test]
-    fn steers_towards_the_side_of_the_target() {
-        assert!(steer_towards(DVec2::ZERO, 0.0, 2.7, DVec2::new(10.0, 1.0)) > 0.0);
-        assert!(steer_towards(DVec2::ZERO, 0.0, 2.7, DVec2::new(10.0, -1.0)) < 0.0);
+    fn steers_toward_the_side_of_the_target() {
+        assert!(steer_toward(DVec2::ZERO, 0.0, 2.7, DVec2::new(10.0, 1.0)) > 0.0);
+        assert!(steer_toward(DVec2::ZERO, 0.0, 2.7, DVec2::new(10.0, -1.0)) < 0.0);
     }
 
     #[test]
@@ -111,7 +111,7 @@ mod test {
         // Target on a circle of radius 20 m tangent to the heading at the origin.
         let r = 20.0;
         let target = DVec2::new(r * 0.5f64.sin(), r * (1.0 - 0.5f64.cos()));
-        let steer = steer_towards(DVec2::ZERO, 0.0, 2.7, target);
+        let steer = steer_toward(DVec2::ZERO, 0.0, 2.7, target);
         assert!((steer.tan() / 2.7 - 1.0 / r).abs() < 1e-12);
     }
 }

@@ -16,7 +16,7 @@ mod vehicle;
 pub use debug::{AccelSource, DebugEvent, DebugSink, NoopSink};
 pub use lane::{Lane, LaneError, LanePos, MAX_SUCCESSORS};
 pub use models::lateral::LaneChange;
-pub use network::{LaneId, Neighbour, Side, SimNetwork};
+pub use network::{LaneId, Neighbor, Side, SimNetwork};
 pub use occupancy::Occupant;
 pub use simulation::{LaneChangeError, Simulation};
 pub use vehicle::{PATH_LEN, Placement, Vehicle, VehicleId, VehicleSpec};

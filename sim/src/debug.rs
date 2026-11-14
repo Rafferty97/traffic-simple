@@ -24,7 +24,7 @@ pub enum DebugEvent {
     AccelTerm { vehicle: VehicleId, source: AccelSource, accel: f64 },
     /// A motion update is starting: earlier [`DebugEvent::Lookahead`]s are stale.
     RecomputeMotion,
-    /// The point a vehicle's path tracker is steering towards.
+    /// The point a vehicle's path tracker is steering toward.
     Lookahead { vehicle: VehicleId, point: DVec2 },
 }
 

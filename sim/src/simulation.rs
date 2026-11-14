@@ -46,7 +46,7 @@ pub enum LaneChangeError {
     #[error("a lane change is already in progress")]
     InProgress,
     #[error("no lane on that side")]
-    NoNeighbour,
+    NoNeighbor,
     #[error("changing into that lane isn't permitted")]
     NotPermitted,
 }
@@ -79,7 +79,7 @@ impl<D: DebugSink> Simulation<D> {
         &mut self.sink
     }
 
-    /// Inserts a vehicle on the centreline of a lane, facing along it.
+    /// Inserts a vehicle on the centerline of a lane, facing along it.
     ///
     /// It starts with zero acceleration, which it holds until the next longitudinal model update.
     pub fn insert(&mut self, spec: VehicleSpec, at: Placement) -> VehicleId {
@@ -133,11 +133,11 @@ impl<D: DebugSink> Simulation<D> {
 
     /// The vehicle whose body is nearest to `point`, if any is within `tolerance`.
     ///
-    /// If the point is inside several bodies, the one whose centre is nearest wins.
+    /// If the point is inside several bodies, the one whose center is nearest wins.
     pub fn vehicle_at(&self, point: DVec2, tolerance: f64) -> Option<VehicleId> {
         self.vehicles
             .iter()
-            .map(|(id, v)| (id, v.distance_to(point), v.centre().distance(point)))
+            .map(|(id, v)| (id, v.distance_to(point), v.center().distance(point)))
             .filter(|&(_, dist, _)| dist <= tolerance)
             .min_by(|a, b| a.1.total_cmp(&b.1).then(a.2.total_cmp(&b.2)))
             .map(|(id, ..)| id)
@@ -162,8 +162,8 @@ impl<D: DebugSink> Simulation<D> {
     /// Changes a vehicle into the lane beside it on `side`, if permitted.
     ///
     /// The vehicle's lane switches at once and it joins the new lane's occupants.
-    /// Its pose doesn't move: it is now off-centre on its new lane, and path
-    /// tracking steers it onto the centreline along a cubic. It stays on its old
+    /// Its pose doesn't move: it is now off-center on its new lane, and path
+    /// tracking steers it onto the centerline along a cubic. It stays on its old
     /// lane's occupants until its rear has left that lane.
     pub fn change_lane(&mut self, id: VehicleId, side: Side) -> Result<(), LaneChangeError> {
         let vehicle = self.vehicles.get_mut(id).ok_or(LaneChangeError::NoVehicle)?;
@@ -171,14 +171,14 @@ impl<D: DebugSink> Simulation<D> {
             return Err(LaneChangeError::InProgress);
         }
         let current = self.network.lane(vehicle.path[0]);
-        let neighbour = current.adj(side).ok_or(LaneChangeError::NoNeighbour)?;
-        if !neighbour.can_change {
+        let neighbor = current.adj(side).ok_or(LaneChangeError::NoNeighbor)?;
+        if !neighbor.can_change {
             return Err(LaneChangeError::NotPermitted);
         }
 
         // Adjacent lanes start and end together, so the same fraction along the
         // new lane is a good hint.
-        let target = self.network.lane(neighbour.lane);
+        let target = self.network.lane(neighbor.lane);
         let fraction = vehicle.lane_pos.s / current.length();
         let hint = target.lane_pos(fraction * target.length(), 0.0);
         let lane_pos = target.world_to_lane_near(vehicle.pos, hint);
@@ -186,7 +186,7 @@ impl<D: DebugSink> Simulation<D> {
         let slope = angle_diff(vehicle.heading, tangent).tan();
 
         vehicle.path.clear();
-        vehicle.path.push(neighbour.lane);
+        vehicle.path.push(neighbor.lane);
         extend_path(&self.network, &mut vehicle.path);
         vehicle.lane_pos = lane_pos;
         vehicle.old_side = Some(side.opposite());
@@ -198,7 +198,7 @@ impl<D: DebugSink> Simulation<D> {
         ));
 
         let occupant = Occupant::new(target, id, &self.vehicles[id], lane_pos);
-        let list = &mut self.occupants[neighbour.lane.0 as usize];
+        let list = &mut self.occupants[neighbor.lane.0 as usize];
         let index = list.partition_point(|o| o.s <= occupant.s);
         list.insert(index, occupant);
         Ok(())
@@ -265,7 +265,7 @@ impl<D: DebugSink> Simulation<D> {
     /// Path tracking and integration: steers, moves, then advances each vehicle
     /// onto its next lane once its rear axle passes the end of its current one.
     ///
-    /// During a lane change, the target path is offset from the centreline along
+    /// During a lane change, the target path is offset from the centerline along
     /// the change's cubic, and the change ends where the cubic does.
     fn update_motion(&mut self, dt: f64) {
         let Self { network, vehicles, occupants, sink, .. } = self;
@@ -276,7 +276,7 @@ impl<D: DebugSink> Simulation<D> {
             let ahead = vehicle.lane_pos.s + lateral::lookahead_distance(vehicle.speed);
             let offset = vehicle.lane_change.map_or(0.0, |change| change.offset_at(ahead));
             let target = point_along_path(network, &vehicle.path, ahead, offset);
-            vehicle.steer = lateral::steer_towards(vehicle.pos, vehicle.heading, wheelbase, target);
+            vehicle.steer = lateral::steer_toward(vehicle.pos, vehicle.heading, wheelbase, target);
             sink.record(|| DebugEvent::Lookahead { vehicle: id, point: target });
 
             // Trapezoidal distance is exact for constant acceleration, unless the
@@ -348,8 +348,8 @@ fn extend_path(network: &SimNetwork, path: &mut ArrayVec<LaneId, PATH_LEN>) {
     }
 }
 
-/// The point `s` metres along a path from the start of its first lane, `t` metres
-/// left of the centreline. Past the end of the path, the last lane's final
+/// The point `s` meters along a path from the start of its first lane, `t` meters
+/// left of the centerline. Past the end of the path, the last lane's final
 /// segment is extended.
 fn point_along_path(network: &SimNetwork, path: &[LaneId], mut s: f64, t: f64) -> DVec2 {
     for (i, &id) in path.iter().enumerate() {

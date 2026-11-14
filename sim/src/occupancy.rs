@@ -13,7 +13,7 @@ use crate::lane::{Lane, LanePos};
 use crate::network::{LaneId, SimNetwork};
 use crate::vehicle::{Vehicle, VehicleId};
 
-/// How far ahead of its front bumper a vehicle looks for a leader, in metres.
+/// How far ahead of its front bumper a vehicle looks for a leader, in meters.
 const LEADER_HORIZON: f64 = 200.0;
 
 /// A vehicle's record in one lane's occupant list.
@@ -55,7 +55,7 @@ impl Occupant {
 #[derive(Clone, Copy, Debug)]
 struct Corner {
     past_end: bool,
-    /// Further from the centreline than half the lane's width.
+    /// Further from the centerline than half the lane's width.
     beside: bool,
 }
 

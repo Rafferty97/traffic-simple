@@ -45,7 +45,7 @@ fn lone_car_laps_forever_without_a_leader() {
     });
     // At the speed limit for most of two minutes: about seven laps.
     assert!((sim.get(id).unwrap().speed() - SPEED_LIMIT).abs() < 0.1);
-    assert!(max_t < 0.1, "drifted {max_t} m off the centreline");
+    assert!(max_t < 0.1, "drifted {max_t} m off the centerline");
 }
 
 #[test]
@@ -106,10 +106,10 @@ fn picking_prefers_the_nearest_body() {
     let mut sim = Simulation::new(ring(230.0, SPEED_LIMIT), Terms::default());
     fill_ring(&mut sim, 4);
     let (id, v) = sim.vehicles().next().unwrap();
-    let centre = v.centre();
-    assert_eq!(sim.vehicle_at(centre, 0.0), Some(id));
+    let center = v.center();
+    assert_eq!(sim.vehicle_at(center, 0.0), Some(id));
     // Just off the side of the car: only found with enough tolerance.
-    let side = centre + 1.5 * glam::DVec2::from_angle(v.heading()).perp();
+    let side = center + 1.5 * glam::DVec2::from_angle(v.heading()).perp();
     assert_eq!(sim.vehicle_at(side, 0.1), None);
     assert_eq!(sim.vehicle_at(side, 1.0), Some(id));
 }

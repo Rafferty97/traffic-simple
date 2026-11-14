@@ -80,7 +80,7 @@ fn changes_lane_smoothly_and_leaves_the_old_lane() {
     assert!(v.lane_change().is_none(), "lane change never finished");
     assert!(
         v.lane_pos().t.abs() < 0.05,
-        "ended {} m off the centreline",
+        "ended {} m off the centerline",
         v.lane_pos().t
     );
     // The rear leaves the old lane partway through the four-second change.
@@ -110,7 +110,7 @@ fn refuses_impossible_changes() {
     // Now on the innermost lane.
     assert_eq!(
         sim.change_lane(id, Side::Left),
-        Err(LaneChangeError::NoNeighbour)
+        Err(LaneChangeError::NoNeighbor)
     );
     sim.remove(id);
     assert_eq!(

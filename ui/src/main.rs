@@ -13,7 +13,7 @@ use traffic_sim::{
 /// Here the inner lane has that circumference, and every lane has that density.
 const RING_CIRCUMFERENCE: f64 = 230.0;
 const RING_LANES: usize = 3;
-const CARS_PER_METRE: f64 = 22.0 / 230.0;
+const CARS_PER_METER: f64 = 22.0 / 230.0;
 const LANE_WIDTH: f64 = 3.5;
 /// How far outside a vehicle a click still selects it, in screen points.
 const PICK_TOLERANCE: f32 = 6.0;
@@ -109,13 +109,13 @@ impl App {
             };
             row("id", format!("{id:?}"));
             row("lane", format!("{}", v.lane().0));
-            let neighbour = |side| match self.sim.network().lane(v.lane()).adj(side) {
+            let neighbor = |side| match self.sim.network().lane(v.lane()).adj(side) {
                 Some(n) if n.can_change => format!("{}", n.lane.0),
                 Some(n) => format!("{} (no change)", n.lane.0),
                 None => "none".into(),
             };
-            row("left", neighbour(Side::Left));
-            row("right", neighbour(Side::Right));
+            row("left", neighbor(Side::Left));
+            row("right", neighbor(Side::Right));
             let side = |side: Option<Side>| match side {
                 Some(Side::Left) => "left".to_string(),
                 Some(Side::Right) => "right".to_string(),
@@ -322,7 +322,7 @@ fn draw_debug(
         }
 
         if layers.on(Layer::Centerlines) {
-            let centerline: Vec<_> = lane.centreline().map(to_scene).collect();
+            let centerline: Vec<_> = lane.centerline().map(to_scene).collect();
             for &p in &centerline {
                 painter.circle_filled(p, 0.1, VERTEX);
             }
@@ -503,7 +503,7 @@ impl Layer {
             Layer::Lookahead => (
                 "Lookahead",
                 &[LOOKAHEAD],
-                "Rear axle to the point pure pursuit is steering towards",
+                "Rear axle to the point pure pursuit is steering toward",
             ),
         }
     }
@@ -591,12 +591,12 @@ fn rear(v: &Vehicle) -> DVec2 {
 /// so the rib at vertex `i` joins `outline[i]` and `outline[n - 1 - i]`. Each
 /// quad between ribs is convex, which a filled polygon of the whole outline
 /// would not be on a bend.
-fn lane_surface(lane: &Lane, colour: Color32) -> Shape {
+fn lane_surface(lane: &Lane, color: Color32) -> Shape {
     let outline: Vec<_> = lane.outline().map(to_scene).collect();
     let n = outline.len() as u32;
     let mut mesh = egui::Mesh::default();
     for &p in &outline {
-        mesh.colored_vertex(p, colour);
+        mesh.colored_vertex(p, color);
     }
     for i in 0..n / 2 - 1 {
         let (l0, l1, r0, r1) = (i, i + 1, n - 1 - i, n - 2 - i);
@@ -606,7 +606,7 @@ fn lane_surface(lane: &Lane, colour: Color32) -> Shape {
     Shape::mesh(mesh)
 }
 
-/// World metres (y up) to scene coordinates (y down).
+/// World meters (y up) to scene coordinates (y down).
 fn to_scene(p: DVec2) -> Pos2 {
     Pos2::new(p.x as f32, -p.y as f32)
 }
@@ -618,7 +618,7 @@ fn new_sim() -> Simulation<DebugState> {
     for lane in 0..RING_LANES as u32 {
         let lane = LaneId(lane);
         let length = sim.network().lane(lane).length();
-        let cars = (length * CARS_PER_METRE).round() as usize;
+        let cars = (length * CARS_PER_METER).round() as usize;
         for i in 0..cars {
             let s = length * i as f64 / cars as f64;
             sim.insert(demo_car(), Placement { lane, s, speed: 0.0 });
@@ -628,8 +628,8 @@ fn new_sim() -> Simulation<DebugState> {
 }
 
 /// A ring road of concentric lanes, each its own successor, with lane changes
-/// allowed both ways between neighbours. Lane 0 is the innermost, with the given
-/// circumference. Travel is anticlockwise, so lane `i` is on the left of lane `i + 1`.
+/// allowed both ways between neighbors. Lane 0 is the innermost, with the given
+/// circumference. Travel is counterclockwise, so lane `i` is on the left of lane `i + 1`.
 ///
 /// Chords are sized for at most 1 cm of sagitta. Every lane starts and ends at
 /// angle 0, at the midpoint of a chord, so there is no kink at the seam and the
