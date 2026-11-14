@@ -45,6 +45,8 @@ struct App {
     selected: Option<VehicleId>,
     /// Whether the inspector's brake button is held down.
     braking: bool,
+    /// Which debug view layers are drawn.
+    layers: Layers,
     /// Why the last lane-change request for the selected vehicle was refused.
     lane_change_error: Option<LaneChangeError>,
 }
@@ -62,6 +64,7 @@ impl App {
             scene_rect: scene_rect.expand(10.0),
             selected: None,
             braking: false,
+            layers: Layers::default(),
             lane_change_error: None,
         }
     }
@@ -219,12 +222,18 @@ impl eframe::App for App {
             .show(ui, |ui| {
                 // Content that is too wide scrolls instead of widening the panel,
                 // which would shift the scene.
-                egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
-                    if let Some(id) = self.selected {
+                if let Some(id) = self.selected {
+                    egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
                         ui.heading("Vehicle");
                         self.inspector(ui, id);
-                    }
-                });
+                    });
+                } else {
+                    // Vertical only, so the descriptions wrap.
+                    egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                        ui.heading("Debug view layers");
+                        self.layers.legend(ui);
+                    });
+                }
             });
 
         if !self.paused {
@@ -243,7 +252,7 @@ impl eframe::App for App {
             let response = scene
                 .show(ui, &mut self.scene_rect, |ui| match self.view {
                     View::Pretty => draw_pretty(ui.painter(), &self.sim, self.selected),
-                    View::Debug => draw_debug(ui.painter(), &self.sim, self.selected),
+                    View::Debug => draw_debug(ui.painter(), &self.sim, self.selected, &self.layers),
                 })
                 .response;
             if response.clicked()
@@ -297,110 +306,237 @@ fn draw_pretty(painter: &egui::Painter, sim: &Simulation<DebugState>, selected: 
     }
 }
 
-fn draw_debug(painter: &egui::Painter, sim: &Simulation<DebugState>, selected: Option<VehicleId>) {
-    let thin = Stroke::new(0.08, Color32::from_gray(160));
+fn draw_debug(
+    painter: &egui::Painter,
+    sim: &Simulation<DebugState>,
+    selected: Option<VehicleId>,
+    layers: &Layers,
+) {
+    let thin = Stroke::new(0.08, OUTLINE);
     for (lane_id, lane) in sim.network().lanes() {
-        painter.add(Shape::closed_line(
-            lane.outline().map(to_scene).collect(),
-            thin,
-        ));
-        let centreline: Vec<_> = lane.centreline().map(to_scene).collect();
-        for &p in &centreline {
-            painter.circle_filled(p, 0.1, Color32::from_gray(200));
-        }
-        painter.add(Shape::line(
-            centreline,
-            Stroke::new(0.04, Color32::from_gray(110)),
-        ));
-
-        // A tick across the lane every 10 m.
-        let hw = 0.5 * lane.width();
-        for i in 0..=(lane.length() / 10.0) as u32 {
-            let s = 10.0 * i as f64;
-            let ends = [hw, -hw].map(|t| to_scene(lane.lane_to_world(lane.lane_pos(s, t))));
-            painter.line_segment(ends, thin);
+        if layers.on(Layer::LaneOutlines) {
+            painter.add(Shape::closed_line(
+                lane.outline().map(to_scene).collect(),
+                thin,
+            ));
         }
 
-        // Neighbour links every 20 m, from the centreline to each side's edge:
-        // green where changes into that neighbour are allowed, red where not.
-        for side in [Side::Left, Side::Right] {
-            let Some(n) = lane.adj(side) else {
-                continue;
-            };
-            let colour = if n.can_change {
-                Color32::from_rgb(80, 200, 80)
-            } else {
-                Color32::from_rgb(220, 70, 70)
-            };
-            let edge = if side == Side::Left { 0.45 } else { -0.45 } * lane.width();
-            for i in 0..(lane.length() / 20.0) as u32 {
-                let s = 20.0 * i as f64 + 5.0;
-                let ends = [0.0, edge].map(|t| to_scene(lane.lane_to_world(lane.lane_pos(s, t))));
-                painter.line_segment(ends, Stroke::new(0.06, colour));
+        if layers.on(Layer::Centerlines) {
+            let centerline: Vec<_> = lane.centreline().map(to_scene).collect();
+            for &p in &centerline {
+                painter.circle_filled(p, 0.1, VERTEX);
+            }
+            painter.add(Shape::line(centerline, Stroke::new(0.04, CENTERLINE)));
+        }
+
+        if layers.on(Layer::Ticks) {
+            let hw = 0.5 * lane.width();
+            for i in 0..=(lane.length() / 10.0) as u32 {
+                let s = 10.0 * i as f64;
+                let ends = [hw, -hw].map(|t| to_scene(lane.lane_to_world(lane.lane_pos(s, t))));
+                painter.line_segment(ends, thin);
             }
         }
 
-        // Each occupant record, on the centreline at its `s`.
-        for occupant in sim.occupants(lane_id) {
-            let p = lane.lane_to_world(lane.lane_pos(occupant.s, 0.0));
-            painter.circle_filled(to_scene(p), 0.25, Color32::from_rgb(200, 160, 255));
+        // Every 20 m, from the centerline to each side's edge.
+        if layers.on(Layer::Neighbors) {
+            for side in [Side::Left, Side::Right] {
+                let Some(n) = lane.adj(side) else { continue };
+                let color = if n.can_change {
+                    MAY_CHANGE
+                } else {
+                    MAY_NOT_CHANGE
+                };
+                let edge = if side == Side::Left { 0.45 } else { -0.45 } * lane.width();
+                for i in 0..(lane.length() / 20.0) as u32 {
+                    let s = 20.0 * i as f64 + 5.0;
+                    let ends =
+                        [0.0, edge].map(|t| to_scene(lane.lane_to_world(lane.lane_pos(s, t))));
+                    painter.line_segment(ends, Stroke::new(0.06, color));
+                }
+            }
+        }
+
+        if layers.on(Layer::Occupants) {
+            for occupant in sim.occupants(lane_id) {
+                let p = lane.lane_to_world(lane.lane_pos(occupant.s, 0.0));
+                painter.circle_filled(to_scene(p), 0.25, OCCUPANT);
+            }
         }
     }
 
     for (id, v) in sim.vehicles() {
-        let colour = if Some(id) == selected {
-            SELECTED
-        } else {
-            Color32::from_rgb(240, 90, 90)
-        };
-        let corners = v.corners().map(to_scene).to_vec();
-        painter.add(Shape::closed_line(corners, Stroke::new(0.1, colour)));
-        painter.circle_filled(to_scene(v.pos()), 0.2, colour);
+        if layers.on(Layer::Vehicles) {
+            let color = if Some(id) == selected {
+                SELECTED
+            } else {
+                VEHICLE
+            };
+            let corners = v.corners().map(to_scene).to_vec();
+            painter.add(Shape::closed_line(corners, Stroke::new(0.1, color)));
+            painter.circle_filled(to_scene(v.pos()), 0.2, color);
+        }
 
-        // The planned lane-change path, from the vehicle's stored cubic. Drawn on
-        // its current lane only, so it stops short if it crosses a lane's end.
-        if let Some(change) = v.lane_change() {
+        // From the vehicle's stored cubic, drawn on its current lane only, so it
+        // stops short if it crosses a lane's end.
+        if layers.on(Layer::LaneChanges)
+            && let Some(change) = v.lane_change()
+        {
             let lane = sim.network().lane(v.lane());
             let samples = (0..=40).map(|i| change.s0 + change.length * i as f64 / 40.0);
             let points = samples
                 .take_while(|&s| s <= lane.length())
                 .map(|s| to_scene(lane.lane_to_world(lane.lane_pos(s, change.offset_at(s)))))
                 .collect();
-            painter.add(Shape::line(
-                points,
-                Stroke::new(0.08, Color32::from_rgb(250, 160, 60)),
-            ));
+            painter.add(Shape::line(points, Stroke::new(0.08, LANE_CHANGE)));
         }
     }
 
-    // Leader links, from the front bumper to the leader's rear bumper. Bright
-    // when that leader's term is the one the acceleration came from.
-    for &(id, source, accel) in &sim.sink().accel_terms {
-        let AccelSource::Leader { id: leader, .. } = source else {
-            continue;
-        };
-        let (Some(v), Some(leader)) = (sim.get(id), sim.get(leader)) else {
-            continue;
-        };
-        let colour = if accel == v.accel() {
-            Color32::from_rgb(120, 230, 120)
-        } else {
-            Color32::from_rgb(60, 110, 60)
-        };
-        painter.line_segment(
-            [to_scene(front(v)), to_scene(rear(leader))],
-            Stroke::new(0.08, colour),
-        );
+    // From the front bumper to the leader's rear bumper.
+    if layers.on(Layer::Leaders) {
+        for &(id, source, accel) in &sim.sink().accel_terms {
+            let AccelSource::Leader { id: leader, .. } = source else {
+                continue;
+            };
+            let (Some(v), Some(leader)) = (sim.get(id), sim.get(leader)) else {
+                continue;
+            };
+            let color = if accel == v.accel() {
+                LEADER_BINDING
+            } else {
+                LEADER_OTHER
+            };
+            painter.line_segment(
+                [to_scene(front(v)), to_scene(rear(leader))],
+                Stroke::new(0.08, color),
+            );
+        }
     }
 
-    for &(id, point) in &sim.sink().lookaheads {
-        let Some(v) = sim.get(id) else { continue };
-        let colour = Color32::from_rgb(90, 200, 240);
-        painter.line_segment(
-            [to_scene(v.pos()), to_scene(point)],
-            Stroke::new(0.04, colour),
-        );
-        painter.circle_filled(to_scene(point), 0.2, colour);
+    if layers.on(Layer::Lookahead) {
+        for &(id, point) in &sim.sink().lookaheads {
+            let Some(v) = sim.get(id) else { continue };
+            painter.line_segment(
+                [to_scene(v.pos()), to_scene(point)],
+                Stroke::new(0.04, LOOKAHEAD),
+            );
+            painter.circle_filled(to_scene(point), 0.2, LOOKAHEAD);
+        }
+    }
+}
+
+// Debug view colors, shared by the drawing and the legend.
+const OUTLINE: Color32 = Color32::from_gray(160);
+const VERTEX: Color32 = Color32::from_gray(200);
+const CENTERLINE: Color32 = Color32::from_gray(110);
+const MAY_CHANGE: Color32 = Color32::from_rgb(80, 200, 80);
+const MAY_NOT_CHANGE: Color32 = Color32::from_rgb(220, 70, 70);
+const OCCUPANT: Color32 = Color32::from_rgb(200, 160, 255);
+const VEHICLE: Color32 = Color32::from_rgb(240, 90, 90);
+const LANE_CHANGE: Color32 = Color32::from_rgb(250, 160, 60);
+const LEADER_BINDING: Color32 = Color32::from_rgb(120, 230, 120);
+const LEADER_OTHER: Color32 = Color32::from_rgb(60, 110, 60);
+const LOOKAHEAD: Color32 = Color32::from_rgb(90, 200, 240);
+
+/// A debug view layer that can be turned on and off.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Layer {
+    LaneOutlines,
+    Centerlines,
+    Ticks,
+    Neighbors,
+    Occupants,
+    Vehicles,
+    LaneChanges,
+    Leaders,
+    Lookahead,
+}
+
+impl Layer {
+    const ALL: [Layer; 9] = [
+        Layer::LaneOutlines,
+        Layer::Centerlines,
+        Layer::Ticks,
+        Layer::Neighbors,
+        Layer::Occupants,
+        Layer::Vehicles,
+        Layer::LaneChanges,
+        Layer::Leaders,
+        Layer::Lookahead,
+    ];
+
+    /// Its name, its colors, and what they mean, for the legend.
+    fn legend(self) -> (&'static str, &'static [Color32], &'static str) {
+        match self {
+            Layer::LaneOutlines => ("Lane outlines", &[OUTLINE], "Each lane's edges"),
+            Layer::Centerlines => (
+                "Centerlines",
+                &[CENTERLINE, VERTEX],
+                "Each lane's centerline and its vertices",
+            ),
+            Layer::Ticks => ("Ticks", &[OUTLINE], "Across each lane every 10 m of s"),
+            Layer::Neighbors => (
+                "Neighbors",
+                &[MAY_CHANGE, MAY_NOT_CHANGE],
+                "Links to each side's neighbor: green where changing into it is allowed, red where not",
+            ),
+            Layer::Occupants => (
+                "Occupants",
+                &[OCCUPANT],
+                "Each occupant record, on the centerline at its s",
+            ),
+            Layer::Vehicles => (
+                "Vehicles",
+                &[VEHICLE, SELECTED],
+                "Bodies and rear axles; the selected vehicle in yellow",
+            ),
+            Layer::LaneChanges => (
+                "Lane changes",
+                &[LANE_CHANGE],
+                "The cubic path of each lane change in progress",
+            ),
+            Layer::Leaders => (
+                "Leaders",
+                &[LEADER_BINDING, LEADER_OTHER],
+                "Front bumper to each leader's rear: bright when that leader sets the acceleration",
+            ),
+            Layer::Lookahead => (
+                "Lookahead",
+                &[LOOKAHEAD],
+                "Rear axle to the point pure pursuit is steering towards",
+            ),
+        }
+    }
+}
+
+/// Which debug view layers are on.
+struct Layers([bool; Layer::ALL.len()]);
+
+impl Default for Layers {
+    fn default() -> Self {
+        Self([true; Layer::ALL.len()])
+    }
+}
+
+impl Layers {
+    fn on(&self, layer: Layer) -> bool {
+        self.0[layer as usize]
+    }
+
+    /// A checkbox per layer, with its colors and what they mean.
+    fn legend(&mut self, ui: &mut egui::Ui) {
+        for layer in Layer::ALL {
+            let (name, colors, meaning) = layer.legend();
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.0[layer as usize], name);
+                for &color in colors {
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 2.0, color);
+                }
+            });
+            ui.indent(name, |ui| ui.small(meaning));
+        }
     }
 }
 
