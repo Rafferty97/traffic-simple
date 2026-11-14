@@ -10,6 +10,8 @@ mod common;
 use common::{Terms, ring_road};
 
 const DT: f64 = 1.0 / 60.0;
+/// The UI's ring: the inner lane's circumference, in meters.
+const RING_CIRCUMFERENCE: f64 = 1000.0;
 const SPEED_LIMIT: f64 = 50.0 / 3.6;
 const SPAWN_LANE: LaneId = LaneId(2);
 const DESPAWN_LANE: LaneId = LaneId(0);
@@ -59,7 +61,10 @@ struct Stats {
 }
 
 fn run_scenario(spawn_rate: f64, despawn_rate: f64, minutes: f64) -> Stats {
-    let mut sim = Simulation::new(ring_road(230.0, 3, SPEED_LIMIT), Terms::default());
+    let mut sim = Simulation::new(
+        ring_road(RING_CIRCUMFERENCE, 3, SPEED_LIMIT),
+        Terms::default(),
+    );
     let spawn_s = 0.25 * sim.network().lane(SPAWN_LANE).length();
     let despawn_s = 0.75 * sim.network().lane(DESPAWN_LANE).length();
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);

@@ -10,8 +10,9 @@ use traffic_sim::{
     Side, SimNetwork, Simulation, Vehicle, VehicleId, VehicleSpec,
 };
 
-/// The inner lane's circumference, as in Sugiyama et al. (2008).
-const RING_CIRCUMFERENCE: f64 = 230.0;
+/// The inner lane's circumference: about 160 m across, roomy enough for
+/// vehicles to accelerate, settle into gaps and change lanes.
+const RING_CIRCUMFERENCE: f64 = 1000.0;
 const RING_LANES: usize = 3;
 const LANE_WIDTH: f64 = 3.5;
 const SPEED_LIMIT: f64 = 50.0 / 3.6;
@@ -395,6 +396,13 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // Space toggles pause, unless a text field is being edited. Consumed
+        // before the panels are drawn, so a focused button doesn't also click.
+        let typing = ui.ctx().egui_wants_keyboard_input();
+        if !typing && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Space)) {
+            self.paused = !self.paused;
+        }
+
         egui::Panel::top("controls").show(ui, |ui| self.controls(ui));
 
         // Always shown at a fixed width, so selecting a vehicle doesn't move the scene.
