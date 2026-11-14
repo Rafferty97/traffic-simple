@@ -19,6 +19,8 @@ use crate::vehicle::{Vehicle, VehicleId};
 
 /// How far ahead of its front bumper a vehicle looks for a leader, in meters.
 const LEADER_HORIZON: f64 = 200.0;
+/// The least room, in meters, a vehicle needs beside another to pass it.
+const PASSING_CLEARANCE: f64 = 0.5;
 
 /// A vehicle's record in one lane's occupant list.
 #[derive(Clone, Copy, Debug)]
@@ -30,6 +32,12 @@ pub struct Occupant {
     hint: LanePos,
     /// Whether this is the ghost of a vehicle indicating a change into this lane.
     pub ghost: bool,
+    /// The lateral extent of the vehicle's rear on this lane: its rear corners'
+    /// `t`, smaller first.
+    pub extent: [f64; 2],
+    /// Whether the vehicle has left this lane and is only straddling it. Kept
+    /// up to date by `update`; false on a new record, which is the cautious way.
+    pub departing: bool,
 }
 
 impl Occupant {
@@ -58,10 +66,10 @@ impl Occupant {
             beside: p.t.abs() > 0.5 * lane.width(),
         };
         let hint = if left.s <= right.s { left } else { right };
-        (
-            Self { s: hint.s, id, hint, ghost: false },
-            [corner(left), corner(right)],
-        )
+        let extent = [left.t.min(right.t), left.t.max(right.t)];
+        // Set by `update`, which knows which lane this is.
+        let occupant = Self { s: hint.s, id, hint, ghost: false, extent, departing: false };
+        (occupant, [corner(left), corner(right)])
     }
 }
 
@@ -102,6 +110,7 @@ pub fn update(
                 return true;
             }
             let following = vehicle.path[0] == lane_id;
+            occupant.departing = !following;
             let outside = |c: &Corner| c.past_end || (c.beside && !following);
             if !corners.iter().all(outside) {
                 return true;
@@ -156,6 +165,10 @@ pub struct Search {
 /// On the first lane, only occupants whose rear is ahead of the rear axle count.
 /// On later lanes, every occupant counts. The vehicle's own records are skipped,
 /// as are `skip`'s, for asking what if that vehicle weren't there.
+///
+/// A departing vehicle, one only straddling a lane it has left, is passed if its
+/// rear leaves room beside it: at least [`PASSING_CLEARANCE`] between its extent
+/// and this vehicle's body, centered `axle_t` from the centerline.
 #[allow(clippy::too_many_arguments)]
 pub fn find_leader(
     network: &SimNetwork,
@@ -164,9 +177,15 @@ pub fn find_leader(
     vehicle: &Vehicle,
     lanes: &[LaneId],
     axle_s: f64,
+    axle_t: f64,
     ghosts: Ghosts,
     skip: Option<VehicleId>,
 ) -> Search {
+    let half_width = 0.5 * vehicle.spec.width;
+    let body = [axle_t - half_width, axle_t + half_width];
+    let room_to_pass = |extent: [f64; 2]| {
+        extent[0] - body[1] >= PASSING_CLEARANCE || body[0] - extent[1] >= PASSING_CLEARANCE
+    };
     let front = axle_s + vehicle.spec.length - vehicle.spec.rear_axle;
     let mut found = Search::default();
     // Start of the current lane, measured along `lanes` from the start of the first.
@@ -188,6 +207,9 @@ pub fn find_leader(
             }
             if o.ghost && ghosts == Ghosts::Report {
                 found.ghost = found.ghost.or(Some((o.id, gap)));
+                continue;
+            }
+            if o.departing && room_to_pass(o.extent) {
                 continue;
             }
             found.leader = Some((o.id, gap));
@@ -214,6 +236,8 @@ mod test {
                 id: ids.insert(()),
                 hint: lane.lane_pos(s, 0.0),
                 ghost: false,
+                extent: [-1.0, 1.0],
+                departing: false,
             })
             .collect();
         insertion_sort(&mut list);

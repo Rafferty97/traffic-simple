@@ -204,3 +204,47 @@ fn changing_out_of_a_queue_keeps_clear_of_the_old_leader() {
     assert!(v.lane_change().is_none(), "lane change never finished");
     assert_eq!(lanes_of(&sim, id), [0]);
 }
+
+#[test]
+fn followers_pass_a_car_mostly_out_of_their_lane() {
+    // Wide lanes, so a straddling car's rear can leave room to pass while it is
+    // still a member of the old lane.
+    let lane = |y: f64| {
+        let points = [glam::DVec2::new(0.0, y), glam::DVec2::new(400.0, y)];
+        Lane::new(&points, 5.0, SPEED_LIMIT).unwrap()
+    };
+    // Lane 0 is on the left of lane 1.
+    let mut network = SimNetwork::new(vec![lane(5.0), lane(0.0)]);
+    network.set_adjacent(LaneId(0), LaneId(1), true, true);
+    let mut sim = Simulation::new(network, NoopSink);
+    // A slow driver, so it stops soon after being held, still straddling.
+    let slow = traffic_sim::VehicleSpec { speed_factor: 0.15, ..car() };
+    let id = sim.insert(slow, Placement { lane: LaneId(1), s: 60.0, speed: 2.0 });
+    let follower = sim.insert(car(), Placement { lane: LaneId(1), s: 10.0, speed: 6.0 });
+    sim.change_lane(id, Side::Left).unwrap();
+
+    // Hold it once its rear is well over, but before it has left the old lane.
+    let rear_on_old = |sim: &Simulation| {
+        let list = sim.occupants(LaneId(1));
+        list.iter().find(|o| o.id == id && !o.ghost).map(|o| o.extent)
+    };
+    let mut passed_while_straddling = false;
+    let mut closest = f64::INFINITY;
+    for _ in 0..(30.0 / DT) as usize {
+        sim.step(DT);
+        if !sim.is_held(id) && rear_on_old(&sim).is_some_and(|extent| extent[0] >= 1.8) {
+            sim.hold(id);
+        }
+        let (v, f) = (sim.get(id).unwrap(), sim.get(follower).unwrap());
+        closest = closest.min(clearance(v, f));
+        if f.lane_pos().s > v.lane_pos().s + 5.0 && rear_on_old(&sim).is_some() {
+            passed_while_straddling = true;
+        }
+    }
+    assert!(sim.is_held(id), "never got far enough over to hold");
+    assert!(closest > 0.3, "came within {closest} m");
+    assert!(
+        passed_while_straddling,
+        "the follower never passed the straddling car"
+    );
+}
