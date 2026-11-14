@@ -242,7 +242,7 @@ Demand and routing live outside the `sim` crate. The simulation exposes vehicle 
 - **Routing model:** answers which lane to take next. Implementations include shortest path to a destination (Dijkstra or A*) and a random walk through the network.
 - **Heterogeneity** comes from inserting vehicles with varied attributes. Distributions are the caller's concern, not the core's.
 
-**Suggestion:** let insertion fail when there is no safe room at the requested position and speed. This stops vehicles popping into existence on top of others.
+- **Checked insertion:** `try_insert` refuses when there is no safe room: when the new vehicle would overlap another, or when it or its new follower would have to brake harder than `SAFE_BRAKING` (4 m/s², MOBIL's b_safe) because of the other. Its speed is capped at its new leader's. Its follower is the nearest vehicle behind it on its lane, or at the end of a lane leading into it, found by scanning for predecessors, which is fine outside the step. `insert` stays unchecked, for tests and scripted setups.
 
 **Routing (interim):** until a routing model exists, a vehicle's path follows each lane's first successor.
 

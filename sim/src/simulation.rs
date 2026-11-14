@@ -38,6 +38,13 @@ pub struct Simulation<D: DebugSink = NoopSink> {
     sink: D,
 }
 
+/// Why [`Simulation::try_insert`] refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum InsertError {
+    #[error("no safe room at that position")]
+    NoRoom,
+}
+
 /// Why [`Simulation::change_lane`] refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum LaneChangeError {
@@ -79,16 +86,79 @@ impl<D: DebugSink> Simulation<D> {
         &mut self.sink
     }
 
-    /// Inserts a vehicle on the centerline of a lane, facing along it.
+    /// Inserts a vehicle on the centerline of a lane, facing along it, without
+    /// checking for room. See [`Simulation::try_insert`] for a checked insert.
     ///
     /// It starts with zero acceleration, which it holds until the next longitudinal model update.
     pub fn insert(&mut self, spec: VehicleSpec, at: Placement) -> VehicleId {
+        let vehicle = self.build_vehicle(spec, at);
+        self.register(vehicle)
+    }
+
+    /// Inserts a vehicle as [`Simulation::insert`] does, but only where there is
+    /// safe room for it.
+    ///
+    /// Its speed is `at.speed`, capped at its new leader's speed. It is refused if
+    /// it would overlap another vehicle, or if it or its new follower would have to
+    /// brake harder than [`SAFE_BRAKING`](crate::SAFE_BRAKING)
+    /// because of it. Its follower is the nearest vehicle behind it on its lane, or
+    /// at the end of a lane leading into it.
+    pub fn try_insert(
+        &mut self,
+        spec: VehicleSpec,
+        at: Placement,
+    ) -> Result<VehicleId, InsertError> {
+        let mut vehicle = self.build_vehicle(spec, at);
+        let lane = self.network.lane(at.lane);
+        // A key that matches no vehicle, since this one isn't inserted yet.
+        let id = VehicleId::default();
+        let rear = Occupant::new(lane, id, &vehicle, vehicle.lane_pos).s;
+        let front = rear + spec.length;
+
+        let list = &self.occupants[at.lane.0 as usize];
+        if list.iter().any(|o| o.s >= rear && o.s <= front) {
+            return Err(InsertError::NoRoom);
+        }
+
+        let axle_s = vehicle.lane_pos.s;
+        let path = vehicle.path.clone();
+        let leader =
+            occupancy::find_leader(&self.network, &self.occupants, id, &vehicle, &path, axle_s);
+        if let Some((leader, gap)) = leader {
+            let leader_speed = self.vehicles[leader].speed;
+            vehicle.speed = vehicle.speed.min(leader_speed);
+            let accel = acceleration::interaction(&spec, vehicle.speed, gap, leader_speed);
+            if gap <= 0.0 || accel < -acceleration::SAFE_BRAKING {
+                return Err(InsertError::NoRoom);
+            }
+        }
+
+        let follower = find_follower(
+            &self.network,
+            &self.occupants,
+            &self.vehicles,
+            at.lane,
+            rear,
+        );
+        if let Some((follower, gap)) = follower {
+            let f = &self.vehicles[follower];
+            let accel = acceleration::interaction(&f.spec, f.speed, gap, vehicle.speed);
+            if gap <= 0.0 || accel < -acceleration::SAFE_BRAKING {
+                return Err(InsertError::NoRoom);
+            }
+        }
+
+        Ok(self.register(vehicle))
+    }
+
+    /// A vehicle placed on a lane's centerline, facing along it, not yet in the simulation.
+    fn build_vehicle(&self, spec: VehicleSpec, at: Placement) -> Vehicle {
         let lane = self.network.lane(at.lane);
         let lane_pos = lane.lane_pos(at.s, 0.0);
         let mut path = ArrayVec::new();
         path.push(at.lane);
         extend_path(&self.network, &mut path);
-        let vehicle = Vehicle {
+        Vehicle {
             spec,
             pos: lane.lane_to_world(lane_pos),
             heading: wrap_angle(lane.tangent_at(lane_pos).to_angle()),
@@ -99,11 +169,17 @@ impl<D: DebugSink> Simulation<D> {
             lane_pos,
             old_side: None,
             lane_change: None,
-        };
-        let id = self.vehicles.insert(vehicle);
+        }
+    }
 
+    /// Adds a built vehicle to the simulation and to its lane's occupants.
+    fn register(&mut self, vehicle: Vehicle) -> VehicleId {
+        let lane_id = vehicle.path[0];
+        let lane_pos = vehicle.lane_pos;
+        let id = self.vehicles.insert(vehicle);
+        let lane = self.network.lane(lane_id);
         let occupant = Occupant::new(lane, id, &self.vehicles[id], lane_pos);
-        let list = &mut self.occupants[at.lane.0 as usize];
+        let list = &mut self.occupants[lane_id.0 as usize];
         let index = list.partition_point(|o| o.s <= occupant.s);
         list.insert(index, occupant);
         id
@@ -369,6 +445,29 @@ impl<D: DebugSink> Simulation<D> {
             self.held.retain(|&h| h != id);
         }
     }
+}
+
+/// The nearest vehicle behind `s` on `lane`, or failing that the last vehicle on a
+/// lane leading into it, and the gap from its front to `s`. For insertion only:
+/// it scans every lane for predecessors.
+fn find_follower(
+    network: &SimNetwork,
+    occupants: &[Vec<Occupant>],
+    vehicles: &SlotMap<VehicleId, Vehicle>,
+    lane: LaneId,
+    s: f64,
+) -> Option<(VehicleId, f64)> {
+    let gap = |o: &Occupant, offset: f64| (o.id, s + offset - (o.s + vehicles[o.id].spec.length));
+    let list = &occupants[lane.0 as usize];
+    let behind = list.partition_point(|o| o.s < s);
+    if behind > 0 {
+        return Some(gap(&list[behind - 1], 0.0));
+    }
+    network
+        .lanes()
+        .filter(|(_, l)| l.successors().contains(&lane))
+        .filter_map(|(id, l)| occupants[id.0 as usize].last().map(|o| gap(o, l.length())))
+        .min_by(|a, b| a.1.total_cmp(&b.1))
 }
 
 /// Fills `path` up to capacity by following each lane's first successor.

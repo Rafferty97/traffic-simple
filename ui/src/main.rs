@@ -1,5 +1,6 @@
 //! egui app with a pretty view and a debug view of the simulation.
 
+use std::collections::HashMap;
 use std::f64::consts::TAU;
 
 use eframe::egui::{self, Color32, Pos2, Rect, Shape, Stroke};
@@ -9,12 +10,20 @@ use traffic_sim::{
     Simulation, Vehicle, VehicleId, VehicleSpec,
 };
 
-/// Sugiyama et al. (2008): 22 cars on a 230 m ring.
-/// Here the inner lane has that circumference, and every lane has that density.
+/// The inner lane's circumference, as in Sugiyama et al. (2008).
 const RING_CIRCUMFERENCE: f64 = 230.0;
 const RING_LANES: usize = 3;
-const CARS_PER_METER: f64 = 22.0 / 230.0;
 const LANE_WIDTH: f64 = 3.5;
+const SPEED_LIMIT: f64 = 50.0 / 3.6;
+
+/// Vehicles enter the outer (rightmost) lane and leave from the inner (leftmost)
+/// one, so they have to change lanes leftward to leave.
+const SPAWN_LANE: LaneId = LaneId(RING_LANES as u32 - 1);
+const DESPAWN_LANE: LaneId = LaneId(0);
+/// Where the spawn and despawn points are, as fractions of their lanes' lengths:
+/// half a lap apart.
+const SPAWN_AT: f64 = 0.25;
+const DESPAWN_AT: f64 = 0.75;
 /// How far outside a vehicle a click still selects it, in screen points.
 const PICK_TOLERANCE: f32 = 6.0;
 
@@ -49,6 +58,107 @@ struct App {
     layers: Layers,
     /// Why the last lane-change request for the selected vehicle was refused.
     lane_change_error: Option<LaneChangeError>,
+    harness: Harness,
+}
+
+/// Spawns vehicles into the outer lane and despawns them from the inner lane,
+/// each at a rate.
+struct Harness {
+    /// Spawns per simulated second.
+    spawn_rate: f64,
+    /// Despawns per simulated second.
+    despawn_rate: f64,
+    /// Spawns owed: grows at the spawn rate, and a refused spawn waits here.
+    spawn_credit: f64,
+    /// Despawns owed: grows at the despawn rate, spent as inner-lane vehicles
+    /// pass the despawn point.
+    despawn_credit: f64,
+    spawned: u32,
+    despawned: u32,
+    /// Each vehicle's `s` last step, to see who crossed the despawn point.
+    last_s: HashMap<VehicleId, f64>,
+}
+
+impl Default for Harness {
+    fn default() -> Self {
+        Self {
+            spawn_rate: 0.5,
+            despawn_rate: 0.3,
+            spawn_credit: 0.0,
+            despawn_credit: 0.0,
+            spawned: 0,
+            despawned: 0,
+            last_s: HashMap::new(),
+        }
+    }
+}
+
+impl Harness {
+    /// Runs after each simulation step of `dt` simulated seconds.
+    fn step(&mut self, sim: &mut Simulation<DebugState>, dt: f64) {
+        // At most one spawn owed: a backlog would arrive as a burst.
+        self.spawn_credit = (self.spawn_credit + self.spawn_rate * dt).min(1.0);
+        if self.spawn_credit >= 1.0 {
+            let lane = sim.network().lane(SPAWN_LANE);
+            let at = Placement {
+                lane: SPAWN_LANE,
+                s: SPAWN_AT * lane.length(),
+                speed: SPEED_LIMIT,
+            };
+            if sim.try_insert(demo_car(), at).is_ok() {
+                self.spawn_credit -= 1.0;
+                self.spawned += 1;
+            }
+        }
+
+        self.despawn_credit = (self.despawn_credit + self.despawn_rate * dt).min(3.0);
+        let despawn_s = DESPAWN_AT * sim.network().lane(DESPAWN_LANE).length();
+        let crossed: Vec<_> = sim
+            .vehicles()
+            .filter(|(_, v)| v.lane() == DESPAWN_LANE)
+            .filter(|(id, v)| {
+                let last = self.last_s.get(id).copied().unwrap_or(f64::INFINITY);
+                last < despawn_s && v.lane_pos().s >= despawn_s
+            })
+            .map(|(id, _)| id)
+            .collect();
+        for id in crossed {
+            if self.despawn_credit >= 1.0 {
+                sim.remove(id);
+                self.despawn_credit -= 1.0;
+                self.despawned += 1;
+            }
+        }
+
+        self.last_s.clear();
+        self.last_s.extend(sim.vehicles().map(|(id, v)| (id, v.lane_pos().s)));
+    }
+
+    fn controls(&mut self, ui: &mut egui::Ui, on_road: usize) {
+        ui.horizontal(|ui| {
+            ui.add(egui::Slider::new(&mut self.spawn_rate, 0.0..=2.0).text("spawns/s"));
+            ui.add(egui::Slider::new(&mut self.despawn_rate, 0.0..=2.0).text("despawns/s"));
+            ui.separator();
+            ui.label(format!(
+                "spawned {}, despawned {}, on the road {on_road}",
+                self.spawned, self.despawned
+            ));
+        });
+    }
+
+    /// Ticks across the lanes at the spawn (green) and despawn (red) points.
+    fn draw(painter: &egui::Painter, sim: &Simulation<DebugState>) {
+        for (lane_id, at, color) in [
+            (SPAWN_LANE, SPAWN_AT, Color32::from_rgb(80, 220, 80)),
+            (DESPAWN_LANE, DESPAWN_AT, Color32::from_rgb(230, 70, 70)),
+        ] {
+            let lane = sim.network().lane(lane_id);
+            let s = at * lane.length();
+            let hw = 0.5 * lane.width();
+            let ends = [hw, -hw].map(|t| to_scene(lane.lane_to_world(lane.lane_pos(s, t))));
+            painter.line_segment(ends, Stroke::new(0.4, color));
+        }
+    }
 }
 
 impl App {
@@ -66,11 +176,13 @@ impl App {
             braking: false,
             layers: Layers::default(),
             lane_change_error: None,
+            harness: Harness::default(),
         }
     }
 
     fn step(&mut self, dt: f64) {
         self.sim.step(dt);
+        self.harness.step(&mut self.sim, dt);
     }
 
     fn controls(&mut self, ui: &mut egui::Ui) {
@@ -91,8 +203,13 @@ impl App {
                 self.sim = new_sim();
                 self.selected = None;
                 self.braking = false;
+                let rates = (self.harness.spawn_rate, self.harness.despawn_rate);
+                self.harness = Harness::default();
+                (self.harness.spawn_rate, self.harness.despawn_rate) = rates;
             }
         });
+        let on_road = self.sim.vehicles().count();
+        self.harness.controls(ui, on_road);
     }
 
     fn inspector(&mut self, ui: &mut egui::Ui, id: VehicleId) {
@@ -250,9 +367,14 @@ impl eframe::App for App {
             ui.painter().rect_filled(ui.max_rect(), 0.0, background);
             let scene = egui::Scene::new().zoom_range(0.1..=200.0).scroll_zooms(true);
             let response = scene
-                .show(ui, &mut self.scene_rect, |ui| match self.view {
-                    View::Pretty => draw_pretty(ui.painter(), &self.sim, self.selected),
-                    View::Debug => draw_debug(ui.painter(), &self.sim, self.selected, &self.layers),
+                .show(ui, &mut self.scene_rect, |ui| {
+                    match self.view {
+                        View::Pretty => draw_pretty(ui.painter(), &self.sim, self.selected),
+                        View::Debug => {
+                            draw_debug(ui.painter(), &self.sim, self.selected, &self.layers)
+                        }
+                    }
+                    Harness::draw(ui.painter(), &self.sim);
                 })
                 .response;
             if response.clicked()
@@ -611,20 +733,10 @@ fn to_scene(p: DVec2) -> Pos2 {
     Pos2::new(p.x as f32, -p.y as f32)
 }
 
-/// A three-lane ring at Sugiyama's density, its cars evenly spaced and at rest.
+/// An empty three-lane ring; the harness fills it.
 fn new_sim() -> Simulation<DebugState> {
-    let network = ring_road(RING_CIRCUMFERENCE, RING_LANES, 50.0 / 3.6);
-    let mut sim = Simulation::new(network, DebugState::default());
-    for lane in 0..RING_LANES as u32 {
-        let lane = LaneId(lane);
-        let length = sim.network().lane(lane).length();
-        let cars = (length * CARS_PER_METER).round() as usize;
-        for i in 0..cars {
-            let s = length * i as f64 / cars as f64;
-            sim.insert(demo_car(), Placement { lane, s, speed: 0.0 });
-        }
-    }
-    sim
+    let network = ring_road(RING_CIRCUMFERENCE, RING_LANES, SPEED_LIMIT);
+    Simulation::new(network, DebugState::default())
 }
 
 /// A ring road of concentric lanes, each its own successor, with lane changes

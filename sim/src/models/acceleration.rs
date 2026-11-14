@@ -15,6 +15,11 @@ const DELTA: i32 = 4;
 /// touching its leader.
 pub const MAX_BRAKING: f64 = 9.0;
 
+/// The hardest braking, in m/s², that a driver will accept being forced into by
+/// another vehicle's maneuver, such as a lane change in front of it or a vehicle
+/// inserted ahead of it. MOBIL's `b_safe`; 4 m/s² is Treiber's default.
+pub const SAFE_BRAKING: f64 = 4.0;
+
 /// Free-road term: `a · (1 − (v / v0)^δ)`.
 pub fn free_road(spec: &VehicleSpec, speed: f64, desired_speed: f64) -> f64 {
     let accel = spec.max_accel * (1.0 - (speed / desired_speed).powi(DELTA));
