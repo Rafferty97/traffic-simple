@@ -54,17 +54,12 @@ fn changes_lane_smoothly_and_leaves_the_old_lane() {
     assert_eq!(lanes_of(&sim, id), [1, 2]);
 
     let (mut last_steer, mut left_old_lane) = (v.steer(), None);
-    let (mut onset_step, mut max_steer_rate) = (0.0f64, 0.0f64);
+    let mut max_steer_rate = 0.0f64;
     let mut time = 0.0;
     run(&mut sim, 10.0, |sim| {
         time += DT;
         let v = sim.get(id).unwrap();
-        let step = (v.steer() - last_steer).abs();
-        if time <= DT {
-            onset_step = step;
-        } else {
-            max_steer_rate = max_steer_rate.max(step / DT);
-        }
+        max_steer_rate = max_steer_rate.max((v.steer() - last_steer).abs() / DT);
         last_steer = v.steer();
         if left_old_lane.is_none() && lanes_of(sim, id) == [2] {
             left_old_lane = Some(time);
@@ -86,14 +81,9 @@ fn changes_lane_smoothly_and_leaves_the_old_lane() {
     // The rear leaves the old lane partway through the four-second change.
     let left = left_old_lane.expect("never left the old lane");
     assert!(left > 0.5 && left < 4.0, "left the old lane after {left} s");
-    // The cubic can't match the path's curvature at its start, so steering steps
-    // once at onset (about 1.4 degrees here) and is smooth after that.
+    // Smooth from the first frame: the cubic starts where pure pursuit was aiming.
     assert!(
-        onset_step < 0.03,
-        "steering stepped {onset_step} rad at onset"
-    );
-    assert!(
-        max_steer_rate < 0.2,
+        max_steer_rate < 0.15,
         "steering rate reached {max_steer_rate} rad/s"
     );
 }
@@ -162,4 +152,52 @@ fn a_change_across_the_seam_keeps_followers_on_the_old_side_informed() {
     run(&mut sim, 10.0, |_| {});
     assert_eq!(lanes_of(&sim, id), [2]);
     assert_eq!(sim.get(id).unwrap().old_side(), None);
+}
+
+/// The smallest distance from any corner of either body to the other body.
+fn clearance(a: &traffic_sim::Vehicle, b: &traffic_sim::Vehicle) -> f64 {
+    let a_to_b = a.corners().map(|c| b.distance_to(c));
+    let b_to_a = b.corners().map(|c| a.distance_to(c));
+    a_to_b.into_iter().chain(b_to_a).fold(f64::INFINITY, f64::min)
+}
+
+#[test]
+fn changing_out_of_a_queue_keeps_clear_of_the_old_leader() {
+    let lane = |y: f64| {
+        let points = [glam::DVec2::new(0.0, y), glam::DVec2::new(300.0, y)];
+        Lane::new(&points, 3.5, SPEED_LIMIT).unwrap()
+    };
+    // Lane 0 is on the left of lane 1.
+    let mut network = SimNetwork::new(vec![lane(3.5), lane(0.0)]);
+    network.set_adjacent(LaneId(0), LaneId(1), true, true);
+    let mut sim = Simulation::new(network, NoopSink);
+
+    // A held car with another queued up behind it.
+    let leader = sim.insert(car(), Placement { lane: LaneId(1), s: 60.0, speed: 0.0 });
+    sim.hold(leader);
+    let id = sim.insert(car(), Placement { lane: LaneId(1), s: 20.0, speed: 0.0 });
+    run(&mut sim, 30.0, |_| {});
+    assert!(sim.get(id).unwrap().speed() < 0.01, "never queued");
+
+    // Too close to complete the change: it pulls forward but stops short.
+    sim.change_lane(id, Side::Left).unwrap();
+    let mut closest = f64::INFINITY;
+    run(&mut sim, 20.0, |sim| {
+        closest = closest.min(clearance(sim.get(id).unwrap(), sim.get(leader).unwrap()));
+    });
+    assert!(closest > 0.5, "came within {closest} m of the old leader");
+    let v = sim.get(id).unwrap();
+    assert_eq!(
+        v.old_side(),
+        Some(Side::Right),
+        "should still be straddling"
+    );
+    assert_eq!(lanes_of(&sim, id), [0, 1]);
+
+    // Once the old leader moves off, the change completes.
+    sim.release(leader);
+    run(&mut sim, 20.0, |_| {});
+    let v = sim.get(id).unwrap();
+    assert!(v.lane_change().is_none(), "lane change never finished");
+    assert_eq!(lanes_of(&sim, id), [0]);
 }

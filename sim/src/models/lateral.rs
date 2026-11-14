@@ -20,8 +20,9 @@ const LANE_CHANGE_TIME: f64 = 4.0;
 const MIN_LANE_CHANGE_LENGTH: f64 = 15.0;
 
 /// A lane change in progress. The target path's offset from the new lane's
-/// centerline follows a cubic in `u = s − s0`, from the vehicle's offset and slope
-/// at the start to zero offset and zero slope at `u = length`.
+/// centerline follows a cubic in `u = s − s0`, from the old path's offset and slope
+/// at the start to zero offset and zero slope at `u = length`. It starts at the
+/// point pure pursuit was aiming at, so the target doesn't jump.
 #[derive(Clone, Copy, Debug)]
 pub struct LaneChange {
     /// Where the change started, as `s` along the vehicle's current lane.

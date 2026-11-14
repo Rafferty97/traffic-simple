@@ -4,7 +4,7 @@ use slotmap::SlotMap;
 
 use crate::debug::{AccelSource, DebugEvent, DebugSink, NoopSink};
 use crate::kinematics;
-use crate::math::{angle_diff, wrap_angle};
+use crate::math::wrap_angle;
 use crate::models::acceleration;
 use crate::models::lateral::{self, LaneChange};
 use crate::network::{LaneId, Side, SimNetwork};
@@ -182,20 +182,23 @@ impl<D: DebugSink> Simulation<D> {
         let fraction = vehicle.lane_pos.s / current.length();
         let hint = target.lane_pos(fraction * target.length(), 0.0);
         let lane_pos = target.world_to_lane_near(vehicle.pos, hint);
-        let tangent = target.tangent_at(lane_pos).to_angle();
-        let slope = angle_diff(vehicle.heading, tangent).tan();
+
+        // The cubic starts where pure pursuit is aiming on the old path, with that
+        // path's offset and slope relative to the new lane, so the target point
+        // carries on smoothly instead of jumping.
+        let ahead = vehicle.lane_pos.s + lateral::lookahead_distance(vehicle.speed);
+        let aim = point_along_path(&self.network, &vehicle.path, ahead, 0.0);
+        let beyond = point_along_path(&self.network, &vehicle.path, ahead + 1.0, 0.0);
+        let start = target.world_to_lane_near(aim, lane_pos);
+        let next = target.world_to_lane_near(beyond, start);
+        let slope = (next.t - start.t) / (next.s - start.s);
 
         vehicle.path.clear();
         vehicle.path.push(neighbor.lane);
         extend_path(&self.network, &mut vehicle.path);
         vehicle.lane_pos = lane_pos;
         vehicle.old_side = Some(side.opposite());
-        vehicle.lane_change = Some(LaneChange::new(
-            lane_pos.s,
-            lane_pos.t,
-            slope,
-            vehicle.speed,
-        ));
+        vehicle.lane_change = Some(LaneChange::new(start.s, start.t, slope, vehicle.speed));
 
         let occupant = Occupant::new(target, id, &self.vehicles[id], lane_pos);
         let list = &mut self.occupants[neighbor.lane.0 as usize];
@@ -239,13 +242,43 @@ impl<D: DebugSink> Simulation<D> {
             let source = AccelSource::FreeRoad { desired_speed };
             sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel });
 
-            if let Some((leader, gap)) = occupancy::find_leader(network, occupants, id, vehicle) {
+            let mut react = |leader: VehicleId, gap: f64| {
                 let leader_speed = vehicles[leader].speed;
                 let term =
                     acceleration::interaction(&vehicle.spec, vehicle.speed, gap, leader_speed);
                 let source = AccelSource::Leader { id: leader, gap };
                 sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
                 accel = accel.min(term);
+            };
+
+            let axle_s = vehicle.lane_pos.s;
+            if let Some((leader, gap)) =
+                occupancy::find_leader(network, occupants, id, vehicle, &vehicle.path, axle_s)
+            {
+                react(leader, gap);
+            }
+
+            // Still straddling after a lane change: also search the old side, along
+            // the neighbors of the vehicle's path, from its position on the old lane.
+            if let Some(side) = vehicle.old_side {
+                let old_path: ArrayVec<LaneId, PATH_LEN> = vehicle
+                    .path
+                    .iter()
+                    .map_while(|&lane| network.lane(lane).adj(side).map(|n| n.lane))
+                    .collect();
+                if let Some(&first) = old_path.first() {
+                    let old = network.lane(first);
+                    // Adjacent lanes start and end together, so the same fraction
+                    // along the old lane is a good hint.
+                    let fraction = vehicle.lane_pos.s / lane.length();
+                    let hint = old.lane_pos(fraction * old.length(), 0.0);
+                    let axle_s = old.world_to_lane_near(vehicle.pos, hint).s;
+                    if let Some((leader, gap)) =
+                        occupancy::find_leader(network, occupants, id, vehicle, &old_path, axle_s)
+                    {
+                        react(leader, gap);
+                    }
+                }
             }
             decisions.push((id, accel));
         }

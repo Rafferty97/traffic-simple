@@ -112,23 +112,25 @@ fn insertion_sort(list: &mut [Occupant]) {
     }
 }
 
-/// The nearest vehicle ahead along `vehicle`'s path, within the leader horizon,
-/// and the bumper-to-bumper gap to it.
+/// The nearest vehicle ahead along `lanes`, within the leader horizon, and the
+/// bumper-to-bumper gap to it. `axle_s` is the vehicle's rear axle's `s` on the
+/// first lane.
 ///
-/// On the vehicle's own lane, only occupants whose rear is ahead of its rear axle
-/// count. On later lanes in its path, every occupant counts.
+/// On the first lane, only occupants whose rear is ahead of the rear axle count.
+/// On later lanes, every occupant counts.
 pub fn find_leader(
     network: &SimNetwork,
     occupants: &[Vec<Occupant>],
     id: VehicleId,
     vehicle: &Vehicle,
+    lanes: &[LaneId],
+    axle_s: f64,
 ) -> Option<(VehicleId, f64)> {
-    let front = vehicle.lane_pos.s + vehicle.spec.length - vehicle.spec.rear_axle;
-    // Start of the current path lane, measured along the path from the start of
-    // the vehicle's own lane.
+    let front = axle_s + vehicle.spec.length - vehicle.spec.rear_axle;
+    // Start of the current lane, measured along `lanes` from the start of the first.
     let mut offset = 0.0;
-    let mut after = vehicle.lane_pos.s;
-    for &lane in &vehicle.path {
+    let mut after = axle_s;
+    for &lane in lanes {
         if offset - front > LEADER_HORIZON {
             break;
         }
