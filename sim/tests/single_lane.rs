@@ -63,3 +63,25 @@ fn bent_lane_is_tracked_closely() {
     let (_, max_t) = drive(lane(1.0));
     assert!(max_t < 0.1, "drifted {max_t} m off the centerline");
 }
+
+#[test]
+fn drivers_settle_at_their_share_of_the_limit() {
+    for factor in [0.8, 1.2] {
+        // Alone on a ring, so nothing gets in the way.
+        let mut sim = Simulation::new(common::ring(230.0, SPEED_LIMIT), NoopSink);
+        let at = Placement { lane: LaneId(0), s: 0.0, speed: 0.0 };
+        let id = sim.insert(
+            traffic_sim::VehicleSpec { speed_factor: factor, ..car() },
+            at,
+        );
+        for _ in 0..(40.0 / DT) as usize {
+            sim.step(DT);
+        }
+        // Free-road IDM approaches the desired speed from below.
+        let speed = sim.get(id).unwrap().speed();
+        assert!(
+            (speed - factor * SPEED_LIMIT).abs() < 0.2,
+            "factor {factor}: {speed} m/s"
+        );
+    }
+}

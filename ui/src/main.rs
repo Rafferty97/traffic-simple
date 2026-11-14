@@ -77,6 +77,8 @@ struct Harness {
     despawned: u32,
     /// Each vehicle's `s` last step, to see who crossed the despawn point.
     last_s: HashMap<VehicleId, f64>,
+    /// State of a xorshift random number generator, for drivers' speed factors.
+    rng: u64,
 }
 
 impl Default for Harness {
@@ -89,6 +91,7 @@ impl Default for Harness {
             spawned: 0,
             despawned: 0,
             last_s: HashMap::new(),
+            rng: 0x9E37_79B9_7F4A_7C15,
         }
     }
 }
@@ -100,12 +103,10 @@ impl Harness {
         self.spawn_credit = (self.spawn_credit + self.spawn_rate * dt).min(1.0);
         if self.spawn_credit >= 1.0 {
             let lane = sim.network().lane(SPAWN_LANE);
-            let at = Placement {
-                lane: SPAWN_LANE,
-                s: SPAWN_AT * lane.length(),
-                speed: SPEED_LIMIT,
-            };
-            if sim.try_insert(demo_car(), at).is_ok() {
+            let car = VehicleSpec { speed_factor: self.speed_factor(), ..demo_car() };
+            let s = SPAWN_AT * lane.length();
+            let at = Placement { lane: SPAWN_LANE, s, speed: car.desired_speed(SPEED_LIMIT) };
+            if sim.try_insert(car, at).is_ok() {
                 self.spawn_credit -= 1.0;
                 self.spawned += 1;
             }
@@ -132,6 +133,23 @@ impl Harness {
 
         self.last_s.clear();
         self.last_s.extend(sim.vehicles().map(|(id, v)| (id, v.lane_pos().s)));
+    }
+
+    /// A speed factor from a normal distribution with mean 1 and deviation 0.1,
+    /// as SUMO's default, clamped to [0.8, 1.2].
+    fn speed_factor(&mut self) -> f64 {
+        // Box-Muller on two uniform samples in (0, 1].
+        let (u, v) = (self.uniform(), self.uniform());
+        let normal = (-2.0 * u.ln()).sqrt() * (TAU * v).cos();
+        (1.0 + 0.1 * normal).clamp(0.8, 1.2)
+    }
+
+    /// A uniform sample in (0, 1], from xorshift64.
+    fn uniform(&mut self) -> f64 {
+        self.rng ^= self.rng << 13;
+        self.rng ^= self.rng >> 7;
+        self.rng ^= self.rng << 17;
+        ((self.rng >> 11) + 1) as f64 / (1u64 << 53) as f64
     }
 
     fn controls(&mut self, ui: &mut egui::Ui, on_road: usize) {
@@ -774,6 +792,7 @@ fn demo_car() -> VehicleSpec {
         length: 4.6,
         width: 1.9,
         max_speed: 30.0,
+        speed_factor: 1.0,
         max_accel: 1.0,
         comfy_decel: 1.5,
         time_headway: 1.0,

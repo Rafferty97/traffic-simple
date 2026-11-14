@@ -19,8 +19,11 @@ slotmap::new_key_type! {
 pub struct VehicleSpec {
     pub length: f64,
     pub width: f64,
-    /// The fastest the driver will go; the lane's speed limit may cap it further.
+    /// The fastest the vehicle will go, whatever the speed limit.
     pub max_speed: f64,
+    /// How fast the driver likes to go relative to the speed limit: 1 is exactly
+    /// the limit. SUMO's `speedFactor`.
+    pub speed_factor: f64,
     pub max_accel: f64,
     /// Comfortable deceleration, positive.
     pub comfy_decel: f64,
@@ -35,6 +38,11 @@ pub struct VehicleSpec {
 }
 
 impl VehicleSpec {
+    /// The speed the driver wants on a lane with the given limit.
+    pub fn desired_speed(&self, speed_limit: f64) -> f64 {
+        (speed_limit * self.speed_factor).min(self.max_speed)
+    }
+
     /// Distance between the axles.
     pub fn wheelbase(&self) -> f64 {
         self.front_axle - self.rear_axle

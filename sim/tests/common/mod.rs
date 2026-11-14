@@ -11,6 +11,7 @@ pub fn car() -> VehicleSpec {
         length: 4.6,
         width: 1.9,
         max_speed: 30.0,
+        speed_factor: 1.0,
         max_accel: 1.5,
         comfy_decel: 2.0,
         time_headway: 1.2,

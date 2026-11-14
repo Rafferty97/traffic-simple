@@ -313,7 +313,7 @@ impl<D: DebugSink> Simulation<D> {
         decisions.clear();
         for (id, vehicle) in vehicles.iter() {
             let lane = network.lane(vehicle.path[0]);
-            let desired_speed = vehicle.spec.max_speed.min(lane.speed_limit());
+            let desired_speed = vehicle.spec.desired_speed(lane.speed_limit());
             let mut accel = acceleration::free_road(&vehicle.spec, vehicle.speed, desired_speed);
             let source = AccelSource::FreeRoad { desired_speed };
             sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel });
