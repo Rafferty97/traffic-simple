@@ -83,7 +83,8 @@ All vehicles live in one global `SlotMap`. Each lane keeps a list of occupant re
 **Per-lane occupancy**
 
 - Each record is `(s, vehicle id, projection hint)` and lives in the lane's list, not on the vehicle. There is one copy of s, so lists and vehicles can't drift apart, and sorting and leader search never touch the `SlotMap`.
-- A record's s is the smaller of the vehicle's two rear corners' s on that lane. Followers care about where a vehicle's rear is. Lateral coordinates are discarded for now.
+- A record's s is the smaller of the vehicle's two rear corners' s on that lane. Followers care about where a vehicle's rear is.
+- **Lateral extent:** a record also keeps the lateral extent of the vehicle's rear on that lane, the two rear corners' t. It is what the overtaking check reads (see Lane membership, lane changes and diverging).
 - **Joining:** a vehicle joins a lane when it advances onto it, which is when its rear axle passes the end of the previous lane.
 - **Leaving:** it leaves a lane once both rear corners are outside the lane's geometry: past its end after advancing to a successor, or beside it (more than half the lane's width from the centreline) after a lane change. A record on the lane a vehicle is following is never dropped for being beside it. A vehicle leaves the network when its rear passes the end of the lane it follows and that lane has no successors; an old lane that dead-ends doesn't count.
 - A vehicle on a loop can briefly have two records in the same lane, at two different s values. This is geometrically true and needs no special handling.
@@ -127,6 +128,7 @@ Vehicles move by a kinematic bicycle model, steered by pure pursuit toward a tar
 - **Controller choice:** pure pursuit with a lookahead that scales with speed. It anticipates curves the way drivers do, cutting corners slightly, which reads as natural, and the guard rails bound how far it cuts. Stanley, which tracks the path more tightly, is the fallback if tracking on tight junction connectors looks wrong.
 - **Steering as curvature:** steering is stored as the curvature of the rear axle's path, in 1/m, rather than as a front-wheel angle. Pure pursuit's curvature `2·sin(α) / d` is `2·(h × d) / |d|²` for heading `h` and offset `d` to the target, so it needs no trigonometry beyond the heading's direction, and the bicycle model turns by `dist · curvature` with no `tan`. The steering lock is a curvature limit, `tan(δ_max) / wheelbase`. This made a step about 30% faster than storing the angle.
 - **Guard rails:** a vehicle must never escape the lane geometry, for example by bounding its lateral offset from the assigned lane. The open question is how to do this without visible snapping.
+- **No corner cutting:** outside a lane change, a vehicle's body stays within its lane's edges. This is guaranteed by how vehicles are steered, not checked at runtime: nothing looks for bodies overhanging a neighboring lane, because that would cost a check per vehicle per neighbor. How to guarantee it is an open question.
 
 After a lane change, the vehicle starts off-centre on its new lane. Its target path is a lateral offset that ramps from that starting offset to zero along a cubic (see Lane membership, lane changes and diverging). The controller follows that offset, so the trajectory looks natural without being scripted.
 
@@ -135,7 +137,8 @@ After a lane change, the vehicle starts off-centre on its new lane. Its target p
 IDM+ (Schakel, van Arem and Netten, 2010) computes each vehicle's acceleration at about 20 Hz, behind a module boundary so it can be replaced. IDM+ splits IDM into a free-road term and an interaction term and takes the minimum instead of the sum. That gives a more realistic capacity, and it extends naturally to several leaders: the acceleration is the minimum over the free-road term and one interaction term per leader.
 
 - **What it reacts to:** the nearest leader along the vehicle's path, vehicles in active conflicts projected into its own lane, and the nearest barrier it has not committed to. The most restrictive one wins.
-- **Desired speed:** the smaller of the vehicle's maximum speed and its lane's speed limit.
+- **Desired speed:** the lane's speed limit times the vehicle's speed factor, capped at the vehicle's maximum speed. The speed factor is a vehicle attribute, as SUMO's `speedFactor`: without it every driver holds exactly the limit and nobody has a reason to overtake. Its distribution is the caller's concern: SUMO draws it from a normal distribution with mean 1 and, by default, deviation 0.1; the old prototype clamped its draws to [0.75, 1.25].
+- **Lower limits ahead:** a lane ahead on the path with a lower limit is its own term. The vehicle needs `(v_lim² − v²) / 2d` to reach that limit by the lane's start, `d` ahead. The term applies only once that is harsher than comfortable braking, so braking starts just in time, and is capped at twice comfortable braking. This comes from the old prototype.
 - **Barriers as virtual leaders:** an uncommitted barrier is treated as a stationary vehicle at the barrier line. This is standard IDM practice from Treiber's work.
 - **Evaluation:** the acceleration is a running minimum over the terms as they are computed. No list of leaders, conflicts or barriers is built.
 - **Lane-change onset:** the model can see when each vehicle appeared on a lane. A newly appeared leader (a cut-in) does not cause sudden braking.
@@ -158,6 +161,7 @@ All diverging traffic uses one mechanism: a vehicle stays registered on a lane i
 - **Across section boundaries:** a vehicle that advances while still straddling also joins the old-side neighbour of its new lane, so followers there see it. The old side clears when a record is dropped because both rear corners left it sideways.
 - **Lateral path:** at the start of a change the vehicle fixes a cubic in u = s − s₀ along its new lane. It starts at the point pure pursuit was aiming at on the old path, so the target point carries on without jumping: s₀ and t₀ are that point's coordinates on the new lane, and m₀ is the old path's slope dt/ds there (zero for parallel lanes). It runs to zero offset and zero slope at u = L: with x = u/L, t(u) = t₀(2x³ − 3x² + 1) + L·m₀(x³ − 2x² + x). L = max(v·T, L_min), with T = 4 s and L_min = 15 m, so peak lateral acceleration is about 6·t₀/T² (about 1.3 m/s² across a 3.5 m lane) at any speed above about 4 m/s. Pure pursuit aims at the cubic's offset at its lookahead point, and at zero beyond L. If the vehicle advances mid-change, s₀ shifts back by the old lane's length.
 - **Completion:** a change is complete when the vehicle reaches the end of its cubic. It can't start another until then.
+- **Overtaking a departing vehicle:** a vehicle still on a follower's lane may be mostly in the next lane. In leader search, a follower passes a record whose lateral extent leaves room for its own body at its own offset, with at least 0.5 m of clearance, and doesn't treat it as a leader. The old prototype did the same for vehicles projected from neighboring lanes.
 - **`change_lane`** executes a change directly, with no safety check, so it can drive a vehicle into another. It is the execute half of the intent protocol and a testing hook.
 
 **Lane-change intents.** Decisions use only forward searches; nothing searches backwards.
@@ -179,6 +183,9 @@ All diverging traffic uses one mechanism: a vehicle stays registered on a lane i
 Merging and crossing traffic rely on lane-pair conflicts computed ahead of time. A conflict costs nothing until a vehicle approaches it, so cost scales with vehicles, not with the O(n²) conflict pairs in a junction.
 
 - **Each conflict stores:** the two lanes, the overlapping s-range on each, its kind (merge or cross) and which side yields.
+- **Finding conflicts:** sample one lane's centerline every 0.25 m and project each sample onto the other lane. A sample is in the conflict when the distance between the centerlines is less than `r·(1 + |cos θ|)`, where r is about half a lane width and θ is the angle between the lanes: a full lane width where the lanes run parallel, shrinking to half a lane width where they cross at right angles. The s-range is padded by one sample at each end.
+- **Merge or cross:** a merge when the lanes' directions across the zone have a dot product above 0.25, otherwise a crossing.
+- **Zipper merges:** sort the vehicles approaching a merge on both lanes by front position, and have each follow the one ahead of it when that one is on the other lane. This is how the old prototype merged.
 - **Merging:** a vehicle approaching a merge projects vehicles in the other lane's overlap range into its own s, and treats them as potential leaders or as traffic to yield to.
 - **Crossing:** vehicles on crossing lanes must never overlap inside the conflict zone. Resolved by gap acceptance, plus arrival order where that sets priority (below).
 - **Gridlock** is allowed.
@@ -186,11 +193,16 @@ Merging and crossing traffic rely on lane-pair conflicts computed ahead of time.
 **Suggestion:** give each yielding point one of two priority policies.
 
 - **Fixed priority:** the yielding vehicle uses gap acceptance against priority traffic.
-- **Arrival order:** for four-way stops and similar, vehicles join a junction queue when they stop at their line and are released first come, first served. Vehicles whose paths don't conflict may go together. SUMO models this as its `allway_stop` junction type.
+- **Arrival order:** for four-way stops and similar, vehicles join a junction queue when they stop at their line and are released first come, first served. Vehicles whose paths don't conflict may go together. SUMO models this as its `allway_stop` junction type. A vehicle joins the queue once it is within a set distance of the line and, at a stop line, has come to a stop; it then gets the next sequence number.
 
 Arrival order also breaks ties where two vehicles would otherwise wait for each other indefinitely.
 
 **Gap acceptance** is a simple, conservative calculation from current speed, distance and maximum acceleration. The yielding vehicle goes only if it can clear the conflict zone before any priority vehicle could reach it, even if that vehicle accelerated at its maximum. Priority vehicles stopped at an uncommitted barrier are ignored, because they won't enter the zone, and this prevents deadlocks.
+
+- **Earliest arrival:** a vehicle at speed v, accelerating at a up to a speed cap v_max, covers distance d in `(√(v² + 2ad) − v) / a` if it doesn't reach the cap, and otherwise in `t₁ + (d − d₁) / v_max`, where `t₁ = (v_max − v) / a` and `d₁ = (v + v_max)·t₁ / 2`. Add a 0.5 s buffer.
+- **Only vehicles whose path crosses the conflict count:** a vehicle on the conflicting lane whose path turns off before the zone is ignored.
+- **Approaching priority vehicles** are found by forward passes, not by searching upstream from the conflict.
+- **Ties:** movements have integer priority levels. A higher level goes first; at equal levels, arrival order decides, by a sequence number taken when each vehicle joined the queue. This breaks every tie deterministically.
 
 **Suggestion:** index conflicts per lane, sorted by start s. A vehicle then finds its upcoming conflicts by scanning forward from its own s within its lookahead, and only conflicts reached this way are active.
 
@@ -209,6 +221,12 @@ Stop lines, give-way lines, traffic lights and the start of keep-clear zones are
 
 - Amber and red are the same in the simulation.
 - Signals run fixed cycles to start, behind a module boundary so actuated control can come later.
+- **Movements:** a signal controls movements, each a group of lanes that go and stop together, with a bitmask of the movements it conflicts with. Each movement has its own amber time.
+- **All-red clearance:** a movement can't turn green until every conflicting movement has been red for at least its clearance time.
+- **Phases:** each phase is a mask of movements that should be green. A phase's duration counts from when all of its movements are green, so clearance times don't eat into green time.
+- **Update:** each step computes every movement's next state from the current states, then applies them all, in keeping with the state → decisions → apply flow.
+
+This is how the old prototype ran its signals.
 
 A green light exerts no deceleration, committed or not, unless there is no room across the junction. Then keep-clear rules apply.
 
@@ -278,7 +296,9 @@ The hardest problems are junction geometry and dense merging. Both have defeated
 
 **Open questions**
 
-None at the moment.
+- **No corner cutting:** how to guarantee that a vehicle's body stays within its lane outside lane changes. Pure pursuit aims along the path from the vehicle's own position, so it tracks a constant curve exactly; it cuts in only where curvature changes, because it starts turning before a bend and straightens before its end. That is about 5 cm at 50 km/h on a 100 m bend, but more on tight junction connectors that start abruptly.
+- **Head of the queue:** only the first vehicle approaching a barrier should negotiate it; the ones behind just follow. In the old prototype each lane walked its vehicles backwards from the line. Can a vehicle's forward search decide this alone, for example by being the head when the first thing ahead of it is the barrier rather than a leader, or is a backwards pass needed?
+- **Approaching priority traffic:** gap acceptance needs the priority vehicles that could reach a conflict in time. With forward passes only, how do they make themselves known at a conflict ahead of them?
 
 ## Milestones
 
