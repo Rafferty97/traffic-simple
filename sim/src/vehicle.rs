@@ -64,8 +64,8 @@ pub struct Vehicle {
     pub(crate) speed: f64,
     /// Held between longitudinal updates.
     pub(crate) accel: f64,
-    /// Front-wheel steering angle in radians, positive to the left.
-    pub(crate) steer: f64,
+    /// Curvature of the rear axle's path, in 1/m, positive to the left.
+    pub(crate) curvature: f64,
     /// The lane the vehicle is following, then the lanes it will take next.
     pub(crate) path: ArrayVec<LaneId, PATH_LEN>,
     /// The rear axle's position on `path[0]`.
@@ -100,9 +100,9 @@ impl Vehicle {
         self.accel
     }
 
-    /// Front-wheel steering angle in radians, positive to the left.
-    pub fn steer(&self) -> f64 {
-        self.steer
+    /// Curvature of the rear axle's path, in 1/m, positive to the left.
+    pub fn curvature(&self) -> f64 {
+        self.curvature
     }
 
     /// The lane the vehicle is following.

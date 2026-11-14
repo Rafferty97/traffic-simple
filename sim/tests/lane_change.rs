@@ -53,14 +53,16 @@ fn changes_lane_smoothly_and_leaves_the_old_lane() {
     );
     assert_eq!(lanes_of(&sim, id), [1, 2]);
 
-    let (mut last_steer, mut left_old_lane) = (v.steer(), None);
+    // Front-wheel steering angle, from the path curvature and the wheelbase.
+    let steer = |v: &traffic_sim::Vehicle| (v.curvature() * v.spec().wheelbase()).atan();
+    let (mut last_steer, mut left_old_lane) = (steer(v), None);
     let mut max_steer_rate = 0.0f64;
     let mut time = 0.0;
     run(&mut sim, 10.0, |sim| {
         time += DT;
         let v = sim.get(id).unwrap();
-        max_steer_rate = max_steer_rate.max((v.steer() - last_steer).abs() / DT);
-        last_steer = v.steer();
+        max_steer_rate = max_steer_rate.max((steer(v) - last_steer).abs() / DT);
+        last_steer = steer(v);
         if left_old_lane.is_none() && lanes_of(sim, id) == [2] {
             left_old_lane = Some(time);
             assert_eq!(

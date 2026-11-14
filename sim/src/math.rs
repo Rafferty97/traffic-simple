@@ -1,4 +1,4 @@
-use std::f64::consts::{PI, TAU};
+use std::f64::consts::TAU;
 
 /// `sin(x) / x`, by its Taylor series. Only valid for small `x`.
 pub fn sinc(x: f64) -> f64 {
@@ -10,9 +10,4 @@ pub fn sinc(x: f64) -> f64 {
 /// Wraps an angle into [0, 2π).
 pub fn wrap_angle(a: f64) -> f64 {
     a.rem_euclid(TAU)
-}
-
-/// Signed angle from `b` to `a`, in [-π, π).
-pub fn angle_diff(a: f64, b: f64) -> f64 {
-    (a - b + PI).rem_euclid(TAU) - PI
 }

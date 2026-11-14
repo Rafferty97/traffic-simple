@@ -141,7 +141,7 @@ impl App {
                 format!("{:.2} m/s ({:.0} km/h)", v.speed(), v.speed() * 3.6),
             );
             row("accel", format!("{:+.2} m/s²", v.accel()));
-            row("steer", format!("{:+.2}°", v.steer().to_degrees()));
+            row("curvature", format!("{:+.4} /m", v.curvature()));
         });
 
         ui.separator();

@@ -4,14 +4,13 @@
 
 use glam::DVec2;
 
-use crate::math::angle_diff;
-
 /// Shortest lookahead distance in meters, used at low speed.
 const MIN_LOOKAHEAD: f64 = 2.0;
 /// Lookahead distance added per m/s of speed, in seconds.
 const LOOKAHEAD_TIME: f64 = 0.3;
-/// Largest front-wheel steering angle in radians (about 34°).
-const MAX_STEER: f64 = 0.6;
+/// `tan` of the largest front-wheel steering angle, 0.6 rad (about 34°). A
+/// vehicle's sharpest curvature is this divided by its wheelbase.
+const TAN_MAX_STEER: f64 = 0.684_136_808_341_692_4;
 
 /// How long a lane change takes, in seconds. Peak lateral acceleration is about
 /// `6 · offset / T²`: about 1.3 m/s² across a 3.5 m lane.
@@ -60,12 +59,16 @@ pub fn lookahead_distance(speed: f64) -> f64 {
     MIN_LOOKAHEAD + LOOKAHEAD_TIME * speed
 }
 
-/// The steering angle that puts the rear axle on an arc through `target`.
-pub fn steer_toward(pos: DVec2, heading: f64, wheelbase: f64, target: DVec2) -> f64 {
+/// The curvature that puts the rear axle on an arc through `target`, in 1/m,
+/// positive to the left, limited by the vehicle's steering lock.
+///
+/// Pure pursuit's `2·sin(α) / d`, where `α` is the angle from the heading to the
+/// target. `sin(α)` is the cross product of the heading with the unit vector to
+/// the target, so this needs no trigonometry beyond the heading's direction.
+pub fn curvature_toward(pos: DVec2, heading: f64, wheelbase: f64, target: DVec2) -> f64 {
     let d = target - pos;
-    let alpha = angle_diff(d.to_angle(), heading);
-    let curvature = 2.0 * alpha.sin() / d.length();
-    (wheelbase * curvature).atan().clamp(-MAX_STEER, MAX_STEER)
+    let max = TAN_MAX_STEER / wheelbase;
+    (2.0 * DVec2::from_angle(heading).perp_dot(d) / d.length_squared()).clamp(-max, max)
 }
 
 #[cfg(test)]
@@ -97,14 +100,14 @@ mod test {
 
     #[test]
     fn straight_ahead_needs_no_steering() {
-        let steer = steer_toward(DVec2::ZERO, 0.0, 2.7, DVec2::new(10.0, 0.0));
-        assert_eq!(steer, 0.0);
+        let curvature = curvature_toward(DVec2::ZERO, 0.0, 2.7, DVec2::new(10.0, 0.0));
+        assert_eq!(curvature, 0.0);
     }
 
     #[test]
     fn steers_toward_the_side_of_the_target() {
-        assert!(steer_toward(DVec2::ZERO, 0.0, 2.7, DVec2::new(10.0, 1.0)) > 0.0);
-        assert!(steer_toward(DVec2::ZERO, 0.0, 2.7, DVec2::new(10.0, -1.0)) < 0.0);
+        assert!(curvature_toward(DVec2::ZERO, 0.0, 2.7, DVec2::new(10.0, 1.0)) > 0.0);
+        assert!(curvature_toward(DVec2::ZERO, 0.0, 2.7, DVec2::new(10.0, -1.0)) < 0.0);
     }
 
     #[test]
@@ -112,7 +115,14 @@ mod test {
         // Target on a circle of radius 20 m tangent to the heading at the origin.
         let r = 20.0;
         let target = DVec2::new(r * 0.5f64.sin(), r * (1.0 - 0.5f64.cos()));
-        let steer = steer_toward(DVec2::ZERO, 0.0, 2.7, target);
-        assert!((steer.tan() / 2.7 - 1.0 / r).abs() < 1e-12);
+        let curvature = curvature_toward(DVec2::ZERO, 0.0, 2.7, target);
+        assert!((curvature - 1.0 / r).abs() < 1e-12);
+    }
+
+    #[test]
+    fn steering_lock_limits_curvature() {
+        // Directly to the left: far beyond the steering lock.
+        let curvature = curvature_toward(DVec2::ZERO, 0.0, 2.7, DVec2::new(0.0, 1.0));
+        assert!((curvature - 0.6f64.tan() / 2.7).abs() < 1e-12);
     }
 }

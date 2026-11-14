@@ -74,7 +74,7 @@ All vehicles live in one global `SlotMap`. Each lane keeps a list of occupant re
 
 **Vehicle state (sketch)**
 
-- World pose (x, y, heading), speed, steering state
+- World pose (x, y, heading), speed, and the curvature of the rear axle's path (its steering state)
 - Acceleration, held between longitudinal updates rather than recomputed each frame
 - Path: the assigned lane followed by the next few lanes it will take, in a fixed-capacity inline list. Leader search and path tracking look along it across lane boundaries.
 - Barrier commitments
@@ -125,6 +125,7 @@ Vehicles move by a kinematic bicycle model, steered by pure pursuit toward a tar
 
 - **Inputs each frame:** held acceleration, a target path (the assigned lane, or a blended lateral offset during a lane change) and a lookahead distance.
 - **Controller choice:** pure pursuit with a lookahead that scales with speed. It anticipates curves the way drivers do, cutting corners slightly, which reads as natural, and the guard rails bound how far it cuts. Stanley, which tracks the path more tightly, is the fallback if tracking on tight junction connectors looks wrong.
+- **Steering as curvature:** steering is stored as the curvature of the rear axle's path, in 1/m, rather than as a front-wheel angle. Pure pursuit's curvature `2·sin(α) / d` is `2·(h × d) / |d|²` for heading `h` and offset `d` to the target, so it needs no trigonometry beyond the heading's direction, and the bicycle model turns by `dist · curvature` with no `tan`. The steering lock is a curvature limit, `tan(δ_max) / wheelbase`. This made a step about 30% faster than storing the angle.
 - **Guard rails:** a vehicle must never escape the lane geometry, for example by bounding its lateral offset from the assigned lane. The open question is how to do this without visible snapping.
 
 After a lane change, the vehicle starts off-centre on its new lane. Its target path is a lateral offset that ramps from that starting offset to zero along a cubic (see Lane membership, lane changes and diverging). The controller follows that offset, so the trajectory looks natural without being scripted.

@@ -94,7 +94,7 @@ impl<D: DebugSink> Simulation<D> {
             heading: wrap_angle(lane.tangent_at(lane_pos).to_angle()),
             speed: at.speed,
             accel: 0.0,
-            steer: 0.0,
+            curvature: 0.0,
             path,
             lane_pos,
             old_side: None,
@@ -309,7 +309,8 @@ impl<D: DebugSink> Simulation<D> {
             let ahead = vehicle.lane_pos.s + lateral::lookahead_distance(vehicle.speed);
             let offset = vehicle.lane_change.map_or(0.0, |change| change.offset_at(ahead));
             let target = point_along_path(network, &vehicle.path, ahead, offset);
-            vehicle.steer = lateral::steer_toward(vehicle.pos, vehicle.heading, wheelbase, target);
+            vehicle.curvature =
+                lateral::curvature_toward(vehicle.pos, vehicle.heading, wheelbase, target);
             sink.record(|| DebugEvent::Lookahead { vehicle: id, point: target });
 
             // Trapezoidal distance is exact for constant acceleration, unless the
@@ -318,7 +319,7 @@ impl<D: DebugSink> Simulation<D> {
             let dist = 0.5 * (vehicle.speed + speed) * dt;
             vehicle.speed = speed;
             (vehicle.pos, vehicle.heading) =
-                kinematics::advance(vehicle.pos, vehicle.heading, vehicle.steer, wheelbase, dist);
+                kinematics::advance(vehicle.pos, vehicle.heading, vehicle.curvature, dist);
 
             let lane = network.lane(vehicle.path[0]);
             vehicle.lane_pos = lane.world_to_lane_near(vehicle.pos, vehicle.lane_pos);
