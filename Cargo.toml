@@ -11,3 +11,4 @@ repository = "https://github.com/Rafferty97/traffic-simple"
 
 [workspace.dependencies]
 traffic-sim = { path = "sim" }
+glam = "0.34.3"

@@ -1,0 +1,112 @@
+use glam::DVec2;
+
+use crate::lane::LanePos;
+use crate::network::LaneId;
+
+slotmap::new_key_type! {
+    /// Identifies a vehicle in the simulation.
+    pub struct VehicleId;
+}
+
+/// A vehicle's static attributes. Lengths in metres, speeds in m/s,
+/// accelerations in m/s².
+#[derive(Clone, Copy, Debug)]
+pub struct VehicleSpec {
+    pub length: f64,
+    pub width: f64,
+    /// The fastest the driver will go; the lane's speed limit may cap it further.
+    pub max_speed: f64,
+    pub max_accel: f64,
+    /// Positive. Not used until vehicles have leaders.
+    pub comfy_decel: f64,
+    /// Distance from the rear bumper to the rear axle.
+    pub rear_axle: f64,
+    /// Distance from the rear bumper to the front axle.
+    pub front_axle: f64,
+}
+
+impl VehicleSpec {
+    /// Distance between the axles.
+    pub fn wheelbase(&self) -> f64 {
+        self.front_axle - self.rear_axle
+    }
+}
+
+/// Where a vehicle is inserted.
+#[derive(Clone, Copy, Debug)]
+pub struct Placement {
+    pub lane: LaneId,
+    /// Position of the rear axle along the lane's centreline, as in [`Vehicle::lane_pos`].
+    pub s: f64,
+    pub speed: f64,
+}
+
+/// A vehicle in the simulation.
+///
+/// The pose (rear-axle position and heading) is the source of truth; the lane
+/// position is derived from it.
+#[derive(Clone, Debug)]
+pub struct Vehicle {
+    pub(crate) spec: VehicleSpec,
+    /// World position of the midpoint of the rear axle.
+    pub(crate) pos: DVec2,
+    /// Heading in radians, anticlockwise from +x, in [0, 2π).
+    pub(crate) heading: f64,
+    pub(crate) speed: f64,
+    /// Held between longitudinal updates.
+    pub(crate) accel: f64,
+    /// Front-wheel steering angle in radians, positive to the left.
+    pub(crate) steer: f64,
+    /// The lane the vehicle is following.
+    pub(crate) lane: LaneId,
+    /// The rear axle's position on `lane`.
+    pub(crate) lane_pos: LanePos,
+}
+
+impl Vehicle {
+    pub fn spec(&self) -> &VehicleSpec {
+        &self.spec
+    }
+
+    /// World position of the midpoint of the rear axle.
+    pub fn pos(&self) -> DVec2 {
+        self.pos
+    }
+
+    /// Heading in radians, anticlockwise from +x.
+    pub fn heading(&self) -> f64 {
+        self.heading
+    }
+
+    pub fn speed(&self) -> f64 {
+        self.speed
+    }
+
+    pub fn accel(&self) -> f64 {
+        self.accel
+    }
+
+    /// Front-wheel steering angle in radians, positive to the left.
+    pub fn steer(&self) -> f64 {
+        self.steer
+    }
+
+    /// The lane the vehicle is following.
+    pub fn lane(&self) -> LaneId {
+        self.lane
+    }
+
+    /// The rear axle's position on [`Vehicle::lane`].
+    pub fn lane_pos(&self) -> LanePos {
+        self.lane_pos
+    }
+
+    /// The body's corners: rear left, rear right, front right, front left.
+    pub fn corners(&self) -> [DVec2; 4] {
+        let dir = DVec2::from_angle(self.heading);
+        let left = 0.5 * self.spec.width * dir.perp();
+        let rear = self.pos - self.spec.rear_axle * dir;
+        let front = rear + self.spec.length * dir;
+        [rear + left, rear - left, front - left, front + left]
+    }
+}

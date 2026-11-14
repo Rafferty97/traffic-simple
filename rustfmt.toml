@@ -1,0 +1,4 @@
+max_width = 100
+struct_lit_width = 60
+struct_variant_width = 60
+chain_width = 80

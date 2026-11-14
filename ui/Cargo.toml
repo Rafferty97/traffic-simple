@@ -9,4 +9,5 @@ repository.workspace = true
 
 [dependencies]
 eframe = "0.37.0"
+glam.workspace = true
 traffic-sim.workspace = true
