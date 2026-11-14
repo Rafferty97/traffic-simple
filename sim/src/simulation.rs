@@ -4,9 +4,10 @@ use slotmap::SlotMap;
 
 use crate::debug::{AccelSource, DebugEvent, DebugSink, NoopSink};
 use crate::kinematics;
-use crate::math::wrap_angle;
-use crate::models::{acceleration, lateral};
-use crate::network::{LaneId, SimNetwork};
+use crate::math::{angle_diff, wrap_angle};
+use crate::models::acceleration;
+use crate::models::lateral::{self, LaneChange};
+use crate::network::{LaneId, Side, SimNetwork};
 use crate::occupancy::{self, Occupant};
 use crate::vehicle::{PATH_LEN, Placement, Vehicle, VehicleId, VehicleSpec};
 
@@ -32,7 +33,22 @@ pub struct Simulation<D: DebugSink = NoopSink> {
     decisions: Vec<(VehicleId, f64)>,
     /// Scratch space for vehicles leaving the network, reused between substeps.
     leavers: Vec<VehicleId>,
+    /// Scratch space for vehicles that have finished leaving an old lane.
+    left_sideways: Vec<VehicleId>,
     sink: D,
+}
+
+/// Why [`Simulation::change_lane`] refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum LaneChangeError {
+    #[error("no such vehicle")]
+    NoVehicle,
+    #[error("a lane change is already in progress")]
+    InProgress,
+    #[error("no lane on that side")]
+    NoNeighbour,
+    #[error("changing into that lane isn't permitted")]
+    NotPermitted,
 }
 
 impl<D: DebugSink> Simulation<D> {
@@ -46,6 +62,7 @@ impl<D: DebugSink> Simulation<D> {
             accel_clock: 0.0,
             decisions: Vec::new(),
             leavers: Vec::new(),
+            left_sideways: Vec::new(),
             sink,
         }
     }
@@ -80,6 +97,8 @@ impl<D: DebugSink> Simulation<D> {
             steer: 0.0,
             path,
             lane_pos,
+            old_side: None,
+            lane_change: None,
         };
         let id = self.vehicles.insert(vehicle);
 
@@ -138,6 +157,51 @@ impl<D: DebugSink> Simulation<D> {
 
     pub fn is_held(&self, id: VehicleId) -> bool {
         self.held.contains(&id)
+    }
+
+    /// Changes a vehicle into the lane beside it on `side`, if permitted.
+    ///
+    /// The vehicle's lane switches at once and it joins the new lane's occupants.
+    /// Its pose doesn't move: it is now off-centre on its new lane, and path
+    /// tracking steers it onto the centreline along a cubic. It stays on its old
+    /// lane's occupants until its rear has left that lane.
+    pub fn change_lane(&mut self, id: VehicleId, side: Side) -> Result<(), LaneChangeError> {
+        let vehicle = self.vehicles.get_mut(id).ok_or(LaneChangeError::NoVehicle)?;
+        if vehicle.lane_change.is_some() {
+            return Err(LaneChangeError::InProgress);
+        }
+        let current = self.network.lane(vehicle.path[0]);
+        let neighbour = current.adj(side).ok_or(LaneChangeError::NoNeighbour)?;
+        if !neighbour.can_change {
+            return Err(LaneChangeError::NotPermitted);
+        }
+
+        // Adjacent lanes start and end together, so the same fraction along the
+        // new lane is a good hint.
+        let target = self.network.lane(neighbour.lane);
+        let fraction = vehicle.lane_pos.s / current.length();
+        let hint = target.lane_pos(fraction * target.length(), 0.0);
+        let lane_pos = target.world_to_lane_near(vehicle.pos, hint);
+        let tangent = target.tangent_at(lane_pos).to_angle();
+        let slope = angle_diff(vehicle.heading, tangent).tan();
+
+        vehicle.path.clear();
+        vehicle.path.push(neighbour.lane);
+        extend_path(&self.network, &mut vehicle.path);
+        vehicle.lane_pos = lane_pos;
+        vehicle.old_side = Some(side.opposite());
+        vehicle.lane_change = Some(LaneChange::new(
+            lane_pos.s,
+            lane_pos.t,
+            slope,
+            vehicle.speed,
+        ));
+
+        let occupant = Occupant::new(target, id, &self.vehicles[id], lane_pos);
+        let list = &mut self.occupants[neighbour.lane.0 as usize];
+        let index = list.partition_point(|o| o.s <= occupant.s);
+        list.insert(index, occupant);
+        Ok(())
     }
 
     /// Advances the simulation by `dt` seconds.
@@ -200,6 +264,9 @@ impl<D: DebugSink> Simulation<D> {
 
     /// Path tracking and integration: steers, moves, then advances each vehicle
     /// onto its next lane once its rear axle passes the end of its current one.
+    ///
+    /// During a lane change, the target path is offset from the centreline along
+    /// the change's cubic, and the change ends where the cubic does.
     fn update_motion(&mut self, dt: f64) {
         let Self { network, vehicles, occupants, sink, .. } = self;
         sink.record(|| DebugEvent::RecomputeMotion);
@@ -207,7 +274,8 @@ impl<D: DebugSink> Simulation<D> {
             let wheelbase = vehicle.spec.wheelbase();
 
             let ahead = vehicle.lane_pos.s + lateral::lookahead_distance(vehicle.speed);
-            let target = point_along_path(network, &vehicle.path, ahead);
+            let offset = vehicle.lane_change.map_or(0.0, |change| change.offset_at(ahead));
+            let target = point_along_path(network, &vehicle.path, ahead, offset);
             vehicle.steer = lateral::steer_towards(vehicle.pos, vehicle.heading, wheelbase, target);
             sink.record(|| DebugEvent::Lookahead { vehicle: id, point: target });
 
@@ -231,17 +299,37 @@ impl<D: DebugSink> Simulation<D> {
                 let next = network.lane(vehicle.path[0]);
                 let hint = next.lane_pos(vehicle.lane_pos.s - length, 0.0);
                 vehicle.lane_pos = next.world_to_lane_near(vehicle.pos, hint);
+                if let Some(change) = &mut vehicle.lane_change {
+                    change.s0 -= length;
+                }
                 // Joins unsorted; `update_occupancy` sets its `s` and sorts.
                 let occupant = Occupant::new(next, id, vehicle, vehicle.lane_pos);
                 occupants[vehicle.path[0].0 as usize].push(occupant);
+                // Still straddling after a lane change: also join the old side's
+                // next lane, so followers there keep seeing it.
+                if let Some(old) = vehicle.old_side.and_then(|side| next.adj(side)) {
+                    let old_lane = network.lane(old.lane);
+                    let hint = old_lane.lane_pos(vehicle.lane_pos.s, 0.0);
+                    let occupant = Occupant::new(old_lane, id, vehicle, hint);
+                    occupants[old.lane.0 as usize].push(occupant);
+                }
+            }
+
+            if vehicle.lane_change.is_some_and(|change| vehicle.lane_pos.s >= change.end()) {
+                vehicle.lane_change = None;
             }
         }
     }
 
     /// Refreshes the occupant lists and removes vehicles that have left the network.
     fn update_occupancy(&mut self) {
-        let Self { network, vehicles, occupants, leavers, .. } = self;
-        occupancy::update(network, vehicles, occupants, leavers);
+        let Self { network, vehicles, occupants, leavers, left_sideways, .. } = self;
+        occupancy::update(network, vehicles, occupants, leavers, left_sideways);
+        for id in self.left_sideways.drain(..) {
+            if let Some(vehicle) = self.vehicles.get_mut(id) {
+                vehicle.old_side = None;
+            }
+        }
         for id in self.leavers.drain(..) {
             self.vehicles.remove(id);
             self.held.retain(|&h| h != id);
@@ -260,13 +348,14 @@ fn extend_path(network: &SimNetwork, path: &mut ArrayVec<LaneId, PATH_LEN>) {
     }
 }
 
-/// The centreline point `s` metres along a path from the start of its first lane.
-/// Past the end of the path, the last lane's final segment is extended.
-fn point_along_path(network: &SimNetwork, path: &[LaneId], mut s: f64) -> DVec2 {
+/// The point `s` metres along a path from the start of its first lane, `t` metres
+/// left of the centreline. Past the end of the path, the last lane's final
+/// segment is extended.
+fn point_along_path(network: &SimNetwork, path: &[LaneId], mut s: f64, t: f64) -> DVec2 {
     for (i, &id) in path.iter().enumerate() {
         let lane = network.lane(id);
         if s < lane.length() || i == path.len() - 1 {
-            return lane.lane_to_world(lane.lane_pos(s, 0.0));
+            return lane.lane_to_world(lane.lane_pos(s, t));
         }
         s -= lane.length();
     }

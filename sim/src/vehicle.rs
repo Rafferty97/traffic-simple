@@ -2,7 +2,8 @@ use arrayvec::ArrayVec;
 use glam::DVec2;
 
 use crate::lane::LanePos;
-use crate::network::LaneId;
+use crate::models::lateral::LaneChange;
+use crate::network::{LaneId, Side};
 
 /// How many lanes a vehicle's path holds: its current lane and the next few.
 pub const PATH_LEN: usize = 4;
@@ -69,6 +70,11 @@ pub struct Vehicle {
     pub(crate) path: ArrayVec<LaneId, PATH_LEN>,
     /// The rear axle's position on `path[0]`.
     pub(crate) lane_pos: LanePos,
+    /// After a lane change, the side its old lane is on, until the vehicle has
+    /// left the old lane. The old lanes are the neighbours of `path` on this side.
+    pub(crate) old_side: Option<Side>,
+    /// The lane change in progress, if any.
+    pub(crate) lane_change: Option<LaneChange>,
 }
 
 impl Vehicle {
@@ -112,6 +118,16 @@ impl Vehicle {
     /// The rear axle's position on [`Vehicle::lane`].
     pub fn lane_pos(&self) -> LanePos {
         self.lane_pos
+    }
+
+    /// After a lane change, the side its old lane is on, until it has left the old lane.
+    pub fn old_side(&self) -> Option<Side> {
+        self.old_side
+    }
+
+    /// The lane change in progress, if any.
+    pub fn lane_change(&self) -> Option<LaneChange> {
+        self.lane_change
     }
 
     /// The centre of the body.

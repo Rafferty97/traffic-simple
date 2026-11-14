@@ -5,8 +5,8 @@ use std::f64::consts::TAU;
 use eframe::egui::{self, Color32, Pos2, Rect, Shape, Stroke};
 use glam::DVec2;
 use traffic_sim::{
-    AccelSource, DebugEvent, DebugSink, Lane, LaneId, Placement, Side, SimNetwork, Simulation,
-    Vehicle, VehicleId, VehicleSpec,
+    AccelSource, DebugEvent, DebugSink, Lane, LaneChangeError, LaneId, Placement, Side, SimNetwork,
+    Simulation, Vehicle, VehicleId, VehicleSpec,
 };
 
 /// Sugiyama et al. (2008): 22 cars on a 230 m ring.
@@ -45,6 +45,8 @@ struct App {
     selected: Option<VehicleId>,
     /// Whether the inspector's brake button is held down.
     braking: bool,
+    /// Why the last lane-change request for the selected vehicle was refused.
+    lane_change_error: Option<LaneChangeError>,
 }
 
 impl App {
@@ -60,6 +62,7 @@ impl App {
             scene_rect: scene_rect.expand(10.0),
             selected: None,
             braking: false,
+            lane_change_error: None,
         }
     }
 
@@ -110,6 +113,22 @@ impl App {
             };
             row("left", neighbour(Side::Left));
             row("right", neighbour(Side::Right));
+            let side = |side: Option<Side>| match side {
+                Some(Side::Left) => "left".to_string(),
+                Some(Side::Right) => "right".to_string(),
+                None => "none".to_string(),
+            };
+            row("old side", side(v.old_side()));
+            match v.lane_change() {
+                Some(change) => {
+                    let done = (pos.s - change.s0) / change.length;
+                    row(
+                        "changing",
+                        format!("{:.0}% of {:.0} m", 100.0 * done, change.length),
+                    )
+                }
+                None => row("changing", "no".into()),
+            }
             let path: Vec<_> = v.path().iter().map(|l| l.0.to_string()).collect();
             row("path", path.join(" → "));
             row("s", format!("{:.2} m", pos.s));
@@ -164,6 +183,17 @@ impl App {
                 self.sim.release(id);
             }
         }
+
+        ui.horizontal(|ui| {
+            for (label, side) in [("Change left", Side::Left), ("Change right", Side::Right)] {
+                if ui.button(label).clicked() {
+                    self.lane_change_error = self.sim.change_lane(id, side).err();
+                }
+            }
+        });
+        if let Some(error) = self.lane_change_error {
+            ui.colored_label(Color32::RED, error.to_string());
+        }
     }
 
     /// Selects the vehicle under `point` (scene coordinates), or clears the selection.
@@ -172,6 +202,7 @@ impl App {
             self.sim.release(id);
             self.braking = false;
         }
+        self.lane_change_error = None;
         let world = DVec2::new(point.x as f64, -point.y as f64);
         self.selected = self.sim.vehicle_at(world, tolerance);
     }
@@ -325,6 +356,21 @@ fn draw_debug(painter: &egui::Painter, sim: &Simulation<DebugState>, selected: O
         let corners = v.corners().map(to_scene).to_vec();
         painter.add(Shape::closed_line(corners, Stroke::new(0.1, colour)));
         painter.circle_filled(to_scene(v.pos()), 0.2, colour);
+
+        // The planned lane-change path, from the vehicle's stored cubic. Drawn on
+        // its current lane only, so it stops short if it crosses a lane's end.
+        if let Some(change) = v.lane_change() {
+            let lane = sim.network().lane(v.lane());
+            let samples = (0..=40).map(|i| change.s0 + change.length * i as f64 / 40.0);
+            let points = samples
+                .take_while(|&s| s <= lane.length())
+                .map(|s| to_scene(lane.lane_to_world(lane.lane_pos(s, change.offset_at(s)))))
+                .collect();
+            painter.add(Shape::line(
+                points,
+                Stroke::new(0.08, Color32::from_rgb(250, 160, 60)),
+            ));
+        }
     }
 
     // Leader links, from the front bumper to the leader's rear bumper. Bright

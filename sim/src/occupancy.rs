@@ -1,10 +1,11 @@
 //! Per-lane occupant lists, sorted by `s`, and leader search over them.
 //!
 //! A vehicle joins a lane when it advances onto it (its rear axle passes the end
-//! of the previous lane) and leaves once both rear corners are past the lane's
-//! end. In between, its record's `s` is the smaller of its rear corners' `s`.
-//! On a loop shorter than a vehicle's rear overhang plus a lane, a vehicle can
-//! be in the same lane's list twice, briefly, at two different `s`.
+//! of the previous lane) or changes lanes into it. It leaves once both rear
+//! corners are outside the lane: past its end, or beside it. In between, its
+//! record's `s` is the smaller of its rear corners' `s`. On a loop shorter than a
+//! vehicle's rear overhang plus a lane, a vehicle can be in the same lane's list
+//! twice, briefly, at two different `s`.
 
 use slotmap::SlotMap;
 
@@ -28,38 +29,72 @@ pub struct Occupant {
 impl Occupant {
     /// Projects a vehicle's rear corners onto `lane`, searching from `hint`.
     pub fn new(lane: &Lane, id: VehicleId, vehicle: &Vehicle, hint: LanePos) -> Self {
+        Self::project(lane, id, vehicle, hint).0
+    }
+
+    /// As [`Occupant::new`], also saying where each rear corner is relative to the lane.
+    fn project(
+        lane: &Lane,
+        id: VehicleId,
+        vehicle: &Vehicle,
+        hint: LanePos,
+    ) -> (Self, [Corner; 2]) {
         let [rear_left, rear_right, ..] = vehicle.corners();
         let left = lane.world_to_lane_near(rear_left, hint);
         let right = lane.world_to_lane_near(rear_right, hint);
+        let corner = |p: LanePos| Corner {
+            past_end: p.s >= lane.length(),
+            beside: p.t.abs() > 0.5 * lane.width(),
+        };
         let hint = if left.s <= right.s { left } else { right };
-        Self { s: hint.s, id, hint }
+        (Self { s: hint.s, id, hint }, [corner(left), corner(right)])
     }
 }
 
-/// Refreshes every occupant's `s`, drops those that have cleared their lane and
-/// restores the order.
+/// Where a rear corner is relative to a lane.
+#[derive(Clone, Copy, Debug)]
+struct Corner {
+    past_end: bool,
+    /// Further from the centreline than half the lane's width.
+    beside: bool,
+}
+
+/// Refreshes every occupant's `s`, drops those whose rear corners are both
+/// outside their lane, and restores the order.
 ///
-/// Vehicles that clear a lane with no successors have left the network; their
-/// ids are pushed to `leavers`.
+/// - A record on the lane a vehicle is following is never dropped for being
+///   beside it, only for being past its end.
+/// - Vehicles whose rear passes the end of the lane they follow, when it has no
+///   successors, have left the network; their ids are pushed to `leavers`.
+/// - Vehicles whose rear has moved off a lane sideways have finished leaving an
+///   old lane after a lane change; their ids are pushed to `left_sideways`.
 pub fn update(
     network: &SimNetwork,
     vehicles: &SlotMap<VehicleId, Vehicle>,
     occupants: &mut [Vec<Occupant>],
     leavers: &mut Vec<VehicleId>,
+    left_sideways: &mut Vec<VehicleId>,
 ) {
     for (i, list) in occupants.iter_mut().enumerate() {
-        let id = LaneId(i as u32);
-        let lane = network.lane(id);
-        let dead_end = network.lane(id).successors().is_empty();
-        for occupant in list.iter_mut() {
-            *occupant = Occupant::new(lane, occupant.id, &vehicles[occupant.id], occupant.hint);
-        }
-        list.retain(|occupant| {
-            let cleared = occupant.s >= lane.length();
-            if cleared && dead_end {
-                leavers.push(occupant.id);
+        let lane_id = LaneId(i as u32);
+        let lane = network.lane(lane_id);
+        let dead_end = lane.successors().is_empty();
+        list.retain_mut(|occupant| {
+            let vehicle = &vehicles[occupant.id];
+            let (updated, corners) = Occupant::project(lane, occupant.id, vehicle, occupant.hint);
+            *occupant = updated;
+            let following = vehicle.path[0] == lane_id;
+            let outside = |c: &Corner| c.past_end || (c.beside && !following);
+            if !corners.iter().all(outside) {
+                return true;
             }
-            !cleared
+            // Only the lane it follows: an old lane may dead-end beside a lane that goes on.
+            if following && dead_end && corners.iter().all(|c| c.past_end) {
+                leavers.push(occupant.id);
+            } else if corners.iter().all(|c| c.beside) {
+                left_sideways.push(occupant.id);
+            }
+            false
         });
         insertion_sort(list);
     }
