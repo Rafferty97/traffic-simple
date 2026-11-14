@@ -83,7 +83,7 @@ All vehicles live in one global `SlotMap`. Each lane keeps a list of occupant re
 - Each record is `(s, vehicle id, projection hint)` and lives in the lane's list, not on the vehicle. There is one copy of s, so lists and vehicles can't drift apart, and sorting and leader search never touch the `SlotMap`.
 - A record's s is the smaller of the vehicle's two rear corners' s on that lane. Followers care about where a vehicle's rear is. Lateral coordinates are discarded for now.
 - **Joining:** a vehicle joins a lane when it advances onto it, which is when its rear axle passes the end of the previous lane.
-- **Leaving:** it leaves a lane once both rear corners are past the lane's end. Leaving a lane with no successors removes the vehicle from the network.
+- **Leaving:** it leaves a lane once both rear corners are outside the lane's geometry: past its end after advancing to a successor, or beyond its edge after a lane change. Leaving a lane with no successors removes the vehicle from the network.
 - A vehicle on a loop can briefly have two records in the same lane, at two different s values. This is geometrically true and needs no special handling.
 - Updated every substep, and cheaply: each record is re-projected from its hint, cleared records are dropped, and order is restored by insertion sort, which is O(n) on sorted input and cheap for nearly sorted input.
 - Multi-lane membership is the general form of SUMO's "shadow lane" for a vehicle partway through a lane change.
@@ -115,7 +115,7 @@ Long frames are split into substeps, so a slow frame can't destabilise integrati
 
 **Suggestion:** fire the ~20 Hz and discrete updates from per-rate time accumulators.
 
-**Suggestion:** stagger discrete updates across vehicles, for example by key modulo the number of ticks per decision period. This spreads load evenly and stops every vehicle reacting on the same tick.
+Discrete decisions are staggered across vehicles, so their cost is spread evenly across frames rather than landing on one. This also stops every vehicle reacting on the same tick.
 
 ## Vehicle kinematics
 
@@ -125,7 +125,7 @@ Vehicles move by a kinematic bicycle model, steered by pure pursuit toward a tar
 - **Controller choice:** pure pursuit with a lookahead that scales with speed. It anticipates curves the way drivers do, cutting corners slightly, which reads as natural, and the guard rails bound how far it cuts. Stanley, which tracks the path more tightly, is the fallback if tracking on tight junction connectors looks wrong.
 - **Guard rails:** a vehicle must never escape the lane geometry, for example by bounding its lateral offset from the assigned lane. The open question is how to do this without visible snapping.
 
-**Suggestion:** describe a lane change as a target lateral offset that ramps from the current lane to the target lane over a few seconds, using a smooth blend such as cosine or quintic. The controller follows that offset, so the trajectory looks natural without being scripted.
+**Suggestion:** after a lane change, the vehicle starts off-centre on its new lane. Describe its target path as a lateral offset that ramps from that starting offset to zero over a few seconds, using a smooth blend such as cosine or quintic. The controller follows that offset, so the trajectory looks natural without being scripted.
 
 ## Longitudinal model
 
@@ -149,6 +149,8 @@ All diverging traffic uses one mechanism: a vehicle stays registered on a lane i
 - **Covers:** lane changes, diverging at junctions and taking off-ramps. No special cases are needed.
 - **Effect:** while a vehicle straddles two lanes, followers on both lanes see it as a leader.
 - **Where changes happen:** only inside a permitted lane-change s-range from the network.
+- **The decision is a jump:** when a vehicle decides to change lanes, its assigned lane switches to the target lane at once. That switch is what encodes the decision. It joins the target lane's occupant list at the same moment, just as advancing onto a successor does. Its pose doesn't move; it is simply now off-centre on its new lane, and the lateral model steers it smoothly onto the centreline.
+- **Leaving the old lane:** it stays a member of the old lane until both rear corners are outside the old lane's geometry, so followers there keep seeing it while it straddles.
 
 **Suggestion:** use MOBIL (Treiber and Kesting's incentive-plus-safety model with a politeness factor) for discretionary changes. Drive mandatory changes from the routing model's required lane sequence.
 
@@ -258,7 +260,7 @@ The hardest problems are junction geometry and dense merging. Both have defeated
 
 **Open questions**
 
-- How a vehicle joins its target lane during a lane change (milestone 3). Successor transitions join on advance, as above.
+None at the moment.
 
 ## Milestones
 
