@@ -21,30 +21,51 @@ pub fn car() -> VehicleSpec {
 }
 
 /// A circular lane of the given circumference that is its own successor.
-///
-/// Chords are sized for at most 1 cm of sagitta. The lane starts and ends at the
-/// midpoint of one chord, so there is no kink at the seam.
 pub fn ring(circumference: f64, speed_limit: f64) -> SimNetwork {
-    let radius = circumference / TAU;
-    let max_chord = (8.0 * radius * 0.01).sqrt();
-    let n = (circumference / max_chord).ceil() as usize;
-    let vertex = |i: usize| radius * DVec2::from_angle(TAU * i as f64 / n as f64);
-    let seam = 0.5 * (vertex(n - 1) + vertex(0));
-    let mut points = vec![seam];
-    points.extend((0..n).map(vertex));
-    points.push(seam);
-    let lane = Lane::new(&points, 3.5, speed_limit).unwrap();
-    let mut network = SimNetwork::new(vec![lane]);
-    network.connect(LaneId(0), LaneId(0));
+    ring_road(circumference, 1, speed_limit)
+}
+
+/// A ring road of concentric lanes, each its own successor, with lane changes
+/// allowed both ways between neighbours. Lane 0 is the innermost, with the given
+/// circumference. Travel is anticlockwise, so lane `i` is on the left of lane `i + 1`.
+///
+/// Chords are sized for at most 1 cm of sagitta. Every lane starts and ends at
+/// angle 0, at the midpoint of a chord, so there is no kink at the seam and the
+/// lanes start and end together.
+pub fn ring_road(circumference: f64, lanes: usize, speed_limit: f64) -> SimNetwork {
+    const WIDTH: f64 = 3.5;
+    let lane = |radius: f64| {
+        let max_chord = (8.0 * radius * 0.01).sqrt();
+        let n = (TAU * radius / max_chord).ceil() as usize;
+        let vertex = |i: usize| radius * DVec2::from_angle(TAU * (i as f64 + 0.5) / n as f64);
+        let seam = 0.5 * (vertex(n - 1) + vertex(0));
+        let mut points = vec![seam];
+        points.extend((0..n).map(vertex));
+        points.push(seam);
+        Lane::new(&points, WIDTH, speed_limit).unwrap()
+    };
+    let inner = circumference / TAU;
+    let mut network = SimNetwork::new((0..lanes).map(|i| lane(inner + WIDTH * i as f64)).collect());
+    for i in 0..lanes as u32 {
+        network.connect(LaneId(i), LaneId(i));
+        if i > 0 {
+            network.set_adjacent(LaneId(i - 1), LaneId(i), true, true);
+        }
+    }
     network
 }
 
-/// Inserts `count` cars at rest, evenly spaced around a ring from [`ring`].
+/// Inserts `count` cars at rest, evenly spaced around lane 0 of a ring.
 pub fn fill_ring<D: traffic_sim::DebugSink>(sim: &mut Simulation<D>, count: usize) {
-    let length = sim.network().lane(LaneId(0)).length();
+    fill_lane(sim, LaneId(0), count);
+}
+
+/// Inserts `count` cars at rest, evenly spaced along a lane.
+pub fn fill_lane<D: traffic_sim::DebugSink>(sim: &mut Simulation<D>, lane: LaneId, count: usize) {
+    let length = sim.network().lane(lane).length();
     for i in 0..count {
         let s = length * i as f64 / count as f64;
-        sim.insert(car(), Placement { lane: LaneId(0), s, speed: 0.0 });
+        sim.insert(car(), Placement { lane, s, speed: 0.0 });
     }
 }
 

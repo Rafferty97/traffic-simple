@@ -5,13 +5,16 @@ use std::f64::consts::TAU;
 use eframe::egui::{self, Color32, Pos2, Rect, Shape, Stroke};
 use glam::DVec2;
 use traffic_sim::{
-    AccelSource, DebugEvent, DebugSink, Lane, LaneId, Placement, SimNetwork, Simulation, Vehicle,
-    VehicleId, VehicleSpec,
+    AccelSource, DebugEvent, DebugSink, Lane, LaneId, Placement, Side, SimNetwork, Simulation,
+    Vehicle, VehicleId, VehicleSpec,
 };
 
 /// Sugiyama et al. (2008): 22 cars on a 230 m ring.
+/// Here the inner lane has that circumference, and every lane has that density.
 const RING_CIRCUMFERENCE: f64 = 230.0;
-const RING_CARS: usize = 22;
+const RING_LANES: usize = 3;
+const CARS_PER_METRE: f64 = 22.0 / 230.0;
+const LANE_WIDTH: f64 = 3.5;
 /// How far outside a vehicle a click still selects it, in screen points.
 const PICK_TOLERANCE: f32 = 6.0;
 
@@ -47,8 +50,8 @@ struct App {
 impl App {
     fn new() -> Self {
         let sim = new_sim();
-        let lane = sim.network().lane(LaneId(0));
-        let scene_rect = Rect::from_points(&lane.outline().map(to_scene).collect::<Vec<_>>());
+        let outlines = sim.network().lanes().flat_map(|(_, lane)| lane.outline().map(to_scene));
+        let scene_rect = Rect::from_points(&outlines.collect::<Vec<_>>());
         Self {
             sim,
             view: View::Pretty,
@@ -100,6 +103,13 @@ impl App {
             };
             row("id", format!("{id:?}"));
             row("lane", format!("{}", v.lane().0));
+            let neighbour = |side| match self.sim.network().lane(v.lane()).adj(side) {
+                Some(n) if n.can_change => format!("{}", n.lane.0),
+                Some(n) => format!("{} (no change)", n.lane.0),
+                None => "none".into(),
+            };
+            row("left", neighbour(Side::Left));
+            row("right", neighbour(Side::Right));
             let path: Vec<_> = v.path().iter().map(|l| l.0.to_string()).collect();
             row("path", path.join(" → "));
             row("s", format!("{:.2} m", pos.s));
@@ -220,6 +230,27 @@ fn draw_pretty(painter: &egui::Painter, sim: &Simulation<DebugState>, selected: 
     for (_, lane) in sim.network().lanes() {
         painter.add(lane_surface(lane, Color32::from_gray(60)));
     }
+    // Lane lines, drawn once per pair along the right edge of the left lane:
+    // dashed where changes are allowed both ways, solid otherwise.
+    let marking = Stroke::new(0.15, Color32::from_gray(230));
+    for (_, lane) in sim.network().lanes() {
+        let Some(right) = lane.adj_right() else {
+            continue;
+        };
+        let back = sim.network().lane(right.lane).adj_left();
+        let dashed = right.can_change && back.is_some_and(|n| n.can_change);
+        let edge = |s: f64| to_scene(lane.lane_to_world(lane.lane_pos(s, -0.5 * lane.width())));
+        if dashed {
+            // 3 m dashes every 9 m.
+            for i in 0..(lane.length() / 9.0) as u32 {
+                let s = 9.0 * i as f64;
+                painter.line_segment([edge(s), edge(s + 3.0)], marking);
+            }
+        } else {
+            let points = (0..=(lane.length() / 2.0) as u32).map(|i| edge(2.0 * i as f64));
+            painter.add(Shape::line(points.collect(), marking));
+        }
+    }
     for (id, v) in sim.vehicles() {
         let corners = v.corners().map(to_scene).to_vec();
         let outline = if Some(id) == selected {
@@ -257,6 +288,25 @@ fn draw_debug(painter: &egui::Painter, sim: &Simulation<DebugState>, selected: O
             let s = 10.0 * i as f64;
             let ends = [hw, -hw].map(|t| to_scene(lane.lane_to_world(lane.lane_pos(s, t))));
             painter.line_segment(ends, thin);
+        }
+
+        // Neighbour links every 20 m, from the centreline to each side's edge:
+        // green where changes into that neighbour are allowed, red where not.
+        for side in [Side::Left, Side::Right] {
+            let Some(n) = lane.adj(side) else {
+                continue;
+            };
+            let colour = if n.can_change {
+                Color32::from_rgb(80, 200, 80)
+            } else {
+                Color32::from_rgb(220, 70, 70)
+            };
+            let edge = if side == Side::Left { 0.45 } else { -0.45 } * lane.width();
+            for i in 0..(lane.length() / 20.0) as u32 {
+                let s = 20.0 * i as f64 + 5.0;
+                let ends = [0.0, edge].map(|t| to_scene(lane.lane_to_world(lane.lane_pos(s, t))));
+                painter.line_segment(ends, Stroke::new(0.06, colour));
+            }
         }
 
         // Each occupant record, on the centreline at its `s`.
@@ -379,33 +429,49 @@ fn to_scene(p: DVec2) -> Pos2 {
     Pos2::new(p.x as f32, -p.y as f32)
 }
 
-/// The Sugiyama ring with its cars evenly spaced and at rest.
+/// A three-lane ring at Sugiyama's density, its cars evenly spaced and at rest.
 fn new_sim() -> Simulation<DebugState> {
-    let mut sim = Simulation::new(ring(RING_CIRCUMFERENCE, 50.0 / 3.6), DebugState::default());
-    let length = sim.network().lane(LaneId(0)).length();
-    for i in 0..RING_CARS {
-        let s = length * i as f64 / RING_CARS as f64;
-        sim.insert(demo_car(), Placement { lane: LaneId(0), s, speed: 0.0 });
+    let network = ring_road(RING_CIRCUMFERENCE, RING_LANES, 50.0 / 3.6);
+    let mut sim = Simulation::new(network, DebugState::default());
+    for lane in 0..RING_LANES as u32 {
+        let lane = LaneId(lane);
+        let length = sim.network().lane(lane).length();
+        let cars = (length * CARS_PER_METRE).round() as usize;
+        for i in 0..cars {
+            let s = length * i as f64 / cars as f64;
+            sim.insert(demo_car(), Placement { lane, s, speed: 0.0 });
+        }
     }
     sim
 }
 
-/// A circular lane that is its own successor.
+/// A ring road of concentric lanes, each its own successor, with lane changes
+/// allowed both ways between neighbours. Lane 0 is the innermost, with the given
+/// circumference. Travel is anticlockwise, so lane `i` is on the left of lane `i + 1`.
 ///
-/// Chords are sized for at most 1 cm of sagitta. The lane starts and ends at the
-/// midpoint of one chord, so there is no kink at the seam.
-fn ring(circumference: f64, speed_limit: f64) -> SimNetwork {
-    let radius = circumference / TAU;
-    let max_chord = (8.0 * radius * 0.01).sqrt();
-    let n = (circumference / max_chord).ceil() as usize;
-    let vertex = |i: usize| radius * DVec2::from_angle(TAU * i as f64 / n as f64);
-    let seam = 0.5 * (vertex(n - 1) + vertex(0));
-    let mut points = vec![seam];
-    points.extend((0..n).map(vertex));
-    points.push(seam);
-    let lane = Lane::new(&points, 3.5, speed_limit).expect("ring lane is valid");
-    let mut network = SimNetwork::new(vec![lane]);
-    network.connect(LaneId(0), LaneId(0));
+/// Chords are sized for at most 1 cm of sagitta. Every lane starts and ends at
+/// angle 0, at the midpoint of a chord, so there is no kink at the seam and the
+/// lanes start and end together.
+fn ring_road(circumference: f64, lanes: usize, speed_limit: f64) -> SimNetwork {
+    let lane = |radius: f64| {
+        let max_chord = (8.0 * radius * 0.01).sqrt();
+        let n = (TAU * radius / max_chord).ceil() as usize;
+        let vertex = |i: usize| radius * DVec2::from_angle(TAU * (i as f64 + 0.5) / n as f64);
+        let seam = 0.5 * (vertex(n - 1) + vertex(0));
+        let mut points = vec![seam];
+        points.extend((0..n).map(vertex));
+        points.push(seam);
+        Lane::new(&points, LANE_WIDTH, speed_limit).expect("ring lane is valid")
+    };
+    let inner = circumference / TAU;
+    let radii = (0..lanes).map(|i| inner + LANE_WIDTH * i as f64);
+    let mut network = SimNetwork::new(radii.map(lane).collect());
+    for i in 0..lanes as u32 {
+        network.connect(LaneId(i), LaneId(i));
+        if i > 0 {
+            network.set_adjacent(LaneId(i - 1), LaneId(i), true, true);
+        }
+    }
     network
 }
 

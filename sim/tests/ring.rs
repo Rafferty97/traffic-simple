@@ -3,7 +3,7 @@
 use traffic_sim::{LaneId, Placement, Simulation};
 
 mod common;
-use common::{Terms, car, fill_ring, ring};
+use common::{Terms, car, fill_lane, fill_ring, ring, ring_road};
 
 type Sim = Simulation<Terms>;
 
@@ -128,6 +128,48 @@ fn recorded_terms_reach_each_acceleration() {
             if min.is_finite() {
                 assert_eq!(min, v.accel(), "terms don't reach {id:?}'s acceleration");
             }
+        }
+    });
+}
+
+#[test]
+fn three_lane_ring_keeps_to_its_lanes() {
+    let mut sim = Simulation::new(ring_road(230.0, 3, SPEED_LIMIT), Terms::default());
+    for lane in 0..3 {
+        fill_lane(&mut sim, LaneId(lane), 22);
+    }
+    let start: Vec<_> = sim.vehicles().map(|(id, v)| (id, v.lane())).collect();
+    run(&mut sim, 120.0, |sim| {
+        for &(id, lane) in &start {
+            let v = sim.get(id).unwrap();
+            assert_eq!(v.lane(), lane, "{id:?} changed lane");
+            assert!(
+                v.lane_pos().t.abs() < 0.1,
+                "{id:?} drifted {} m",
+                v.lane_pos().t
+            );
+        }
+        for lane in 0..3 {
+            let list = sim.occupants(LaneId(lane));
+            assert!(
+                list.windows(2).all(|w| w[0].s <= w[1].s),
+                "lane {lane} out of order"
+            );
+            // Only this lane's own cars, though a car crossing the seam briefly has two records.
+            for o in list {
+                assert_eq!(
+                    sim.get(o.id).unwrap().lane(),
+                    LaneId(lane),
+                    "foreign record on lane {lane}"
+                );
+            }
+        }
+        for &(id, lane) in &start {
+            let list = sim.occupants(lane);
+            assert!(
+                list.iter().any(|o| o.id == id),
+                "{id:?} missing from its lane"
+            );
         }
     });
 }

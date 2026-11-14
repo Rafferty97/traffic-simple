@@ -253,7 +253,7 @@ impl<D: DebugSink> Simulation<D> {
 fn extend_path(network: &SimNetwork, path: &mut ArrayVec<LaneId, PATH_LEN>) {
     while !path.is_full() {
         let last = path[path.len() - 1];
-        match network.successors(last).first() {
+        match network.lane(last).successors().first() {
             Some(&next) => path.push(next),
             None => break,
         }

@@ -50,7 +50,7 @@ pub fn update(
     for (i, list) in occupants.iter_mut().enumerate() {
         let id = LaneId(i as u32);
         let lane = network.lane(id);
-        let dead_end = network.successors(id).is_empty();
+        let dead_end = network.lane(id).successors().is_empty();
         for occupant in list.iter_mut() {
             *occupant = Occupant::new(lane, occupant.id, &vehicles[occupant.id], occupant.hint);
         }

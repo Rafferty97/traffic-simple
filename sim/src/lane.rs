@@ -1,11 +1,18 @@
 use std::f64::consts::TAU;
 
+use arrayvec::ArrayVec;
 use glam::DVec2;
+
+use crate::network::{LaneId, Neighbour, Side};
+
+/// The most successors a lane can have.
+pub const MAX_SUCCESSORS: usize = 4;
 
 /// The sharpest turn allowed at a single vertex: 1/16 of a revolution.
 const MAX_TURN: f64 = TAU / 16.0;
 
-/// A lane described by a polyline centreline, a constant width and a speed limit.
+/// A lane described by a polyline centreline, a constant width and a speed limit,
+/// plus its links to other lanes, which [`SimNetwork`](crate::SimNetwork) sets.
 ///
 /// Positions are expressed in lane coordinates `(s, t)`: `s` is the distance in
 /// metres along the centreline and `t` is the lateral offset in metres, positive
@@ -21,6 +28,12 @@ pub struct Lane {
     length: f64,
     /// Speed limit in metres per second.
     speed_limit: f64,
+    /// The lanes this one connects to, end to start.
+    pub(crate) successors: ArrayVec<LaneId, MAX_SUCCESSORS>,
+    /// The lane beside this one on the left, if any.
+    pub(crate) adj_left: Option<Neighbour>,
+    /// The lane beside this one on the right, if any.
+    pub(crate) adj_right: Option<Neighbour>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -103,7 +116,15 @@ impl Lane {
             segs.push(Segment { start: points[i], dir: dirs[i], cum_s, adj: (t0, k) });
             cum_s += lens[i];
         }
-        Ok(Self { segs, length: cum_s, width, speed_limit })
+        Ok(Self {
+            segs,
+            length: cum_s,
+            width,
+            speed_limit,
+            successors: ArrayVec::new(),
+            adj_left: None,
+            adj_right: None,
+        })
     }
 
     /// Length of the centreline in metres.
@@ -119,6 +140,29 @@ impl Lane {
     /// Speed limit in metres per second.
     pub fn speed_limit(&self) -> f64 {
         self.speed_limit
+    }
+
+    /// The lanes this one connects to, end to start, in the order they were connected.
+    pub fn successors(&self) -> &[LaneId] {
+        &self.successors
+    }
+
+    /// The lane beside this one on the left, if any.
+    pub fn adj_left(&self) -> Option<Neighbour> {
+        self.adj_left
+    }
+
+    /// The lane beside this one on the right, if any.
+    pub fn adj_right(&self) -> Option<Neighbour> {
+        self.adj_right
+    }
+
+    /// The lane beside this one on the given side, if any.
+    pub fn adj(&self, side: Side) -> Option<Neighbour> {
+        match side {
+            Side::Left => self.adj_left,
+            Side::Right => self.adj_right,
+        }
     }
 
     /// Creates a new `LanePos` for the given `s` and `t`.

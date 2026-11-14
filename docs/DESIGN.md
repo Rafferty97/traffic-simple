@@ -44,7 +44,7 @@ One Rust workspace. The simulation crate depends on nothing else in the workspac
 One source-of-truth network description compiles into two products: a `SimNetwork` for the simulation and render geometry for the UI or SVG export.
 
 - **Source of truth:** written by hand or by procedural generators. Real-world import is out of scope. The format is undecided and will grow organically.
-- **`SimNetwork` output:** lanes as polylines, lane successors, permitted lane changes (lane pair, direction, s-range), precomputed conflicts, barriers and signal controllers.
+- **`SimNetwork` output:** lanes as polylines, lane successors, lane neighbours with lane-change permissions, precomputed conflicts, barriers and signal controllers.
 - **Render output:** road and junction surfaces, lane markings, stop lines and keep-clear markings.
 - **Compile-time work:** generating connector lanes through junctions, computing conflicts and placing barriers.
 
@@ -59,7 +59,9 @@ Generating junction geometry (connector curves and junction surfaces) is the har
 The simulation has no roads, only lanes. Lanes may overlap, merge, diverge or cross, and lane changes may be permitted between them.
 
 - **Geometry:** each lane is a polyline with arc length s and lateral offset t. The (s, t) ↔ world mapping is worked out and fast.
-- **Relationships:** successors and predecessors (end-to-start connections); lane-change permissions (lane pair, direction, s-range); overlaps, found by conflict precomputation.
+- **Relationships:** successors and predecessors (end-to-start connections); left and right neighbours; overlaps, found by conflict precomputation.
+- **Neighbours:** each lane has at most one neighbour on each side. Adjacency is symmetric, but lane-change permission is per ordered pair, because a change may be allowed one way only. Permission covers the whole lane pair; where a road changes from allowing changes to not, it splits into successive lanes.
+- **Lane sections:** adjacent lanes start and end together, like the lanes of a SUMO edge or an OpenDRIVE lane section. Where one lane splits, its neighbours split at the same point. So the neighbour of a lane's successor is the successor of its neighbour, which lets a vehicle map its path to the lanes beside it. This isn't checked yet.
 - **Multi-lane roads** exist only in the source-of-truth network. Compilation flattens them.
 
 **Suggestion:** store cumulative arc length per vertex, and give each vehicle a cached segment index per lane it occupies. Vehicles move a fraction of a segment per frame, so projection becomes a forward scan from the cached index, close to O(1).
@@ -115,7 +117,7 @@ Long frames are split into substeps, so a slow frame can't destabilise integrati
 
 **Suggestion:** fire the ~20 Hz and discrete updates from per-rate time accumulators.
 
-Discrete decisions are staggered across vehicles, so their cost is spread evenly across frames rather than landing on one. This also stops every vehicle reacting on the same tick.
+Discrete decisions are staggered across vehicles, so their cost is spread evenly across frames rather than landing on one. This also stops every vehicle reacting on the same tick. A cursor walks the vehicles in iteration order, wrapping around: each substep processes the whole part of an accumulated budget of n·h/P vehicles, where h is the substep and P the decision period, so each vehicle decides about once per P at any frame rate. Resuming uses `iter().skip(k)`, which is O(k) but cheap; a dense slot map or an explicit order list would make it O(1) if profiling asks.
 
 ## Vehicle kinematics
 
@@ -125,7 +127,7 @@ Vehicles move by a kinematic bicycle model, steered by pure pursuit toward a tar
 - **Controller choice:** pure pursuit with a lookahead that scales with speed. It anticipates curves the way drivers do, cutting corners slightly, which reads as natural, and the guard rails bound how far it cuts. Stanley, which tracks the path more tightly, is the fallback if tracking on tight junction connectors looks wrong.
 - **Guard rails:** a vehicle must never escape the lane geometry, for example by bounding its lateral offset from the assigned lane. The open question is how to do this without visible snapping.
 
-**Suggestion:** after a lane change, the vehicle starts off-centre on its new lane. Describe its target path as a lateral offset that ramps from that starting offset to zero over a few seconds, using a smooth blend such as cosine or quintic. The controller follows that offset, so the trajectory looks natural without being scripted.
+After a lane change, the vehicle starts off-centre on its new lane. Its target path is a lateral offset that ramps from that starting offset to zero along a cubic (see Lane membership, lane changes and diverging). The controller follows that offset, so the trajectory looks natural without being scripted.
 
 ## Longitudinal model
 
@@ -148,9 +150,23 @@ All diverging traffic uses one mechanism: a vehicle stays registered on a lane i
 
 - **Covers:** lane changes, diverging at junctions and taking off-ramps. No special cases are needed.
 - **Effect:** while a vehicle straddles two lanes, followers on both lanes see it as a leader.
-- **Where changes happen:** only inside a permitted lane-change s-range from the network.
+- **Where changes happen:** only into a neighbour that the network permits changing into.
 - **The decision is a jump:** when a vehicle decides to change lanes, its assigned lane switches to the target lane at once. That switch is what encodes the decision. It joins the target lane's occupant list at the same moment, just as advancing onto a successor does. Its pose doesn't move; it is simply now off-centre on its new lane, and the lateral model steers it smoothly onto the centreline.
 - **Leaving the old lane:** it stays a member of the old lane until both rear corners are outside the old lane's geometry, so followers there keep seeing it while it straddles.
+- **Old side:** the vehicle remembers which side its old lane is on, as `Option<Side>`, and derives the old lanes by mapping its path to their neighbours on that side. While it straddles, it runs a second leader search from its projected position on the old lane, continuing along those neighbours, so it doesn't run into its old leader.
+- **Across section boundaries:** a vehicle that advances while still straddling also joins the old-side neighbour of its new lane, so followers there see it. The old side clears when a record is dropped because both rear corners left it sideways.
+- **Lateral path:** at the start of a change the vehicle fixes a cubic in u = s − s₀ along its new lane. It runs from the vehicle's offset t₀ and slope m₀ = tan(heading − lane tangent) to zero offset and zero slope at u = L: with x = u/L, t(u) = t₀(2x³ − 3x² + 1) + L·m₀(x³ − 2x² + x). L = max(v·T, L_min), so peak lateral acceleration is about 6·t₀/T² at any speed. Pure pursuit aims at the cubic's offset at its lookahead point, and at zero beyond L. If the vehicle advances mid-change, s₀ shifts back by the old lane's length.
+- **Completion:** a change is complete when the vehicle reaches the end of its cubic. It can't start another until then.
+
+**Lane-change intents.** Decisions use only forward searches; nothing searches backwards.
+
+1. **Advertise:** at its decision tick, a vehicle projects itself onto its permitted neighbours and runs forward searches from there, giving its prospective leader and its own gain. If changing looks worth it, it advertises an intent: a flagged ghost record in the target lane's occupant list, kept up to date each substep like any other record. The ghost is the vehicle's indicator.
+2. **Respond:** at each acceleration update, every response is cleared and recomputed by ordinary forward searches. The nearest follower on the target lane finds the ghost first. Ghosts brake no one, but that follower also computes its acceleration if the vehicle cut in, as a response to the intent. The follower behind the vehicle on its current lane finds it flagged as leaving, and also computes its acceleration if it weren't there. Each response has one writer, and responses are applied after the read-only searches.
+3. **Decide:** at its next decision tick, the vehicle has everything MOBIL needs. It executes if the change is safe and worth it and it has indicated for at least its minimum indicating time, which is a parameter. Executing is the jump to the new lane, and its ghost simply becomes its real record. It cancels if the gain falls below the threshold or no permitted neighbour remains on that side; otherwise it keeps indicating.
+
+- **Two vehicles into one gap:** a ghost ahead counts as a leader in a vehicle's own search, a follower responds only to the nearest record ahead of it, and a missing response means not safe. So changes into the same gap happen strictly one after another, even from both sides or on the same tick. Two vehicles may indicate at once.
+- **Across section boundaries:** when the vehicle advances, its ghost moves to the neighbour of its new lane. If there is none, or the change isn't permitted, the intent is cancelled.
+- **Cooperative yielding** comes almost for free: a follower can choose to treat a ghost as a real leader to open a gap.
 
 **Suggestion:** use MOBIL (Treiber and Kesting's incentive-plus-safety model with a politeness factor) for discretionary changes. Drive mandatory changes from the routing model's required lane sequence.
 
