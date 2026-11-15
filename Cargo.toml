@@ -12,3 +12,4 @@ repository = "https://github.com/Rafferty97/traffic-simple"
 [workspace.dependencies]
 traffic-sim = { path = "sim" }
 glam = "0.34.3"
+rand = { version = "0.10.3", default-features = false }

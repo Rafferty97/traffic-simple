@@ -4,6 +4,8 @@
 
 use std::f64::consts::TAU;
 
+use rand::rngs::Xoshiro256PlusPlus;
+use rand::{RngExt, SeedableRng};
 use traffic_sim::{LaneId, Placement, Side, Simulation, VehicleId, VehicleSpec};
 
 mod common;
@@ -32,22 +34,13 @@ fn demo_car(speed_factor: f64) -> VehicleSpec {
     }
 }
 
-/// Seeded xorshift with a normal sample, as the UI draws speed factors.
-struct Rng(u64);
-
-impl Rng {
-    fn uniform(&mut self) -> f64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        ((self.0 >> 11) + 1) as f64 / (1u64 << 53) as f64
-    }
-
-    fn speed_factor(&mut self) -> f64 {
-        let (u, v) = (self.uniform(), self.uniform());
-        let normal = (-2.0 * u.ln()).sqrt() * (TAU * v).cos();
-        (1.0 + 0.1 * normal).clamp(0.8, 1.2)
-    }
+/// A speed factor as the UI draws them: normal with mean 1 and deviation 0.1,
+/// by Box-Muller, clamped to [0.8, 1.2].
+fn speed_factor(rng: &mut Xoshiro256PlusPlus) -> f64 {
+    let u = 1.0 - rng.random::<f64>();
+    let v = rng.random::<f64>();
+    let normal = (-2.0 * u.ln()).sqrt() * (TAU * v).cos();
+    (1.0 + 0.1 * normal).clamp(0.8, 1.2)
 }
 
 #[derive(Debug, Default)]
@@ -67,7 +60,7 @@ fn run_scenario(spawn_rate: f64, despawn_rate: f64, minutes: f64) -> Stats {
     );
     let spawn_s = 0.25 * sim.network().lane(SPAWN_LANE).length();
     let despawn_s = 0.75 * sim.network().lane(DESPAWN_LANE).length();
-    let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+    let mut rng = Xoshiro256PlusPlus::seed_from_u64(0);
     let (mut spawn_credit, mut despawn_credit) = (0.0f64, 0.0f64);
     let mut stats = Stats::default();
     let mut last: std::collections::HashMap<VehicleId, (f64, LaneId, bool)> = Default::default();
@@ -77,7 +70,7 @@ fn run_scenario(spawn_rate: f64, despawn_rate: f64, minutes: f64) -> Stats {
 
         spawn_credit = (spawn_credit + spawn_rate * DT).min(1.0);
         if spawn_credit >= 1.0 {
-            let car = demo_car(rng.speed_factor());
+            let car = demo_car(speed_factor(&mut rng));
             let at = Placement {
                 lane: SPAWN_LANE,
                 s: spawn_s,

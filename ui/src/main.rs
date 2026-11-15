@@ -5,6 +5,8 @@ use std::f64::consts::TAU;
 
 use eframe::egui::{self, Color32, Pos2, Rect, Shape, Stroke};
 use glam::DVec2;
+use rand::rngs::Xoshiro256PlusPlus;
+use rand::{RngExt, SeedableRng};
 use traffic_sim::{
     AccelSource, DebugEvent, DebugSink, Lane, LaneChangeError, LaneChangeEval, LaneId, Placement,
     Side, SimNetwork, Simulation, Vehicle, VehicleId, VehicleSpec,
@@ -76,8 +78,8 @@ struct Harness {
     despawned: u32,
     /// Each vehicle's `s` last step, to see who crossed the despawn point.
     last_s: HashMap<VehicleId, f64>,
-    /// State of a xorshift random number generator, for drivers' speed factors.
-    rng: u64,
+    /// Draws drivers' speed factors. Seeded, so every run spawns the same drivers.
+    rng: Xoshiro256PlusPlus,
 }
 
 impl Default for Harness {
@@ -90,7 +92,7 @@ impl Default for Harness {
             spawned: 0,
             despawned: 0,
             last_s: HashMap::new(),
-            rng: 0x9E37_79B9_7F4A_7C15,
+            rng: Xoshiro256PlusPlus::seed_from_u64(0),
         }
     }
 }
@@ -137,18 +139,11 @@ impl Harness {
     /// A speed factor from a normal distribution with mean 1 and deviation 0.1,
     /// as SUMO's default, clamped to [0.8, 1.2].
     fn speed_factor(&mut self) -> f64 {
-        // Box-Muller on two uniform samples in (0, 1].
-        let (u, v) = (self.uniform(), self.uniform());
+        // Box-Muller on two uniform samples, u in (0, 1] so its log is finite.
+        let u = 1.0 - self.rng.random::<f64>();
+        let v = self.rng.random::<f64>();
         let normal = (-2.0 * u.ln()).sqrt() * (TAU * v).cos();
         (1.0 + 0.1 * normal).clamp(0.8, 1.2)
-    }
-
-    /// A uniform sample in (0, 1], from xorshift64.
-    fn uniform(&mut self) -> f64 {
-        self.rng ^= self.rng << 13;
-        self.rng ^= self.rng >> 7;
-        self.rng ^= self.rng << 17;
-        ((self.rng >> 11) + 1) as f64 / (1u64 << 53) as f64
     }
 
     fn controls(&mut self, ui: &mut egui::Ui, on_road: usize) {

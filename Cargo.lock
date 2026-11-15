@@ -3661,6 +3661,7 @@ dependencies = [
  "criterion",
  "glam",
  "proptest",
+ "rand",
  "slotmap",
  "thiserror 2.0.21",
 ]
@@ -3708,6 +3709,7 @@ version = "0.0.0"
 dependencies = [
  "eframe",
  "glam",
+ "rand",
  "traffic-sim",
 ]
 
