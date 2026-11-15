@@ -53,8 +53,6 @@ struct App {
     /// Visible region of the world, in scene coordinates (see [`to_scene`]).
     scene_rect: Rect,
     selected: Option<VehicleId>,
-    /// Whether the inspector's brake button is held down.
-    braking: bool,
     /// Which debug view layers are drawn.
     layers: Layers,
     /// Why the last lane-change request for the selected vehicle was refused.
@@ -192,7 +190,6 @@ impl App {
             speed: 1.0,
             scene_rect: scene_rect.expand(10.0),
             selected: None,
-            braking: false,
             layers: Layers::default(),
             lane_change_error: None,
             harness: Harness::default(),
@@ -221,7 +218,6 @@ impl App {
             if ui.button("Reset").clicked() {
                 self.sim = new_sim();
                 self.selected = None;
-                self.braking = false;
                 let rates = (self.harness.spawn_rate, self.harness.despawn_rate);
                 self.harness = Harness::default();
                 (self.harness.spawn_rate, self.harness.despawn_rate) = rates;
@@ -354,40 +350,39 @@ impl App {
         if !terms.is_empty() && !terms.iter().any(|&(_, accel)| accel == v.accel()) {
             ui.colored_label(Color32::RED, "No recorded term matches the acceleration.");
         }
+    }
 
-        ui.separator();
-        // A click-only button stops counting as pressed once the press is too long
-        // to be a click (0.8 s); sensing drags keeps it pressed until release.
-        let button = egui::Button::new("Hold to brake").sense(egui::Sense::click_and_drag());
-        let response = ui.add(button);
-        let down = response.is_pointer_button_down_on();
-        if down != self.braking {
-            self.braking = down;
-            if down {
-                self.sim.hold(id);
-            } else {
-                self.sim.release(id);
-            }
-        }
-
-        ui.horizontal(|ui| {
-            for (label, side) in [("Change left", Side::Left), ("Change right", Side::Right)] {
-                if ui.button(label).clicked() {
-                    self.lane_change_error = self.sim.change_lane(id, side).err();
-                }
-            }
-        });
+    /// The selected vehicle's controls, in one row of equal-width buttons.
+    fn inspector_actions(&mut self, ui: &mut egui::Ui, id: VehicleId) {
         if let Some(error) = self.lane_change_error {
             ui.colored_label(Color32::RED, error.to_string());
         }
+        let held = self.sim.is_held(id);
+        let gap = ui.spacing().item_spacing.x;
+        let size = egui::vec2(
+            (ui.available_width() - 2.0 * gap) / 3.0,
+            ui.spacing().interact_size.y,
+        );
+        ui.horizontal(|ui| {
+            if ui.add_sized(size, egui::Button::new("Change left")).clicked() {
+                self.lane_change_error = self.sim.change_lane(id, Side::Left).err();
+            }
+            // Drawn as an ordinary button when off, and highlighted when on.
+            if ui.add_sized(size, egui::Button::new("Stop").selected(held)).clicked() {
+                if held {
+                    self.sim.release(id);
+                } else {
+                    self.sim.hold(id);
+                }
+            }
+            if ui.add_sized(size, egui::Button::new("Change right")).clicked() {
+                self.lane_change_error = self.sim.change_lane(id, Side::Right).err();
+            }
+        });
     }
 
     /// Selects the vehicle under `point` (scene coordinates), or clears the selection.
     fn pick(&mut self, point: Pos2, tolerance: f64) {
-        if let Some(id) = self.selected.take() {
-            self.sim.release(id);
-            self.braking = false;
-        }
         self.lane_change_error = None;
         let world = DVec2::new(point.x as f64, -point.y as f64);
         self.selected = self.sim.vehicle_at(world, tolerance);
@@ -413,6 +408,13 @@ impl eframe::App for App {
                 // Content that is too wide scrolls instead of widening the panel,
                 // which would shift the scene.
                 if let Some(id) = self.selected {
+                    // Pinned to the bottom, so the buttons stay put as the
+                    // details above them grow and shrink.
+                    if self.sim.get(id).is_some() {
+                        egui::Panel::bottom("vehicle actions")
+                            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(0, 6)))
+                            .show(ui, |ui| self.inspector_actions(ui, id));
+                    }
                     egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
                         ui.heading("Vehicle");
                         self.inspector(ui, id);
@@ -737,7 +739,11 @@ struct Layers([bool; Layer::ALL.len()]);
 
 impl Default for Layers {
     fn default() -> Self {
-        Self([true; Layer::ALL.len()])
+        let mut layers = [false; Layer::ALL.len()];
+        for layer in [Layer::LaneOutlines, Layer::Vehicles] {
+            layers[layer as usize] = true;
+        }
+        Self(layers)
     }
 }
 
