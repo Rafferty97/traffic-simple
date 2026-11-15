@@ -11,6 +11,7 @@
 //! lane's list. Ghosts are kept up to date like any record but are only removed
 //! explicitly, when the intent is cancelled or carried out.
 
+use arrayvec::ArrayVec;
 use glam::DVec2;
 use slotmap::SlotMap;
 
@@ -22,6 +23,9 @@ use crate::vehicle::{Vehicle, VehicleId};
 
 /// How far ahead of its front bumper a vehicle looks for a leader, in meters.
 pub(crate) const LEADER_HORIZON: f64 = 200.0;
+/// The most leaders a search finds. A lane rarely gives more than one or two;
+/// past this many, the rest are beyond what the nearer ones already impose.
+pub const MAX_LEADERS: usize = 8;
 /// The least room, in meters, a vehicle needs beside another to pass it.
 const PASSING_CLEARANCE: f64 = 0.5;
 /// How far behind the other vehicle's rear, in meters, a passing check puts the
@@ -346,16 +350,18 @@ pub enum Ghosts {
 }
 
 /// What a leader search found, each with the bumper-to-bumper gap to it.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Search {
-    pub leader: Option<(VehicleId, f64)>,
-    /// The nearest ghost before the leader, with [`Ghosts::Pass`].
+    /// Every vehicle ahead it must react to, nearest first: each is its own term
+    /// in the longitudinal model, whose minimum binds.
+    pub leaders: ArrayVec<(VehicleId, f64), MAX_LEADERS>,
+    /// The nearest ghost before the first leader, with [`Ghosts::Pass`].
     pub ghost: Option<(VehicleId, f64)>,
 }
 
-/// The nearest vehicle ahead along `lanes`, within the leader horizon, and the
-/// bumper-to-bumper gap to it. `axle_s` is the vehicle's rear axle's `s` on the
-/// first lane.
+/// The vehicles ahead along `lanes`, within the leader horizon, that a vehicle
+/// must react to, each with the bumper-to-bumper gap to it. `axle_s` is the
+/// vehicle's rear axle's `s` on the first lane.
 ///
 /// On the first lane, only occupants whose rear is at or ahead of this vehicle's
 /// rear count, `axle_s` less its rear overhang: [`find_follower`] takes those
@@ -374,6 +380,18 @@ pub struct Search {
 /// [`PASSING_CLEARANCE`] beside the other vehicle's rear corners. That reads the
 /// other vehicle's corners from `vehicles`, the one place leader search does.
 /// Each such check is reported to `on_pass`.
+///
+/// Which records it needs, by transitivity: whatever constrains the first vehicle
+/// in the lane ahead, R, reaches this vehicle through R, so it needn't look past
+/// R, except in two ways. R may have passed a vehicle diverging from the lane
+/// that this one can't: those lie between R and the next vehicle in the lane, R2,
+/// which R can't pass. And R's path may leave this one's at a lane boundary, so
+/// what lies beyond on this one's path never constrains R. So on each lane it
+/// takes the first vehicle in the lane, and the diverging vehicles it can't pass
+/// up to the next one, R2, which it stops at without taking; then it goes on to
+/// the next lane of its path and does the same, as SUMO takes the nearest vehicle
+/// on each lane ahead. Where R does carry on along its path, the next lane's
+/// vehicles are beyond R, and their terms are weaker.
 #[allow(clippy::too_many_arguments)]
 pub fn find_leader(
     network: &SimNetwork,
@@ -399,7 +417,7 @@ pub fn find_leader(
     // Start of the current lane, measured along `lanes` from the start of the first.
     let mut offset = 0.0;
     let rear = axle_s - vehicle.spec.rear_axle;
-    for (k, &lane) in lanes.iter().enumerate() {
+    'lanes: for (k, &lane) in lanes.iter().enumerate() {
         if offset - front > horizon {
             break;
         }
@@ -409,17 +427,27 @@ pub fn find_leader(
         } else {
             0
         };
+        // Past the first vehicle in the lane on this lane, R: only vehicles
+        // diverging from it still count, up to the next one in the lane.
+        let mut past_r = false;
         for o in &list[start..] {
             if o.id == id || Some(o.id) == skip {
                 continue;
             }
             let gap = offset + o.s - front;
             if gap > horizon {
-                return found;
+                break 'lanes;
             }
             if o.ghost && ghosts == Ghosts::Pass {
-                found.ghost = found.ghost.or(Some((o.id, gap)));
+                if found.leaders.is_empty() {
+                    found.ghost = found.ghost.or(Some((o.id, gap)));
+                }
                 continue;
+            }
+            let in_lane = o.lateral == Lateral::InLane;
+            if past_r && in_lane {
+                // R2: whatever lies beyond reaches it through R.
+                break;
             }
             let leaving = course.leaving(network, k, lane);
             if let Some(side) = passing_side(o.lateral, leaving, course.moving()) {
@@ -438,8 +466,10 @@ pub fn find_leader(
                     continue;
                 }
             }
-            found.leader = Some((o.id, gap));
-            return found;
+            if found.leaders.try_push((o.id, gap)).is_err() {
+                break 'lanes;
+            }
+            past_r |= in_lane;
         }
         offset += network.lane(lane).length();
     }

@@ -249,9 +249,12 @@ impl<D: DebugSink> Simulation<D> {
             None,
             |_| {},
         );
-        if let Some((leader, gap)) = leader.leader {
+        // No faster than the nearest leader, and braking gently enough for all.
+        if let Some(&(nearest, _)) = leader.leaders.first() {
+            vehicle.speed = vehicle.speed.min(self.vehicles[nearest].speed);
+        }
+        for &(leader, gap) in &leader.leaders {
             let leader_speed = self.vehicles[leader].speed;
-            vehicle.speed = vehicle.speed.min(leader_speed);
             let accel = acceleration::interaction(&spec, vehicle.speed, gap, leader_speed);
             if gap <= 0.0 || accel < -acceleration::SAFE_BRAKING {
                 return Err(InsertError::NoRoom);
@@ -583,7 +586,7 @@ impl<D: DebugSink> Simulation<D> {
                 None,
                 |check| sink.record(|| DebugEvent::PassCheck { vehicle: id, check }),
             );
-            if let Some((leader, gap)) = search.leader {
+            for &(leader, gap) in &search.leaders {
                 react(sink, leader, gap);
             }
 
@@ -644,7 +647,7 @@ impl<D: DebugSink> Simulation<D> {
                         None,
                         |check| sink.record(|| DebugEvent::PassCheck { vehicle: id, check }),
                     );
-                    if let Some((leader, gap)) = search.leader {
+                    for &(leader, gap) in &search.leaders {
                         react(sink, leader, gap);
                     }
                 }
@@ -1031,7 +1034,7 @@ fn accel_along(
         skip,
         |_| {},
     );
-    if let Some((leader, gap)) = search.leader {
+    for &(leader, gap) in &search.leaders {
         let leader_speed = vehicles[leader].speed;
         accel = accel.min(acceleration::interaction(
             &vehicle.spec,
@@ -1210,7 +1213,9 @@ mod test {
             None,
             |_| {},
         )
-        .leader
+        .leaders
+        .first()
+        .copied()
     }
 
     /// Keeps the lane-change evaluations.
@@ -1894,5 +1899,93 @@ mod test {
         sim.cancel_intent(indicating);
         sim.update_accels();
         assert_eq!(sim.vehicles[follower].yielding, None);
+    }
+
+    // Several leaders.
+
+    /// Every leader `id` reacts to now, nearest first.
+    fn leaders(sim: &Simulation, id: VehicleId) -> Vec<VehicleId> {
+        let v = &sim.vehicles[id];
+        let search = occupancy::find_leader(
+            &sim.network,
+            &sim.occupants,
+            &sim.vehicles,
+            id,
+            v,
+            &v.path,
+            v.lane_pos.s,
+            Course::of(v),
+            Ghosts::Pass,
+            None,
+            |_| {},
+        );
+        search.leaders.iter().map(|&(leader, _)| leader).collect()
+    }
+
+    #[test]
+    fn a_car_sees_a_diverging_car_its_leader_has_passed() {
+        // C, changing left out of lane 1, held with its right rear corner 1.6 m
+        // left of lane 1's centerline. B, in lane 1 behind it, clears that by
+        // 0.65 m and passes; A, wider, behind B, wouldn't clear it by enough.
+        let mut sim = two_lanes();
+        let c = sim.insert(car(), at(1, 60.0, 0.0));
+        sim.change_lane(c, Side::Left).unwrap();
+        let lane_1 = sim.network.lane(LaneId(1));
+        let pos = lane_1.lane_to_world(lane_1.lane_pos(60.0, 2.55));
+        let lane_0 = sim.network.lane(LaneId(0));
+        let on_0 = lane_0.world_to_lane_near(pos, lane_0.lane_pos(60.0, 0.0));
+        let v = &mut sim.vehicles[c];
+        (v.pos, v.heading, v.lane_pos) = (pos, 0.0, on_0);
+        sim.update_occupancy();
+        let record = sim.occupants[1].iter().find(|o| o.id == c).unwrap();
+        assert_eq!(record.lateral, Lateral::Diverging(Side::Left));
+        let b = sim.insert(car(), at(1, 45.0, 10.0));
+        let wide = VehicleSpec { width: 2.6, ..car() };
+        let a = sim.insert(wide, at(1, 30.0, 10.0));
+        assert_eq!(leaders(&sim, b), [], "B passes C");
+        // A reacts to B, and to C past it, rather than finding C only once B is by.
+        assert_eq!(leaders(&sim, a), [b, c]);
+    }
+
+    #[test]
+    fn a_leader_turning_off_doesnt_hide_the_queue_beyond() {
+        // Lane 0 splits: lane 2 bears away, lane 1 runs straight on. B turns onto
+        // lane 2; A goes straight on, where a car is held stopped.
+        let lane = |points: &[DVec2]| Lane::new(points, WIDTH, LIMIT).unwrap();
+        let lanes = vec![
+            lane(&[DVec2::ZERO, DVec2::new(100.0, 0.0)]),
+            lane(&[DVec2::new(100.0, 0.0), DVec2::new(200.0, 0.0)]),
+            lane(&[
+                DVec2::new(100.0, 0.0),
+                DVec2::new(150.0, 5.0),
+                DVec2::new(200.0, 15.0),
+            ]),
+        ];
+        let mut network = SimNetwork::new(lanes);
+        network.connect(LaneId(0), LaneId(2));
+        network.connect(LaneId(0), LaneId(1));
+        let mut sim = Simulation::new(network, NoopSink);
+        let queued = sim.insert(car(), at(1, 20.0, 0.0));
+        sim.hold(queued);
+        let b = sim.insert(car(), at(0, 80.0, 10.0));
+        assert_eq!(sim.vehicles[b].path[1], LaneId(2));
+        let a = sim.insert(car(), at(0, 50.0, 10.0));
+        let path = &mut sim.vehicles[a].path;
+        path.clear();
+        path.extend([LaneId(0), LaneId(1)]);
+        assert_eq!(leaders(&sim, a), [b, queued]);
+    }
+
+    #[test]
+    fn the_search_stops_at_the_second_car_in_the_lane() {
+        // What constrains B, the first car ahead, reaches A through B: A needn't
+        // look past the next car in the lane, D, at all.
+        let mut sim = two_lanes();
+        let a = sim.insert(car(), at(0, 20.0, 10.0));
+        let b = sim.insert(car(), at(0, 40.0, 10.0));
+        let _d = sim.insert(car(), at(0, 60.0, 10.0));
+        let stopped = sim.insert(car(), at(0, 120.0, 0.0));
+        sim.hold(stopped);
+        assert_eq!(leaders(&sim, a), [b]);
     }
 }
