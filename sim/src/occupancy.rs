@@ -24,6 +24,9 @@ use crate::vehicle::{Vehicle, VehicleId};
 const LEADER_HORIZON: f64 = 200.0;
 /// The least room, in meters, a vehicle needs beside another to pass it.
 const PASSING_CLEARANCE: f64 = 0.5;
+/// How far behind the other vehicle's rear, in meters, a passing check puts the
+/// searching vehicle's nose, so a check that fails is drawn short of overlapping.
+const NOSE_GAP: f64 = 0.1;
 
 /// A vehicle's record in one lane's occupant list.
 #[derive(Clone, Copy, Debug)]
@@ -261,6 +264,38 @@ impl<'a> Course<'a> {
         (pos, (next - pos).normalize())
     }
 
+    /// Where it will be, as its rear axle's position and heading, when its nose
+    /// is [`NOSE_GAP`] short of `point`, another vehicle's rearmost corner, at `s`
+    /// on `lane`, the `k`th lane searched. `nose` is how far its nose is ahead of
+    /// its rear axle.
+    ///
+    /// On the lanes it follows, `gap`, how far its rear axle travels before its
+    /// nose reaches `s`, is exact. On a lane beside them, distances differ from
+    /// its own, so `point` is projected onto its own `k`th lane instead.
+    #[allow(clippy::too_many_arguments)]
+    fn reach(
+        &self,
+        network: &SimNetwork,
+        k: usize,
+        lane: LaneId,
+        gap: f64,
+        point: DVec2,
+        s: f64,
+        nose: f64,
+    ) -> (DVec2, DVec2) {
+        let ahead = match self.path.get(k) {
+            Some(&own) if own != lane => {
+                let (own_lane, searched) = (network.lane(own), network.lane(lane));
+                let before: f64 = self.path[..k].iter().map(|&l| network.lane(l).length()).sum();
+                // Adjacent lanes start and end together, so the same fraction is a good hint.
+                let hint = own_lane.lane_pos(s / searched.length() * own_lane.length(), 0.0);
+                before + own_lane.world_to_lane_near(point, hint).s - nose - self.s
+            }
+            _ => gap,
+        };
+        self.pose(network, ahead - NOSE_GAP)
+    }
+
     /// How far its rear axle has still to go to the end of its lane change, or zero
     /// if it isn't changing lanes.
     fn remaining(&self) -> f64 {
@@ -372,10 +407,13 @@ pub fn find_leader(
             }
             let leaving = course.leaving(network, k, lane);
             if let Some(side) = passing_side(o.lateral, leaving, course.moving()) {
-                let (pos, tangent) = course.pose(network, gap);
+                // The record sits at the other vehicle's rearmost corner.
+                let rearmost = network.lane(lane).lane_to_world(o.hint);
+                let nose = vehicle.spec.length - vehicle.spec.rear_axle;
+                let (pos, tangent) = course.reach(network, k, lane, gap, rearmost, o.s, nose);
                 let [rear_left, rear_right, ..] = vehicles[o.id].corners();
-                let (clearance, corner) =
-                    clearance(side, pos, tangent, half_width, [rear_left, rear_right]);
+                let corners = [rear_left, rear_right];
+                let (clearance, corner) = clearance(side, pos, tangent, half_width, corners);
                 let passed = clearance >= PASSING_CLEARANCE;
                 let leader = o.id;
                 on_pass(PassCheck { leader, pos, tangent, side, corner, clearance, passed });
