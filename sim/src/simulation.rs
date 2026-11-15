@@ -4,6 +4,7 @@ use slotmap::SlotMap;
 
 use crate::debug::{AccelSource, DebugEvent, DebugSink, LaneChangeEval, NoopSink};
 use crate::kinematics;
+use crate::lane::LanePos;
 use crate::math::wrap_angle;
 use crate::models::acceleration;
 use crate::models::lane_change::{self, Outcome};
@@ -308,35 +309,22 @@ impl<D: DebugSink> Simulation<D> {
         if vehicle.lane_change.is_some() {
             return Err(LaneChangeError::InProgress);
         }
-        let current = self.network.lane(vehicle.path[0]);
-        let neighbor = current.adj(side).ok_or(LaneChangeError::NoNeighbor)?;
+        let neighbor = self
+            .network
+            .lane(vehicle.path[0])
+            .adj(side)
+            .ok_or(LaneChangeError::NoNeighbor)?;
         if !neighbor.can_change {
             return Err(LaneChangeError::NotPermitted);
         }
 
-        // Adjacent lanes start and end together, so the same fraction along the
-        // new lane is a good hint.
-        let target = self.network.lane(neighbor.lane);
-        let fraction = vehicle.lane_pos.s / current.length();
-        let hint = target.lane_pos(fraction * target.length(), 0.0);
-        let lane_pos = target.world_to_lane_near(vehicle.pos, hint);
-
-        // The cubic starts where pure pursuit is aiming on the old path, with that
-        // path's offset and slope relative to the new lane, so the target point
-        // carries on smoothly instead of jumping.
-        let ahead = vehicle.lane_pos.s + lateral::lookahead_distance(vehicle.speed);
-        let aim = self.network.point_along(&vehicle.path, ahead, 0.0);
-        let beyond = self.network.point_along(&vehicle.path, ahead + 1.0, 0.0);
-        let start = target.world_to_lane_near(aim, lane_pos);
-        let next = target.world_to_lane_near(beyond, start);
-        let slope = (next.t - start.t) / (next.s - start.s);
-
+        let (lane_pos, change) = plan_change(&self.network, vehicle, neighbor.lane);
         vehicle.path.clear();
         vehicle.path.push(neighbor.lane);
         extend_path(&self.network, &mut vehicle.path);
         vehicle.lane_pos = lane_pos;
         vehicle.old_side = Some(side.opposite());
-        vehicle.lane_change = Some(LaneChange::new(start.s, start.t, slope, vehicle.speed));
+        vehicle.lane_change = Some(change);
         vehicle.intent = None;
 
         let list = &mut self.occupants[neighbor.lane.0 as usize];
@@ -986,18 +974,12 @@ fn accel_in(
     vehicle: &Vehicle,
     target: LaneId,
 ) -> (f64, f64) {
-    let current = network.lane(vehicle.path[0]);
-    let lane = network.lane(target);
-    // Adjacent lanes start and end together, so the same fraction is a good hint.
-    let hint = lane.lane_pos(vehicle.lane_pos.s / current.length() * lane.length(), 0.0);
-    let projected = lane.world_to_lane_near(vehicle.pos, hint);
+    // Changing, it would follow the same cubic `change_lane` would give it.
+    let (projected, change) = plan_change(network, vehicle, target);
     let axle_s = projected.s;
     let mut path = ArrayVec::<LaneId, PATH_LEN>::new();
     path.push(target);
     extend_path(network, &mut path);
-    // Changing, it would steer from where it is across onto the target lane's
-    // centerline along a cubic, as `change_lane` sets up.
-    let change = LaneChange::new(axle_s, projected.t, 0.0, vehicle.speed);
     let accel = accel_along(
         network,
         occupants,
@@ -1010,6 +992,32 @@ fn accel_in(
         Ghosts::Lead,
     );
     (accel, axle_s)
+}
+
+/// How a vehicle not already changing lanes would change into `target`, a lane
+/// beside the one it is on: its rear axle's position on `target`, and the cubic
+/// its path would follow onto `target`'s centerline. [`Simulation::change_lane`]
+/// carries this out, and the lane-change decision weighs it up, so the two agree.
+///
+/// The cubic starts where pure pursuit is aiming on the vehicle's current path,
+/// with that path's offset and slope relative to `target`, so the target point
+/// carries on smoothly instead of jumping.
+fn plan_change(network: &SimNetwork, vehicle: &Vehicle, target: LaneId) -> (LanePos, LaneChange) {
+    let current = network.lane(vehicle.path[0]);
+    let lane = network.lane(target);
+    // Adjacent lanes start and end together, so the same fraction is a good hint.
+    let hint = lane.lane_pos(vehicle.lane_pos.s / current.length() * lane.length(), 0.0);
+    let lane_pos = lane.world_to_lane_near(vehicle.pos, hint);
+    let ahead = vehicle.lane_pos.s + lateral::lookahead_distance(vehicle.speed);
+    let aim = network.point_along(&vehicle.path, ahead, 0.0);
+    let beyond = network.point_along(&vehicle.path, ahead + 1.0, 0.0);
+    let start = lane.world_to_lane_near(aim, lane_pos);
+    let next = lane.world_to_lane_near(beyond, start);
+    let slope = (next.t - start.t) / (next.s - start.s);
+    (
+        lane_pos,
+        LaneChange::new(start.s, start.t, slope, vehicle.speed),
+    )
 }
 
 /// Whether another vehicle, or another vehicle's ghost, is alongside: whether any
