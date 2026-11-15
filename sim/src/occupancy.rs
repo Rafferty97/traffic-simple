@@ -14,7 +14,7 @@
 use slotmap::SlotMap;
 
 use crate::lane::{Lane, LanePos};
-use crate::network::{LaneId, SimNetwork};
+use crate::network::{LaneId, Side, SimNetwork};
 use crate::vehicle::{Vehicle, VehicleId};
 
 /// How far ahead of its front bumper a vehicle looks for a leader, in meters.
@@ -32,12 +32,35 @@ pub struct Occupant {
     hint: LanePos,
     /// Whether this is the ghost of a vehicle indicating a change into this lane.
     pub ghost: bool,
-    /// The lateral extent of the vehicle's rear on this lane: its rear corners'
-    /// `t`, smaller first.
-    pub extent: [f64; 2],
-    /// Whether the vehicle has left this lane and is only straddling it. Kept
-    /// up to date by `update`; false on a new record, which is the cautious way.
-    pub departing: bool,
+    /// How the vehicle sits across this lane, as followers here see it. Kept up
+    /// to date by `update`; in the lane on a new record, which is the cautious way.
+    pub lateral: Lateral,
+}
+
+/// How a vehicle sits across a lane it has a record on, as followers there see it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Lateral {
+    /// Following the lane or moving into it. It blocks followers wherever it is
+    /// across the lane: a vehicle moving in is treated as already there.
+    InLane,
+    /// Leaving the lane to the left after a lane change. `trailing` is the `t` of
+    /// its right rear corner, the one still furthest into the lane.
+    DivergingLeft { trailing: f64 },
+    /// Leaving the lane to the right; `trailing` is its left rear corner's `t`.
+    DivergingRight { trailing: f64 },
+}
+
+impl Lateral {
+    /// Whether a follower whose body spans `body` across the lane (its `t`, right
+    /// edge first) can pass, with at least [`PASSING_CLEARANCE`] to spare. It can
+    /// only pass a diverging vehicle, and only on the side that vehicle is leaving.
+    fn can_pass(self, body: [f64; 2]) -> bool {
+        match self {
+            Lateral::InLane => false,
+            Lateral::DivergingLeft { trailing } => body[1] + PASSING_CLEARANCE <= trailing,
+            Lateral::DivergingRight { trailing } => body[0] - PASSING_CLEARANCE >= trailing,
+        }
+    }
 }
 
 impl Occupant {
@@ -62,13 +85,14 @@ impl Occupant {
         let left = lane.world_to_lane_near(rear_left, hint);
         let right = lane.world_to_lane_near(rear_right, hint);
         let corner = |p: LanePos| Corner {
+            t: p.t,
             past_end: p.s >= lane.length(),
             beside: p.t.abs() > 0.5 * lane.width(),
         };
         let hint = if left.s <= right.s { left } else { right };
-        let extent = [left.t.min(right.t), left.t.max(right.t)];
-        // Set by `update`, which knows which lane this is.
-        let occupant = Self { s: hint.s, id, hint, ghost: false, extent, departing: false };
+        // Set by `update`, which knows how the vehicle relates to this lane.
+        let lateral = Lateral::InLane;
+        let occupant = Self { s: hint.s, id, hint, ghost: false, lateral };
         (occupant, [corner(left), corner(right)])
     }
 }
@@ -76,6 +100,7 @@ impl Occupant {
 /// Where a rear corner is relative to a lane.
 #[derive(Clone, Copy, Debug)]
 struct Corner {
+    t: f64,
     past_end: bool,
     /// Further from the centerline than half the lane's width.
     beside: bool,
@@ -107,7 +132,10 @@ pub fn update(
                 return true;
             }
             let following = vehicle.path[0] == lane_id;
-            occupant.departing = !following;
+            occupant.lateral = match following {
+                true => Lateral::InLane,
+                false => lateral(network, lane, vehicle, corners),
+            };
             let outside = |c: &Corner| c.past_end || (c.beside && !following);
             if !corners.iter().all(outside) {
                 return true;
@@ -118,6 +146,30 @@ pub fn update(
             false
         });
         insertion_sort(list);
+    }
+}
+
+/// How a vehicle that isn't following `lane` sits across it, from its rear
+/// corners there, left then right.
+///
+/// It is diverging if `lane` is an old lane it is moving out of sideways: the
+/// lane beside `lane`, on the side away from the vehicle's old side, is the lane
+/// it follows or, just after a section boundary, the lane before it. Otherwise,
+/// as for a record lingering past the end of the lane before, it is in the lane.
+fn lateral(network: &SimNetwork, lane: &Lane, vehicle: &Vehicle, corners: [Corner; 2]) -> Lateral {
+    let Some(old_side) = vehicle.old_side else {
+        return Lateral::InLane;
+    };
+    let toward = old_side.opposite();
+    let following = vehicle.path[0];
+    let moving_out = lane.adj(toward).is_some_and(|n| {
+        n.lane == following || network.lane(n.lane).successors().contains(&following)
+    });
+    let [left, right] = corners;
+    match (moving_out, toward) {
+        (false, _) => Lateral::InLane,
+        (true, Side::Left) => Lateral::DivergingLeft { trailing: right.t },
+        (true, Side::Right) => Lateral::DivergingRight { trailing: left.t },
     }
 }
 
@@ -160,9 +212,10 @@ pub struct Search {
 /// On later lanes, every occupant counts. The vehicle's own records are skipped,
 /// as are `skip`'s, for asking what if that vehicle weren't there.
 ///
-/// A departing vehicle, one only straddling a lane it has left, is passed if its
-/// rear leaves room beside it: at least [`PASSING_CLEARANCE`] between its extent
-/// and this vehicle's body, centered `axle_t` from the centerline.
+/// A vehicle diverging from a lane after a lane change is passed if its trailing
+/// rear corner leaves room on the side it is leaving: at least
+/// [`PASSING_CLEARANCE`] between that corner and this vehicle's body, centered
+/// `axle_t` from the centerline. Any other record blocks (see [`Lateral`]).
 #[allow(clippy::too_many_arguments)]
 pub fn find_leader(
     network: &SimNetwork,
@@ -177,9 +230,6 @@ pub fn find_leader(
 ) -> Search {
     let half_width = 0.5 * vehicle.spec.width;
     let body = [axle_t - half_width, axle_t + half_width];
-    let room_to_pass = |extent: [f64; 2]| {
-        extent[0] - body[1] >= PASSING_CLEARANCE || body[0] - extent[1] >= PASSING_CLEARANCE
-    };
     let front = axle_s + vehicle.spec.length - vehicle.spec.rear_axle;
     let mut found = Search::default();
     // Start of the current lane, measured along `lanes` from the start of the first.
@@ -203,7 +253,7 @@ pub fn find_leader(
                 found.ghost = found.ghost.or(Some((o.id, gap)));
                 continue;
             }
-            if o.departing && room_to_pass(o.extent) {
+            if o.lateral.can_pass(body) {
                 continue;
             }
             found.leader = Some((o.id, gap));
@@ -220,6 +270,34 @@ mod test {
     use super::*;
 
     #[test]
+    fn in_lane_never_passes() {
+        // Even with the follower a whole lane width to the side.
+        assert!(!Lateral::InLane.can_pass([-5.0, -3.0]));
+        assert!(!Lateral::InLane.can_pass([3.0, 5.0]));
+    }
+
+    #[test]
+    fn diverging_passes_only_on_the_side_it_leaves() {
+        let body = |t: f64| [t - 0.95, t + 0.95];
+        // Leaving to the left, its right rear corner 1.6 m left of the centerline:
+        // a follower on the centerline has 0.65 m to its right.
+        let left = Lateral::DivergingLeft { trailing: 1.6 };
+        assert!(left.can_pass(body(0.0)));
+        assert!(!left.can_pass(body(0.2)), "less than the clearance");
+        assert!(
+            !left.can_pass(body(3.0)),
+            "never on the side it is moving to"
+        );
+        let right = Lateral::DivergingRight { trailing: -1.6 };
+        assert!(right.can_pass(body(0.0)));
+        assert!(!right.can_pass(body(-0.2)), "less than the clearance");
+        assert!(
+            !right.can_pass(body(-3.0)),
+            "never on the side it is moving to"
+        );
+    }
+
+    #[test]
     fn insertion_sort_orders_by_s() {
         let mut ids = SlotMap::<VehicleId, ()>::with_key();
         let lane = Lane::new(&[glam::DVec2::ZERO, glam::DVec2::X * 10.0], 3.5, 14.0).unwrap();
@@ -230,8 +308,7 @@ mod test {
                 id: ids.insert(()),
                 hint: lane.lane_pos(s, 0.0),
                 ghost: false,
-                extent: [-1.0, 1.0],
-                departing: false,
+                lateral: Lateral::InLane,
             })
             .collect();
         insertion_sort(&mut list);

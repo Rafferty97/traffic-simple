@@ -1,12 +1,21 @@
 //! egui app with a pretty view and a debug view of the simulation.
 
+mod replay;
+
+/// The simulation's test helpers, for checking that replays read back exactly.
+#[cfg(test)]
+#[path = "../../sim/tests/common/mod.rs"]
+mod common;
+
 use std::collections::HashMap;
 use std::f64::consts::TAU;
+use std::path::PathBuf;
 
 use eframe::egui::{self, Color32, Pos2, Rect, Shape, Stroke};
 use glam::DVec2;
 use rand::rngs::Xoshiro256PlusPlus;
 use rand::{RngExt, SeedableRng};
+use replay::Recorded;
 use traffic_sim::{
     AccelSource, DebugEvent, DebugSink, Lane, LaneChangeError, LaneChangeEval, LaneId, Placement,
     Side, SimNetwork, Simulation, Vehicle, VehicleId, VehicleSpec,
@@ -47,7 +56,7 @@ enum View {
 }
 
 struct App {
-    sim: Simulation<DebugState>,
+    sim: Recorded<DebugState>,
     view: View,
     paused: bool,
     /// Simulated seconds per real second.
@@ -59,6 +68,8 @@ struct App {
     layers: Layers,
     /// Why the last lane-change request for the selected vehicle was refused.
     lane_change_error: Option<LaneChangeError>,
+    /// Where the last capture was saved, or why it failed.
+    capture_status: Option<String>,
     harness: Harness,
 }
 
@@ -99,7 +110,7 @@ impl Default for Harness {
 
 impl Harness {
     /// Runs after each simulation step of `dt` simulated seconds.
-    fn step(&mut self, sim: &mut Simulation<DebugState>, dt: f64) {
+    fn step(&mut self, sim: &mut Recorded<DebugState>, dt: f64) {
         // At most one spawn owed: a backlog would arrive as a burst.
         self.spawn_credit = (self.spawn_credit + self.spawn_rate * dt).min(1.0);
         if self.spawn_credit >= 1.0 {
@@ -187,6 +198,7 @@ impl App {
             selected: None,
             layers: Layers::default(),
             lane_change_error: None,
+            capture_status: None,
             harness: Harness::default(),
         }
     }
@@ -194,6 +206,18 @@ impl App {
     fn step(&mut self, dt: f64) {
         self.sim.step(dt);
         self.harness.step(&mut self.sim, dt);
+    }
+
+    /// Saves a replay of the session so far to `captures/` in the workspace,
+    /// named by the wall-clock time, and returns its path.
+    fn capture(&self) -> std::io::Result<PathBuf> {
+        let dir = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../captures"));
+        std::fs::create_dir_all(&dir)?;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+        let stamp = now.map_or(0, |d| d.as_secs());
+        let path = dir.join(format!("capture-{stamp}.replay"));
+        std::fs::write(&path, self.sim.capture(self.selected))?;
+        Ok(path.canonicalize().unwrap_or(path))
     }
 
     fn controls(&mut self, ui: &mut egui::Ui) {
@@ -216,8 +240,22 @@ impl App {
                 let rates = (self.harness.spawn_rate, self.harness.despawn_rate);
                 self.harness = Harness::default();
                 (self.harness.spawn_rate, self.harness.despawn_rate) = rates;
+                self.capture_status = None;
+            }
+            if ui
+                .button("Capture")
+                .on_hover_text("Save a replay of this session, for a test case")
+                .clicked()
+            {
+                self.capture_status = Some(match self.capture() {
+                    Ok(path) => format!("Saved {}", path.display()),
+                    Err(error) => format!("Capture failed: {error}"),
+                });
             }
         });
+        if let Some(status) = &self.capture_status {
+            ui.small(status);
+        }
         let on_road = self.sim.vehicles().count();
         self.harness.controls(ui, on_road);
     }
@@ -847,9 +885,17 @@ fn to_scene(p: DVec2) -> Pos2 {
 }
 
 /// An empty three-lane ring; the harness fills it.
-fn new_sim() -> Simulation<DebugState> {
+fn new_sim() -> Recorded<DebugState> {
     let network = ring_road(RING_CIRCUMFERENCE, RING_LANES, SPEED_LIMIT);
-    Simulation::new(network, DebugState::default())
+    // How the replay rebuilds this network: `ring_road` in `sim/tests/common`.
+    let description = format!(
+        "ring circumference={RING_CIRCUMFERENCE:?} lanes={RING_LANES} width={LANE_WIDTH:?} \
+         speed_limit={SPEED_LIMIT:?}"
+    );
+    Recorded::new(
+        Simulation::new(network, DebugState::default()),
+        &description,
+    )
 }
 
 /// A ring road of concentric lanes, each its own successor, with lane changes

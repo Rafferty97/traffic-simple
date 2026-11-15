@@ -7,7 +7,7 @@
 
 use rand::rngs::Xoshiro256PlusPlus;
 use rand::{RngExt, SeedableRng};
-use traffic_sim::{LaneId, NoopSink, Placement, Side, Simulation, VehicleId, VehicleSpec};
+use traffic_sim::{LaneId, Lateral, NoopSink, Placement, Side, Simulation, VehicleId, VehicleSpec};
 
 mod common;
 use common::{car, ring_road};
@@ -77,7 +77,11 @@ fn trace(seed: u64, seconds: f64) -> Vec<u64> {
             for o in sim.occupants(lane) {
                 push_id(&mut out, o.id);
                 out.extend([o.s.to_bits(), o.ghost as u64]);
-                out.extend(o.extent.map(f64::to_bits));
+                out.extend(match o.lateral {
+                    Lateral::InLane => [0, 0],
+                    Lateral::DivergingLeft { trailing } => [1, trailing.to_bits()],
+                    Lateral::DivergingRight { trailing } => [2, trailing.to_bits()],
+                });
             }
         }
     }

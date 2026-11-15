@@ -18,6 +18,6 @@ pub use lane::{Lane, LaneError, LanePos, MAX_PREDECESSORS, MAX_SUCCESSORS};
 pub use models::acceleration::SAFE_BRAKING;
 pub use models::lateral::LaneChange;
 pub use network::{LaneId, Neighbor, Side, SimNetwork};
-pub use occupancy::Occupant;
+pub use occupancy::{Lateral, Occupant};
 pub use simulation::{InsertError, LaneChangeError, Simulation};
 pub use vehicle::{Intent, PATH_LEN, Placement, Response, Vehicle, VehicleId, VehicleSpec};

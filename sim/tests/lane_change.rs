@@ -1,7 +1,8 @@
 //! Lane changes on a three-lane ring, commanded directly with `change_lane`.
 
 use traffic_sim::{
-    Lane, LaneChangeError, LaneId, NoopSink, Placement, Side, SimNetwork, Simulation, VehicleId,
+    Lane, LaneChangeError, LaneId, Lateral, NoopSink, Placement, Side, SimNetwork, Simulation,
+    VehicleId,
 };
 
 mod common;
@@ -224,15 +225,19 @@ fn followers_pass_a_car_mostly_out_of_their_lane() {
     sim.change_lane(id, Side::Left).unwrap();
 
     // Hold it once its rear is well over, but before it has left the old lane.
+    // Changing left, its trailing corner on the old lane is its right rear one.
     let rear_on_old = |sim: &Simulation| {
         let list = sim.occupants(LaneId(1));
-        list.iter().find(|o| o.id == id && !o.ghost).map(|o| o.extent)
+        list.iter().find(|o| o.id == id && !o.ghost).map(|o| match o.lateral {
+            Lateral::DivergingLeft { trailing } => trailing,
+            other => panic!("expected it to diverge left from the old lane, not {other:?}"),
+        })
     };
     let mut passed_while_straddling = false;
     let mut closest = f64::INFINITY;
     for _ in 0..(30.0 / DT) as usize {
         sim.step(DT);
-        if !sim.is_held(id) && rear_on_old(&sim).is_some_and(|extent| extent[0] >= 1.8) {
+        if !sim.is_held(id) && rear_on_old(&sim).is_some_and(|trailing| trailing >= 1.8) {
             sim.hold(id);
         }
         let (v, f) = (sim.get(id).unwrap(), sim.get(follower).unwrap());
