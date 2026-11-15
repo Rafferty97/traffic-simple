@@ -40,8 +40,8 @@ pub struct Simulation<D: DebugSink = NoopSink> {
     decisions: Vec<(VehicleId, f64)>,
     /// Scratch space for vehicles leaving the network, reused between substeps.
     leavers: Vec<VehicleId>,
-    /// Scratch space for vehicles that have finished leaving an old lane.
-    left_sideways: Vec<VehicleId>,
+    /// Scratch space for vehicles that lost a record on a lane they had left.
+    departed: Vec<VehicleId>,
     /// Simulated time, in seconds.
     time: f64,
     /// Where staggered lane-change decisions resume: a position in the
@@ -103,7 +103,7 @@ impl<D: DebugSink> Simulation<D> {
             accel_clock: 0.0,
             decisions: Vec::new(),
             leavers: Vec::new(),
-            left_sideways: Vec::new(),
+            departed: Vec::new(),
             time: 0.0,
             decision_cursor: 0,
             decision_budget: 0.0,
@@ -600,11 +600,13 @@ impl<D: DebugSink> Simulation<D> {
 
     /// Path tracking and integration: steers, moves, then advances each vehicle
     /// onto its next lane once its rear axle passes the end of its current one.
+    /// A vehicle whose rear axle passes the end of a lane with no successors has
+    /// left the network and is removed.
     ///
     /// During a lane change, the target path is offset from the centerline along
     /// the change's cubic, and the change ends where the cubic does.
     fn update_motion(&mut self, dt: f64) {
-        let Self { network, vehicles, occupants, sink, .. } = self;
+        let Self { network, vehicles, occupants, leavers, sink, .. } = self;
         sink.record(|| DebugEvent::RecomputeMotion);
         for (id, vehicle) in vehicles.iter_mut() {
             let wheelbase = vehicle.spec.wheelbase();
@@ -669,19 +671,14 @@ impl<D: DebugSink> Simulation<D> {
                 }
             }
 
+            // Past the end with nowhere to advance to: it has left the network.
+            let lane = network.lane(vehicle.path[0]);
+            if vehicle.lane_pos.s >= lane.length() && lane.successors().is_empty() {
+                leavers.push(id);
+            }
+
             if vehicle.lane_change.is_some_and(|change| vehicle.lane_pos.s >= change.end()) {
                 vehicle.lane_change = None;
-            }
-        }
-    }
-
-    /// Refreshes the occupant lists and removes vehicles that have left the network.
-    fn update_occupancy(&mut self) {
-        let Self { network, vehicles, occupants, leavers, left_sideways, .. } = self;
-        occupancy::update(network, vehicles, occupants, leavers, left_sideways);
-        for id in self.left_sideways.drain(..) {
-            if let Some(vehicle) = self.vehicles.get_mut(id) {
-                vehicle.old_side = None;
             }
         }
         // Through `remove`, so ghosts and any other records go too.
@@ -691,6 +688,28 @@ impl<D: DebugSink> Simulation<D> {
         }
         self.leavers = leavers;
         self.leavers.clear();
+    }
+
+    /// Refreshes the occupant lists, and clears the old side of vehicles that have
+    /// finished leaving it.
+    fn update_occupancy(&mut self) {
+        let Self { network, vehicles, occupants, departed, .. } = self;
+        occupancy::update(network, vehicles, occupants, departed);
+        // A vehicle straddles while it still has a record on the lane beside the
+        // one it follows, on its old side. Losing a record elsewhere, such as at
+        // the end of the lane before, leaves it straddling.
+        for id in departed.drain(..) {
+            let vehicle = &mut vehicles[id];
+            let Some(side) = vehicle.old_side else {
+                continue;
+            };
+            let straddling = network.lane(vehicle.path[0]).adj(side).is_some_and(|old| {
+                occupants[old.lane.0 as usize].iter().any(|o| o.id == id && !o.ghost)
+            });
+            if !straddling {
+                vehicle.old_side = None;
+            }
+        }
     }
 }
 

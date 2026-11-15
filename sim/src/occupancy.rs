@@ -87,21 +87,18 @@ struct Corner {
 /// - Ghosts are refreshed but never dropped here.
 /// - A record on the lane a vehicle is following is never dropped for being
 ///   beside it, only for being past its end.
-/// - Vehicles whose rear passes the end of the lane they follow, when it has no
-///   successors, have left the network; their ids are pushed to `leavers`.
-/// - Vehicles whose rear has moved off a lane sideways have finished leaving an
-///   old lane after a lane change; their ids are pushed to `left_sideways`.
+/// - Vehicles that lose a record on a lane they aren't following, by its end or
+///   its side, have their ids pushed to `departed`, so their old side can be
+///   checked once every list is up to date.
 pub fn update(
     network: &SimNetwork,
     vehicles: &SlotMap<VehicleId, Vehicle>,
     occupants: &mut [Vec<Occupant>],
-    leavers: &mut Vec<VehicleId>,
-    left_sideways: &mut Vec<VehicleId>,
+    departed: &mut Vec<VehicleId>,
 ) {
     for (i, list) in occupants.iter_mut().enumerate() {
         let lane_id = LaneId(i as u32);
         let lane = network.lane(lane_id);
-        let dead_end = lane.successors().is_empty();
         list.retain_mut(|occupant| {
             let vehicle = &vehicles[occupant.id];
             let (updated, corners) = Occupant::project(lane, occupant.id, vehicle, occupant.hint);
@@ -115,13 +112,8 @@ pub fn update(
             if !corners.iter().all(outside) {
                 return true;
             }
-            // Only the lane it follows: an old lane may dead-end beside a lane that goes on.
-            if following && dead_end && corners.iter().all(|c| c.past_end) {
-                leavers.push(occupant.id);
-            } else if corners.iter().all(|c| c.beside && !c.past_end) {
-                // A corner past the end left by the end, even if it is also
-                // beside: a vehicle advancing while still off-centre.
-                left_sideways.push(occupant.id);
+            if !following {
+                departed.push(occupant.id);
             }
             false
         });
