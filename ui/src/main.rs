@@ -675,34 +675,35 @@ fn draw_debug(
         }
     }
 
-    // Drawn across the checked lane at the other vehicle's rear, in that lane's
-    // (s, t), so the follower's predicted span and the other vehicle's line up
-    // and the gap between them reads directly.
+    // In world space, as the check is made: the follower's predicted body as its
+    // front reaches the other vehicle's rear, that vehicle's nearer rear corner,
+    // and the gap between them across the follower's heading.
     if layers.on(Layer::PassChecks) {
         for &(id, check) in sim.sink().pass_checks.iter().filter(|c| shown(c.0)) {
             let Some(v) = sim.get(id) else { continue };
-            let lane = sim.network().lane(check.lane);
-            let at = |t: f64| to_scene(lane.lane_to_world(lane.lane_pos(check.s, t)));
-            let [right, left] = check.body;
-            painter.line_segment([at(right), at(left)], Stroke::new(0.25, PASS_BODY));
-            // The other vehicle's span, just ahead so both bars show where they overlap.
-            let ahead = |t: f64| to_scene(lane.lane_to_world(lane.lane_pos(check.s + 0.4, t)));
-            let [span_right, span_left] = check.span;
-            painter.line_segment(
-                [ahead(span_right), ahead(span_left)],
-                Stroke::new(0.15, PASS_SPAN),
-            );
-            // The gap on the side with more room, between the near edges: a
-            // negative gap is an overlap, drawn the same way in red.
-            let gap = if check.body[0] - span_left >= span_right - check.body[1] {
-                [right, span_left]
-            } else {
-                [span_right, left]
+            let (u, n) = (check.tangent, check.tangent.perp());
+            let (back, ahead) = (-v.spec().rear_axle, v.spec().length - v.spec().rear_axle);
+            let half = 0.5 * v.spec().width;
+            let body = [(back, half), (ahead, half), (ahead, -half), (back, -half)]
+                .map(|(x, y)| to_scene(check.pos + u * x + n * y))
+                .to_vec();
+            painter.add(Shape::closed_line(body, Stroke::new(0.08, PASS_BODY)));
+            painter.circle_filled(to_scene(check.corner), 0.25, PASS_CORNER);
+            // From the corner straight across to the body's near edge, extended
+            // ahead: a negative gap is an overlap, drawn the same way in red.
+            let along = (check.corner - check.pos).dot(u);
+            let edge = match check.side {
+                Side::Left => -half,
+                Side::Right => half,
             };
+            let foot = check.pos + u * along + n * edge;
             let color = if check.passed { PASS_OK } else { PASS_BLOCKED };
-            painter.line_segment(gap.map(at), Stroke::new(0.1, color));
             painter.line_segment(
-                [to_scene(front(v)), at(0.5 * (left + right))],
+                [to_scene(check.corner), to_scene(foot)],
+                Stroke::new(0.1, color),
+            );
+            painter.line_segment(
+                [to_scene(front(v)), to_scene(check.pos + u * ahead)],
                 Stroke::new(0.03, PASS_BODY),
             );
         }
@@ -733,7 +734,7 @@ const LANE_CHANGE: Color32 = Color32::from_rgb(250, 160, 60);
 const LEADER_BINDING: Color32 = Color32::from_rgb(120, 230, 120);
 const LEADER_OTHER: Color32 = Color32::from_rgb(60, 110, 60);
 const LOOKAHEAD: Color32 = Color32::from_rgb(90, 200, 240);
-const PASS_SPAN: Color32 = Color32::from_rgb(255, 120, 200);
+const PASS_CORNER: Color32 = Color32::from_rgb(255, 120, 200);
 const PASS_BODY: Color32 = Color32::from_rgb(120, 170, 255);
 const PASS_OK: Color32 = Color32::from_rgb(80, 220, 80);
 const PASS_BLOCKED: Color32 = Color32::from_rgb(230, 60, 60);
@@ -804,8 +805,8 @@ impl Layer {
             ),
             Layer::PassChecks => (
                 "Passing checks",
-                &[PASS_SPAN, PASS_BODY, PASS_OK, PASS_BLOCKED],
-                "Where a follower checked whether it can pass a vehicle ahead, across the lane at that vehicle's rear: the span the follower's body will cover beside it, that vehicle's span (stretched to where it will end up if it is changing lanes), and the gap between them on the side with more room, green if wide enough to pass and red if not. A fine line runs from the follower to the check",
+                &[PASS_CORNER, PASS_BODY, PASS_OK, PASS_BLOCKED],
+                "Where a follower checked whether it can pass a vehicle ahead: its predicted body as its front reaches that vehicle's rear, that vehicle's nearer rear corner, and the gap from the corner across to the follower's edge, green if wide enough to pass and red if not. Only pairs where the follower could pass are checked: a vehicle moving out of the lane, or one the follower is moving away from. A fine line runs from the follower to its predicted body",
             ),
             Layer::Lookahead => (
                 "Lookahead",

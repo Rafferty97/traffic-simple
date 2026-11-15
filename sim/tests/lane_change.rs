@@ -1,8 +1,8 @@
 //! Lane changes on a three-lane ring, commanded directly with `change_lane`.
 
 use traffic_sim::{
-    Lane, LaneChangeError, LaneId, NoopSink, Placement, SAFE_BRAKING, Side, SimNetwork, Simulation,
-    VehicleId,
+    Lane, LaneChangeError, LaneId, Lateral, NoopSink, Placement, SAFE_BRAKING, Side, SimNetwork,
+    Simulation, VehicleId,
 };
 
 mod common;
@@ -157,6 +157,20 @@ fn a_change_across_the_seam_keeps_followers_on_the_old_side_informed() {
     assert_eq!(sim.get(id).unwrap().old_side(), None);
 }
 
+/// For a car changing left out of `lane`, the `t` on `lane` of its right rear
+/// corner, the one still furthest into it, while it still has a record there.
+fn trailing_corner(sim: &Simulation, id: VehicleId, lane: LaneId) -> Option<f64> {
+    let record = sim.occupants(lane).iter().find(|o| o.id == id && !o.ghost)?;
+    assert_eq!(
+        record.lateral,
+        Lateral::Diverging(Side::Left),
+        "it should be diverging left"
+    );
+    let l = sim.network().lane(lane);
+    let [_, rear_right, ..] = sim.get(id)?.corners();
+    Some(l.world_to_lane_near(rear_right, l.lane_pos(record.s, 0.0)).t)
+}
+
 /// The smallest distance from any corner of either body to the other body.
 fn clearance(a: &traffic_sim::Vehicle, b: &traffic_sim::Vehicle) -> f64 {
     let a_to_b = a.corners().map(|c| b.distance_to(c));
@@ -225,12 +239,7 @@ fn followers_pass_a_car_mostly_out_of_their_lane() {
     sim.change_lane(id, Side::Left).unwrap();
 
     // Hold it once its rear is well over, but before it has left the old lane.
-    // Changing left, the right edge of its span on the old lane is its right rear
-    // corner, the one still furthest into the lane.
-    let rear_on_old = |sim: &Simulation| {
-        let list = sim.occupants(LaneId(1));
-        list.iter().find(|o| o.id == id && !o.ghost).map(|o| o.lateral.right)
-    };
+    let rear_on_old = |sim: &Simulation| trailing_corner(sim, id, LaneId(1));
     let mut passed_while_straddling = false;
     let mut closest = f64::INFINITY;
     for _ in 0..(30.0 / DT) as usize {
@@ -270,10 +279,7 @@ fn followers_pass_where_they_will_be_not_where_they_are() {
     let slow = traffic_sim::VehicleSpec { speed_factor: 0.15, ..car() };
     let ahead = sim.insert(slow, Placement { lane: LaneId(1), s: 300.0, speed: 2.0 });
     sim.change_lane(ahead, Side::Left).unwrap();
-    let trailing = |sim: &Simulation| {
-        let list = sim.occupants(LaneId(1));
-        list.iter().find(|o| o.id == ahead && !o.ghost).map(|o| o.lateral.right)
-    };
+    let trailing = |sim: &Simulation| trailing_corner(sim, ahead, LaneId(1));
     // Held at 0.6 m, it drifts to about 1.1 m while braking to a stop.
     while !trailing(&sim).is_some_and(|t| t >= 0.6) {
         sim.step(DT);
@@ -397,4 +403,71 @@ fn a_car_changing_in_behind_a_slower_one_follows_it() {
         !drew_level,
         "it drew level with the car it changed in behind"
     );
+}
+
+/// Three straight lanes, 0 on the left of 1 on the left of 2, with a slow car on
+/// lane 1 that changes left and is held partway out, its right rear corner about
+/// 1.1 m left of lane 1's centerline. Returns the simulation and that car.
+fn held_partway_out_of_lane_1() -> (Simulation, VehicleId) {
+    let lane = |y: f64| {
+        let points = [glam::DVec2::new(0.0, y), glam::DVec2::new(600.0, y)];
+        Lane::new(&points, 3.5, SPEED_LIMIT).unwrap()
+    };
+    let mut network = SimNetwork::new(vec![lane(7.0), lane(3.5), lane(0.0)]);
+    network.set_adjacent(LaneId(0), LaneId(1), true, true);
+    network.set_adjacent(LaneId(1), LaneId(2), true, true);
+    let mut sim = Simulation::new(network, NoopSink);
+    let slow = traffic_sim::VehicleSpec { speed_factor: 0.15, ..car() };
+    let ahead = sim.insert(slow, Placement { lane: LaneId(1), s: 300.0, speed: 2.0 });
+    sim.change_lane(ahead, Side::Left).unwrap();
+    while !trailing_corner(&sim, ahead, LaneId(1)).is_some_and(|t| t >= 0.6) {
+        sim.step(DT);
+    }
+    sim.hold(ahead);
+    run(&mut sim, 5.0, |_| {});
+    (sim, ahead)
+}
+
+/// Inserts a car on lane 1, 12 m behind `ahead`, moving at 3 m/s, changes it to
+/// `side`, and runs. Returns how far its rear got past `ahead`'s and its
+/// closest approach.
+fn change_behind(mut sim: Simulation, ahead: VehicleId, side: Side) -> (f64, f64) {
+    let spec = car();
+    let rear = sim.get(ahead).unwrap().lane_pos().s - spec.rear_axle;
+    let s = rear - 12.0 - (spec.length - spec.rear_axle);
+    let follower = sim.insert(car(), Placement { lane: LaneId(1), s, speed: 3.0 });
+    sim.change_lane(follower, side).unwrap();
+    let mut closest = f64::INFINITY;
+    run(&mut sim, 20.0, |sim| {
+        closest = closest.min(clearance(
+            sim.get(ahead).unwrap(),
+            sim.get(follower).unwrap(),
+        ));
+    });
+    let (a, f) = (sim.get(ahead).unwrap(), sim.get(follower).unwrap());
+    let past = (f.lane_pos().s - f.spec().rear_axle) - (a.lane_pos().s - a.spec().rear_axle);
+    (past, closest)
+}
+
+#[test]
+fn changes_in_opposite_directions_pass_each_other() {
+    // The follower changes right, away from the car leaving lane 1 to the left,
+    // so it may drive past once its course takes it clear.
+    let (sim, ahead) = held_partway_out_of_lane_1();
+    let (past, closest) = change_behind(sim, ahead, Side::Right);
+    assert!(past > 10.0, "it should have driven past, got {past:.1} m");
+    assert!(closest > 0.3, "came within {closest} m");
+}
+
+#[test]
+fn changes_in_the_same_direction_never_pass() {
+    // The follower changes left too, following the held car out of lane 1: it
+    // waits behind it.
+    let (sim, ahead) = held_partway_out_of_lane_1();
+    let (past, closest) = change_behind(sim, ahead, Side::Left);
+    assert!(
+        past < 0.0,
+        "it should have waited behind, got {past:.1} m past"
+    );
+    assert!(closest > 0.3, "came within {closest} m");
 }

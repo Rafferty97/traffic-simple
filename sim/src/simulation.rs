@@ -10,7 +10,7 @@ use crate::models::acceleration;
 use crate::models::lane_change::{self, Outcome};
 use crate::models::lateral::{self, LaneChange};
 use crate::network::{LaneId, Side, SimNetwork};
-use crate::occupancy::{self, Course, Ghosts, Occupant};
+use crate::occupancy::{self, Course, Ghosts, Lateral, Occupant};
 use crate::vehicle::{Intent, PATH_LEN, Placement, Response, Vehicle, VehicleId, VehicleSpec};
 
 /// Longest substep in seconds. Longer frames are split.
@@ -170,6 +170,7 @@ impl<D: DebugSink> Simulation<D> {
         let leader = occupancy::find_leader(
             &self.network,
             &self.occupants,
+            &self.vehicles,
             id,
             &vehicle,
             &path,
@@ -319,6 +320,7 @@ impl<D: DebugSink> Simulation<D> {
         }
 
         let (lane_pos, change) = plan_change(&self.network, vehicle, neighbor.lane);
+        let old_lane = vehicle.path[0];
         vehicle.path.clear();
         vehicle.path.push(neighbor.lane);
         extend_path(&self.network, &mut vehicle.path);
@@ -326,6 +328,13 @@ impl<D: DebugSink> Simulation<D> {
         vehicle.old_side = Some(side.opposite());
         vehicle.lane_change = Some(change);
         vehicle.intent = None;
+
+        // Its record on the lane it is leaving is now diverging. Set here rather
+        // than left to the next occupancy update, so searches before then see it.
+        let old = &mut self.occupants[old_lane.0 as usize];
+        if let Some(record) = old.iter_mut().find(|o| o.id == id && !o.ghost) {
+            record.lateral = Lateral::Diverging(side);
+        }
 
         let list = &mut self.occupants[neighbor.lane.0 as usize];
         if let Some(ghost) = list.iter_mut().find(|o| o.id == id && o.ghost) {
@@ -477,6 +486,7 @@ impl<D: DebugSink> Simulation<D> {
             let search = occupancy::find_leader(
                 network,
                 occupants,
+                vehicles,
                 id,
                 vehicle,
                 path,
@@ -509,6 +519,7 @@ impl<D: DebugSink> Simulation<D> {
                     let search = occupancy::find_leader(
                         network,
                         occupants,
+                        vehicles,
                         id,
                         vehicle,
                         &old_path,
@@ -544,6 +555,7 @@ impl<D: DebugSink> Simulation<D> {
                 let without = occupancy::find_leader(
                     network,
                     occupants,
+                    vehicles,
                     id,
                     vehicle,
                     path,
@@ -942,6 +954,7 @@ fn accel_along(
     let search = occupancy::find_leader(
         network,
         occupants,
+        vehicles,
         id,
         vehicle,
         lanes,
@@ -988,7 +1001,7 @@ fn accel_in(
         vehicle,
         &path,
         axle_s,
-        Course::new(&path, Some(change)),
+        Course::new(&path, Some(change), axle_s),
         Ghosts::Lead,
     );
     (accel, axle_s)

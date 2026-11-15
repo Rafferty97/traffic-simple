@@ -11,12 +11,13 @@
 //! lane's list. Ghosts are kept up to date like any record but are only removed
 //! explicitly, when the intent is cancelled or carried out.
 
+use glam::DVec2;
 use slotmap::SlotMap;
 
 use crate::debug::PassCheck;
 use crate::lane::LanePos;
 use crate::models::lateral::LaneChange;
-use crate::network::{LaneId, SimNetwork};
+use crate::network::{LaneId, Side, SimNetwork};
 use crate::vehicle::{Vehicle, VehicleId};
 
 /// How far ahead of its front bumper a vehicle looks for a leader, in meters.
@@ -34,38 +35,73 @@ pub struct Occupant {
     hint: LanePos,
     /// Whether this is the ghost of a vehicle indicating a change into this lane.
     pub ghost: bool,
-    /// The span the vehicle takes up across this lane, as followers here see it.
+    /// Whether the vehicle is in this lane or moving out of it sideways.
     pub lateral: Lateral,
 }
 
-/// The span of `t` a vehicle takes up across a lane it has a record on, as
-/// followers there see it.
-///
-/// For a vehicle settled in its lane, that is its rear corners. For one changing
-/// lanes, or the ghost of one indicating, it is stretched to cover where it will
-/// end up as well, centred on the lane it is moving into: a vehicle moving in is
-/// treated as already there, and one moving out still blocks the side it is
-/// moving toward. A follower passes it only if it clears that span.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Lateral {
-    pub right: f64,
-    pub left: f64,
+/// How a vehicle relates to a lane it has a record on, as followers there see it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lateral {
+    /// In the lane: following it, settled or still converging onto it after a
+    /// lane change, lingering past the end of it after advancing, or the ghost of
+    /// a vehicle indicating into it. A vehicle moving in is treated as already
+    /// there.
+    InLane,
+    /// Moving out of the lane sideways after a lane change, toward this side.
+    Diverging(Side),
 }
 
-impl Lateral {
-    /// The room between this span and a body spanning `body` across the lane
-    /// (its `t`, right edge first), on whichever side there is more. Negative if
-    /// they overlap.
-    fn room(self, body: [f64; 2]) -> f64 {
-        (body[0] - self.left).max(self.right - body[1])
+/// The side of a vehicle ahead a follower might pass it on, or `None` if it may
+/// never pass it, from how each relates to the lane searched.
+///
+/// The passing check is a snapshot taken as the follower reaches the other
+/// vehicle's rear, so it is only sound when the follower isn't moving toward it
+/// sideways: then that moment is the tightest, and the gap only grows. So:
+///
+/// - A vehicle in the lane can only be passed by a follower leaving the lane,
+///   on the side it is leaving toward. Two in the same lane, settled or
+///   converging, never pass.
+/// - A vehicle diverging can be passed on the side it is leaving, unless the
+///   follower is itself moving the same way.
+///
+/// `leaving` is the side the follower is leaving the searched lane toward, and
+/// `moving` the side it is moving across toward, if any.
+fn passing_side(leader: Lateral, leaving: Option<Side>, moving: Option<Side>) -> Option<Side> {
+    match (leader, leaving) {
+        (Lateral::InLane, leaving) => leaving,
+        (Lateral::Diverging(side), _) if moving == Some(side) => None,
+        (Lateral::Diverging(side), _) => Some(side.opposite()),
     }
+}
 
-    /// Whether a follower whose body spans `body` can pass, with at least
-    /// [`PASSING_CLEARANCE`] to spare. Leader search makes the same test itself,
-    /// so that it can report the room.
-    #[cfg(test)]
-    fn can_pass(self, body: [f64; 2]) -> bool {
-        self.room(body) >= PASSING_CLEARANCE
+/// How much room a follower would have passing a vehicle ahead on `side` of it,
+/// if it drove straight ahead from `pos`, its rear axle, heading along `tangent`:
+/// the lateral distance from its body's near edge to the nearer of the other
+/// vehicle's rear corners, and that corner. Negative if they overlap.
+///
+/// Only the rear corners are measured, which assumes the other vehicle is
+/// straight or turned away from the follower. That holds for the pairs
+/// [`passing_side`] lets through: one diverging is turned away, and one in the
+/// lane is passed only by a follower moving away from it.
+fn clearance(
+    side: Side,
+    pos: DVec2,
+    tangent: DVec2,
+    half_width: f64,
+    corners: [DVec2; 2],
+) -> (f64, DVec2) {
+    // Positive to the follower's left.
+    let lateral = corners.map(|c| (c - pos).dot(tangent.perp()));
+    match side {
+        // Passing on its left, so it is to the follower's right.
+        Side::Left => {
+            let i = if lateral[0] >= lateral[1] { 0 } else { 1 };
+            (-half_width - lateral[i], corners[i])
+        }
+        Side::Right => {
+            let i = if lateral[0] <= lateral[1] { 0 } else { 1 };
+            (lateral[i] - half_width, corners[i])
+        }
     }
 }
 
@@ -111,26 +147,22 @@ impl Occupant {
             beside: p.t.abs() > 0.5 * lane.width(),
         };
         let hint = if left.s <= right.s { left } else { right };
-        let (mut lo, mut hi) = (left.t.min(right.t), left.t.max(right.t));
-        // Where it is heading, as `t` on this lane: the centerline of this lane for
-        // a ghost, and of the lane it follows for a vehicle changing lanes, level
-        // with it. Carried across through world space, so the lanes may lie any
-        // way relative to each other.
-        let heading_for = match (ghost, vehicle.lane_change) {
-            (true, _) => Some(0.0),
-            (false, None) => None,
-            (false, Some(_)) if vehicle.path[0] == lane_id => Some(0.0),
-            (false, Some(_)) => {
-                let target = network.lane(vehicle.path[0]);
-                let point = target.lane_to_world(target.lane_pos(vehicle.lane_pos.s, 0.0));
-                Some(lane.world_to_lane_near(point, hint).t)
-            }
+        // Diverging if this is an old lane it is moving out of sideways: the lane
+        // beside it, away from the vehicle's old side, is the lane it follows or,
+        // just after a section boundary, the lane before that.
+        let following = vehicle.path[0];
+        let toward = vehicle.old_side.map(Side::opposite);
+        let moving_out = |side: Side| {
+            lane.adj(side).is_some_and(|n| {
+                n.lane == following || network.lane(n.lane).successors().contains(&following)
+            })
         };
-        if let Some(centre) = heading_for {
-            let half_width = 0.5 * vehicle.spec.width;
-            (lo, hi) = (lo.min(centre - half_width), hi.max(centre + half_width));
-        }
-        let lateral = Lateral { right: lo, left: hi };
+        let lateral = match toward {
+            Some(side) if !ghost && lane_id != following && moving_out(side) => {
+                Lateral::Diverging(side)
+            }
+            _ => Lateral::InLane,
+        };
         let occupant = Self { s: hint.s, id, hint, ghost, lateral };
         (occupant, [corner(left), corner(right)])
     }
@@ -197,88 +229,57 @@ fn insertion_sort(list: &mut [Occupant]) {
 
 /// Where a searching vehicle plans to be: its lane change's cubic, or else the
 /// centerline, along the lanes it follows. Pure pursuit tracks that path
-/// closely, so it says where the vehicle's body will be when it gets somewhere
-/// ahead.
-///
-/// A search along other lanes, as the old-side search runs along the lanes beside
-/// them, carries points on the course across through world space, so nothing is
-/// assumed about how those lanes lie: they may be any distance apart, and
-/// converge or spread.
+/// closely, so it says where the vehicle will be when it gets somewhere ahead.
 #[derive(Clone, Copy, Debug)]
 pub struct Course<'a> {
     /// The lanes it follows, the one it is on first.
     path: &'a [LaneId],
     /// The lane change it is following, in `s` along `path`.
     change: Option<LaneChange>,
+    /// Its rear axle's `s` along `path`.
+    s: f64,
 }
 
 impl<'a> Course<'a> {
-    pub fn new(path: &'a [LaneId], change: Option<LaneChange>) -> Self {
-        Self { path, change }
+    pub fn new(path: &'a [LaneId], change: Option<LaneChange>, s: f64) -> Self {
+        Self { path, change, s }
     }
 
     /// A vehicle's own planned path.
     pub fn of(vehicle: &'a Vehicle) -> Self {
-        Self::new(&vehicle.path, vehicle.lane_change)
+        Self::new(&vehicle.path, vehicle.lane_change, vehicle.lane_pos.s)
     }
 
-    /// The span of `t` on a searched lane that a body covers from when its front
-    /// reaches the point at `s` there: over its own length past that point, and
-    /// out to where its lane change ends, on the centerline of the lane it follows
-    /// level with that point. A body moving across the lane may stay alongside
-    /// whatever is there for as long as their speeds keep them level, which can be
-    /// the rest of the change; for one moving away, the end adds nothing.
-    ///
-    /// `lane` is the `k`th lane searched, starting `start` along the searched
-    /// lanes, and is either the `k`th lane of the course's path or the lane beside
-    /// it. `hint` is a position on `lane` near `s`. The cubic can bulge when it
-    /// starts with a slope, so the middle is sampled as well as the ends.
-    #[allow(clippy::too_many_arguments)]
-    fn span(
-        &self,
-        network: &SimNetwork,
-        k: usize,
-        lane: LaneId,
-        start: f64,
-        s: f64,
-        hint: LanePos,
-        length: f64,
-        half_width: f64,
-    ) -> [f64; 2] {
+    /// Its rear axle's position and heading, as a unit tangent, `ahead` meters
+    /// further along the course. The heading follows the cubic's slope as well as
+    /// the lanes' bends.
+    fn pose(&self, network: &SimNetwork, ahead: f64) -> (DVec2, DVec2) {
         let offset_at = |at: f64| self.change.map_or(0.0, |c| c.offset_at(at));
-        let Some(&level) = self.path.get(k) else {
-            // Beyond the course: assume the body could be anywhere.
-            return [f64::NEG_INFINITY, f64::INFINITY];
-        };
+        let at = self.s + ahead.max(0.0);
+        let pos = network.point_along(self.path, at, offset_at(at));
+        let next = network.point_along(self.path, at + 1.0, offset_at(at + 1.0));
+        (pos, (next - pos).normalize())
+    }
+
+    /// The side it is moving across toward during its lane change, if any: away
+    /// from where the cubic starts.
+    fn moving(&self) -> Option<Side> {
+        let change = self.change?;
+        match change.offset {
+            o if o > 0.0 => Some(Side::Right),
+            o if o < 0.0 => Some(Side::Left),
+            _ => None,
+        }
+    }
+
+    /// The side it is leaving `lane`, the `k`th lane searched, toward, if that
+    /// lane is beside the course's `k`th lane rather than on it.
+    fn leaving(&self, network: &SimNetwork, k: usize, lane: LaneId) -> Option<Side> {
+        let level = *self.path.get(k)?;
         let searched = network.lane(lane);
-        let own = level == lane;
-        // Where the point is along the course's path.
-        let along = if own {
-            start + s
-        } else {
-            let beside = network.lane(level);
-            let before: f64 = self.path[..k].iter().map(|&l| network.lane(l).length()).sum();
-            let point = searched.lane_to_world(searched.lane_pos(s, 0.0));
-            let guess = beside.lane_pos(s / searched.length() * beside.length(), 0.0);
-            before + beside.world_to_lane_near(point, guess).s
-        };
-        let t_at = |at: f64, offset: f64| match own {
-            true => offset,
-            false => {
-                searched.world_to_lane_near(network.point_along(self.path, at, offset), hint).t
-            }
-        };
-        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
-        for f in [0.0, 0.5, 1.0] {
-            let at = along + f * length;
-            let t = t_at(at, offset_at(at));
-            (lo, hi) = (lo.min(t), hi.max(t));
-        }
-        if self.change.is_some() {
-            let t = t_at(along, 0.0);
-            (lo, hi) = (lo.min(t), hi.max(t));
-        }
-        [lo - half_width, hi + half_width]
+        [Side::Left, Side::Right]
+            .into_iter()
+            .find(|&side| level != lane && searched.adj(side).is_some_and(|n| n.lane == level))
     }
 }
 
@@ -309,13 +310,17 @@ pub struct Search {
 /// On later lanes, every occupant counts. The vehicle's own records are skipped,
 /// as are `skip`'s, for asking what if that vehicle weren't there.
 ///
-/// A record is passed if its span across the lane (see [`Lateral`]) leaves at
-/// least [`PASSING_CLEARANCE`] beside this vehicle's body, where that body will be
-/// while passing it, along `course`. Each check is reported to `on_pass`.
+/// Some records may be passed, by the rules in [`passing_side`]. One of those is
+/// passed if, with this vehicle where its `course` puts it as its front reaches
+/// that record's rear, driving straight ahead would leave at least
+/// [`PASSING_CLEARANCE`] beside the other vehicle's rear corners. That reads the
+/// other vehicle's corners from `vehicles`, the one place leader search does.
+/// Each such check is reported to `on_pass`.
 #[allow(clippy::too_many_arguments)]
 pub fn find_leader(
     network: &SimNetwork,
     occupants: &[Vec<Occupant>],
+    vehicles: &SlotMap<VehicleId, Vehicle>,
     id: VehicleId,
     vehicle: &Vehicle,
     lanes: &[LaneId],
@@ -349,14 +354,18 @@ pub fn find_leader(
                 found.ghost = found.ghost.or(Some((o.id, gap)));
                 continue;
             }
-            let length = vehicle.spec.length;
-            let body = course.span(network, k, lane, offset, o.s, o.hint, length, half_width);
-            let room = o.lateral.room(body);
-            let passed = room >= PASSING_CLEARANCE;
-            let (s, span) = (o.s, [o.lateral.right, o.lateral.left]);
-            on_pass(PassCheck { leader: o.id, lane, s, span, body, room, passed });
-            if passed {
-                continue;
+            let leaving = course.leaving(network, k, lane);
+            if let Some(side) = passing_side(o.lateral, leaving, course.moving()) {
+                let (pos, tangent) = course.pose(network, gap);
+                let [rear_left, rear_right, ..] = vehicles[o.id].corners();
+                let (clearance, corner) =
+                    clearance(side, pos, tangent, half_width, [rear_left, rear_right]);
+                let passed = clearance >= PASSING_CLEARANCE;
+                let leader = o.id;
+                on_pass(PassCheck { leader, pos, tangent, side, corner, clearance, passed });
+                if passed {
+                    continue;
+                }
             }
             found.leader = Some((o.id, gap));
             return found;
@@ -373,51 +382,63 @@ mod test {
     use crate::lane::Lane;
 
     #[test]
-    fn a_course_is_carried_onto_lanes_that_spread_apart() {
-        use glam::DVec2;
-        // Lane 0 runs along the x axis. Lane 1 starts beside it, 3.5 m to the
-        // left, and spreads to 5.5 m over 100 m: no fixed separation.
-        let lane = |a: DVec2, b: DVec2| Lane::new(&[a, b], 3.5, 14.0).unwrap();
-        let mut network = SimNetwork::new(vec![
-            lane(DVec2::ZERO, DVec2::new(100.0, 0.0)),
-            lane(DVec2::new(0.0, 3.5), DVec2::new(100.0, 5.5)),
-        ]);
-        network.set_adjacent(LaneId(1), LaneId(0), true, true);
-        // A car centred on lane 0, checked from lane 1 at its s = 50.
-        let path = [LaneId(0)];
-        let course = Course::new(&path, None);
-        let beside = network.lane(LaneId(1));
-        let hint = beside.lane_pos(50.0, 0.0);
-        let [right, left] = course.span(&network, 0, LaneId(1), 0.0, 50.0, hint, 4.6, 0.95);
-        // Lane 1 is about 4.5 m away there and 4.6 m at the far end of the car,
-        // so its centre is about 4.5 m to lane 1's right. A fixed separation
-        // would have put it at 3.5 m.
-        let centre = 0.5 * (left + right);
-        assert!((centre + 4.55).abs() < 0.1, "centre at t = {centre}");
-        assert!((left - right - 1.9).abs() < 0.2, "span {right}..{left}");
+    fn the_rules_only_let_through_followers_not_moving_toward_the_leader() {
+        use Lateral::{Diverging, InLane};
+        use Side::{Left, Right};
+        // In the same lane, settled or converging: never.
+        assert_eq!(passing_side(InLane, None, None), None);
+        assert_eq!(passing_side(InLane, None, Some(Left)), None);
+        // A follower leaving the lane passes on the side it leaves toward.
+        assert_eq!(passing_side(InLane, Some(Left), Some(Left)), Some(Left));
+        assert_eq!(passing_side(InLane, Some(Right), None), Some(Right));
+        // A diverging vehicle is passed on the side it is leaving...
+        assert_eq!(passing_side(Diverging(Left), None, None), Some(Right));
+        assert_eq!(
+            passing_side(Diverging(Left), Some(Right), Some(Right)),
+            Some(Right)
+        );
+        // ...unless the follower is moving the same way.
+        assert_eq!(passing_side(Diverging(Left), None, Some(Left)), None);
+        assert_eq!(
+            passing_side(Diverging(Right), Some(Right), Some(Right)),
+            None
+        );
     }
 
     #[test]
-    fn a_span_is_passed_with_room_on_either_side() {
-        let body = |t: f64| [t - 0.95, t + 0.95];
-        // A car settled on the centerline.
-        let settled = Lateral { right: -0.95, left: 0.95 };
-        assert!(!settled.can_pass(body(0.0)));
-        assert!(settled.can_pass(body(2.45)), "0.55 m to its left");
-        assert!(settled.can_pass(body(-2.45)), "0.55 m to its right");
-        assert!(!settled.can_pass(body(2.3)), "less than the clearance");
-        // A car moving left out of the lane, its right rear corner 1.6 m left of
-        // the centerline, stretched to cover the lane beside: passed only on its
-        // right.
-        let leaving = Lateral { right: 1.6, left: 4.45 };
-        assert!(leaving.can_pass(body(0.0)), "0.65 m to its right");
-        assert!(!leaving.can_pass(body(0.2)), "less than the clearance");
-        assert!(!leaving.can_pass(body(3.5)), "not where it is going");
-        // A car moving in from the right, stretched to cover the centerline, as if
-        // already there.
-        let arriving = Lateral { right: -4.45, left: 0.95 };
-        assert!(!arriving.can_pass(body(0.0)));
-        assert!(arriving.can_pass(body(2.45)), "0.55 m to where it will be");
+    fn clearance_is_measured_across_the_followers_heading() {
+        let half_width = 0.95;
+        // Heading along x, with the other car's rear corners 2.0 and 3.9 m to its
+        // left: passing on that car's right leaves 1.05 m.
+        let corners = [DVec2::new(5.0, 3.9), DVec2::new(5.0, 2.0)];
+        let (room, corner) = clearance(Side::Right, DVec2::ZERO, DVec2::X, half_width, corners);
+        assert!((room - 1.05).abs() < 1e-12);
+        assert_eq!(corner, corners[1]);
+        // Passing on its left instead would overlap it.
+        assert!(clearance(Side::Left, DVec2::ZERO, DVec2::X, half_width, corners).0 < 0.0);
+        // Heading 45 degrees to the left, toward it: much less room.
+        let toward = DVec2::new(1.0, 1.0).normalize();
+        let (room, _) = clearance(Side::Right, DVec2::ZERO, toward, half_width, corners);
+        assert!(room < 0.0, "room {room}");
+    }
+
+    #[test]
+    fn a_course_heads_along_its_cubic() {
+        // Straight along x, changing from 3.5 m left of the centerline back onto
+        // it over 15 m: halfway, it is 1.75 m left and heading right of x.
+        let lane = Lane::new(&[DVec2::ZERO, DVec2::new(100.0, 0.0)], 3.5, 14.0).unwrap();
+        let network = SimNetwork::new(vec![lane]);
+        let path = [LaneId(0)];
+        let change = LaneChange::new(0.0, 3.5, 0.0, 0.0);
+        let course = Course::new(&path, Some(change), 0.0);
+        assert_eq!(course.moving(), Some(Side::Right));
+        let (pos, tangent) = course.pose(&network, 7.5);
+        assert!((pos - DVec2::new(7.5, 1.75)).length() < 1e-9, "at {pos}");
+        assert!(tangent.y < -0.2, "heading {tangent}");
+        // Not changing, it heads straight along the centerline.
+        let (pos, tangent) = Course::new(&path, None, 0.0).pose(&network, 7.5);
+        assert!((pos - DVec2::new(7.5, 0.0)).length() < 1e-9);
+        assert!((tangent - DVec2::X).length() < 1e-9);
     }
 
     #[test]
@@ -431,7 +452,7 @@ mod test {
                 id: ids.insert(()),
                 hint: lane.lane_pos(s, 0.0),
                 ghost: false,
-                lateral: Lateral { right: -1.0, left: 1.0 },
+                lateral: Lateral::InLane,
             })
             .collect();
         insertion_sort(&mut list);

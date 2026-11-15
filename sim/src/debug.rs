@@ -1,7 +1,7 @@
 use glam::DVec2;
 
 use crate::models::lane_change::Outcome;
-use crate::network::{LaneId, Side};
+use crate::network::Side;
 use crate::vehicle::VehicleId;
 
 /// Receives debug events from the simulation.
@@ -44,25 +44,24 @@ pub enum DebugEvent {
     PassCheck { vehicle: VehicleId, check: PassCheck },
 }
 
-/// Whether a vehicle can pass another on its lane: the other vehicle's span
-/// across the lane against where the searching vehicle's body will be beside it.
+/// Whether a vehicle can pass another ahead of it on a lane, checked in world
+/// space: where the searching vehicle will be as its front reaches the other's
+/// rear, against the other's rear corners, as if it drove straight ahead.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PassCheck {
     /// The vehicle that might be passed.
     pub leader: VehicleId,
-    /// The lane where the check was made.
-    pub lane: LaneId,
-    /// Its record's `s` on `lane`: where its rear is.
-    pub s: f64,
-    /// Its span of `t` on `lane`, right edge first: its rear corners, stretched
-    /// to where it will end up if it is changing lanes.
-    pub span: [f64; 2],
-    /// The `t` span on `lane` the searching vehicle's body will cover while
-    /// passing it, right edge first.
-    pub body: [f64; 2],
-    /// Room between them on whichever side there is more, in meters: negative if
-    /// they overlap.
-    pub room: f64,
+    /// Where the searching vehicle's rear axle is predicted to be then.
+    pub pos: DVec2,
+    /// Its predicted heading there, as a unit vector.
+    pub tangent: DVec2,
+    /// The side of the other vehicle it would pass on.
+    pub side: Side,
+    /// The other vehicle's rear corner nearer that side.
+    pub corner: DVec2,
+    /// Room between that corner and the searching vehicle's near edge, in meters:
+    /// negative if they overlap.
+    pub clearance: f64,
     /// Whether that is enough to pass.
     pub passed: bool,
 }
