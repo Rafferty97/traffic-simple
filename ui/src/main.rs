@@ -31,14 +31,8 @@ const RING_LANES: usize = 3;
 const LANE_WIDTH: f64 = 3.5;
 const SPEED_LIMIT: f64 = 50.0 / 3.6;
 
-/// Vehicles enter the outer (rightmost) lane and leave from the inner (leftmost)
-/// one, so they have to change lanes leftward to leave.
-const SPAWN_LANE: LaneId = LaneId(RING_LANES as u32 - 1);
-const DESPAWN_LANE: LaneId = LaneId(0);
-/// Where the spawn and despawn points are, as fractions of their lanes' lengths:
-/// half a lap apart.
-const SPAWN_AT: f64 = 0.25;
-const DESPAWN_AT: f64 = 0.75;
+/// Most spawns or despawns per simulated second, while the count is off target.
+const CHANGE_RATE: f64 = 2.0;
 /// How far outside a vehicle a click still selects it, in screen points.
 const PICK_TOLERANCE: f32 = 6.0;
 
@@ -79,19 +73,14 @@ struct App {
 /// Spawns vehicles into the outer lane and despawns them from the inner lane,
 /// each at a rate.
 struct Harness {
-    /// Spawns per simulated second.
-    spawn_rate: f64,
-    /// Despawns per simulated second.
-    despawn_rate: f64,
-    /// Spawns owed: grows at the spawn rate, and a refused spawn waits here.
-    spawn_credit: f64,
-    /// Despawns owed: grows at the despawn rate, spent as inner-lane vehicles
-    /// pass the despawn point.
-    despawn_credit: f64,
+    /// How many vehicles it keeps on the road, spawning and despawning them
+    /// anywhere: in any lane, at any point along it.
+    target: usize,
+    /// Spawns or despawns owed while off target: grows at [`CHANGE_RATE`], and a
+    /// refused spawn waits here.
+    credit: f64,
     spawned: u32,
     despawned: u32,
-    /// Each vehicle's `s` last step, to see who crossed the despawn point.
-    last_s: HashMap<VehicleId, f64>,
     /// Draws drivers' speed factors. Seeded, so every run spawns the same drivers.
     rng: Xoshiro256PlusPlus,
 }
@@ -99,55 +88,52 @@ struct Harness {
 impl Default for Harness {
     fn default() -> Self {
         Self {
-            spawn_rate: 1.0,
-            despawn_rate: 0.3,
-            spawn_credit: 0.0,
-            despawn_credit: 0.0,
+            target: 60,
+            credit: 0.0,
             spawned: 0,
             despawned: 0,
-            last_s: HashMap::new(),
             rng: Xoshiro256PlusPlus::seed_from_u64(0),
         }
     }
 }
 
 impl Harness {
-    /// Runs after each simulation step of `dt` simulated seconds.
-    fn step(&mut self, sim: &mut Recorded<DebugState>, dt: f64) {
-        // At most one spawn owed: a backlog would arrive as a burst.
-        self.spawn_credit = (self.spawn_credit + self.spawn_rate * dt).min(1.0);
-        if self.spawn_credit >= 1.0 {
-            let lane = sim.network().lane(SPAWN_LANE);
+    /// Runs after each simulation step of `dt` simulated seconds: while the count
+    /// is off target, spawns or despawns at up to [`CHANGE_RATE`], each at a
+    /// random lane and point, or a random vehicle other than the `selected` one.
+    fn step(&mut self, sim: &mut Recorded<DebugState>, selected: Option<VehicleId>, dt: f64) {
+        let count = sim.vehicles().count();
+        if count == self.target {
+            self.credit = 0.0;
+            return;
+        }
+        // At most one owed: a backlog would arrive as a burst.
+        self.credit = (self.credit + CHANGE_RATE * dt).min(1.0);
+        if self.credit < 1.0 {
+            return;
+        }
+        if count < self.target {
+            let lanes = sim.network().lanes().count() as u32;
+            let lane = LaneId(self.rng.random_range(0..lanes));
+            let s = self.rng.random::<f64>() * sim.network().lane(lane).length();
             let car = VehicleSpec { speed_factor: self.speed_factor(), ..demo_car() };
-            let s = SPAWN_AT * lane.length();
-            let at = Placement { lane: SPAWN_LANE, s, speed: car.desired_speed(SPEED_LIMIT) };
+            let at = Placement { lane, s, speed: car.desired_speed(SPEED_LIMIT) };
+            // Refused where there is no safe room: the credit waits for another try.
             if sim.try_insert(car, at).is_ok() {
-                self.spawn_credit -= 1.0;
+                self.credit -= 1.0;
                 self.spawned += 1;
             }
-        }
-
-        self.despawn_credit = (self.despawn_credit + self.despawn_rate * dt).min(3.0);
-        let despawn_s = DESPAWN_AT * sim.network().lane(DESPAWN_LANE).length();
-        let crossed: Vec<_> = sim
-            .vehicles()
-            .filter(|(_, v)| v.lane() == DESPAWN_LANE)
-            .filter(|(id, v)| {
-                let last = self.last_s.get(id).copied().unwrap_or(f64::INFINITY);
-                last < despawn_s && v.lane_pos().s >= despawn_s
-            })
-            .map(|(id, _)| id)
-            .collect();
-        for id in crossed {
-            if self.despawn_credit >= 1.0 {
+        } else {
+            // Never the one being inspected.
+            let others = || sim.vehicles().map(|(id, _)| id).filter(|&id| Some(id) != selected);
+            let n = others().count();
+            if n > 0 {
+                let id = others().nth(self.rng.random_range(0..n)).unwrap();
                 sim.remove(id);
-                self.despawn_credit -= 1.0;
+                self.credit -= 1.0;
                 self.despawned += 1;
             }
         }
-
-        self.last_s.clear();
-        self.last_s.extend(sim.vehicles().map(|(id, v)| (id, v.lane_pos().s)));
     }
 
     /// A speed factor from a normal distribution with mean 1 and deviation 0.1,
@@ -162,28 +148,13 @@ impl Harness {
 
     fn controls(&mut self, ui: &mut egui::Ui, on_road: usize) {
         ui.horizontal(|ui| {
-            ui.add(egui::Slider::new(&mut self.spawn_rate, 0.0..=2.0).text("spawns/s"));
-            ui.add(egui::Slider::new(&mut self.despawn_rate, 0.0..=2.0).text("despawns/s"));
+            ui.add(egui::Slider::new(&mut self.target, 0..=300).text("target vehicles"));
             ui.separator();
             ui.label(format!(
                 "spawned {}, despawned {}, on the road {on_road}",
                 self.spawned, self.despawned
             ));
         });
-    }
-
-    /// Ticks across the lanes at the spawn (green) and despawn (red) points.
-    fn draw(painter: &egui::Painter, sim: &Simulation<DebugState>) {
-        for (lane_id, at, color) in [
-            (SPAWN_LANE, SPAWN_AT, Color32::from_rgb(80, 220, 80)),
-            (DESPAWN_LANE, DESPAWN_AT, Color32::from_rgb(230, 70, 70)),
-        ] {
-            let lane = sim.network().lane(lane_id);
-            let s = at * lane.length();
-            let hw = 0.5 * lane.width();
-            let ends = [hw, -hw].map(|t| to_scene(lane.lane_to_world(lane.lane_pos(s, t))));
-            painter.line_segment(ends, Stroke::new(0.4, color));
-        }
     }
 }
 
@@ -208,7 +179,7 @@ impl App {
 
     fn step(&mut self, dt: f64) {
         self.sim.step(dt);
-        self.harness.step(&mut self.sim, dt);
+        self.harness.step(&mut self.sim, self.selected, dt);
     }
 
     /// Saves a replay of the session so far to `captures/` in the workspace,
@@ -268,9 +239,8 @@ impl App {
             if ui.button("Reset").clicked() {
                 self.sim = new_sim();
                 self.selected = None;
-                let rates = (self.harness.spawn_rate, self.harness.despawn_rate);
-                self.harness = Harness::default();
-                (self.harness.spawn_rate, self.harness.despawn_rate) = rates;
+                let target = self.harness.target;
+                self.harness = Harness { target, ..Harness::default() };
                 self.capture_status = None;
             }
             if ui
@@ -513,14 +483,9 @@ impl eframe::App for App {
             ui.painter().rect_filled(ui.max_rect(), 0.0, background);
             let scene = egui::Scene::new().zoom_range(0.1..=200.0).scroll_zooms(true);
             let response = scene
-                .show(ui, &mut self.scene_rect, |ui| {
-                    match self.view {
-                        View::Pretty => draw_pretty(ui.painter(), &self.sim, self.selected),
-                        View::Debug => {
-                            draw_debug(ui.painter(), &self.sim, self.selected, &self.layers)
-                        }
-                    }
-                    Harness::draw(ui.painter(), &self.sim);
+                .show(ui, &mut self.scene_rect, |ui| match self.view {
+                    View::Pretty => draw_pretty(ui.painter(), &self.sim, self.selected),
+                    View::Debug => draw_debug(ui.painter(), &self.sim, self.selected, &self.layers),
                 })
                 .response;
             if response.clicked()

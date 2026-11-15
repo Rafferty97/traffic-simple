@@ -1,6 +1,8 @@
-//! The UI's demo scenario, headless: an empty three-lane ring, vehicles spawned
-//! into the outer lane and despawned from the inner lane, so congestion on the
-//! outside drives lane changes leftward. Mirrors the UI's harness.
+//! The UI's original demo scenario, headless: an empty three-lane ring,
+//! vehicles spawned into the outer lane and despawned from the inner lane, so
+//! congestion on the outside drives lane changes leftward. The UI has since moved
+//! on to spawning and despawning anywhere to keep a target count; this keeps the
+//! old scenario, at fixed rates, as a stress test for lane changes.
 
 use std::f64::consts::TAU;
 
