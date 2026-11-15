@@ -17,8 +17,8 @@ use rand::rngs::Xoshiro256PlusPlus;
 use rand::{RngExt, SeedableRng};
 use replay::Recorded;
 use traffic_sim::{
-    AccelSource, DebugEvent, DebugSink, Lane, LaneChangeError, LaneChangeEval, LaneId, Placement,
-    Side, SimNetwork, Simulation, Vehicle, VehicleId, VehicleSpec,
+    AccelSource, DebugEvent, DebugSink, Lane, LaneChangeError, LaneChangeEval, LaneId, PassCheck,
+    Placement, Side, SimNetwork, Simulation, Vehicle, VehicleId, VehicleSpec,
 };
 
 /// The inner lane's circumference: about 160 m across, roomy enough for
@@ -456,6 +456,7 @@ impl eframe::App for App {
                     // Vertical only, so the descriptions wrap.
                     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                         ui.heading("Debug view layers");
+                        ui.small("Select a vehicle to show only its marks.");
                         self.layers.legend(ui);
                     });
                 }
@@ -568,6 +569,9 @@ fn draw_debug(
     selected: Option<VehicleId>,
     layers: &Layers,
 ) {
+    // With a vehicle selected, only its own marks are drawn; otherwise everyone's.
+    // Vehicle bodies and the network are always drawn.
+    let shown = |id: VehicleId| selected.is_none_or(|s| s == id);
     let thin = Stroke::new(0.08, OUTLINE);
     for (lane_id, lane) in sim.network().lanes() {
         if layers.on(Layer::LaneOutlines) {
@@ -614,7 +618,7 @@ fn draw_debug(
         }
 
         if layers.on(Layer::Occupants) {
-            for occupant in sim.occupants(lane_id) {
+            for occupant in sim.occupants(lane_id).iter().filter(|o| shown(o.id)) {
                 let p = lane.lane_to_world(lane.lane_pos(occupant.s, 0.0));
                 let color = if occupant.ghost { GHOST } else { OCCUPANT };
                 painter.circle_filled(to_scene(p), 0.25, color);
@@ -637,6 +641,7 @@ fn draw_debug(
         // From the vehicle's stored cubic, drawn on its current lane only, so it
         // stops short if it crosses a lane's end.
         if layers.on(Layer::LaneChanges)
+            && shown(id)
             && let Some(change) = v.lane_change()
         {
             let lane = sim.network().lane(v.lane());
@@ -651,7 +656,7 @@ fn draw_debug(
 
     // From the front bumper to the leader's rear bumper.
     if layers.on(Layer::Leaders) {
-        for &(id, source, accel) in &sim.sink().accel_terms {
+        for &(id, source, accel) in sim.sink().accel_terms.iter().filter(|t| shown(t.0)) {
             let AccelSource::Leader { id: leader, .. } = source else {
                 continue;
             };
@@ -670,8 +675,40 @@ fn draw_debug(
         }
     }
 
+    // Drawn across the checked lane at the diverging vehicle's rear, in that
+    // lane's (s, t), so the follower's predicted span and the trailing corner
+    // line up and the gap between them reads directly.
+    if layers.on(Layer::PassChecks) {
+        for &(id, check) in sim.sink().pass_checks.iter().filter(|c| shown(c.0)) {
+            let Some(v) = sim.get(id) else { continue };
+            let lane = sim.network().lane(check.lane);
+            let at = |t: f64| to_scene(lane.lane_to_world(lane.lane_pos(check.s, t)));
+            let [right, left] = check.body;
+            painter.line_segment([at(right), at(left)], Stroke::new(0.25, PASS_BODY));
+            // A short tick for the corner, along the lane.
+            let corner =
+                |ds: f64| to_scene(lane.lane_to_world(lane.lane_pos(check.s + ds, check.trailing)));
+            painter.line_segment(
+                [corner(-0.6), corner(0.6)],
+                Stroke::new(0.15, PASS_TRAILING),
+            );
+            // The gap on the passing side, from the body's near edge to the corner:
+            // a negative gap is an overlap, drawn the same way in red.
+            let edge = match check.leaving {
+                Side::Left => left,
+                Side::Right => right,
+            };
+            let color = if check.passed { PASS_OK } else { PASS_BLOCKED };
+            painter.line_segment([at(edge), at(check.trailing)], Stroke::new(0.1, color));
+            painter.line_segment(
+                [to_scene(front(v)), at(0.5 * (left + right))],
+                Stroke::new(0.03, PASS_BODY),
+            );
+        }
+    }
+
     if layers.on(Layer::Lookahead) {
-        for &(id, point) in &sim.sink().lookaheads {
+        for &(id, point) in sim.sink().lookaheads.iter().filter(|l| shown(l.0)) {
             let Some(v) = sim.get(id) else { continue };
             painter.line_segment(
                 [to_scene(v.pos()), to_scene(point)],
@@ -695,6 +732,10 @@ const LANE_CHANGE: Color32 = Color32::from_rgb(250, 160, 60);
 const LEADER_BINDING: Color32 = Color32::from_rgb(120, 230, 120);
 const LEADER_OTHER: Color32 = Color32::from_rgb(60, 110, 60);
 const LOOKAHEAD: Color32 = Color32::from_rgb(90, 200, 240);
+const PASS_TRAILING: Color32 = Color32::from_rgb(255, 120, 200);
+const PASS_BODY: Color32 = Color32::from_rgb(120, 170, 255);
+const PASS_OK: Color32 = Color32::from_rgb(80, 220, 80);
+const PASS_BLOCKED: Color32 = Color32::from_rgb(230, 60, 60);
 
 /// A debug view layer that can be turned on and off.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -707,11 +748,12 @@ enum Layer {
     Vehicles,
     LaneChanges,
     Leaders,
+    PassChecks,
     Lookahead,
 }
 
 impl Layer {
-    const ALL: [Layer; 9] = [
+    const ALL: [Layer; 10] = [
         Layer::LaneOutlines,
         Layer::Centerlines,
         Layer::Ticks,
@@ -720,6 +762,7 @@ impl Layer {
         Layer::Vehicles,
         Layer::LaneChanges,
         Layer::Leaders,
+        Layer::PassChecks,
         Layer::Lookahead,
     ];
 
@@ -757,6 +800,11 @@ impl Layer {
                 "Leaders",
                 &[LEADER_BINDING, LEADER_OTHER],
                 "Front bumper to each leader's rear: bright when that leader sets the acceleration",
+            ),
+            Layer::PassChecks => (
+                "Passing checks",
+                &[PASS_TRAILING, PASS_BODY, PASS_OK, PASS_BLOCKED],
+                "Where a follower checked whether it can pass a vehicle diverging from its lane, across that lane at the diverging vehicle's rear: its trailing corner, the span the follower's body will cover beside it, and the gap between them on the passing side, green if wide enough to pass and red if not. A fine line runs from the follower to the check",
             ),
             Layer::Lookahead => (
                 "Lookahead",
@@ -812,12 +860,17 @@ struct DebugState {
     lookaheads: Vec<(VehicleId, DVec2)>,
     /// Each vehicle's evaluations from its last lane-change decision.
     decisions: HashMap<VehicleId, Vec<LaneChangeEval>>,
+    /// The last longitudinal update's checks for passing a diverging vehicle.
+    pass_checks: Vec<(VehicleId, PassCheck)>,
 }
 
 impl DebugSink for DebugState {
     fn record(&mut self, event: impl FnOnce() -> DebugEvent) {
         match event() {
-            DebugEvent::RecomputeAccels => self.accel_terms.clear(),
+            DebugEvent::RecomputeAccels => {
+                self.accel_terms.clear();
+                self.pass_checks.clear();
+            }
             DebugEvent::AccelTerm { vehicle, source, accel } => {
                 self.accel_terms.push((vehicle, source, accel))
             }
@@ -832,6 +885,7 @@ impl DebugSink for DebugState {
             DebugEvent::VehicleRemoved { vehicle } => {
                 self.decisions.remove(&vehicle);
             }
+            DebugEvent::PassCheck { vehicle, check } => self.pass_checks.push((vehicle, check)),
         }
     }
 }

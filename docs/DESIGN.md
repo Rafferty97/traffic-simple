@@ -270,7 +270,7 @@ The generic was chosen: the UI runs with a recording sink and benchmarks with th
 
 **Suggestion:** pass closures (`sink.record(|| …)`) so building an event's data is skipped entirely when the sink does nothing.
 
-**Events worth recording:** leader links and gaps, conflict activations, barrier commitments, lane-change decisions with their MOBIL scores, target paths and lookahead points.
+**Events worth recording:** leader links and gaps, conflict activations, barrier commitments, lane-change decisions with their MOBIL scores, target paths and lookahead points, and checks for passing a diverging vehicle, with the follower's predicted span, the trailing corner and the gap between them.
 
 The debug view shows what the simulation actually used, never a recomputation. Events are grouped by the update that produces them, and they accumulate in the sink:
 

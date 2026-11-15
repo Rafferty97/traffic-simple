@@ -13,7 +13,7 @@ mod occupancy;
 mod simulation;
 mod vehicle;
 
-pub use debug::{AccelSource, DebugEvent, DebugSink, LaneChangeEval, NoopSink};
+pub use debug::{AccelSource, DebugEvent, DebugSink, LaneChangeEval, NoopSink, PassCheck};
 pub use lane::{Lane, LaneError, LanePos, MAX_PREDECESSORS, MAX_SUCCESSORS};
 pub use models::acceleration::SAFE_BRAKING;
 pub use models::lane_change::Outcome;

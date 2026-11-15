@@ -1,7 +1,7 @@
 use glam::DVec2;
 
 use crate::models::lane_change::Outcome;
-use crate::network::Side;
+use crate::network::{LaneId, Side};
 use crate::vehicle::VehicleId;
 
 /// Receives debug events from the simulation.
@@ -38,6 +38,33 @@ pub enum DebugEvent {
     LaneChangeEval { vehicle: VehicleId, eval: LaneChangeEval },
     /// A vehicle has left the simulation.
     VehicleRemoved { vehicle: VehicleId },
+    /// A vehicle's leader search, in the longitudinal update, weighed up passing
+    /// a vehicle diverging from a lane. Stale after the next
+    /// [`DebugEvent::RecomputeAccels`].
+    PassCheck { vehicle: VehicleId, check: PassCheck },
+}
+
+/// Whether a vehicle can pass one diverging from a lane: that vehicle's trailing
+/// rear corner against where the searching vehicle's body will be beside it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PassCheck {
+    /// The diverging vehicle.
+    pub leader: VehicleId,
+    /// The lane it is diverging from, where the check was made.
+    pub lane: LaneId,
+    /// Its record's `s` on `lane`: where its trailing corner is.
+    pub s: f64,
+    /// The side it is leaving toward. It can only be passed on the other.
+    pub leaving: Side,
+    /// Its trailing rear corner's `t` on `lane`.
+    pub trailing: f64,
+    /// The `t` span on `lane` the searching vehicle's body will cover while
+    /// passing it, right edge first.
+    pub body: [f64; 2],
+    /// Room between them on the passing side, in meters: negative if they overlap.
+    pub clearance: f64,
+    /// Whether that is enough to pass.
+    pub passed: bool,
 }
 
 /// How a vehicle weighed up changing lanes to one side, under MOBIL.

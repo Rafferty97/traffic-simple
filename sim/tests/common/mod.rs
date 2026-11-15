@@ -92,7 +92,9 @@ impl traffic_sim::DebugSink for Terms {
                 self.1.retain(|e| e.0 != vehicle)
             }
             DebugEvent::LaneChangeEval { vehicle, eval } => self.1.push((vehicle, eval)),
-            DebugEvent::RecomputeMotion | DebugEvent::Lookahead { .. } => {}
+            DebugEvent::RecomputeMotion
+            | DebugEvent::Lookahead { .. }
+            | DebugEvent::PassCheck { .. } => {}
         }
     }
 }

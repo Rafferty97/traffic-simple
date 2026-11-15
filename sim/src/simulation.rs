@@ -177,6 +177,7 @@ impl<D: DebugSink> Simulation<D> {
             Course::of(&vehicle),
             Ghosts::Lead,
             None,
+            |_| {},
         );
         if let Some((leader, gap)) = leader.leader {
             let leader_speed = self.vehicles[leader].speed;
@@ -468,7 +469,8 @@ impl<D: DebugSink> Simulation<D> {
             sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: free });
             let mut accel = free;
 
-            let mut react = |leader: VehicleId, gap: f64| {
+            // Takes the sink rather than capturing it, so the searches can record too.
+            let mut react = |sink: &mut D, leader: VehicleId, gap: f64| {
                 let leader_speed = vehicles[leader].speed;
                 let term =
                     acceleration::interaction(&vehicle.spec, vehicle.speed, gap, leader_speed);
@@ -490,9 +492,10 @@ impl<D: DebugSink> Simulation<D> {
                 Course::of(vehicle),
                 Ghosts::Report,
                 None,
+                |check| sink.record(|| DebugEvent::PassCheck { vehicle: id, check }),
             );
             if let Some((leader, gap)) = search.leader {
-                react(leader, gap);
+                react(sink, leader, gap);
             }
             let mut old_side_term = f64::INFINITY;
 
@@ -529,9 +532,10 @@ impl<D: DebugSink> Simulation<D> {
                         course,
                         Ghosts::Report,
                         None,
+                        |check| sink.record(|| DebugEvent::PassCheck { vehicle: id, check }),
                     );
                     if let Some((leader, gap)) = search.leader {
-                        old_side_term = react(leader, gap);
+                        old_side_term = react(sink, leader, gap);
                     }
                 }
             }
@@ -563,6 +567,7 @@ impl<D: DebugSink> Simulation<D> {
                     Course::of(vehicle),
                     Ghosts::Report,
                     Some(leader),
+                    |_| {},
                 );
                 let mut after = free.min(old_side_term);
                 if let Some((next, gap)) = without.leader {
@@ -950,7 +955,16 @@ fn accel_along(
     let desired = vehicle.spec.desired_speed(network.lane(lanes[0]).speed_limit());
     let mut accel = acceleration::free_road(&vehicle.spec, vehicle.speed, desired);
     let search = occupancy::find_leader(
-        network, occupants, id, vehicle, lanes, axle_s, course, ghosts, None,
+        network,
+        occupants,
+        id,
+        vehicle,
+        lanes,
+        axle_s,
+        course,
+        ghosts,
+        None,
+        |_| {},
     );
     if let Some((leader, gap)) = search.leader {
         let leader_speed = vehicles[leader].speed;

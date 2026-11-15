@@ -13,6 +13,7 @@
 
 use slotmap::SlotMap;
 
+use crate::debug::PassCheck;
 use crate::lane::{Lane, LanePos};
 use crate::models::lateral::LaneChange;
 use crate::network::{LaneId, Side, SimNetwork};
@@ -52,15 +53,25 @@ pub enum Lateral {
 }
 
 impl Lateral {
-    /// Whether a follower whose body spans `body` across the lane (its `t`, right
-    /// edge first) can pass, with at least [`PASSING_CLEARANCE`] to spare. It can
-    /// only pass a diverging vehicle, and only on the side that vehicle is leaving.
-    fn can_pass(self, body: [f64; 2]) -> bool {
+    /// For a diverging vehicle: the side it is leaving toward, its trailing
+    /// corner's `t`, and the room between that corner and a follower whose body
+    /// spans `body` across the lane (its `t`, right edge first), on the side the
+    /// vehicle is leaving. Negative if they overlap. `None` in the lane.
+    fn clearance(self, body: [f64; 2]) -> Option<(Side, f64, f64)> {
         match self {
-            Lateral::InLane => false,
-            Lateral::DivergingLeft { trailing } => body[1] + PASSING_CLEARANCE <= trailing,
-            Lateral::DivergingRight { trailing } => body[0] - PASSING_CLEARANCE >= trailing,
+            Lateral::InLane => None,
+            Lateral::DivergingLeft { trailing } => Some((Side::Left, trailing, trailing - body[1])),
+            Lateral::DivergingRight { trailing } => {
+                Some((Side::Right, trailing, body[0] - trailing))
+            }
         }
+    }
+
+    /// Whether a follower whose body spans `body` across the lane can pass, with
+    /// at least [`PASSING_CLEARANCE`] to spare. It can only pass a diverging
+    /// vehicle, and only on the side that vehicle is leaving.
+    fn can_pass(self, body: [f64; 2]) -> bool {
+        self.clearance(body).is_some_and(|(_, _, room)| room >= PASSING_CLEARANCE)
     }
 }
 
@@ -248,6 +259,7 @@ pub struct Search {
 /// rear corner leaves room on the side it is leaving: at least
 /// [`PASSING_CLEARANCE`] between that corner and this vehicle's body where it will
 /// be while passing it, along `course`. Any other record blocks (see [`Lateral`]).
+/// Each such check is reported to `on_pass`.
 #[allow(clippy::too_many_arguments)]
 pub fn find_leader(
     network: &SimNetwork,
@@ -259,6 +271,7 @@ pub fn find_leader(
     course: Course,
     ghosts: Ghosts,
     skip: Option<VehicleId>,
+    mut on_pass: impl FnMut(PassCheck),
 ) -> Search {
     let half_width = 0.5 * vehicle.spec.width;
     // The stretch of the searched lanes this vehicle's body covers while passing
@@ -296,8 +309,24 @@ pub fn find_leader(
                 found.ghost = found.ghost.or(Some((o.id, gap)));
                 continue;
             }
-            if o.lateral.can_pass(body(offset + o.s - axle_s)) {
-                continue;
+            if o.lateral != Lateral::InLane {
+                let body = body(offset + o.s - axle_s);
+                let (leaving, trailing, clearance) = o.lateral.clearance(body).unwrap();
+                let passed = o.lateral.can_pass(body);
+                let s = o.s;
+                on_pass(PassCheck {
+                    leader: o.id,
+                    lane,
+                    s,
+                    leaving,
+                    trailing,
+                    body,
+                    clearance,
+                    passed,
+                });
+                if passed {
+                    continue;
+                }
             }
             found.leader = Some((o.id, gap));
             return found;
