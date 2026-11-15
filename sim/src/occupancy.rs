@@ -261,6 +261,12 @@ impl<'a> Course<'a> {
         (pos, (next - pos).normalize())
     }
 
+    /// How far its rear axle has still to go to the end of its lane change, or zero
+    /// if it isn't changing lanes.
+    fn remaining(&self) -> f64 {
+        self.change.map_or(0.0, |c| (c.end() - self.s).max(0.0))
+    }
+
     /// The side it is moving across toward during its lane change, if any: away
     /// from where the cubic starts.
     fn moving(&self) -> Option<Side> {
@@ -310,6 +316,11 @@ pub struct Search {
 /// On later lanes, every occupant counts. The vehicle's own records are skipped,
 /// as are `skip`'s, for asking what if that vehicle weren't there.
 ///
+/// Searching lanes beside the course rather than along it, as the old-side search
+/// does, the horizon is where the course's lane change ends instead: after that
+/// the vehicle is wholly on the lanes it follows, so nothing it would only reach
+/// later can be in its way there.
+///
 /// Some records may be passed, by the rules in [`passing_side`]. One of those is
 /// passed if, with this vehicle where its `course` puts it as its front reaches
 /// that record's rear, driving straight ahead would leave at least
@@ -332,12 +343,17 @@ pub fn find_leader(
 ) -> Search {
     let half_width = 0.5 * vehicle.spec.width;
     let front = axle_s + vehicle.spec.length - vehicle.spec.rear_axle;
+    let horizon = match course.path.first() == lanes.first() {
+        true => LEADER_HORIZON,
+        // A gap is how far the rear axle travels before the nose reaches a rear.
+        false => course.remaining().min(LEADER_HORIZON),
+    };
     let mut found = Search::default();
     // Start of the current lane, measured along `lanes` from the start of the first.
     let mut offset = 0.0;
     let mut after = axle_s;
     for (k, &lane) in lanes.iter().enumerate() {
-        if offset - front > LEADER_HORIZON {
+        if offset - front > horizon {
             break;
         }
         let list = &occupants[lane.0 as usize];
@@ -347,7 +363,7 @@ pub fn find_leader(
                 continue;
             }
             let gap = offset + o.s - front;
-            if gap > LEADER_HORIZON {
+            if gap > horizon {
                 return found;
             }
             if o.ghost && ghosts == Ghosts::Report {

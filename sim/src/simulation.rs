@@ -501,9 +501,13 @@ impl<D: DebugSink> Simulation<D> {
             }
             let mut old_side_term = f64::INFINITY;
 
-            // Still straddling after a lane change: also search the old side, along
-            // the neighbors of the vehicle's path, from its position on the old lane.
-            if let Some(side) = vehicle.old_side {
+            // Still straddling partway through a lane change: also search the old
+            // side, along the neighbors of the vehicle's path, from its position on
+            // the old lane. Once the change is complete, nothing on the old lanes
+            // can be in its way.
+            if let Some(side) = vehicle.old_side
+                && vehicle.lane_change.is_some()
+            {
                 let old_path: ArrayVec<LaneId, PATH_LEN> = vehicle
                     .path
                     .iter()
