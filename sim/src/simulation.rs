@@ -154,10 +154,9 @@ impl<D: DebugSink> Simulation<D> {
         at: Placement,
     ) -> Result<VehicleId, InsertError> {
         let mut vehicle = self.build_vehicle(spec, at);
-        let lane = self.network.lane(at.lane);
         // A key that matches no vehicle, since this one isn't inserted yet.
         let id = VehicleId::default();
-        let rear = Occupant::new(lane, id, &vehicle, vehicle.lane_pos).s;
+        let rear = Occupant::new(&self.network, at.lane, id, &vehicle, vehicle.lane_pos).s;
         let front = rear + spec.length;
 
         let list = &self.occupants[at.lane.0 as usize];
@@ -233,8 +232,7 @@ impl<D: DebugSink> Simulation<D> {
         let lane_id = vehicle.path[0];
         let lane_pos = vehicle.lane_pos;
         let id = self.vehicles.insert(vehicle);
-        let lane = self.network.lane(lane_id);
-        let occupant = Occupant::new(lane, id, &self.vehicles[id], lane_pos);
+        let occupant = Occupant::new(&self.network, lane_id, id, &self.vehicles[id], lane_pos);
         let list = &mut self.occupants[lane_id.0 as usize];
         let index = list.partition_point(|o| o.s <= occupant.s);
         list.insert(index, occupant);
@@ -345,7 +343,13 @@ impl<D: DebugSink> Simulation<D> {
         if let Some(ghost) = list.iter_mut().find(|o| o.id == id && o.ghost) {
             ghost.ghost = false;
         } else {
-            let occupant = Occupant::new(target, id, &self.vehicles[id], lane_pos);
+            let occupant = Occupant::new(
+                &self.network,
+                neighbor.lane,
+                id,
+                &self.vehicles[id],
+                lane_pos,
+            );
             let index = list.partition_point(|o| o.s <= occupant.s);
             list.insert(index, occupant);
         }
@@ -362,7 +366,7 @@ impl<D: DebugSink> Simulation<D> {
         };
         let target = self.network.lane(neighbor.lane);
         let hint = target.lane_pos(vehicle.lane_pos.s / current.length() * target.length(), 0.0);
-        let ghost = Occupant::ghost(target, id, vehicle, hint);
+        let ghost = Occupant::ghost(&self.network, neighbor.lane, id, vehicle, hint);
         let list = &mut self.occupants[neighbor.lane.0 as usize];
         let index = list.partition_point(|o| o.s <= ghost.s);
         list.insert(index, ghost);
@@ -648,14 +652,15 @@ impl<D: DebugSink> Simulation<D> {
                     change.s0 -= length;
                 }
                 // Joins unsorted; `update_occupancy` sets its `s` and sorts.
-                let occupant = Occupant::new(next, id, vehicle, vehicle.lane_pos);
+                let occupant =
+                    Occupant::new(network, vehicle.path[0], id, vehicle, vehicle.lane_pos);
                 occupants[vehicle.path[0].0 as usize].push(occupant);
                 // Still straddling after a lane change: also join the old side's
                 // next lane, so followers there keep seeing it.
                 if let Some(old) = vehicle.old_side.and_then(|side| next.adj(side)) {
                     let old_lane = network.lane(old.lane);
                     let hint = old_lane.lane_pos(vehicle.lane_pos.s, 0.0);
-                    let occupant = Occupant::new(old_lane, id, vehicle, hint);
+                    let occupant = Occupant::new(network, old.lane, id, vehicle, hint);
                     occupants[old.lane.0 as usize].push(occupant);
                 }
                 // Indicating: the ghost moves to the new lane's neighbor, or the
@@ -669,7 +674,7 @@ impl<D: DebugSink> Simulation<D> {
                             let target = network.lane(n.lane);
                             let hint = target.lane_pos(vehicle.lane_pos.s, 0.0);
                             occupants[n.lane.0 as usize]
-                                .push(Occupant::ghost(target, id, vehicle, hint));
+                                .push(Occupant::ghost(network, n.lane, id, vehicle, hint));
                         }
                         None => vehicle.intent = None,
                     }

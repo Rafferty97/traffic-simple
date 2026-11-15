@@ -1,8 +1,8 @@
 //! Lane changes on a three-lane ring, commanded directly with `change_lane`.
 
 use traffic_sim::{
-    Lane, LaneChangeError, LaneId, Lateral, NoopSink, Placement, SAFE_BRAKING, Side, SimNetwork,
-    Simulation, VehicleId,
+    Lane, LaneChangeError, LaneId, NoopSink, Placement, SAFE_BRAKING, Side, SimNetwork, Simulation,
+    VehicleId,
 };
 
 mod common;
@@ -225,13 +225,11 @@ fn followers_pass_a_car_mostly_out_of_their_lane() {
     sim.change_lane(id, Side::Left).unwrap();
 
     // Hold it once its rear is well over, but before it has left the old lane.
-    // Changing left, its trailing corner on the old lane is its right rear one.
+    // Changing left, the right edge of its span on the old lane is its right rear
+    // corner, the one still furthest into the lane.
     let rear_on_old = |sim: &Simulation| {
         let list = sim.occupants(LaneId(1));
-        list.iter().find(|o| o.id == id && !o.ghost).map(|o| match o.lateral {
-            Lateral::DivergingLeft { trailing } => trailing,
-            other => panic!("expected it to diverge left from the old lane, not {other:?}"),
-        })
+        list.iter().find(|o| o.id == id && !o.ghost).map(|o| o.lateral.right)
     };
     let mut passed_while_straddling = false;
     let mut closest = f64::INFINITY;
@@ -274,10 +272,7 @@ fn followers_pass_where_they_will_be_not_where_they_are() {
     sim.change_lane(ahead, Side::Left).unwrap();
     let trailing = |sim: &Simulation| {
         let list = sim.occupants(LaneId(1));
-        list.iter().find(|o| o.id == ahead && !o.ghost).and_then(|o| match o.lateral {
-            Lateral::DivergingLeft { trailing } => Some(trailing),
-            _ => None,
-        })
+        list.iter().find(|o| o.id == ahead && !o.ghost).map(|o| o.lateral.right)
     };
     // Held at 0.6 m, it drifts to about 1.1 m while braking to a stop.
     while !trailing(&sim).is_some_and(|t| t >= 0.6) {
@@ -318,4 +313,88 @@ fn followers_pass_where_they_will_be_not_where_they_are() {
     // at about 9 m/s².
     assert!(hardest > -SAFE_BRAKING, "braked at {hardest} m/s²");
     assert!(closest > 0.3, "came within {closest} m");
+}
+
+/// A car held in lane 1, and a car behind it that changes into lane 0, leaving
+/// `gap` meters between its front and the held car's rear and moving at `speed`.
+/// Returns how far the changer got past the held car's rear, its closest
+/// approach, and whether it was still straddling at the end.
+fn change_away_from_a_held_car(gap: f64, speed: f64) -> (f64, f64, bool) {
+    let lane = |y: f64| {
+        let points = [glam::DVec2::new(0.0, y), glam::DVec2::new(400.0, y)];
+        Lane::new(&points, 3.5, SPEED_LIMIT).unwrap()
+    };
+    // Lane 0 is on the left of lane 1.
+    let mut network = SimNetwork::new(vec![lane(3.5), lane(0.0)]);
+    network.set_adjacent(LaneId(0), LaneId(1), true, true);
+    let mut sim = Simulation::new(network, NoopSink);
+    let held = sim.insert(car(), Placement { lane: LaneId(1), s: 100.0, speed: 0.0 });
+    sim.hold(held);
+    // Rear axles: the changer's front is `gap` behind the held car's rear.
+    let spec = car();
+    let s = 100.0 - spec.rear_axle - gap - (spec.length - spec.rear_axle);
+    let changer = sim.insert(car(), Placement { lane: LaneId(1), s, speed });
+    sim.change_lane(changer, Side::Left).unwrap();
+    let mut closest = f64::INFINITY;
+    run(&mut sim, 20.0, |sim| {
+        closest = closest.min(clearance(sim.get(held).unwrap(), sim.get(changer).unwrap()));
+    });
+    let (h, c) = (sim.get(held).unwrap(), sim.get(changer).unwrap());
+    let past = (c.lane_pos().s - c.spec().rear_axle) - (h.lane_pos().s - h.spec().rear_axle);
+    (past, closest, c.old_side().is_some())
+}
+
+#[test]
+fn a_straddling_car_drives_past_its_old_leader_once_it_will_be_clear() {
+    // Its course takes it clear of the held car's corner before it gets there.
+    // Before, a car settled in the old lane always blocked it, so it stopped
+    // behind, straddling, for good.
+    let (past, closest, _) = change_away_from_a_held_car(12.0, 3.0);
+    assert!(past > 10.0, "it should have driven past, got {past:.1} m");
+    assert!(closest > 0.3, "came within {closest} m");
+}
+
+#[test]
+fn a_straddling_car_waits_behind_its_old_leader_when_it_wont_be_clear() {
+    // Stopped close behind, its course can't take it clear in time.
+    let (past, closest, straddling) = change_away_from_a_held_car(2.0, 0.0);
+    assert!(
+        past < 0.0,
+        "it should have waited behind, got {past:.1} m past"
+    );
+    assert!(straddling, "it should still be straddling");
+    assert!(closest > 0.3, "came within {closest} m");
+}
+
+#[test]
+fn a_car_changing_in_behind_a_slower_one_follows_it() {
+    // Two straight lanes, 0 on the left of 1.
+    let lane = |y: f64| {
+        let points = [glam::DVec2::new(0.0, y), glam::DVec2::new(600.0, y)];
+        Lane::new(&points, 3.5, SPEED_LIMIT).unwrap()
+    };
+    let mut network = SimNetwork::new(vec![lane(3.5), lane(0.0)]);
+    network.set_adjacent(LaneId(0), LaneId(1), true, true);
+    let mut sim = Simulation::new(network, NoopSink);
+    // A slower car in lane 1, and a faster one in lane 0 that changes in about a
+    // metre behind it. Still a whole lane to the side as it starts, it would
+    // stay alongside the slower car while moving across, so it must follow it.
+    let slow = traffic_sim::VehicleSpec { speed_factor: 0.8, ..car() };
+    let ahead = sim.insert(slow, Placement { lane: LaneId(1), s: 100.0, speed: 11.2 });
+    let spec = car();
+    let s = 100.0 - spec.length - 1.0;
+    let fast = sim.insert(spec, Placement { lane: LaneId(0), s, speed: 14.0 });
+    sim.change_lane(fast, Side::Right).unwrap();
+    let (mut closest, mut drew_level) = (f64::INFINITY, false);
+    run(&mut sim, 15.0, |sim| {
+        let (a, f) = (sim.get(ahead).unwrap(), sim.get(fast).unwrap());
+        closest = closest.min(clearance(a, f));
+        let front = f.lane_pos().s + f.spec().length - f.spec().rear_axle;
+        drew_level |= f.lane() == LaneId(1) && front > a.lane_pos().s - a.spec().rear_axle;
+    });
+    assert!(closest > 0.3, "came within {closest} m");
+    assert!(
+        !drew_level,
+        "it drew level with the car it changed in behind"
+    );
 }
