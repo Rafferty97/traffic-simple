@@ -1,8 +1,8 @@
 //! Lane changes on a three-lane ring, commanded directly with `change_lane`.
 
 use traffic_sim::{
-    Lane, LaneChangeError, LaneId, Lateral, NoopSink, Placement, Side, SimNetwork, Simulation,
-    VehicleId,
+    Lane, LaneChangeError, LaneId, Lateral, NoopSink, Placement, SAFE_BRAKING, Side, SimNetwork,
+    Simulation, VehicleId,
 };
 
 mod common;
@@ -252,4 +252,70 @@ fn followers_pass_a_car_mostly_out_of_their_lane() {
         passed_while_straddling,
         "the follower never passed the straddling car"
     );
+}
+
+#[test]
+fn followers_pass_where_they_will_be_not_where_they_are() {
+    // Three wide lanes, 0 on the left of 1 on the left of 2.
+    let lane = |y: f64| {
+        let points = [glam::DVec2::new(0.0, y), glam::DVec2::new(600.0, y)];
+        Lane::new(&points, 5.0, SPEED_LIMIT).unwrap()
+    };
+    let mut network = SimNetwork::new(vec![lane(10.0), lane(5.0), lane(0.0)]);
+    network.set_adjacent(LaneId(0), LaneId(1), true, true);
+    network.set_adjacent(LaneId(1), LaneId(2), true, true);
+    let mut sim = Simulation::new(network, NoopSink);
+
+    // A slow car changes left out of lane 1 and is held while its trailing (right
+    // rear) corner is 1.2 m left of lane 1's centerline: too little room for a
+    // car centered in lane 1 to pass, but plenty for one still in lane 2.
+    let slow = traffic_sim::VehicleSpec { speed_factor: 0.15, ..car() };
+    let ahead = sim.insert(slow, Placement { lane: LaneId(1), s: 300.0, speed: 2.0 });
+    sim.change_lane(ahead, Side::Left).unwrap();
+    let trailing = |sim: &Simulation| {
+        let list = sim.occupants(LaneId(1));
+        list.iter().find(|o| o.id == ahead && !o.ghost).and_then(|o| match o.lateral {
+            Lateral::DivergingLeft { trailing } => Some(trailing),
+            _ => None,
+        })
+    };
+    // Held at 0.6 m, it drifts to about 1.1 m while braking to a stop.
+    while !trailing(&sim).is_some_and(|t| t >= 0.6) {
+        sim.step(DT);
+        assert!(sim.time() < 30.0, "never got far enough over");
+    }
+    sim.hold(ahead);
+    run(&mut sim, 5.0, |_| {});
+    let settled = trailing(&sim).expect("it should still be on lane 1");
+    assert!(
+        settled + 0.5 > 0.95,
+        "a centered car could pass: {settled} m"
+    );
+
+    // A fast car changes from lane 2 into lane 1 well behind it. It is still
+    // mostly in lane 2 while far back, but will be centered by the time it
+    // arrives, so it must treat the held car as a leader from the start. (Once
+    // stopped, MOBIL may take it back out to lane 2, which is fine.)
+    let s = sim.get(ahead).unwrap().lane_pos().s - 70.0;
+    let fast = sim.insert(car(), Placement { lane: LaneId(2), s, speed: SPEED_LIMIT });
+    sim.change_lane(fast, Side::Left).unwrap();
+    let (mut closest, mut slowest, mut drew_level) = (f64::INFINITY, f64::INFINITY, false);
+    let mut hardest = 0.0f64;
+    run(&mut sim, 20.0, |sim| {
+        let (a, f) = (sim.get(ahead).unwrap(), sim.get(fast).unwrap());
+        closest = closest.min(clearance(a, f));
+        if f.lane() == LaneId(1) {
+            slowest = slowest.min(f.speed());
+            hardest = hardest.min(f.accel());
+            // Its front past the held car's rear.
+            let front = f.lane_pos().s + f.spec().length - f.spec().rear_axle;
+            drew_level |= front > a.lane_pos().s - a.spec().rear_axle;
+        }
+    });
+    assert!(!drew_level, "it drew level with the held car in lane 1");
+    assert!(slowest < 0.5, "it should have stopped behind the held car");
+    // Seen late, from where it is rather than where it will be, it would brake
+    // at about 9 m/s².
+    assert!(hardest > -SAFE_BRAKING, "braked at {hardest} m/s²");
+    assert!(closest > 0.3, "came within {closest} m");
 }

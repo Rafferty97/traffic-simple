@@ -14,6 +14,7 @@
 use slotmap::SlotMap;
 
 use crate::lane::{Lane, LanePos};
+use crate::models::lateral::LaneChange;
 use crate::network::{LaneId, Side, SimNetwork};
 use crate::vehicle::{Vehicle, VehicleId};
 
@@ -185,6 +186,37 @@ fn insertion_sort(list: &mut [Occupant]) {
     }
 }
 
+/// Where a searching vehicle will be across the lanes it searches: its planned
+/// path, which is its lane change's cubic or else its lane's centerline, shifted
+/// onto the searched lanes. Pure pursuit tracks that path closely, so it says
+/// where the vehicle's body will be when it gets somewhere ahead.
+#[derive(Clone, Copy, Debug)]
+pub struct Course {
+    /// The lane change being followed, in the `s` of the lane it is on.
+    change: Option<LaneChange>,
+    /// That lane's `s` at the vehicle's rear axle.
+    s: f64,
+    /// The searched lanes' `t` of that lane's centerline: zero when searching the
+    /// lanes it follows, a lane's separation when searching the lanes beside them.
+    shift: f64,
+}
+
+impl Course {
+    pub fn new(change: Option<LaneChange>, s: f64, shift: f64) -> Self {
+        Self { change, s, shift }
+    }
+
+    /// A vehicle's own planned path, along the lanes it follows.
+    pub fn of(vehicle: &Vehicle) -> Self {
+        Self::new(vehicle.lane_change, vehicle.lane_pos.s, 0.0)
+    }
+
+    /// The planned `t` on the searched lanes, `ahead` meters past the rear axle.
+    fn t_at(&self, ahead: f64) -> f64 {
+        self.shift + self.change.map_or(0.0, |c| c.offset_at(self.s + ahead))
+    }
+}
+
 /// How a leader search treats ghost records.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ghosts {
@@ -214,8 +246,8 @@ pub struct Search {
 ///
 /// A vehicle diverging from a lane after a lane change is passed if its trailing
 /// rear corner leaves room on the side it is leaving: at least
-/// [`PASSING_CLEARANCE`] between that corner and this vehicle's body, centered
-/// `axle_t` from the centerline. Any other record blocks (see [`Lateral`]).
+/// [`PASSING_CLEARANCE`] between that corner and this vehicle's body where it will
+/// be while passing it, along `course`. Any other record blocks (see [`Lateral`]).
 #[allow(clippy::too_many_arguments)]
 pub fn find_leader(
     network: &SimNetwork,
@@ -224,12 +256,23 @@ pub fn find_leader(
     vehicle: &Vehicle,
     lanes: &[LaneId],
     axle_s: f64,
-    axle_t: f64,
+    course: Course,
     ghosts: Ghosts,
     skip: Option<VehicleId>,
 ) -> Search {
     let half_width = 0.5 * vehicle.spec.width;
-    let body = [axle_t - half_width, axle_t + half_width];
+    // The stretch of the searched lanes this vehicle's body covers while passing
+    // a corner `ahead` of its rear axle: from its front reaching the corner to its
+    // rear clearing it, along its course. The cubic can bulge with a starting
+    // slope, so the middle is sampled as well as the ends.
+    let body = |ahead: f64| {
+        let length = vehicle.spec.length;
+        let ts = [0.0, 0.5, 1.0].map(|f| course.t_at(ahead + f * length));
+        let (lo, hi) = ts.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &t| {
+            (lo.min(t), hi.max(t))
+        });
+        [lo - half_width, hi + half_width]
+    };
     let front = axle_s + vehicle.spec.length - vehicle.spec.rear_axle;
     let mut found = Search::default();
     // Start of the current lane, measured along `lanes` from the start of the first.
@@ -253,7 +296,7 @@ pub fn find_leader(
                 found.ghost = found.ghost.or(Some((o.id, gap)));
                 continue;
             }
-            if o.lateral.can_pass(body) {
+            if o.lateral.can_pass(body(offset + o.s - axle_s)) {
                 continue;
             }
             found.leader = Some((o.id, gap));

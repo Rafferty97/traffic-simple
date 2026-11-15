@@ -8,7 +8,7 @@ use crate::math::wrap_angle;
 use crate::models::lateral::{self, LaneChange};
 use crate::models::{acceleration, lane_change};
 use crate::network::{LaneId, Side, SimNetwork};
-use crate::occupancy::{self, Ghosts, Occupant};
+use crate::occupancy::{self, Course, Ghosts, Occupant};
 use crate::vehicle::{Intent, PATH_LEN, Placement, Response, Vehicle, VehicleId, VehicleSpec};
 
 /// Longest substep in seconds. Longer frames are split.
@@ -173,7 +173,7 @@ impl<D: DebugSink> Simulation<D> {
             &vehicle,
             &path,
             axle_s,
-            vehicle.lane_pos.t,
+            Course::of(&vehicle),
             Ghosts::Lead,
             None,
         );
@@ -486,7 +486,7 @@ impl<D: DebugSink> Simulation<D> {
                 vehicle,
                 path,
                 axle_s,
-                vehicle.lane_pos.t,
+                Course::of(vehicle),
                 Ghosts::Report,
                 None,
             );
@@ -509,8 +509,15 @@ impl<D: DebugSink> Simulation<D> {
                     // along the old lane is a good hint.
                     let fraction = vehicle.lane_pos.s / lane.length();
                     let hint = old.lane_pos(fraction * old.length(), 0.0);
-                    let on_old = old.world_to_lane_near(vehicle.pos, hint);
-                    let (axle_s, axle_t) = (on_old.s, on_old.t);
+                    let axle_s = old.world_to_lane_near(vehicle.pos, hint).s;
+                    // Its course is along the lanes it follows, which are on the
+                    // other side of the old lanes, a lane's separation away.
+                    let separation = 0.5 * (lane.width() + old.width());
+                    let shift = match side {
+                        Side::Right => separation,
+                        Side::Left => -separation,
+                    };
+                    let course = Course::new(vehicle.lane_change, vehicle.lane_pos.s, shift);
                     let search = occupancy::find_leader(
                         network,
                         occupants,
@@ -518,7 +525,7 @@ impl<D: DebugSink> Simulation<D> {
                         vehicle,
                         &old_path,
                         axle_s,
-                        axle_t,
+                        course,
                         Ghosts::Report,
                         None,
                     );
@@ -552,7 +559,7 @@ impl<D: DebugSink> Simulation<D> {
                     vehicle,
                     path,
                     axle_s,
-                    vehicle.lane_pos.t,
+                    Course::of(vehicle),
                     Ghosts::Report,
                     Some(leader),
                 );
@@ -775,7 +782,7 @@ fn decide<D: DebugSink>(
         vehicle,
         &vehicle.path,
         vehicle.lane_pos.s,
-        vehicle.lane_pos.t,
+        Course::of(vehicle),
         Ghosts::Report,
     );
     let mut record = |eval: LaneChangeEval| {
@@ -925,8 +932,8 @@ fn anyone_behind_ghost(
 }
 
 /// A vehicle's acceleration under the longitudinal model from its rear axle at
-/// (`axle_s`, `axle_t`) on the first of `lanes`, against the free road and its
-/// leader there.
+/// `axle_s` on the first of `lanes`, following `course` across them, against the
+/// free road and its leader there.
 #[allow(clippy::too_many_arguments)]
 fn accel_along(
     network: &SimNetwork,
@@ -936,13 +943,13 @@ fn accel_along(
     vehicle: &Vehicle,
     lanes: &[LaneId],
     axle_s: f64,
-    axle_t: f64,
+    course: Course,
     ghosts: Ghosts,
 ) -> f64 {
     let desired = vehicle.spec.desired_speed(network.lane(lanes[0]).speed_limit());
     let mut accel = acceleration::free_road(&vehicle.spec, vehicle.speed, desired);
     let search = occupancy::find_leader(
-        network, occupants, id, vehicle, lanes, axle_s, axle_t, ghosts, None,
+        network, occupants, id, vehicle, lanes, axle_s, course, ghosts, None,
     );
     if let Some((leader, gap)) = search.leader {
         let leader_speed = vehicles[leader].speed;
@@ -972,10 +979,13 @@ fn accel_in(
     // Adjacent lanes start and end together, so the same fraction is a good hint.
     let hint = lane.lane_pos(vehicle.lane_pos.s / current.length() * lane.length(), 0.0);
     let projected = lane.world_to_lane_near(vehicle.pos, hint);
-    let (axle_s, axle_t) = (projected.s, projected.t);
+    let axle_s = projected.s;
     let mut path = ArrayVec::<LaneId, PATH_LEN>::new();
     path.push(target);
     extend_path(network, &mut path);
+    // Changing, it would steer from where it is across onto the target lane's
+    // centerline along a cubic, as `change_lane` sets up.
+    let change = LaneChange::new(axle_s, projected.t, 0.0, vehicle.speed);
     let accel = accel_along(
         network,
         occupants,
@@ -984,7 +994,7 @@ fn accel_in(
         vehicle,
         &path,
         axle_s,
-        axle_t,
+        Course::new(Some(change), axle_s, 0.0),
         Ghosts::Lead,
     );
     (accel, axle_s)
