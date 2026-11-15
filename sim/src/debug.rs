@@ -1,5 +1,6 @@
 use glam::DVec2;
 
+use crate::models::lane_change::Outcome;
 use crate::network::Side;
 use crate::vehicle::VehicleId;
 
@@ -56,26 +57,6 @@ pub struct LaneChangeEval {
     /// Whether it and its new follower would brake gently enough.
     pub safe: bool,
     pub outcome: Outcome,
-}
-
-/// What a vehicle decided about one side.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Outcome {
-    /// Not indicating: changing wouldn't gain enough.
-    NotWorthIt,
-    /// Not indicating: it would have to brake too hard in the target lane.
-    Unsafe,
-    /// Not indicating: the other side is better.
-    OtherSide,
-    /// Started indicating.
-    Indicate,
-    /// Still indicating, waiting for a gap: until the change is safe, worth it to
-    /// everyone under politeness, and it has indicated long enough.
-    Wait,
-    /// Changing lanes now.
-    Change,
-    /// Stopped indicating: no longer worth it to the driver, or no longer permitted.
-    Cancel,
 }
 
 /// What an acceleration term reacts to.

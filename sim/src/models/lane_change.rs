@@ -5,6 +5,26 @@
 
 use crate::models::acceleration::SAFE_BRAKING;
 
+/// What a vehicle decided about changing to one side, at a decision tick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// Not indicating: changing wouldn't gain enough.
+    NotWorthIt,
+    /// Not indicating: it would have to brake too hard in the target lane.
+    Unsafe,
+    /// Not indicating: the other side is better.
+    OtherSide,
+    /// Started indicating.
+    Indicate,
+    /// Still indicating, waiting for a gap: until the change is safe, worth it to
+    /// everyone under politeness, and it has indicated long enough.
+    Wait,
+    /// Changing lanes now.
+    Change,
+    /// Stopped indicating: no longer worth it to the driver, or no longer permitted.
+    Cancel,
+}
+
 /// How much a driver weighs the followers' gains and losses against its own.
 pub const POLITENESS: f64 = 0.2;
 /// The least net gain, in m/s², worth changing lanes for.

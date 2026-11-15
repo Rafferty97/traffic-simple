@@ -2,11 +2,12 @@ use arrayvec::ArrayVec;
 use glam::DVec2;
 use slotmap::SlotMap;
 
-use crate::debug::{AccelSource, DebugEvent, DebugSink, LaneChangeEval, NoopSink, Outcome};
+use crate::debug::{AccelSource, DebugEvent, DebugSink, LaneChangeEval, NoopSink};
 use crate::kinematics;
 use crate::math::wrap_angle;
+use crate::models::acceleration;
+use crate::models::lane_change::{self, Outcome};
 use crate::models::lateral::{self, LaneChange};
-use crate::models::{acceleration, lane_change};
 use crate::network::{LaneId, Side, SimNetwork};
 use crate::occupancy::{self, Course, Ghosts, Occupant};
 use crate::vehicle::{Intent, PATH_LEN, Placement, Response, Vehicle, VehicleId, VehicleSpec};
