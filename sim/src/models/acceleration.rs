@@ -43,6 +43,21 @@ pub fn interaction(spec: &VehicleSpec, speed: f64, gap: f64, leader_speed: f64) 
     accel.max(-MAX_BRAKING)
 }
 
+/// How quickly a vehicle eases up to a speed imposed on it from below, in
+/// seconds: the time constant of its approach.
+const CAP_EASE: f64 = 0.5;
+
+/// The acceleration a speed cap allows: braking at the vehicle's comfortable
+/// deceleration while above it, easing up to it from below, and with a cap of 0
+/// braking until it stops. Like any term, it only binds when it is the lowest.
+pub fn capped(spec: &VehicleSpec, speed: f64, max_speed: f64) -> f64 {
+    if max_speed <= 0.0 {
+        -spec.comfy_decel
+    } else {
+        ((max_speed - speed) / CAP_EASE).max(-spec.comfy_decel)
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -59,6 +74,8 @@ mod test {
             min_gap: 2.0,
             rear_axle: 1.0,
             front_axle: 3.7,
+            courtesy: 1.0,
+            politeness: 0.2,
         }
     }
 
@@ -96,5 +113,25 @@ mod test {
         assert_eq!(interaction(&spec(), 30.0, 0.5, 0.0), -MAX_BRAKING);
         assert_eq!(interaction(&spec(), 30.0, -1.0, 0.0), -MAX_BRAKING);
         assert_eq!(free_road(&spec(), 30.0, 10.0), -MAX_BRAKING);
+    }
+
+    #[test]
+    fn a_speed_cap_brakes_above_it_and_eases_up_to_it() {
+        let spec = spec();
+        assert_eq!(
+            capped(&spec, 14.0, 5.0),
+            -spec.comfy_decel,
+            "well above: comfortable braking"
+        );
+        assert!(capped(&spec, 5.2, 5.0) < 0.0 && capped(&spec, 5.2, 5.0) > -spec.comfy_decel);
+        assert!(
+            capped(&spec, 4.0, 5.0) > 0.0,
+            "below it, it doesn't hold the vehicle back"
+        );
+        assert_eq!(
+            capped(&spec, 0.0, 0.0),
+            -spec.comfy_decel,
+            "a cap of 0 stops it"
+        );
     }
 }

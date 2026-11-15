@@ -81,6 +81,8 @@ pub fn replay<D: DebugSink>(log: &str, sink: D) -> Replay<D> {
                     min_gap: f.get("min_gap"),
                     rear_axle: f.get("rear_axle"),
                     front_axle: f.get("front_axle"),
+                    courtesy: f.get("courtesy"),
+                    politeness: f.get("politeness"),
                 };
                 let lane = LaneId(f.get("lane") as u32);
                 let at_ = Placement { lane, s: f.get("s"), speed: f.get("speed") };
@@ -95,6 +97,14 @@ pub fn replay<D: DebugSink>(log: &str, sink: D) -> Replay<D> {
             "hold" => {
                 let id = vehicle();
                 sim.hold(id);
+            }
+            "cap" => {
+                let id = vehicle();
+                let max_speed = words.next().and_then(|w| w.parse().ok());
+                sim.cap_speed(
+                    id,
+                    max_speed.unwrap_or_else(|| panic!("malformed {}", at())),
+                );
             }
             "release" => {
                 let id = vehicle();

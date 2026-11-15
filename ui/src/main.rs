@@ -33,6 +33,8 @@ const SPEED_LIMIT: f64 = 50.0 / 3.6;
 
 /// Most spawns or despawns per simulated second, while the count is off target.
 const CHANGE_RATE: f64 = 2.0;
+/// The speed the inspector's slow button imposes, in m/s: 20 km/h.
+const SLOW_CAP: f64 = 20.0 / 3.6;
 /// How far outside a vehicle a click still selects it, in screen points.
 const PICK_TOLERANCE: f32 = 6.0;
 
@@ -116,7 +118,14 @@ impl Harness {
             let lanes = sim.network().lanes().count() as u32;
             let lane = LaneId(self.rng.random_range(0..lanes));
             let s = self.rng.random::<f64>() * sim.network().lane(lane).length();
-            let car = VehicleSpec { speed_factor: self.speed_factor(), ..demo_car() };
+            // Drivers vary in how hard they'll brake to let someone in, and in how
+            // much they weigh others when changing lanes.
+            let car = VehicleSpec {
+                speed_factor: self.speed_factor(),
+                courtesy: 2.0 * self.rng.random::<f64>(),
+                politeness: 0.1 + 0.3 * self.rng.random::<f64>(),
+                ..demo_car()
+            };
             let at = Placement { lane, s, speed: car.desired_speed(SPEED_LIMIT) };
             // Refused where there is no safe room: the credit waits for another try.
             if sim.try_insert(car, at).is_ok() {
@@ -351,9 +360,13 @@ impl App {
                 };
                 ui.label(format!("{side}: {:?}", eval.outcome));
                 ui.small(format!(
-                    "gain {:+.2}{replies}, net {:+.2}{}",
+                    "gain {:+.2}{replies}, net {:+.2}, built up {:.2}/{:.2}, frustrated {:.1} s, accepts {:.1} m/s²{}",
                     eval.own_gain,
                     eval.incentive,
+                    eval.advantage,
+                    traffic_sim::LANE_CHANGE_INTENT,
+                    eval.frustration,
+                    eval.accepted_braking,
                     if eval.safe { "" } else { ", unsafe" }
                 ));
                 ui.end_row();
@@ -373,7 +386,13 @@ impl App {
                         format!("free road, v0 {desired_speed:.1} m/s")
                     }
                     AccelSource::Leader { id, gap } => format!("leader {id:?}, gap {gap:.2} m"),
-                    AccelSource::Hold => "hold".into(),
+                    AccelSource::Cap { max_speed: 0.0 } => "held to a stop".into(),
+                    AccelSource::Cap { max_speed } => {
+                        format!("capped at {:.0} km/h", max_speed * 3.6)
+                    }
+                    AccelSource::Yield { id, gap } => {
+                        format!("making room for {id:?}, gap {gap:.2} m")
+                    }
                 };
                 let text = egui::RichText::new(format!("{accel:+.2} m/s²")).monospace();
                 ui.label(name);
@@ -397,22 +416,26 @@ impl App {
         if let Some(error) = self.lane_change_error {
             ui.colored_label(Color32::RED, error.to_string());
         }
-        let held = self.sim.is_held(id);
+        let cap = self.sim.speed_cap(id);
         let gap = ui.spacing().item_spacing.x;
         let size = egui::vec2(
-            (ui.available_width() - 2.0 * gap) / 3.0,
+            (ui.available_width() - 3.0 * gap) / 4.0,
             ui.spacing().interact_size.y,
         );
         ui.horizontal(|ui| {
             if ui.add_sized(size, egui::Button::new("Change left")).clicked() {
                 self.lane_change_error = self.sim.change_lane(id, Side::Left).err();
             }
-            // Drawn as an ordinary button when off, and highlighted when on.
-            if ui.add_sized(size, egui::Button::new("Stop").selected(held)).clicked() {
-                if held {
-                    self.sim.release(id);
-                } else {
-                    self.sim.hold(id);
+            // Each a toggle, drawn as an ordinary button when off and highlighted
+            // when on; turning one on replaces the other.
+            for (label, max_speed) in [("Stop", 0.0), ("20 km/h", SLOW_CAP)] {
+                let on = cap == Some(max_speed);
+                if ui.add_sized(size, egui::Button::new(label).selected(on)).clicked() {
+                    if on {
+                        self.sim.release(id);
+                    } else {
+                        self.sim.cap_speed(id, max_speed);
+                    }
                 }
             }
             if ui.add_sized(size, egui::Button::new("Change right")).clicked() {
@@ -1005,5 +1028,7 @@ fn demo_car() -> VehicleSpec {
         min_gap: 1.5,
         rear_axle: 1.0,
         front_axle: 3.7,
+        courtesy: 1.0,
+        politeness: 0.2,
     }
 }

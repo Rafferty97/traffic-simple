@@ -274,6 +274,10 @@ impl<'a> Course<'a> {
     /// On the lanes it follows, `gap`, how far its rear axle travels before its
     /// nose reaches `s`, is exact. On a lane beside them, distances differ from
     /// its own, so `point` is projected onto its own `k`th lane instead.
+    ///
+    /// If its nose is already there, there is no earlier point to check from, so
+    /// it is where it is `now`, its actual pose, rather than where its course
+    /// would put it, which pure pursuit lags behind.
     #[allow(clippy::too_many_arguments)]
     fn reach(
         &self,
@@ -284,6 +288,7 @@ impl<'a> Course<'a> {
         point: DVec2,
         s: f64,
         nose: f64,
+        now: (DVec2, DVec2),
     ) -> (DVec2, DVec2) {
         let ahead = match self.path.get(k) {
             Some(&own) if own != lane => {
@@ -295,7 +300,10 @@ impl<'a> Course<'a> {
             }
             _ => gap,
         };
-        self.pose(network, ahead - NOSE_GAP)
+        match ahead - NOSE_GAP {
+            ahead if ahead > 0.0 => self.pose(network, ahead),
+            _ => now,
+        }
     }
 
     /// How far its rear axle has still to go to the end of its lane change, or zero
@@ -329,17 +337,20 @@ impl<'a> Course<'a> {
 /// How a leader search treats ghost records.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ghosts {
-    /// Ghosts are passed over: they brake nobody.
+    /// Ghosts are passed over, but the nearest one before the leader is reported:
+    /// the searching vehicle may choose to make room for it.
     Pass,
     /// Ghosts count as leaders, as when a vehicle weighs up changing lanes: a
     /// vehicle already indicating into the gap ahead goes first.
     Lead,
 }
 
-/// What a leader search found: the leader, with the bumper-to-bumper gap to it.
+/// What a leader search found, each with the bumper-to-bumper gap to it.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Search {
     pub leader: Option<(VehicleId, f64)>,
+    /// The nearest ghost before the leader, with [`Ghosts::Pass`].
+    pub ghost: Option<(VehicleId, f64)>,
 }
 
 /// The nearest vehicle ahead along `lanes`, within the leader horizon, and the
@@ -407,6 +418,7 @@ pub fn find_leader(
                 return found;
             }
             if o.ghost && ghosts == Ghosts::Pass {
+                found.ghost = found.ghost.or(Some((o.id, gap)));
                 continue;
             }
             let leaving = course.leaving(network, k, lane);
@@ -414,7 +426,8 @@ pub fn find_leader(
                 // The record sits at the other vehicle's rearmost corner.
                 let rearmost = network.lane(lane).lane_to_world(o.hint);
                 let nose = vehicle.spec.length - vehicle.spec.rear_axle;
-                let (pos, tangent) = course.reach(network, k, lane, gap, rearmost, o.s, nose);
+                let now = (vehicle.pos, DVec2::from_angle(vehicle.heading));
+                let (pos, tangent) = course.reach(network, k, lane, gap, rearmost, o.s, nose, now);
                 let [rear_left, rear_right, ..] = vehicles[o.id].corners();
                 let corners = [rear_left, rear_right];
                 let (clearance, corner) = clearance(side, pos, tangent, half_width, corners);
@@ -568,6 +581,110 @@ mod test {
         let (pos, tangent) = Course::new(&path, None, 0.0).pose(&network, 7.5);
         assert!((pos - DVec2::new(7.5, 0.0)).length() < 1e-9);
         assert!((tangent - DVec2::X).length() < 1e-9);
+    }
+
+    /// Two concentric half-circle lanes, curving left: lane 0 inside, of radius
+    /// 150 m, and lane 1 outside it.
+    fn bend() -> SimNetwork {
+        let arc = |radius: f64| {
+            let points: Vec<_> = (0..=400)
+                .map(|i| {
+                    let a = std::f64::consts::PI * i as f64 / 400.0 - std::f64::consts::FRAC_PI_2;
+                    radius * DVec2::new(a.cos(), a.sin())
+                })
+                .collect();
+            Lane::new(&points, 3.5, 14.0).unwrap()
+        };
+        let mut network = SimNetwork::new(vec![arc(150.0), arc(153.5)]);
+        network.set_adjacent(LaneId(0), LaneId(1), true, true);
+        network
+    }
+
+    /// Where a predicted rear axle at `pos`, heading along `tangent`, puts its
+    /// nose, `nose` ahead, as `s` along `lane`.
+    fn nose_along(
+        network: &SimNetwork,
+        lane: LaneId,
+        pos: DVec2,
+        tangent: DVec2,
+        nose: f64,
+        near: f64,
+    ) -> f64 {
+        let lane = network.lane(lane);
+        lane.world_to_lane_near(pos + tangent * nose, lane.lane_pos(near, 0.0)).s
+    }
+
+    const NOSE: f64 = 3.6;
+    /// Unused: `reach` shouldn't fall back to where the vehicle is.
+    const NOWHERE: (DVec2, DVec2) = (DVec2::new(1e9, 1e9), DVec2::X);
+
+    #[test]
+    fn on_its_own_lane_the_nose_stops_just_short_of_the_other_rear() {
+        let network = bend();
+        let path = [LaneId(1)];
+        let course = Course::new(&path, None, 10.0);
+        let lane = network.lane(LaneId(1));
+        // A rear corner 60 m along, off the centerline.
+        let corner = lane.lane_to_world(lane.lane_pos(60.0, -0.9));
+        let gap = 60.0 - (10.0 + NOSE);
+        let (pos, tangent) = course.reach(&network, 0, LaneId(1), gap, corner, 60.0, NOSE, NOWHERE);
+        let nose = nose_along(&network, LaneId(1), pos, tangent, NOSE, 60.0);
+        assert!((nose - (60.0 - NOSE_GAP)).abs() < 0.02, "nose at {nose}");
+    }
+
+    #[test]
+    fn on_the_old_side_the_other_rear_is_projected_onto_its_own_lane() {
+        // Searching lane 0 from a course along lane 1: lane 0 is shorter round
+        // the bend, so its distances aren't the course's, and the gap is ignored.
+        let network = bend();
+        let path = [LaneId(1)];
+        let course = Course::new(&path, None, 10.0);
+        let beside = network.lane(LaneId(0));
+        let corner = beside.lane_to_world(beside.lane_pos(58.0, -1.2));
+        let (pos, tangent) =
+            course.reach(&network, 0, LaneId(0), 999.0, corner, 58.0, NOSE, NOWHERE);
+        let own = network.lane(LaneId(1));
+        let target = own.world_to_lane_near(corner, own.lane_pos(58.0, 0.0)).s;
+        let nose = nose_along(&network, LaneId(1), pos, tangent, NOSE, target);
+        assert!(
+            (nose - (target - NOSE_GAP)).abs() < 0.02,
+            "nose at {nose}, corner at {target}"
+        );
+    }
+
+    #[test]
+    fn mid_change_the_nose_still_stops_short() {
+        // Changing onto lane 1 from lane 0, so heading across the lane: the nose,
+        // ahead along that heading, falls a little short, never past.
+        let network = bend();
+        let path = [LaneId(1)];
+        let change = LaneChange::new(10.0, 3.5, 0.0, 0.0);
+        let course = Course::new(&path, Some(change), 10.0);
+        let lane = network.lane(LaneId(1));
+        let corner = lane.lane_to_world(lane.lane_pos(25.0, 0.0));
+        let gap = 25.0 - (10.0 + NOSE);
+        let (pos, tangent) = course.reach(&network, 0, LaneId(1), gap, corner, 25.0, NOSE, NOWHERE);
+        let nose = nose_along(&network, LaneId(1), pos, tangent, NOSE, 25.0);
+        assert!(
+            nose < 25.0 && nose > 25.0 - NOSE_GAP - 0.3,
+            "nose at {nose}"
+        );
+    }
+
+    #[test]
+    fn already_alongside_it_is_checked_where_it_is_now() {
+        let network = bend();
+        let path = [LaneId(1)];
+        let course = Course::new(&path, None, 10.0);
+        let lane = network.lane(LaneId(1));
+        let now = (DVec2::new(1.0, 2.0), DVec2::Y);
+        // The other rear is behind its nose already, and just short of it.
+        for s in [11.0, 13.0, 10.0 + NOSE + 0.5 * NOSE_GAP] {
+            let corner = lane.lane_to_world(lane.lane_pos(s, 0.0));
+            let gap = s - (10.0 + NOSE);
+            let reached = course.reach(&network, 0, LaneId(1), gap, corner, s, NOSE, now);
+            assert_eq!(reached, now, "rear at {s}");
+        }
     }
 
     #[test]

@@ -85,3 +85,36 @@ fn drivers_settle_at_their_share_of_the_limit() {
         );
     }
 }
+
+#[test]
+fn a_capped_car_slows_to_its_cap_and_goes_on_once_released() {
+    // A lone car on a long straight lane, so nothing but the cap holds it back.
+    let points: Vec<_> = (0..=10).map(|i| DVec2::new(100.0 * i as f64, 0.0)).collect();
+    let lane = Lane::new(&points, 3.5, SPEED_LIMIT).unwrap();
+    let mut sim = Simulation::new(SimNetwork::new(vec![lane]), NoopSink);
+    let id = sim.insert(
+        car(),
+        Placement { lane: LaneId(0), s: 0.0, speed: SPEED_LIMIT },
+    );
+    let cap = 20.0 / 3.6;
+    sim.cap_speed(id, cap);
+    assert_eq!(sim.speed_cap(id), Some(cap));
+    assert!(!sim.is_held(id));
+    for _ in 0..(10.0 / DT) as usize {
+        sim.step(DT);
+    }
+    let speed = sim.get(id).unwrap().speed();
+    assert!(
+        (speed - cap).abs() < 0.05,
+        "at {speed} m/s, capped at {cap}"
+    );
+    sim.release(id);
+    assert_eq!(sim.speed_cap(id), None);
+    for _ in 0..(5.0 / DT) as usize {
+        sim.step(DT);
+    }
+    assert!(
+        sim.get(id).unwrap().speed() > cap + 2.0,
+        "it should speed up again"
+    );
+}

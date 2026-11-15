@@ -36,6 +36,12 @@ pub struct VehicleSpec {
     pub rear_axle: f64,
     /// Distance from the rear bumper to the front axle.
     pub front_axle: f64,
+    /// The hardest the driver will brake to let another vehicle in ahead, in
+    /// m/s²: 0 never yields to one indicating into its lane.
+    pub courtesy: f64,
+    /// How much the driver weighs other drivers' gains and losses against its own
+    /// when changing lanes: MOBIL's politeness.
+    pub politeness: f64,
 }
 
 impl VehicleSpec {
@@ -87,6 +93,16 @@ pub struct Vehicle {
     pub(crate) lane_change: Option<LaneChange>,
     /// The lane change the vehicle is indicating, if any.
     pub(crate) intent: Option<Intent>,
+    /// The advantage built up so far for changing left and right, in m/s (see
+    /// [`lane_change::accumulate`](crate::models::lane_change::accumulate)).
+    pub(crate) advantage: [f64; 2],
+    /// How long it has been wanting to change lanes but blocked, in seconds,
+    /// fading while it isn't (see
+    /// [`lane_change::frustrate`](crate::models::lane_change::frustrate)).
+    pub(crate) frustration: f64,
+    /// The vehicle whose ghost it has chosen to make room for, if any. Kept so the
+    /// choice sticks rather than flickering on and off.
+    pub(crate) yielding: Option<VehicleId>,
 }
 
 /// A lane change a vehicle is indicating. It has a ghost record in the target

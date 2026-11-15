@@ -270,7 +270,9 @@ fn followers_pass_where_they_will_be_not_where_they_are() {
     };
     let mut network = SimNetwork::new(vec![lane(10.0), lane(5.0), lane(0.0)]);
     network.set_adjacent(LaneId(0), LaneId(1), true, true);
-    network.set_adjacent(LaneId(1), LaneId(2), true, true);
+    // Only into lane 1 from lane 2, so the fast car can't escape back out before
+    // it reaches the held car: this is about how it brakes for it.
+    network.set_adjacent(LaneId(1), LaneId(2), false, true);
     let mut sim = Simulation::new(network, NoopSink);
 
     // A slow car changes left out of lane 1 and is held while its trailing (right
@@ -295,8 +297,7 @@ fn followers_pass_where_they_will_be_not_where_they_are() {
 
     // A fast car changes from lane 2 into lane 1 well behind it. It is still
     // mostly in lane 2 while far back, but will be centered by the time it
-    // arrives, so it must treat the held car as a leader from the start. (Once
-    // stopped, MOBIL may take it back out to lane 2, which is fine.)
+    // arrives, so it must treat the held car as a leader from the start.
     let s = sim.get(ahead).unwrap().lane_pos().s - 70.0;
     let fast = sim.insert(car(), Placement { lane: LaneId(2), s, speed: SPEED_LIMIT });
     sim.change_lane(fast, Side::Left).unwrap();
@@ -380,7 +381,9 @@ fn a_car_changing_in_behind_a_slower_one_follows_it() {
         Lane::new(&points, 3.5, SPEED_LIMIT).unwrap()
     };
     let mut network = SimNetwork::new(vec![lane(3.5), lane(0.0)]);
-    network.set_adjacent(LaneId(0), LaneId(1), true, true);
+    // Changes are only permitted rightward, so the slower car stays in lane 1
+    // rather than moving over to let the faster one by.
+    network.set_adjacent(LaneId(0), LaneId(1), true, false);
     let mut sim = Simulation::new(network, NoopSink);
     // A slower car in lane 1, and a faster one in lane 0 that changes in about a
     // metre behind it. Still a whole lane to the side as it starts, it would

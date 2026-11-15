@@ -1,12 +1,14 @@
 //! Passing checks, made as the follower's nose reaches the other vehicle's rear.
+//! Where the nose is put is checked by snapshot tests of `Course::reach`, in
+//! `occupancy`.
 
 use traffic_sim::{
     DebugEvent, DebugSink, Lane, LaneId, PassCheck, Placement, Side, SimNetwork, Simulation,
-    VehicleId, VehicleSpec,
+    VehicleId,
 };
 
 mod common;
-use common::{car, ring_road};
+use common::car;
 
 const DT: f64 = 1.0 / 60.0;
 const SPEED_LIMIT: f64 = 14.0;
@@ -21,54 +23,6 @@ impl DebugSink for Checks {
             self.0.push((vehicle, check));
         }
     }
-}
-
-#[test]
-fn the_predicted_nose_stops_just_short_of_the_other_cars_rear() {
-    // A busy three-lane ring, so lanes curve and plenty of vehicles change lanes,
-    // with checks from both the lanes they follow and the old side.
-    let mut sim = Simulation::new(ring_road(1000.0, 3, SPEED_LIMIT), Checks::default());
-    let (mut checks, mut worst, mut furthest) = (0, f64::INFINITY, 0.0f64);
-    for i in 0..30_000 {
-        sim.step(DT);
-        if i % 30 == 0 {
-            let factor = 0.8 + 0.4 * ((i / 30) % 7) as f64 / 6.0;
-            let spec = VehicleSpec { speed_factor: factor, ..car() };
-            let at = Placement { lane: LaneId(2), s: 250.0, speed: 12.0 };
-            let _ = sim.try_insert(spec, at);
-        }
-        for (id, check) in std::mem::take(&mut sim.sink_mut().0) {
-            let v = sim.get(id).unwrap();
-            let lane = sim.network().lane(v.lane());
-            // Away from the seam, where `s` wraps round.
-            if v.lane_pos().s > lane.length() - 100.0 {
-                continue;
-            }
-            // Along the follower's own lane: its predicted nose, and the other
-            // car's rearmost corner.
-            let along = |p| lane.world_to_lane_near(p, v.lane_pos()).s;
-            let nose = along(check.pos + check.tangent * (v.spec().length - v.spec().rear_axle));
-            let [rear_left, rear_right, ..] = sim.get(check.leader).unwrap().corners();
-            let rear = along(rear_left).min(along(rear_right));
-            let short = rear - nose;
-            worst = worst.min(short);
-            checks += 1;
-            // Close up, the projection is the whole story.
-            if rear - v.lane_pos().s < 30.0 {
-                furthest = furthest.max(short);
-            }
-        }
-    }
-    assert!(checks > 10_000, "only {checks} checks");
-    assert!(
-        worst >= 0.0,
-        "a nose went {:.3} m past the other car's rear",
-        -worst
-    );
-    assert!(
-        furthest < 0.5,
-        "a nose stopped {furthest:.2} m short close up"
-    );
 }
 
 /// A car held in lane 1, `ahead` meters ahead of another moving at 10 m/s that

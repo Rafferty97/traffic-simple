@@ -4,8 +4,8 @@ use glam::DVec2;
 use std::collections::HashMap;
 
 use traffic_sim::{
-    AccelSource, DebugEvent, DebugSink, Lane, LaneId, Placement, SAFE_BRAKING, SimNetwork,
-    Simulation, VehicleId,
+    AccelSource, DebugEvent, DebugSink, Lane, LaneId, MIN_INDICATING, Placement, SAFE_BRAKING,
+    SimNetwork, Simulation, VehicleId,
 };
 
 mod common;
@@ -64,7 +64,7 @@ fn overtakes_a_stopped_car_after_indicating() {
     let indicated = indicated_at.expect("never indicated");
     let changed = changed_at.expect("never changed lanes");
     assert!(
-        changed - indicated >= 1.0,
+        changed - indicated >= MIN_INDICATING,
         "indicated for only {} s",
         changed - indicated
     );

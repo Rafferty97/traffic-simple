@@ -80,6 +80,13 @@ pub struct LaneChangeEval {
     pub old_follower: Option<f64>,
     /// MOBIL's net gain, weighing the followers' changes by politeness.
     pub incentive: f64,
+    /// The advantage built up for this side, after this decision.
+    pub advantage: f64,
+    /// The driver's frustration before this decision, in seconds blocked.
+    pub frustration: f64,
+    /// The hardest braking it accepts from the change, for itself and its new
+    /// follower, at that frustration.
+    pub accepted_braking: f64,
     /// Whether it and its new follower would brake gently enough.
     pub safe: bool,
     pub outcome: Outcome,
@@ -92,8 +99,11 @@ pub enum AccelSource {
     FreeRoad { desired_speed: f64 },
     /// A vehicle ahead, with the bumper-to-bumper gap along the follower's path.
     Leader { id: VehicleId, gap: f64 },
-    /// The vehicle is being held to a stop.
-    Hold,
+    /// A maximum speed imposed on the vehicle, in m/s: 0 holds it to a stop.
+    Cap { max_speed: f64 },
+    /// Making room for a vehicle indicating into its lane ahead, as if that
+    /// vehicle's ghost were a leader, with the gap to it.
+    Yield { id: VehicleId, gap: f64 },
 }
 
 /// A sink that discards everything.

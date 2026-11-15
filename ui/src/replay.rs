@@ -8,11 +8,12 @@
 //! are written so they parse back exactly. Lines starting with `#` are comments.
 //!
 //! ```text
-//! # traffic-sim replay v1
+//! # traffic-sim replay v2
 //! ring circumference=1000.0 lanes=3 width=3.5 speed_limit=13.88888888888889
 //! step 0.016666666666666666
 //! try_insert ok length=4.6 width=1.9 ... lane=2 s=255.4 speed=14.18
-//! hold 3
+//! cap 3 0.0
+//! cap 4 5.555555555555555
 //! change_lane 7 left refused
 //! ```
 
@@ -48,7 +49,7 @@ impl<D: DebugSink> Recorded<D> {
     /// Starts recording a new simulation. `network` is the log line that
     /// describes how to rebuild its network, such as `ring circumference=…`.
     pub fn new(sim: Simulation<D>, network: &str) -> Self {
-        let log = format!("# traffic-sim replay v1\n{network}\n");
+        let log = format!("# traffic-sim replay v2\n{network}\n");
         Self { sim, log, index: HashMap::new() }
     }
 
@@ -76,6 +77,8 @@ impl<D: DebugSink> Recorded<D> {
             min_gap,
             rear_axle,
             front_axle,
+            courtesy,
+            politeness,
         } = spec;
         let Placement { lane, s, speed } = at;
         writeln!(
@@ -83,7 +86,8 @@ impl<D: DebugSink> Recorded<D> {
             "try_insert {outcome} length={length:?} width={width:?} max_speed={max_speed:?} \
              speed_factor={speed_factor:?} max_accel={max_accel:?} comfy_decel={comfy_decel:?} \
              time_headway={time_headway:?} min_gap={min_gap:?} rear_axle={rear_axle:?} \
-             front_axle={front_axle:?} lane={} s={s:?} speed={speed:?}",
+             front_axle={front_axle:?} courtesy={courtesy:?} politeness={politeness:?} \
+             lane={} s={s:?} speed={speed:?}",
             lane.0
         )
         .unwrap();
@@ -99,9 +103,9 @@ impl<D: DebugSink> Recorded<D> {
         self.sim.remove(id)
     }
 
-    pub fn hold(&mut self, id: VehicleId) {
-        writeln!(self.log, "hold {}", self.index[&id]).unwrap();
-        self.sim.hold(id);
+    pub fn cap_speed(&mut self, id: VehicleId, max_speed: f64) {
+        writeln!(self.log, "cap {} {max_speed:?}", self.index[&id]).unwrap();
+        self.sim.cap_speed(id, max_speed);
     }
 
     pub fn release(&mut self, id: VehicleId) {
@@ -187,7 +191,7 @@ mod test {
                 let id = ids[rng.random_range(0..ids.len())];
                 if sim.get(id).is_some() {
                     match rng.random_range(0..4) {
-                        0 => sim.hold(id),
+                        0 => sim.cap_speed(id, rng.random_range(0..2) as f64 * 5.0),
                         1 => sim.release(id),
                         2 => drop(sim.change_lane(id, Side::Left)),
                         _ => drop(sim.remove(id)),
