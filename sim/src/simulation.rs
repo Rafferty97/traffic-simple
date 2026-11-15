@@ -771,7 +771,15 @@ fn decide<D: DebugSink>(
                 accel_in(network, occupants, vehicles, id, vehicle, target.lane);
             let own_gain = own_after - now;
             let safe = lane_change::safe(own_after)
-                && !alongside(occupants, vehicles, target.lane, id, vehicle, axle_s);
+                && !alongside(
+                    network,
+                    occupants,
+                    vehicles,
+                    target.lane,
+                    id,
+                    vehicle,
+                    axle_s,
+                );
             let outcome = match () {
                 _ if !safe => Outcome::Unsafe,
                 _ if !lane_change::worth_it(own_gain) => Outcome::NotWorthIt,
@@ -826,13 +834,24 @@ fn decide<D: DebugSink>(
     let indicated = time - intent.since;
     let follower_safe = match intent.new_follower {
         Some(response) => lane_change::safe(response.after),
-        // No reply: safe only if nobody is directly behind the ghost, and replies
+        // No reply: safe only if no vehicle is behind the ghost, and replies
         // have had time to arrive.
-        None => indicated >= 2.0 * ACCEL_PERIOD && !anyone_behind_ghost(occupants, target.lane, id),
+        None => {
+            indicated >= 2.0 * ACCEL_PERIOD
+                && !anyone_behind_ghost(network, occupants, target.lane, id)
+        }
     };
     let safe = lane_change::safe(own_after)
         && follower_safe
-        && !alongside(occupants, vehicles, target.lane, id, vehicle, axle_s);
+        && !alongside(
+            network,
+            occupants,
+            vehicles,
+            target.lane,
+            id,
+            vehicle,
+            axle_s,
+        );
     // Cancelling is decided on the driver's own gain, like starting, but with a
     // lower bar so the indicator doesn't flicker. Politeness and safety only hold
     // back the change.
@@ -863,10 +882,27 @@ fn decide<D: DebugSink>(
     }
 }
 
-/// Whether a record sits directly behind a vehicle's ghost in a lane's occupants.
-fn anyone_behind_ghost(occupants: &[Vec<Occupant>], lane: LaneId, id: VehicleId) -> bool {
+/// Whether a vehicle, not a ghost, is behind a vehicle's ghost: before it in the
+/// lane's occupants or on a lane leading into it. Only a vehicle can reply to a
+/// ghost, so ghosts behind don't count; counting them would deadlock a lane that
+/// several vehicles indicate into, each waiting on the others' ghosts.
+fn anyone_behind_ghost(
+    network: &SimNetwork,
+    occupants: &[Vec<Occupant>],
+    lane: LaneId,
+    id: VehicleId,
+) -> bool {
     let list = &occupants[lane.0 as usize];
-    list.iter().position(|o| o.id == id && o.ghost).is_some_and(|i| i > 0)
+    let Some(ghost) = list.iter().position(|o| o.id == id && o.ghost) else {
+        return false;
+    };
+    let vehicle = |o: &Occupant| !o.ghost && o.id != id;
+    list[..ghost].iter().any(vehicle)
+        || network
+            .lane(lane)
+            .predecessors()
+            .iter()
+            .any(|p| occupants[p.0 as usize].iter().any(vehicle))
 }
 
 /// A vehicle's acceleration under the longitudinal model from its rear axle at
@@ -936,14 +972,20 @@ fn accel_in(
 }
 
 /// Whether another vehicle, or another vehicle's ghost, is alongside: whether any
-/// record on `lane` overlaps the stretch the vehicle would take up there, from
-/// its rear to its front, with its rear axle at `axle_s`.
+/// record overlaps the stretch the vehicle would take up on `lane`, from its rear
+/// to its front, with its rear axle at `axle_s`.
 ///
 /// Leader search looks ahead of the rear axle and a follower's search ahead of
 /// its own, so a vehicle directly alongside is seen by neither. This closes that
-/// gap: MOBIL's requirement that both new gaps be positive. It reads only the
-/// records next to that stretch in one sorted list.
+/// gap: MOBIL's requirement that both new gaps be positive.
+///
+/// A record is on the lane its rear axle is on, so near either end of `lane` the
+/// stretch also overlaps records on the lanes before and after it: a vehicle
+/// whose front has crossed into `lane` but whose rear axle hasn't, or whose rear
+/// has crossed out of it. It reads only the records next to that stretch, in
+/// `lane`'s sorted list and those of its predecessors and successors.
 fn alongside(
+    network: &SimNetwork,
     occupants: &[Vec<Occupant>],
     vehicles: &SlotMap<VehicleId, Vehicle>,
     lane: LaneId,
@@ -953,16 +995,25 @@ fn alongside(
 ) -> bool {
     let rear = axle_s - vehicle.spec.rear_axle;
     let front = rear + vehicle.spec.length;
-    let list = &occupants[lane.0 as usize];
-    // Records start at their rear, so only those starting before our front can
-    // overlap; of those, walk back while their rear is within a vehicle length.
-    let end = list.partition_point(|o| o.s < front);
-    list[..end]
-        .iter()
-        .rev()
-        .filter(|o| o.id != id)
-        .take_while(|o| o.s > rear - MAX_VEHICLE_LENGTH)
-        .any(|o| o.s + vehicles[o.id].spec.length > rear)
+    // Whether a record in `list` overlaps [rear, front], shifted by `offset` into
+    // that list's own `s`.
+    let overlaps = |list: &[Occupant], offset: f64| {
+        let (rear, front) = (rear + offset, front + offset);
+        // Records start at their rear, so only those starting before our front can
+        // overlap; of those, walk back while their rear is within a vehicle length.
+        let end = list.partition_point(|o| o.s < front);
+        list[..end]
+            .iter()
+            .rev()
+            .filter(|o| o.id != id)
+            .take_while(|o| o.s > rear - MAX_VEHICLE_LENGTH)
+            .any(|o| o.s + vehicles[o.id].spec.length > rear)
+    };
+    let here = network.lane(lane);
+    let list = |l: &LaneId| &occupants[l.0 as usize][..];
+    overlaps(list(&lane), 0.0)
+        || here.predecessors().iter().any(|p| overlaps(list(p), network.lane(*p).length()))
+        || here.successors().iter().any(|n| overlaps(list(n), -here.length()))
 }
 
 /// Fills `path` up to capacity by following each lane's first successor.

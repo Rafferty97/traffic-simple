@@ -118,7 +118,9 @@ pub fn update(
             // Only the lane it follows: an old lane may dead-end beside a lane that goes on.
             if following && dead_end && corners.iter().all(|c| c.past_end) {
                 leavers.push(occupant.id);
-            } else if corners.iter().all(|c| c.beside) {
+            } else if corners.iter().all(|c| c.beside && !c.past_end) {
+                // A corner past the end left by the end, even if it is also
+                // beside: a vehicle advancing while still off-centre.
                 left_sideways.push(occupant.id);
             }
             false

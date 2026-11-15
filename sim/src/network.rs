@@ -1,4 +1,4 @@
-use crate::lane::{Lane, MAX_SUCCESSORS};
+use crate::lane::{Lane, MAX_PREDECESSORS, MAX_SUCCESSORS};
 
 /// Identifies a lane: its index in [`SimNetwork`]'s lanes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -48,7 +48,8 @@ impl SimNetwork {
     /// Connects the end of `from` to the start of `to`. A lane may connect to itself.
     ///
     /// The end of `from` and the start of `to` should coincide; this isn't checked.
-    /// Panics if `from` already has [`MAX_SUCCESSORS`] successors.
+    /// Panics if `from` already has [`MAX_SUCCESSORS`] successors or `to` already
+    /// has [`MAX_PREDECESSORS`] predecessors.
     pub fn connect(&mut self, from: LaneId, to: LaneId) {
         assert!((to.0 as usize) < self.lanes.len(), "no lane {to:?}");
         let successors = &mut self.lanes[from.0 as usize].successors;
@@ -57,6 +58,12 @@ impl SimNetwork {
             "{from:?} already has {MAX_SUCCESSORS} successors"
         );
         successors.push(to);
+        let predecessors = &mut self.lanes[to.0 as usize].predecessors;
+        assert!(
+            !predecessors.is_full(),
+            "{to:?} already has {MAX_PREDECESSORS} predecessors"
+        );
+        predecessors.push(from);
     }
 
     /// Makes `left` and `right` neighbors, `left` on the left of `right`, with a
@@ -127,6 +134,9 @@ mod test {
         assert_eq!(net.lane(a).successors(), [c, b]);
         assert_eq!(net.lane(b).successors(), [b]);
         assert!(net.lane(c).successors().is_empty());
+        assert!(net.lane(a).predecessors().is_empty());
+        assert_eq!(net.lane(b).predecessors(), [b, a]);
+        assert_eq!(net.lane(c).predecessors(), [a]);
     }
 
     #[test]

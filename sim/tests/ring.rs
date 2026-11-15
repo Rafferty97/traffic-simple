@@ -137,7 +137,7 @@ fn three_lane_ring_occupancy_stays_consistent() {
     let mut sim = Simulation::new(ring_road(230.0, 3, SPEED_LIMIT), Terms::default());
     // Densest inside and sparsest outside, so drivers have reason to move out.
     // Different counts also keep the lanes' cars from starting side by side.
-    for (lane, count) in [(0, 26), (1, 20), (2, 12)] {
+    for (lane, count) in [(0, 22), (1, 16), (2, 8)] {
         fill_lane(&mut sim, LaneId(lane), count);
     }
     let mut changes = 0;

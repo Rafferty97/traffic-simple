@@ -8,6 +8,10 @@ use crate::network::{LaneId, Neighbor, Side};
 /// The most successors a lane can have.
 pub const MAX_SUCCESSORS: usize = 4;
 
+/// The most predecessors a lane can have. More than successors, since a lane
+/// leaving a junction collects connectors from several approaches.
+pub const MAX_PREDECESSORS: usize = 8;
+
 /// The sharpest turn allowed at a single vertex: 1/16 of a revolution.
 const MAX_TURN: f64 = TAU / 16.0;
 
@@ -30,6 +34,8 @@ pub struct Lane {
     speed_limit: f64,
     /// The lanes this one connects to, end to start.
     pub(crate) successors: ArrayVec<LaneId, MAX_SUCCESSORS>,
+    /// The lanes that connect to this one, end to start: the inverse of `successors`.
+    pub(crate) predecessors: ArrayVec<LaneId, MAX_PREDECESSORS>,
     /// The lane beside this one on the left, if any.
     pub(crate) adj_left: Option<Neighbor>,
     /// The lane beside this one on the right, if any.
@@ -122,6 +128,7 @@ impl Lane {
             width,
             speed_limit,
             successors: ArrayVec::new(),
+            predecessors: ArrayVec::new(),
             adj_left: None,
             adj_right: None,
         })
@@ -145,6 +152,11 @@ impl Lane {
     /// The lanes this one connects to, end to start, in the order they were connected.
     pub fn successors(&self) -> &[LaneId] {
         &self.successors
+    }
+
+    /// The lanes that connect to this one, end to start, in the order they were connected.
+    pub fn predecessors(&self) -> &[LaneId] {
+        &self.predecessors
     }
 
     /// The lane beside this one on the left, if any.

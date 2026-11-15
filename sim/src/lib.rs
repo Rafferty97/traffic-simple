@@ -14,7 +14,7 @@ mod simulation;
 mod vehicle;
 
 pub use debug::{AccelSource, DebugEvent, DebugSink, LaneChangeEval, NoopSink, Outcome};
-pub use lane::{Lane, LaneError, LanePos, MAX_SUCCESSORS};
+pub use lane::{Lane, LaneError, LanePos, MAX_PREDECESSORS, MAX_SUCCESSORS};
 pub use models::acceleration::SAFE_BRAKING;
 pub use models::lateral::LaneChange;
 pub use network::{LaneId, Neighbor, Side, SimNetwork};
