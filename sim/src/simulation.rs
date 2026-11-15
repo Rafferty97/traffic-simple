@@ -327,8 +327,8 @@ impl<D: DebugSink> Simulation<D> {
         // path's offset and slope relative to the new lane, so the target point
         // carries on smoothly instead of jumping.
         let ahead = vehicle.lane_pos.s + lateral::lookahead_distance(vehicle.speed);
-        let aim = point_along_path(&self.network, &vehicle.path, ahead, 0.0);
-        let beyond = point_along_path(&self.network, &vehicle.path, ahead + 1.0, 0.0);
+        let aim = self.network.point_along(&vehicle.path, ahead, 0.0);
+        let beyond = self.network.point_along(&vehicle.path, ahead + 1.0, 0.0);
         let start = target.world_to_lane_near(aim, lane_pos);
         let next = target.world_to_lane_near(beyond, start);
         let slope = (next.t - start.t) / (next.s - start.s);
@@ -514,14 +514,6 @@ impl<D: DebugSink> Simulation<D> {
                     let fraction = vehicle.lane_pos.s / lane.length();
                     let hint = old.lane_pos(fraction * old.length(), 0.0);
                     let axle_s = old.world_to_lane_near(vehicle.pos, hint).s;
-                    // Its course is along the lanes it follows, which are on the
-                    // other side of the old lanes, a lane's separation away.
-                    let separation = 0.5 * (lane.width() + old.width());
-                    let shift = match side {
-                        Side::Right => separation,
-                        Side::Left => -separation,
-                    };
-                    let course = Course::new(vehicle.lane_change, vehicle.lane_pos.s, shift);
                     let search = occupancy::find_leader(
                         network,
                         occupants,
@@ -529,7 +521,7 @@ impl<D: DebugSink> Simulation<D> {
                         vehicle,
                         &old_path,
                         axle_s,
-                        course,
+                        Course::of(vehicle),
                         Ghosts::Report,
                         None,
                         |check| sink.record(|| DebugEvent::PassCheck { vehicle: id, check }),
@@ -626,7 +618,7 @@ impl<D: DebugSink> Simulation<D> {
 
             let ahead = vehicle.lane_pos.s + lateral::lookahead_distance(vehicle.speed);
             let offset = vehicle.lane_change.map_or(0.0, |change| change.offset_at(ahead));
-            let target = point_along_path(network, &vehicle.path, ahead, offset);
+            let target = network.point_along(&vehicle.path, ahead, offset);
             vehicle.curvature =
                 lateral::curvature_toward(vehicle.pos, vehicle.heading, wheelbase, target);
             sink.record(|| DebugEvent::Lookahead { vehicle: id, point: target });
@@ -949,7 +941,7 @@ fn accel_along(
     vehicle: &Vehicle,
     lanes: &[LaneId],
     axle_s: f64,
-    course: Course,
+    course: Course<'_>,
     ghosts: Ghosts,
 ) -> f64 {
     let desired = vehicle.spec.desired_speed(network.lane(lanes[0]).speed_limit());
@@ -1009,7 +1001,7 @@ fn accel_in(
         vehicle,
         &path,
         axle_s,
-        Course::new(Some(change), axle_s, 0.0),
+        Course::new(&path, Some(change)),
         Ghosts::Lead,
     );
     (accel, axle_s)
@@ -1069,18 +1061,4 @@ fn extend_path(network: &SimNetwork, path: &mut ArrayVec<LaneId, PATH_LEN>) {
             None => break,
         }
     }
-}
-
-/// The point `s` meters along a path from the start of its first lane, `t` meters
-/// left of the centerline. Past the end of the path, the last lane's final
-/// segment is extended.
-fn point_along_path(network: &SimNetwork, path: &[LaneId], mut s: f64, t: f64) -> DVec2 {
-    for (i, &id) in path.iter().enumerate() {
-        let lane = network.lane(id);
-        if s < lane.length() || i == path.len() - 1 {
-            return lane.lane_to_world(lane.lane_pos(s, t));
-        }
-        s -= lane.length();
-    }
-    unreachable!("a vehicle's path always holds its current lane")
 }

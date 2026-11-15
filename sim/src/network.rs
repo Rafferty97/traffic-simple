@@ -1,3 +1,5 @@
+use glam::DVec2;
+
 use crate::lane::{Lane, MAX_PREDECESSORS, MAX_SUCCESSORS};
 
 /// Identifies a lane: its index in [`SimNetwork`]'s lanes.
@@ -87,6 +89,20 @@ impl SimNetwork {
     /// The lane with the given id. Panics if it doesn't exist.
     pub fn lane(&self, id: LaneId) -> &Lane {
         &self.lanes[id.0 as usize]
+    }
+
+    /// The point `s` meters along a path from the start of its first lane, `t`
+    /// meters left of the centerline. Past the end of the path, the last lane's
+    /// final segment is extended.
+    pub(crate) fn point_along(&self, path: &[LaneId], mut s: f64, t: f64) -> DVec2 {
+        for (i, &id) in path.iter().enumerate() {
+            let lane = self.lane(id);
+            if s < lane.length() || i == path.len() - 1 {
+                return lane.lane_to_world(lane.lane_pos(s, t));
+            }
+            s -= lane.length();
+        }
+        unreachable!("a vehicle's path always holds its current lane")
     }
 
     /// All lanes with their ids.

@@ -197,34 +197,81 @@ fn insertion_sort(list: &mut [Occupant]) {
     }
 }
 
-/// Where a searching vehicle will be across the lanes it searches: its planned
-/// path, which is its lane change's cubic or else its lane's centerline, shifted
-/// onto the searched lanes. Pure pursuit tracks that path closely, so it says
-/// where the vehicle's body will be when it gets somewhere ahead.
+/// Where a searching vehicle plans to be: its lane change's cubic, or else the
+/// centerline, along the lanes it follows. Pure pursuit tracks that path
+/// closely, so it says where the vehicle's body will be when it gets somewhere
+/// ahead.
+///
+/// A search along other lanes, as the old-side search runs along the lanes beside
+/// them, carries points on the course across through world space, so nothing is
+/// assumed about how those lanes lie: they may be any distance apart, and
+/// converge or spread.
 #[derive(Clone, Copy, Debug)]
-pub struct Course {
-    /// The lane change being followed, in the `s` of the lane it is on.
+pub struct Course<'a> {
+    /// The lanes it follows, the one it is on first.
+    path: &'a [LaneId],
+    /// The lane change it is following, in `s` along `path`.
     change: Option<LaneChange>,
-    /// That lane's `s` at the vehicle's rear axle.
-    s: f64,
-    /// The searched lanes' `t` of that lane's centerline: zero when searching the
-    /// lanes it follows, a lane's separation when searching the lanes beside them.
-    shift: f64,
 }
 
-impl Course {
-    pub fn new(change: Option<LaneChange>, s: f64, shift: f64) -> Self {
-        Self { change, s, shift }
+impl<'a> Course<'a> {
+    pub fn new(path: &'a [LaneId], change: Option<LaneChange>) -> Self {
+        Self { path, change }
     }
 
-    /// A vehicle's own planned path, along the lanes it follows.
-    pub fn of(vehicle: &Vehicle) -> Self {
-        Self::new(vehicle.lane_change, vehicle.lane_pos.s, 0.0)
+    /// A vehicle's own planned path.
+    pub fn of(vehicle: &'a Vehicle) -> Self {
+        Self::new(&vehicle.path, vehicle.lane_change)
     }
 
-    /// The planned `t` on the searched lanes, `ahead` meters past the rear axle.
-    fn t_at(&self, ahead: f64) -> f64 {
-        self.shift + self.change.map_or(0.0, |c| c.offset_at(self.s + ahead))
+    /// The span of `t` on a searched lane that a body covers while passing the
+    /// point at `s` there: from its front reaching it to its rear clearing it.
+    ///
+    /// `lane` is the `k`th lane searched, starting `start` along the searched
+    /// lanes, and is either the `k`th lane of the course's path or the lane beside
+    /// it. `hint` is a position on `lane` near `s`. The cubic can bulge when it
+    /// starts with a slope, so the middle is sampled as well as the ends.
+    #[allow(clippy::too_many_arguments)]
+    fn span(
+        &self,
+        network: &SimNetwork,
+        k: usize,
+        lane: LaneId,
+        start: f64,
+        s: f64,
+        hint: LanePos,
+        length: f64,
+        half_width: f64,
+    ) -> [f64; 2] {
+        let offset_at = |at: f64| self.change.map_or(0.0, |c| c.offset_at(at));
+        let Some(&level) = self.path.get(k) else {
+            // Beyond the course: assume the body could be anywhere.
+            return [f64::NEG_INFINITY, f64::INFINITY];
+        };
+        let searched = network.lane(lane);
+        let own = level == lane;
+        // Where the point is along the course's path.
+        let along = if own {
+            start + s
+        } else {
+            let beside = network.lane(level);
+            let before: f64 = self.path[..k].iter().map(|&l| network.lane(l).length()).sum();
+            let point = searched.lane_to_world(searched.lane_pos(s, 0.0));
+            let guess = beside.lane_pos(s / searched.length() * beside.length(), 0.0);
+            before + beside.world_to_lane_near(point, guess).s
+        };
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for f in [0.0, 0.5, 1.0] {
+            let at = along + f * length;
+            let t = if own {
+                offset_at(at)
+            } else {
+                let point = network.point_along(self.path, at, offset_at(at));
+                searched.world_to_lane_near(point, hint).t
+            };
+            (lo, hi) = (lo.min(t), hi.max(t));
+        }
+        [lo - half_width, hi + half_width]
     }
 }
 
@@ -268,30 +315,18 @@ pub fn find_leader(
     vehicle: &Vehicle,
     lanes: &[LaneId],
     axle_s: f64,
-    course: Course,
+    course: Course<'_>,
     ghosts: Ghosts,
     skip: Option<VehicleId>,
     mut on_pass: impl FnMut(PassCheck),
 ) -> Search {
     let half_width = 0.5 * vehicle.spec.width;
-    // The stretch of the searched lanes this vehicle's body covers while passing
-    // a corner `ahead` of its rear axle: from its front reaching the corner to its
-    // rear clearing it, along its course. The cubic can bulge with a starting
-    // slope, so the middle is sampled as well as the ends.
-    let body = |ahead: f64| {
-        let length = vehicle.spec.length;
-        let ts = [0.0, 0.5, 1.0].map(|f| course.t_at(ahead + f * length));
-        let (lo, hi) = ts.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &t| {
-            (lo.min(t), hi.max(t))
-        });
-        [lo - half_width, hi + half_width]
-    };
     let front = axle_s + vehicle.spec.length - vehicle.spec.rear_axle;
     let mut found = Search::default();
     // Start of the current lane, measured along `lanes` from the start of the first.
     let mut offset = 0.0;
     let mut after = axle_s;
-    for &lane in lanes {
+    for (k, &lane) in lanes.iter().enumerate() {
         if offset - front > LEADER_HORIZON {
             break;
         }
@@ -310,7 +345,8 @@ pub fn find_leader(
                 continue;
             }
             if o.lateral != Lateral::InLane {
-                let body = body(offset + o.s - axle_s);
+                let length = vehicle.spec.length;
+                let body = course.span(network, k, lane, offset, o.s, o.hint, length, half_width);
                 let (leaving, trailing, clearance) = o.lateral.clearance(body).unwrap();
                 let passed = o.lateral.can_pass(body);
                 let s = o.s;
@@ -340,6 +376,31 @@ pub fn find_leader(
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn a_course_is_carried_onto_lanes_that_spread_apart() {
+        use glam::DVec2;
+        // Lane 0 runs along the x axis. Lane 1 starts beside it, 3.5 m to the
+        // left, and spreads to 5.5 m over 100 m: no fixed separation.
+        let lane = |a: DVec2, b: DVec2| Lane::new(&[a, b], 3.5, 14.0).unwrap();
+        let mut network = SimNetwork::new(vec![
+            lane(DVec2::ZERO, DVec2::new(100.0, 0.0)),
+            lane(DVec2::new(0.0, 3.5), DVec2::new(100.0, 5.5)),
+        ]);
+        network.set_adjacent(LaneId(1), LaneId(0), true, true);
+        // A car centred on lane 0, checked from lane 1 at its s = 50.
+        let path = [LaneId(0)];
+        let course = Course::new(&path, None);
+        let beside = network.lane(LaneId(1));
+        let hint = beside.lane_pos(50.0, 0.0);
+        let [right, left] = course.span(&network, 0, LaneId(1), 0.0, 50.0, hint, 4.6, 0.95);
+        // Lane 1 is about 4.5 m away there and 4.6 m at the far end of the car,
+        // so its centre is about 4.5 m to lane 1's right. A fixed separation
+        // would have put it at 3.5 m.
+        let centre = 0.5 * (left + right);
+        assert!((centre + 4.55).abs() < 0.1, "centre at t = {centre}");
+        assert!((left - right - 1.9).abs() < 0.2, "span {right}..{left}");
+    }
 
     #[test]
     fn in_lane_never_passes() {
