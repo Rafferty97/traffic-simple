@@ -30,6 +30,7 @@ const NOSE_GAP: f64 = 0.1;
 
 /// A vehicle's record in one lane's occupant list.
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Occupant {
     /// The smaller of the vehicle's rear corners' `s` on this lane.
     pub s: f64,
@@ -44,6 +45,7 @@ pub struct Occupant {
 
 /// How a vehicle relates to a lane it has a record on, as followers there see it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Lateral {
     /// In the lane: following it, settled or still converging onto it after a
     /// lane change, lingering past the end of it after advancing, or the ghost of

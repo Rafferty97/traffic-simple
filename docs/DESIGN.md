@@ -250,6 +250,7 @@ Demand and routing live outside the `sim` crate. The simulation exposes vehicle 
 - **Remove** a vehicle by key.
 - **Hold** a vehicle: it brakes at its comfortable deceleration to a stop and waits until released. Held vehicles are kept in a short list on the simulation, not as a flag on every vehicle.
 - **Pick** the vehicle nearest a point, within a tolerance, for the UI. Linear scan for now.
+- **Snapshot and restore** the whole state at one instant, network included, for freeze frames. With the `serde` feature a snapshot serializes; the UI saves them as JSON. A restored simulation continues bit for bit until it inserts a vehicle into a slot freed before the snapshot: `SlotMap` rebuilds its free list in index order, so that vehicle's id, and the update order after it, can differ.
 - **Routing model:** answers which lane to take next. Implementations include shortest path to a destination (Dijkstra or A*) and a random walk through the network.
 - **Heterogeneity** comes from inserting vehicles with varied attributes. Distributions are the caller's concern, not the core's.
 

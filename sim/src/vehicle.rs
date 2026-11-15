@@ -16,6 +16,7 @@ slotmap::new_key_type! {
 /// A vehicle's static attributes. Lengths in meters, speeds in m/s,
 /// accelerations in m/s².
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct VehicleSpec {
     pub length: f64,
     pub width: f64,
@@ -63,6 +64,7 @@ pub struct Placement {
 /// The pose (rear-axle position and heading) is the source of truth; the lane
 /// position is derived from it.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Vehicle {
     pub(crate) spec: VehicleSpec,
     /// World position of the midpoint of the rear axle.
@@ -90,6 +92,7 @@ pub struct Vehicle {
 /// A lane change a vehicle is indicating. It has a ghost record in the target
 /// lane's occupants until it is cancelled or carried out.
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Intent {
     /// The side of the vehicle's lane it wants to move to.
     pub side: Side,
@@ -104,6 +107,7 @@ pub struct Intent {
 /// A follower's acceleration now and if the indicating vehicle changed lanes.
 /// Recomputed at each longitudinal update.
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Response {
     pub follower: VehicleId,
     pub before: f64,

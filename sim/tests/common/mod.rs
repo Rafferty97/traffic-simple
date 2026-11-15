@@ -1,6 +1,8 @@
 //! Shared helpers for tests and benchmarks.
 #![allow(dead_code)]
 
+#[cfg(feature = "serde")]
+pub mod frame;
 pub mod replay;
 
 use std::f64::consts::TAU;

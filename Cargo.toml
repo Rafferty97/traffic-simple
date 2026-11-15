@@ -13,3 +13,5 @@ repository = "https://github.com/Rafferty97/traffic-simple"
 traffic-sim = { path = "sim" }
 glam = "0.34.3"
 rand = { version = "0.10.3", default-features = false }
+# For freeze-frame snapshots. `float_roundtrip` so f64s read back exactly.
+serde_json = { version = "1.0.154", features = ["float_roundtrip"] }

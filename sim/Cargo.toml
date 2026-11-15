@@ -10,13 +10,23 @@ repository.workspace = true
 [dependencies]
 arrayvec = "0.7.8"
 glam.workspace = true
+serde = { version = "1.0.229", features = ["derive"], optional = true }
 slotmap = "1.1.1"
 thiserror = "2.0.21"
+
+[features]
+# Serialize and deserialize snapshots of a simulation's whole state.
+serde = ["dep:serde", "arrayvec/serde", "glam/serde", "slotmap/serde"]
 
 [dev-dependencies]
 criterion = "0.8.2"
 proptest = "1.12.0"
 rand.workspace = true
+serde_json.workspace = true
+
+[[test]]
+name = "snapshot"
+required-features = ["serde"]
 
 [[bench]]
 name = "ring"

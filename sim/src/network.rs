@@ -4,10 +4,12 @@ use crate::lane::{Lane, MAX_PREDECESSORS, MAX_SUCCESSORS};
 
 /// Identifies a lane: its index in [`SimNetwork`]'s lanes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LaneId(pub u32);
 
 /// A side of a lane, relative to its direction of travel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Side {
     Left,
     Right,
@@ -24,6 +26,7 @@ impl Side {
 
 /// The lane beside another, and whether vehicles may change into it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Neighbor {
     pub lane: LaneId,
     /// Whether vehicles may change from the lane this is stored on into `lane`.
@@ -70,6 +73,7 @@ pub enum End {
 /// the neighbor of a lane's successor is the successor of its neighbor.
 /// [`SimNetwork::validate`] checks this.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SimNetwork {
     lanes: Vec<Lane>,
 }

@@ -23,6 +23,7 @@ const MAX_TURN: f64 = TAU / 16.0;
 /// to the left. The mapping is continuous across vertices, so a vehicle can move
 /// along the lane without `s` jumping.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Lane {
     /// The segments comprising the lane.
     segs: Vec<Segment>,
@@ -43,6 +44,7 @@ pub struct Lane {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 struct Segment {
     /// Position of the centerline at the start of the segment.
     start: DVec2,
@@ -61,6 +63,7 @@ struct Segment {
 /// The cache is only ever a hint: a stale one (even from a different lane) makes a
 /// query slower, never wrong.
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LanePos {
     /// Longitudinal position along the centerline in meters.
     pub s: f64,

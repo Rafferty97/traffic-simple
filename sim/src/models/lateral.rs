@@ -23,6 +23,7 @@ const MIN_LANE_CHANGE_LENGTH: f64 = 15.0;
 /// at the start to zero offset and zero slope at `u = length`. It starts at the
 /// point pure pursuit was aiming at, so the target doesn't jump.
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LaneChange {
     /// Where the change started, as `s` along the vehicle's current lane.
     pub s0: f64,

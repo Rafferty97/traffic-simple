@@ -94,7 +94,76 @@ pub enum LaneChangeError {
     NotPermitted,
 }
 
+/// A simulation's whole state at one instant, without its debug sink: a freeze
+/// frame. [`Simulation::restore`] turns it back into a simulation, exactly as it
+/// was. With the `serde` feature, it serializes, for saving to a file.
+///
+/// A restored simulation continues bit for bit like the original, through steps,
+/// holds, lane changes and removals, until it inserts a vehicle into a slot freed
+/// before the snapshot. The vehicle store's free slots come back in a different
+/// order, so that vehicle can get a different id from the one it would have had,
+/// and the update order can differ from then on.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Snapshot {
+    network: SimNetwork,
+    vehicles: SlotMap<VehicleId, Vehicle>,
+    occupants: Vec<Vec<Occupant>>,
+    held: Vec<VehicleId>,
+    accel_clock: f64,
+    time: f64,
+    decision_cursor: usize,
+    decision_budget: f64,
+}
+
 impl<D: DebugSink> Simulation<D> {
+    /// A freeze frame of the whole state, network included.
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            network: self.network.clone(),
+            vehicles: self.vehicles.clone(),
+            occupants: self.occupants.clone(),
+            held: self.held.clone(),
+            accel_clock: self.accel_clock,
+            time: self.time,
+            decision_cursor: self.decision_cursor,
+            decision_budget: self.decision_budget,
+        }
+    }
+
+    /// A simulation exactly as it was when `snapshot` was taken, with `sink` for
+    /// its debug events. The sink starts empty, so its events refill as each
+    /// update runs.
+    pub fn restore(snapshot: Snapshot, sink: D) -> Self {
+        let Snapshot {
+            network,
+            vehicles,
+            occupants,
+            held,
+            accel_clock,
+            time,
+            decision_cursor,
+            decision_budget,
+        } = snapshot;
+        Self {
+            network,
+            vehicles,
+            occupants,
+            held,
+            accel_clock,
+            time,
+            decision_cursor,
+            decision_budget,
+            // Scratch space, cleared before every use.
+            decisions: Vec::new(),
+            leavers: Vec::new(),
+            departed: Vec::new(),
+            lane_decisions: Vec::new(),
+            responses: Vec::new(),
+            sink,
+        }
+    }
+
     pub fn new(network: SimNetwork, sink: D) -> Self {
         let lane_count = network.lanes().count();
         Self {

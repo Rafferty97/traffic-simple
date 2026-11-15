@@ -247,6 +247,9 @@ name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "as-raw-xcb-connection"
@@ -1481,6 +1484,9 @@ name = "glam"
 version = "0.34.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "627003914c6057c9c8f0832ee4f870b5a4f599d0cfa83f4072675114860cd0ff"
+dependencies = [
+ "serde_core",
+]
 
 [[package]]
 name = "glifo"
@@ -3311,6 +3317,7 @@ version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bdd58c3c93c3d278ca835519292445cb4b0d4dc59ccfdf7ceadaab3f8aeb4038"
 dependencies = [
+ "serde",
  "version_check",
 ]
 
@@ -3662,6 +3669,8 @@ dependencies = [
  "glam",
  "proptest",
  "rand",
+ "serde",
+ "serde_json",
  "slotmap",
  "thiserror 2.0.21",
 ]
@@ -3710,6 +3719,7 @@ dependencies = [
  "eframe",
  "glam",
  "rand",
+ "serde_json",
  "traffic-sim",
 ]
 

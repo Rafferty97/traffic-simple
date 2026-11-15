@@ -5,6 +5,9 @@ mod replay;
 /// The simulation's test helpers, for checking that replays read back exactly.
 #[cfg(test)]
 #[path = "../../sim/tests/common/mod.rs"]
+// Its freeze-frame loader is behind `sim`'s `serde` feature, which this crate
+// doesn't have, so it is left out here.
+#[allow(unexpected_cfgs)]
 mod common;
 
 use std::collections::HashMap;
@@ -220,6 +223,23 @@ impl App {
         Ok(path.canonicalize().unwrap_or(path))
     }
 
+    /// Saves a freeze frame of the simulation as it is now, with the selected
+    /// vehicle, to `captures/` in the workspace, named by the wall-clock time, and
+    /// returns its path. `sim/tests/common/frame.rs` loads it back.
+    fn freeze_frame(&self) -> std::io::Result<PathBuf> {
+        let dir = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../captures"));
+        std::fs::create_dir_all(&dir)?;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+        let stamp = now.map_or(0, |d| d.as_secs());
+        let path = dir.join(format!("frame-{stamp}.json"));
+        let frame = serde_json::json!({
+            "selected": self.selected,
+            "snapshot": self.sim.snapshot(),
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&frame)?)?;
+        Ok(path.canonicalize().unwrap_or(path))
+    }
+
     fn controls(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.view, View::Pretty, "Pretty");
@@ -261,6 +281,16 @@ impl App {
                 self.capture_status = Some(match self.capture() {
                     Ok(path) => format!("Saved {}", path.display()),
                     Err(error) => format!("Capture failed: {error}"),
+                });
+            }
+            if ui
+                .button("Freeze frame")
+                .on_hover_text("Save the simulation exactly as it is now, for a test case")
+                .clicked()
+            {
+                self.capture_status = Some(match self.freeze_frame() {
+                    Ok(path) => format!("Saved {}", path.display()),
+                    Err(error) => format!("Freeze frame failed: {error}"),
                 });
             }
         });
