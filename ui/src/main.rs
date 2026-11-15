@@ -232,7 +232,18 @@ impl App {
             if ui.add_enabled(self.paused, egui::Button::new("Step")).clicked() {
                 self.step(1.0 / 60.0);
             }
-            ui.add(egui::Slider::new(&mut self.speed, 0.1..=10.0).logarithmic(true).text("×"));
+            for (speed, label) in [
+                (0.1, "0.1×"),
+                (0.5, "0.5×"),
+                (1.0, "1×"),
+                (2.0, "2×"),
+                (3.0, "3×"),
+                (4.0, "4×"),
+                (5.0, "5×"),
+                (10.0, "10×"),
+            ] {
+                ui.selectable_value(&mut self.speed, speed, label);
+            }
             ui.separator();
             if ui.button("Reset").clicked() {
                 self.sim = new_sim();
