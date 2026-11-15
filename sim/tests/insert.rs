@@ -65,3 +65,21 @@ fn sees_followers_across_the_seam() {
         Err(InsertError::NoRoom)
     );
 }
+
+#[test]
+fn refuses_to_appear_alongside_at_any_offset() {
+    // Placed within a car length of a parked car, the new car overlaps it:
+    // whichever rear is ahead, the parked car is its leader or its follower,
+    // never neither, including when its rear lies between the new car's rear and
+    // its rear axle.
+    for tenths in -45..=45 {
+        let mut sim = Simulation::new(ring(230.0, SPEED_LIMIT), NoopSink);
+        sim.insert(car(), at(50.0, 0.0));
+        let s = 50.0 + tenths as f64 / 10.0;
+        assert_eq!(
+            sim.try_insert(car(), at(s, 0.0)),
+            Err(InsertError::NoRoom),
+            "at {s}"
+        );
+    }
+}

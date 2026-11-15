@@ -21,4 +21,4 @@ pub use models::lateral::LaneChange;
 pub use network::{End, LaneId, Neighbor, NetworkError, Side, SimNetwork};
 pub use occupancy::{Lateral, Occupant};
 pub use simulation::{InsertError, LaneChangeError, Simulation, Snapshot};
-pub use vehicle::{Intent, PATH_LEN, Placement, Response, Vehicle, VehicleId, VehicleSpec};
+pub use vehicle::{Intent, PATH_LEN, Placement, Vehicle, VehicleId, VehicleSpec};

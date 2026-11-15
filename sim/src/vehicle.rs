@@ -98,27 +98,6 @@ pub struct Intent {
     pub side: Side,
     /// When it started indicating, in simulated seconds.
     pub since: f64,
-    /// From the nearest follower on the target lane, which would end up behind it.
-    pub new_follower: Option<Response>,
-    /// From the follower on its current lane, which would lose it as a leader.
-    pub old_follower: Option<Response>,
-}
-
-/// A follower's acceleration now and if the indicating vehicle changed lanes.
-/// Recomputed at each longitudinal update.
-#[derive(Clone, Copy, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Response {
-    pub follower: VehicleId,
-    pub before: f64,
-    pub after: f64,
-}
-
-impl Response {
-    /// How much the change would help (positive) or hinder (negative) the follower.
-    pub fn change(&self) -> f64 {
-        self.after - self.before
-    }
 }
 
 impl Vehicle {

@@ -340,17 +340,11 @@ impl App {
             }
             match v.intent() {
                 Some(intent) => {
-                    let reply = |r: Option<traffic_sim::Response>| match r {
-                        Some(r) => format!("{:+.2} → {:+.2}", r.before, r.after),
-                        None => "no reply".into(),
-                    };
                     let since = self.sim.time() - intent.since;
                     row(
                         "indicating",
                         format!("{} for {since:.1} s", side(Some(intent.side))),
                     );
-                    row("new follower", reply(intent.new_follower));
-                    row("old follower", reply(intent.old_follower));
                 }
                 None => row("indicating", "no".into()),
             }
@@ -375,12 +369,14 @@ impl App {
                     Side::Left => "left",
                     Side::Right => "right",
                 };
+                // Only while indicating: the change for the new and old followers,
+                // if any is in reach.
                 let replies = match (eval.new_follower, eval.old_follower) {
                     (None, None) => String::new(),
                     (new, old) => format!(
                         ", followers {} / {}",
-                        new.map_or("?".into(), |x| format!("{x:+.2}")),
-                        old.map_or("?".into(), |x| format!("{x:+.2}"))
+                        new.map_or("none".into(), |x| format!("{x:+.2}")),
+                        old.map_or("none".into(), |x| format!("{x:+.2}"))
                     ),
                 };
                 ui.label(format!("{side}: {:?}", eval.outcome));

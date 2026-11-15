@@ -173,3 +173,28 @@ fn a_car_far_behind_in_the_target_lane_doesnt_hold_up_a_change() {
     });
     assert!(changed, "it waited for a reply that could never come");
 }
+
+#[test]
+fn never_changes_into_a_car_alongside() {
+    // Stopped behind a held car, with a held car beside it in lane 0 at offsets
+    // within a car length either way: that car is always either its leader or its
+    // follower there, so the change is never safe.
+    for tenths in -40..=40 {
+        let mut sim = two_lanes();
+        let blocker = sim.insert(car(), place(1, 108.0, 0.0));
+        sim.hold(blocker);
+        let id = sim.insert(car(), place(1, 100.0, 0.0));
+        let s = 100.0 + tenths as f64 / 10.0;
+        let beside = sim.insert(car(), place(0, s, 0.0));
+        sim.hold(beside);
+        let mut changed = false;
+        run(&mut sim, 5.0, |sim| {
+            changed |= sim.get(id).unwrap().lane() == LaneId(0)
+        });
+        assert!(
+            !changed,
+            "changed lanes with a car alongside, its rear axle {:+.1} m from its own",
+            s - 100.0
+        );
+    }
+}

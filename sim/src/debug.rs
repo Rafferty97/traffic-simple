@@ -74,9 +74,9 @@ pub struct LaneChangeEval {
     pub own_after: f64,
     /// Its own acceleration there less its acceleration now.
     pub own_gain: f64,
-    /// The change for its would-be new follower, once that follower has replied.
+    /// The change for the follower it would cut in front of, if one is in reach.
     pub new_follower: Option<f64>,
-    /// The change for its current follower, once that follower has replied.
+    /// The change for the follower it would leave behind, if one is in reach.
     pub old_follower: Option<f64>,
     /// MOBIL's net gain, weighing the followers' changes by politeness.
     pub incentive: f64,
