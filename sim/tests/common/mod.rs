@@ -55,6 +55,7 @@ pub fn ring_road(circumference: f64, lanes: usize, speed_limit: f64) -> SimNetwo
             network.set_adjacent(LaneId(i - 1), LaneId(i), true, true);
         }
     }
+    network.validate().expect("ring road is a valid network");
     network
 }
 
