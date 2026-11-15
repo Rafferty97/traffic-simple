@@ -21,7 +21,7 @@ use crate::network::{LaneId, Side, SimNetwork};
 use crate::vehicle::{Vehicle, VehicleId};
 
 /// How far ahead of its front bumper a vehicle looks for a leader, in meters.
-const LEADER_HORIZON: f64 = 200.0;
+pub(crate) const LEADER_HORIZON: f64 = 200.0;
 /// The least room, in meters, a vehicle needs beside another to pass it.
 const PASSING_CLEARANCE: f64 = 0.5;
 /// How far behind the other vehicle's rear, in meters, a passing check puts the

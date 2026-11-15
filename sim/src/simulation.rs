@@ -867,11 +867,11 @@ fn decide<D: DebugSink>(
     let indicated = time - intent.since;
     let follower_safe = match intent.new_follower {
         Some(response) => lane_change::safe(response.after),
-        // No reply: safe only if no vehicle is behind the ghost, and replies
-        // have had time to arrive.
+        // No reply: safe only if no vehicle is close enough behind the ghost to
+        // reply, and replies have had time to arrive.
         None => {
             indicated >= 2.0 * ACCEL_PERIOD
-                && !anyone_behind_ghost(network, occupants, target.lane, id)
+                && !anyone_behind_ghost(network, occupants, vehicles, target.lane, id)
         }
     };
     let safe = lane_change::safe(own_after)
@@ -915,13 +915,20 @@ fn decide<D: DebugSink>(
     }
 }
 
-/// Whether a vehicle, not a ghost, is behind a vehicle's ghost: before it in the
-/// lane's occupants or on a lane leading into it. Only a vehicle can reply to a
-/// ghost, so ghosts behind don't count; counting them would deadlock a lane that
-/// several vehicles indicate into, each waiting on the others' ghosts.
+/// Whether a vehicle, not a ghost, is close enough behind a vehicle's ghost to
+/// reply to it: the nearest one behind, before it in the lane's occupants or at
+/// the end of a lane leading into it, with the gap from its front to the ghost
+/// within the leader horizon.
+///
+/// Only a vehicle can reply to a ghost, so ghosts behind don't count; counting
+/// them would deadlock a lane that several vehicles indicate into, each waiting
+/// on the others' ghosts. And a vehicle further back can't reach the ghost with
+/// its leader search, so it would never reply, and is too far back for the change
+/// to matter to it.
 fn anyone_behind_ghost(
     network: &SimNetwork,
     occupants: &[Vec<Occupant>],
+    vehicles: &SlotMap<VehicleId, Vehicle>,
     lane: LaneId,
     id: VehicleId,
 ) -> bool {
@@ -929,13 +936,18 @@ fn anyone_behind_ghost(
     let Some(ghost) = list.iter().position(|o| o.id == id && o.ghost) else {
         return false;
     };
-    let vehicle = |o: &Occupant| !o.ghost && o.id != id;
-    list[..ghost].iter().any(vehicle)
-        || network
-            .lane(lane)
-            .predecessors()
-            .iter()
-            .any(|p| occupants[p.0 as usize].iter().any(vehicle))
+    let ghost_s = list[ghost].s;
+    let vehicle = |o: &&Occupant| !o.ghost && o.id != id;
+    // The nearest vehicle behind on each lane, and how far its rear is behind the
+    // ghost. On a loop, a lane is its own predecessor, so this wraps round.
+    let here = list[..ghost].iter().rev().find(vehicle).map(|o| (o, ghost_s - o.s));
+    let before = network.lane(lane).predecessors().iter().filter_map(|&p| {
+        let behind = occupants[p.0 as usize].iter().rev().find(vehicle)?;
+        Some((behind, ghost_s + network.lane(p).length() - behind.s))
+    });
+    here.into_iter()
+        .chain(before)
+        .any(|(o, rear)| rear - vehicles[o.id].spec.length <= occupancy::LEADER_HORIZON)
 }
 
 /// A vehicle's acceleration under the longitudinal model from its rear axle at

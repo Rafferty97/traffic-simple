@@ -155,3 +155,21 @@ fn every_vehicle_decides_about_five_times_a_second() {
         );
     }
 }
+
+#[test]
+fn a_car_far_behind_in_the_target_lane_doesnt_hold_up_a_change() {
+    // A car held 300 m back in lane 0, beyond the reach of its leader search, so
+    // it never replies to the ghost; and it is too far back to be affected.
+    let mut sim = two_lanes();
+    let far = sim.insert(car(), place(0, 50.0, 0.0));
+    sim.hold(far);
+    // A stopped car ahead in lane 1 makes changing left worth it.
+    let blocker = sim.insert(car(), place(1, 420.0, 0.0));
+    sim.hold(blocker);
+    let id = sim.insert(car(), place(1, 350.0, 10.0));
+    let mut changed = false;
+    run(&mut sim, 5.0, |sim| {
+        changed |= sim.get(id).unwrap().lane() == LaneId(0)
+    });
+    assert!(changed, "it waited for a reply that could never come");
+}
