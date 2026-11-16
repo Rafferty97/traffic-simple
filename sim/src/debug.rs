@@ -1,6 +1,6 @@
 use glam::DVec2;
 
-use crate::models::lane_change::Outcome;
+use crate::models::lane_change::LaneChangeEval;
 use crate::network::Side;
 use crate::vehicle::VehicleId;
 
@@ -64,32 +64,6 @@ pub struct PassCheck {
     pub clearance: f64,
     /// Whether that is enough to pass.
     pub passed: bool,
-}
-
-/// How a vehicle weighed up changing lanes to one side, under MOBIL.
-#[derive(Clone, Copy, Debug)]
-pub struct LaneChangeEval {
-    pub side: Side,
-    /// Its own acceleration in the target lane.
-    pub own_after: f64,
-    /// Its own acceleration there less its acceleration now.
-    pub own_gain: f64,
-    /// The change for the follower it would cut in front of, if one is in reach.
-    pub new_follower: Option<f64>,
-    /// The change for the follower it would leave behind, if one is in reach.
-    pub old_follower: Option<f64>,
-    /// MOBIL's net gain, weighing the followers' changes by politeness.
-    pub incentive: f64,
-    /// The advantage built up for this side, after this decision.
-    pub advantage: f64,
-    /// The driver's frustration before this decision, in seconds blocked.
-    pub frustration: f64,
-    /// The hardest braking it accepts from the change, for itself and its new
-    /// follower, at that frustration.
-    pub accepted_braking: f64,
-    /// Whether it and its new follower would brake gently enough.
-    pub safe: bool,
-    pub outcome: Outcome,
 }
 
 /// What an acceleration term reacts to.

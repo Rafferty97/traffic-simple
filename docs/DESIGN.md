@@ -78,6 +78,8 @@ All vehicles live in one global `SlotMap`. Each lane keeps a list of occupant re
 - Acceleration, held between longitudinal updates rather than recomputed each frame
 - Path: the assigned lane followed by the next few lanes it will take, in a fixed-capacity inline list. Leader search and path tracking look along it across lane boundaries.
 - Barrier commitments
+- Indicator: the side it is indicating to and since when, which other vehicles and the UI read
+- Lane-change state: owned by the lane-change model and opaque to the rest of the simulation (see Lane membership, lane changes and diverging)
 - Static attributes: vehicle class, dimensions, driver-model parameters
 
 **Per-lane occupancy**
@@ -187,6 +189,8 @@ All diverging traffic uses one mechanism: a vehicle stays registered on a lane i
 - **Across section boundaries:** when the vehicle advances, its ghost moves to the neighbour of its new lane. If there is none, or the change isn't permitted, the intent is cancelled.
 
 Discretionary changes use MOBIL (Kesting, Treiber and Helbing's incentive-plus-safety model with a politeness factor), through the intents above.
+
+**Module boundary:** the decision making lives in the lane-change model; the rest of the simulation sees only each vehicle's indicator and an opaque per-vehicle model state. At a decision tick, the simulation hands the model the vehicle's indicator, a copy of its state, and a closure that measures a change to either side on demand: the vehicle's own acceleration now and in the target lane, and its old and new followers' accelerations before and after. The searches behind those measurements query the network, so they stay in the simulation. The model updates the state and returns a decision (nothing, indicate, cancel or change), which the simulation carries out, moving the ghost and setting the indicator, and writes the state back in the apply step. A vehicle partway through a change or still straddling isn't asked. Making room works the same way: the simulation offers the ghost ahead and what following it would take, and the model says whom the vehicle makes room for. This is SUMO's split: its lane changer gathers the neighbouring leaders and followers and its lane-change models (LC2013, SL2015) own their state and decide.
 
 **Suggestion:** drive mandatory changes from the routing model's required lane sequence.
 

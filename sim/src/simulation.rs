@@ -2,12 +2,12 @@ use arrayvec::ArrayVec;
 use glam::DVec2;
 use slotmap::{Key, SlotMap};
 
-use crate::debug::{AccelSource, DebugEvent, DebugSink, LaneChangeEval, NoopSink};
+use crate::debug::{AccelSource, DebugEvent, DebugSink, NoopSink};
 use crate::kinematics;
 use crate::lane::LanePos;
 use crate::math::wrap_angle;
 use crate::models::acceleration;
-use crate::models::lane_change::{self, Outcome};
+use crate::models::lane_change::{self, Decision, Effect, LaneChangeEval, Prospect};
 use crate::models::lateral::{self, LaneChange};
 use crate::network::{LaneId, Side, SimNetwork};
 use crate::occupancy::{self, Course, Ghosts, Lateral, Occupant, find_follower};
@@ -50,35 +50,10 @@ pub struct Simulation<D: DebugSink = NoopSink> {
     decision_cursor: usize,
     /// Decisions owed but not yet made: grows by `n · dt / DECISION_PERIOD`.
     decision_budget: f64,
-    /// Scratch space for lane-change decisions, reused between substeps.
-    lane_decisions: Vec<(VehicleId, LaneDecision)>,
+    /// Scratch space for lane-change decisions, reused between substeps: each
+    /// deciding vehicle's lane-change state afterwards, and what it decided.
+    lane_decisions: Vec<(VehicleId, lane_change::State, Decision)>,
     sink: D,
-}
-
-/// What a vehicle's lane-change decision asks for, and its built-up advantage
-/// for each side and its frustration afterwards.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct LaneDecision {
-    action: LaneAction,
-    advantage: [f64; 2],
-    frustration: f64,
-}
-
-/// What a lane-change decision asks the vehicle to do.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum LaneAction {
-    Nothing,
-    Indicate(Side),
-    Cancel,
-    Change(Side),
-}
-
-/// The index of a side in a vehicle's built-up advantage.
-fn index(side: Side) -> usize {
-    match side {
-        Side::Left => 0,
-        Side::Right => 1,
-    }
 }
 
 /// Why [`Simulation::try_insert`] refused.
@@ -299,9 +274,7 @@ impl<D: DebugSink> Simulation<D> {
             old_side: None,
             lane_change: None,
             intent: None,
-            advantage: [0.0; 2],
-            frustration: 0.0,
-            yielding: None,
+            lc: lane_change::State::default(),
         }
     }
 
@@ -518,27 +491,28 @@ impl<D: DebugSink> Simulation<D> {
         lane_decisions.clear();
         for (id, vehicle) in vehicles.iter().chain(vehicles.iter()).skip(start).take(count) {
             sink.record(|| DebugEvent::RecomputeDecision { vehicle: id });
-            let decision = decide(network, occupants, vehicles, sink, self.time, id, vehicle);
-            lane_decisions.push((id, decision));
+            let mut state = vehicle.lc;
+            let Some((decision, evals)) = decide(
+                network, occupants, vehicles, self.time, id, vehicle, &mut state,
+            ) else {
+                continue;
+            };
+            for eval in evals.into_iter().flatten() {
+                sink.record(|| DebugEvent::LaneChangeEval { vehicle: id, eval });
+            }
+            lane_decisions.push((id, state, decision));
         }
         self.decision_cursor = (start + count) % n;
 
         for i in 0..self.lane_decisions.len() {
-            let (id, decision) = self.lane_decisions[i];
-            self.vehicles[id].advantage = decision.advantage;
-            self.vehicles[id].frustration = decision.frustration;
-            match decision.action {
-                LaneAction::Nothing => {}
-                LaneAction::Indicate(side) => self.indicate(id, side),
-                LaneAction::Cancel => self.cancel_intent(id),
-                LaneAction::Change(side) => {
-                    // Already checked: the decision only asks for permitted changes.
-                    let _ = self.change_lane(id, side);
-                    // A new lane, so advantage builds up afresh, and it is no longer
-                    // blocked.
-                    self.vehicles[id].advantage = [0.0; 2];
-                    self.vehicles[id].frustration = 0.0;
-                }
+            let (id, state, decision) = self.lane_decisions[i];
+            self.vehicles[id].lc = state;
+            match decision {
+                Decision::Nothing => {}
+                Decision::Indicate(side) => self.indicate(id, side),
+                Decision::Cancel => self.cancel_intent(id),
+                // Already checked: the decision only asks for permitted changes.
+                Decision::Change(side) => drop(self.change_lane(id, side)),
             }
         }
     }
@@ -590,30 +564,24 @@ impl<D: DebugSink> Simulation<D> {
                 react(sink, leader, gap);
             }
 
-            // Making room for a vehicle indicating into its lane ahead: it keeps on
-            // making room for the one it chose, so the choice doesn't flicker,
-            // unless that would take braking harder than is safe; otherwise it
-            // starts if that takes no more braking than its courtesy allows. A
-            // driver with no courtesy never does.
-            let (mut yielding, mut yield_term) = (None, None);
-            if let Some((owner, gap)) = search.ghost {
+            // Making room for a vehicle indicating into its lane ahead, as the
+            // lane-change model chooses, by what following its ghost would take.
+            let ghost = search.ghost.map(|(owner, gap)| {
                 let owner_speed = vehicles[owner].speed;
                 let term =
                     acceleration::interaction(&vehicle.spec, vehicle.speed, gap, owner_speed);
-                let chosen = vehicle.yielding == Some(owner);
-                let courteous = vehicle.spec.courtesy > 0.0;
-                let limit = if chosen {
-                    acceleration::SAFE_BRAKING
-                } else {
-                    vehicle.spec.courtesy
-                };
-                if (chosen || courteous) && term >= -limit {
-                    yielding = Some(owner);
-                    let source = AccelSource::Yield { id: owner, gap };
-                    sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
-                    yield_term = Some(term);
-                }
-            }
+                (owner, gap, term)
+            });
+            let yielding = lane_change::make_room(
+                &vehicle.lc,
+                &vehicle.spec,
+                ghost.map(|(owner, _, term)| (owner, term)),
+            );
+            let yield_term = ghost.filter(|_| yielding.is_some()).map(|(owner, gap, term)| {
+                let source = AccelSource::Yield { id: owner, gap };
+                sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
+                term
+            });
 
             // Still straddling partway through a lane change: also search the old
             // side, along the neighbors of the vehicle's path, from its position on
@@ -660,7 +628,7 @@ impl<D: DebugSink> Simulation<D> {
 
         for &(id, accel, yielding) in &self.decisions {
             self.vehicles[id].accel = accel;
-            self.vehicles[id].yielding = yielding;
+            self.vehicles[id].lc.set_yielding(yielding);
         }
         for &(id, max_speed) in &self.caps {
             let vehicle = &mut self.vehicles[id];
@@ -794,213 +762,104 @@ impl<D: DebugSink> Simulation<D> {
     }
 }
 
-/// A follower's acceleration now, and if the change it is weighed for went
-/// ahead, and its speed.
-#[derive(Clone, Copy, Debug)]
-struct Effect {
-    before: f64,
-    after: f64,
-    speed: f64,
-}
-
-impl Effect {
-    fn change(self) -> f64 {
-        self.after - self.before
-    }
-}
-
 /// Removes a vehicle's ghost from a lane's occupants.
 fn remove_ghost(occupants: &mut [Vec<Occupant>], lane: LaneId, id: VehicleId) {
     occupants[lane.0 as usize].retain(|o| !(o.id == id && o.ghost));
 }
 
-/// A vehicle's lane-change decision, under MOBIL, with advantage built up over
-/// time as in SUMO's lane-change model.
+/// A vehicle's lane-change decision, by the lane-change model, updating its
+/// model `state`: what it decided, and how it weighed up each side. `None` if it
+/// is partway through a change, or still straddling, when it doesn't decide.
 ///
-/// Each decision, for each permitted side, it weighs up MOBIL's net gain, with
-/// the followers it would affect found by searching back from it, and builds up
-/// advantage from it (see [`lane_change::accumulate`]).
-///
-/// - Not indicating: once enough advantage has built up for a side, and the change
-///   would be safe, it starts indicating to it; to the side with more, if both.
-///   A cooperative change, asking the follower to make room, would also start
-///   here despite being unsafe, but nothing requests one yet.
-/// - Indicating: it changes once it has indicated long enough and the change is
-///   safe, and until then keeps indicating, waiting for a gap. It cancels once
-///   its advantage has faded below a lower bar, or the side is no longer
-///   permitted.
-fn decide<D: DebugSink>(
+/// The model asks what a change to each side would do. Measuring that is the
+/// simulation's part: its own acceleration there, and the followers it would
+/// affect, found by searching back from it.
+fn decide(
     network: &SimNetwork,
     occupants: &[Vec<Occupant>],
     vehicles: &SlotMap<VehicleId, Vehicle>,
-    sink: &mut D,
     time: f64,
     id: VehicleId,
     vehicle: &Vehicle,
-) -> LaneDecision {
-    // A vehicle partway through a change, or still straddling, doesn't decide,
-    // and builds up no advantage until it is done.
+    state: &mut lane_change::State,
+) -> Option<(Decision, [Option<LaneChangeEval>; 2])> {
     if vehicle.lane_change.is_some() || vehicle.old_side.is_some() {
-        let action = match vehicle.intent {
-            Some(_) => LaneAction::Cancel,
-            None => LaneAction::Nothing,
-        };
-        let frustration = vehicle.frustration;
-        return LaneDecision { action, advantage: [0.0; 2], frustration };
+        return None;
     }
-
     let lane = network.lane(vehicle.path[0]);
-    let now = accel_along(
-        network,
-        occupants,
-        vehicles,
-        id,
-        vehicle,
-        &vehicle.path,
-        vehicle.lane_pos.s,
-        Course::of(vehicle),
-        Ghosts::Pass,
-        None,
-    );
-    // The followers it would affect are found by searching back from it. Each
-    // lane is split where its leader search splits it, at its rear, so nobody
+    // Each lane is split where its leader search splits it, at its rear, so nobody
     // slips between leader and follower: a vehicle alongside is one or the other,
     // with no gap, and makes the change unsafe.
     let rear = |axle_s: f64| axle_s - vehicle.spec.rear_axle;
-    // The old follower, behind it in its own lane, is the same for either side:
-    // its acceleration as now, and with this vehicle gone.
-    let own_lane = vehicle.path[0];
-    let old = find_follower(
-        network,
-        occupants,
-        vehicles,
-        own_lane,
-        rear(vehicle.lane_pos.s),
-        id,
-    )
-    .map(|(follower, _)| {
-        let f = &vehicles[follower];
-        let without = accel_along(
-            network,
-            occupants,
-            vehicles,
-            follower,
-            f,
-            &f.path,
-            f.lane_pos.s,
-            Course::of(f),
-            Ghosts::Pass,
-            Some(id),
-        );
-        Effect { before: f.accel, after: without, speed: f.speed }
-    });
-
-    // The braking a change may ask of it and its new follower, at its frustration.
-    let accepted = lane_change::accepted_braking(vehicle.spec.comfy_decel, vehicle.frustration);
-    let mut advantage = [0.0; 2];
-    let mut evals = [Side::Left, Side::Right].map(|side| {
+    // Its acceleration now, and its old follower's, behind it in its own lane, are
+    // the same for either side, so they are measured once, when first needed. The
+    // old follower's is as now, and with this vehicle gone.
+    let mut own_now = None;
+    let mut old_follower = None;
+    let prospect = |side: Side| {
         let target = lane.adj(side).filter(|n| n.can_change)?;
+        let own_now = *own_now.get_or_insert_with(|| {
+            accel_along(
+                network,
+                occupants,
+                vehicles,
+                id,
+                vehicle,
+                &vehicle.path,
+                vehicle.lane_pos.s,
+                Course::of(vehicle),
+                Ghosts::Pass,
+                None,
+            )
+        });
+        let old_follower = *old_follower.get_or_insert_with(|| {
+            let own_lane = vehicle.path[0];
+            find_follower(
+                network,
+                occupants,
+                vehicles,
+                own_lane,
+                rear(vehicle.lane_pos.s),
+                id,
+            )
+            .map(|(follower, _)| {
+                let f = &vehicles[follower];
+                let without = accel_along(
+                    network,
+                    occupants,
+                    vehicles,
+                    follower,
+                    f,
+                    &f.path,
+                    f.lane_pos.s,
+                    Course::of(f),
+                    Ghosts::Pass,
+                    Some(id),
+                );
+                Effect { before: f.accel, after: without, speed: f.speed }
+            })
+        });
         let (own_after, axle_s) = accel_in(network, occupants, vehicles, id, vehicle, target.lane);
-        let own_gain = own_after - now;
         // The new follower, behind it in the target lane: as now, but with this
         // vehicle as a leader too.
-        let new = find_follower(network, occupants, vehicles, target.lane, rear(axle_s), id).map(
-            |(follower, gap)| {
-                let f = &vehicles[follower];
-                let cut_in = acceleration::interaction(&f.spec, f.speed, gap, vehicle.speed);
-                Effect { before: f.accel, after: f.accel.min(cut_in), speed: f.speed }
-            },
-        );
-        let new_follower = new.map(Effect::change);
-        let old_follower = old.map(Effect::change);
-        let incentive = lane_change::incentive(
-            vehicle.spec.politeness,
-            own_gain,
-            new_follower.unwrap_or(0.0),
-            old_follower.unwrap_or(0.0),
-        );
-        let built = vehicle.advantage[index(side)];
-        advantage[index(side)] = lane_change::accumulate(built, incentive, DECISION_PERIOD);
-        // With nobody within reach behind, nobody is cut off.
-        let follower_safe = new.is_none_or(|effect| lane_change::safe(effect.after, accepted));
-        // Frustrated, it may ask a moving follower to make room.
-        let requestable = lane_change::forcing(vehicle.frustration)
-            && new.is_some_and(|effect| effect.speed >= lane_change::MOVING);
-        Some(LaneChangeEval {
-            side,
-            own_after,
-            own_gain,
-            new_follower,
-            old_follower,
-            incentive,
-            advantage: advantage[index(side)],
-            frustration: vehicle.frustration,
-            accepted_braking: accepted,
-            safe: lane_change::safe(own_after, accepted) && follower_safe,
-            outcome: if requestable {
-                Outcome::Request
-            } else {
-                Outcome::NotWorthIt
-            },
-        })
-    });
-
-    let action = match vehicle.intent {
-        None => {
-            for eval in evals.iter_mut().flatten() {
-                let requestable = eval.outcome == Outcome::Request;
-                eval.outcome = match () {
-                    _ if !lane_change::intends(eval.advantage) => Outcome::NotWorthIt,
-                    _ if eval.safe => Outcome::Indicate,
-                    _ if requestable => Outcome::Request,
-                    _ => Outcome::Unsafe,
-                };
-            }
-            // It can only indicate one way: the side with more built up.
-            let indicates =
-                |e: &LaneChangeEval| matches!(e.outcome, Outcome::Indicate | Outcome::Request);
-            if let [Some(left), Some(right)] = &mut evals
-                && indicates(left)
-                && indicates(right)
-            {
-                let worse = if left.advantage >= right.advantage {
-                    right
-                } else {
-                    left
-                };
-                worse.outcome = Outcome::OtherSide;
-            }
-            let indicate = evals.iter().flatten().find(|e| indicates(e));
-            indicate.map_or(LaneAction::Nothing, |e| LaneAction::Indicate(e.side))
-        }
-        Some(intent) => {
-            let indicated = time - intent.since;
-            for eval in evals.iter_mut().flatten() {
-                eval.outcome = match () {
-                    _ if eval.side != intent.side => Outcome::OtherSide,
-                    _ if !lane_change::still_intends(eval.advantage) => Outcome::Cancel,
-                    _ if eval.safe && indicated >= lane_change::MIN_INDICATING => Outcome::Change,
-                    _ => Outcome::Wait,
-                };
-            }
-            match evals[index(intent.side)].map(|e| e.outcome) {
-                // No longer permitted that way.
-                None | Some(Outcome::Cancel) => LaneAction::Cancel,
-                Some(Outcome::Change) => LaneAction::Change(intent.side),
-                _ => LaneAction::Nothing,
-            }
-        }
+        let new_follower =
+            find_follower(network, occupants, vehicles, target.lane, rear(axle_s), id).map(
+                |(follower, gap)| {
+                    let f = &vehicles[follower];
+                    let cut_in = acceleration::interaction(&f.spec, f.speed, gap, vehicle.speed);
+                    Effect { before: f.accel, after: f.accel.min(cut_in), speed: f.speed }
+                },
+            );
+        Some(Prospect { own_now, own_after, new_follower, old_follower })
     };
-    // Blocked: it wants to change lanes, but can't safely.
-    let blocked = evals
-        .iter()
-        .flatten()
-        .any(|e| lane_change::intends(e.advantage) && !e.safe && e.outcome != Outcome::OtherSide);
-    let frustration = lane_change::frustrate(vehicle.frustration, blocked, DECISION_PERIOD);
-    for eval in evals.into_iter().flatten() {
-        sink.record(|| DebugEvent::LaneChangeEval { vehicle: id, eval });
-    }
-    LaneDecision { action, advantage, frustration }
+    Some(lane_change::decide(
+        state,
+        vehicle.intent,
+        &vehicle.spec,
+        time,
+        DECISION_PERIOD,
+        prospect,
+    ))
 }
 
 /// A vehicle's acceleration under the longitudinal model from its rear axle at
@@ -1125,6 +984,7 @@ mod test {
     use super::*;
     use crate::debug::DebugEvent;
     use crate::lane::Lane;
+    use crate::models::lane_change::Outcome;
 
     const LIMIT: f64 = 14.0;
     const WIDTH: f64 = 3.5;
@@ -1218,24 +1078,25 @@ mod test {
         .copied()
     }
 
-    /// Keeps the lane-change evaluations.
-    #[derive(Default)]
-    struct Evals(Vec<LaneChangeEval>);
-
-    impl DebugSink for Evals {
-        fn record(&mut self, event: impl FnOnce() -> DebugEvent) {
-            if let DebugEvent::LaneChangeEval { eval, .. } = event() {
-                self.0.push(eval);
-            }
+    /// What `id` decides now, its lane-change state afterwards, and what it
+    /// weighed up. Partway through a change, it decides nothing and weighs up
+    /// nothing.
+    fn decision(
+        sim: &Simulation,
+        id: VehicleId,
+    ) -> (Decision, lane_change::State, Vec<LaneChangeEval>) {
+        let (net, occ, veh) = (&sim.network, &sim.occupants, &sim.vehicles);
+        let mut state = veh[id].lc;
+        match decide(net, occ, veh, sim.time, id, &veh[id], &mut state) {
+            Some((decision, evals)) => (decision, state, evals.into_iter().flatten().collect()),
+            None => (Decision::Nothing, state, Vec::new()),
         }
     }
 
     /// What `id` decides to do now, and what it weighed up.
-    fn decide_now(sim: &Simulation, id: VehicleId) -> (LaneAction, Vec<LaneChangeEval>) {
-        let mut evals = Evals::default();
-        let (net, occ, veh) = (&sim.network, &sim.occupants, &sim.vehicles);
-        let decision = decide(net, occ, veh, &mut evals, sim.time, id, &veh[id]);
-        (decision.action, evals.0)
+    fn decide_now(sim: &Simulation, id: VehicleId) -> (Decision, Vec<LaneChangeEval>) {
+        let (decision, _, evals) = decision(sim, id);
+        (decision, evals)
     }
 
     /// A car on lane 1 at 300 m that has been indicating left for 2 s, with
@@ -1246,7 +1107,7 @@ mod test {
         sim.hold(blocker);
         let id = sim.insert(car(), at(1, 300.0, 5.0));
         sim.indicate(id, Side::Left);
-        sim.vehicles[id].advantage = [lane_change::MAX_ADVANTAGE, 0.0];
+        sim.vehicles[id].lc.set_advantage([lane_change::MAX_ADVANTAGE, 0.0]);
         sim.time = 2.0;
         id
     }
@@ -1413,7 +1274,7 @@ mod test {
         let mut sim = two_lanes();
         let id = indicating_behind_a_stopped_car(&mut sim);
         let (decision, evals) = decide_now(&sim, id);
-        assert_eq!(decision, LaneAction::Change(Side::Left), "{evals:?}");
+        assert_eq!(decision, Decision::Change(Side::Left), "{evals:?}");
         // Nobody behind in either lane.
         assert_eq!((evals[0].new_follower, evals[0].old_follower), (None, None));
     }
@@ -1424,7 +1285,7 @@ mod test {
         let id = indicating_behind_a_stopped_car(&mut sim);
         sim.time = 0.5 * lane_change::MIN_INDICATING;
         let (decision, evals) = decide_now(&sim, id);
-        assert_eq!(decision, LaneAction::Nothing);
+        assert_eq!(decision, Decision::Nothing);
         assert_eq!(evals[0].outcome, Outcome::Wait);
         assert!(evals[0].safe);
     }
@@ -1435,7 +1296,7 @@ mod test {
         let id = indicating_behind_a_stopped_car(&mut sim);
         sim.insert(car(), at(0, 290.0, 14.0));
         let (decision, evals) = decide_now(&sim, id);
-        assert_eq!(decision, LaneAction::Nothing);
+        assert_eq!(decision, Decision::Nothing);
         let eval = evals[0];
         assert!(!eval.safe);
         assert!(
@@ -1453,7 +1314,7 @@ mod test {
         // 245 m back, beyond the leader horizon, even coming fast.
         sim.insert(car(), at(0, 50.0, 14.0));
         let (decision, evals) = decide_now(&sim, id);
-        assert_eq!(decision, LaneAction::Change(Side::Left), "{evals:?}");
+        assert_eq!(decision, Decision::Change(Side::Left), "{evals:?}");
         assert_eq!(evals[0].new_follower, None);
     }
 
@@ -1469,7 +1330,7 @@ mod test {
             let (decision, evals) = decide_now(&sim, id);
             // Ahead of it, the car beside makes changing worse than staying, so it
             // cancels; either way it doesn't change.
-            assert_ne!(decision, LaneAction::Change(Side::Left), "beside at {s}");
+            assert_ne!(decision, Decision::Change(Side::Left), "beside at {s}");
             assert!(!evals[0].safe, "beside at {s}");
         }
     }
@@ -1497,9 +1358,9 @@ mod test {
         let other = sim.insert(car(), at(1, 206.0, 0.0));
         sim.indicate(other, Side::Left);
         // With advantage built up, so only safety can hold it back.
-        sim.vehicles[id].advantage = [lane_change::MAX_ADVANTAGE; 2];
+        sim.vehicles[id].lc.set_advantage([lane_change::MAX_ADVANTAGE; 2]);
         let (decision, evals) = decide_now(&sim, id);
-        assert_eq!(decision, LaneAction::Nothing);
+        assert_eq!(decision, Decision::Nothing);
         let left = evals.iter().find(|e| e.side == Side::Left).unwrap();
         assert_eq!(left.outcome, Outcome::Unsafe, "{left:?}");
     }
@@ -1515,7 +1376,7 @@ mod test {
         sim.hold(stopped);
         sim.time = 2.0;
         let (decision, evals) = decide_now(&sim, id);
-        assert_eq!(decision, LaneAction::Cancel, "{evals:?}");
+        assert_eq!(decision, Decision::Cancel, "{evals:?}");
     }
 
     #[test]
@@ -1524,7 +1385,7 @@ mod test {
         let id = sim.insert(car(), at(1, 200.0, 10.0));
         sim.change_lane(id, Side::Left).unwrap();
         let (decision, evals) = decide_now(&sim, id);
-        assert_eq!(decision, LaneAction::Nothing);
+        assert_eq!(decision, Decision::Nothing);
         assert!(evals.is_empty());
     }
 
@@ -1700,7 +1561,7 @@ mod test {
     fn it_doesnt_indicate_until_advantage_has_built_up() {
         let (mut sim, id) = behind_a_stopped_car(20.0);
         let (action, evals) = decide_now(&sim, id);
-        assert_eq!(action, LaneAction::Nothing);
+        assert_eq!(action, Decision::Nothing);
         let left = evals.iter().find(|e| e.side == Side::Left).unwrap();
         assert_eq!(left.outcome, Outcome::NotWorthIt);
         assert!(
@@ -1708,22 +1569,20 @@ mod test {
             "{left:?}"
         );
         // Once enough has built up, it indicates.
-        sim.vehicles[id].advantage = [lane_change::INTENT, 0.0];
-        assert_eq!(decide_now(&sim, id).0, LaneAction::Indicate(Side::Left));
+        sim.vehicles[id].lc.set_advantage([lane_change::INTENT, 0.0]);
+        assert_eq!(decide_now(&sim, id).0, Decision::Indicate(Side::Left));
     }
 
     #[test]
     fn a_decision_builds_up_advantage_from_the_net_gain() {
         let (sim, id) = behind_a_stopped_car(20.0);
-        let mut evals = Evals::default();
-        let (net, occ, veh) = (&sim.network, &sim.occupants, &sim.vehicles);
-        let decision = decide(net, occ, veh, &mut evals, sim.time, id, &veh[id]);
-        let left = evals.0.iter().find(|e| e.side == Side::Left).unwrap();
+        let (_, state, evals) = decision(&sim, id);
+        let left = evals.iter().find(|e| e.side == Side::Left).unwrap();
         let expected = lane_change::accumulate(0.0, left.incentive, DECISION_PERIOD);
-        assert_eq!(decision.advantage[index(Side::Left)], expected);
+        assert_eq!(state.advantage()[lane_change::index(Side::Left)], expected);
         assert_eq!(left.advantage, expected);
         // No lane to the right: nothing builds up there.
-        assert_eq!(decision.advantage[index(Side::Right)], 0.0);
+        assert_eq!(state.advantage()[lane_change::index(Side::Right)], 0.0);
     }
 
     #[test]
@@ -1731,9 +1590,9 @@ mod test {
         // A fast car close behind in lane 0: changing would cut it off.
         let (mut sim, id) = behind_a_stopped_car(20.0);
         sim.insert(car(), at(0, 290.0, 14.0));
-        sim.vehicles[id].advantage = [lane_change::MAX_ADVANTAGE, 0.0];
+        sim.vehicles[id].lc.set_advantage([lane_change::MAX_ADVANTAGE, 0.0]);
         let (action, evals) = decide_now(&sim, id);
-        assert_eq!(action, LaneAction::Nothing);
+        assert_eq!(action, Decision::Nothing);
         assert_eq!(evals[0].outcome, Outcome::Unsafe);
     }
 
@@ -1742,11 +1601,9 @@ mod test {
         // Nothing ahead: no gain in either lane, so what had built up fades.
         let mut sim = two_lanes();
         let id = sim.insert(car(), at(1, 300.0, 5.0));
-        sim.vehicles[id].advantage = [0.2, 0.0];
-        let mut evals = Evals::default();
-        let (net, occ, veh) = (&sim.network, &sim.occupants, &sim.vehicles);
-        let decision = decide(net, occ, veh, &mut evals, sim.time, id, &veh[id]);
-        let faded = decision.advantage[index(Side::Left)];
+        sim.vehicles[id].lc.set_advantage([0.2, 0.0]);
+        let (_, state, _) = decision(&sim, id);
+        let faded = state.advantage()[lane_change::index(Side::Left)];
         assert!(faded < 0.2 && faded > 0.0, "{faded}");
     }
 
@@ -1763,16 +1620,10 @@ mod test {
             LaneId(0),
             "it should have changed"
         );
-        assert_eq!(sim.vehicles[id].advantage, [0.0; 2]);
+        assert_eq!(sim.vehicles[id].lc.advantage(), [0.0; 2]);
     }
 
     // Frustration and cooperation.
-
-    /// What `id` decides, as a whole decision: action, advantage and frustration.
-    fn decision(sim: &Simulation, id: VehicleId) -> LaneDecision {
-        let (net, occ, veh) = (&sim.network, &sim.occupants, &sim.vehicles);
-        decide(net, occ, veh, &mut NoopSink, sim.time, id, &veh[id])
-    }
 
     /// Behind a stopped car with advantage built up for changing left, and a car
     /// in lane 0 coming up 27 m behind its rear at `speed`, so changing would make
@@ -1781,25 +1632,25 @@ mod test {
         let (mut sim, id) = behind_a_stopped_car(20.0);
         // Its front 27 m behind the changer's rear, at 299.
         sim.insert(car(), at(0, 299.0 - 27.0 - 3.6, speed));
-        sim.vehicles[id].advantage = [lane_change::MAX_ADVANTAGE, 0.0];
+        sim.vehicles[id].lc.set_advantage([lane_change::MAX_ADVANTAGE, 0.0]);
         (sim, id)
     }
 
     #[test]
     fn frustration_builds_while_blocked_and_fades_once_not() {
         let (sim, id) = wanting_to_change_with_a_follower_at(12.0);
-        let blocked = decision(&sim, id);
-        assert_eq!(blocked.action, LaneAction::Nothing);
+        let (action, blocked, _) = decision(&sim, id);
+        assert_eq!(action, Decision::Nothing);
         assert!(
-            (blocked.frustration - DECISION_PERIOD).abs() < 1e-12,
+            (blocked.frustration() - DECISION_PERIOD).abs() < 1e-12,
             "{blocked:?}"
         );
         // Nothing ahead to want to change for: what had built up fades.
         let mut sim2 = two_lanes();
         let free = sim2.insert(car(), at(1, 300.0, 5.0));
-        sim2.vehicles[free].frustration = 4.0;
-        let calm = decision(&sim2, free);
-        assert!(calm.frustration < 4.0, "{calm:?}");
+        sim2.vehicles[free].lc.set_frustration(4.0);
+        let (_, calm, _) = decision(&sim2, free);
+        assert!(calm.frustration() < 4.0, "{calm:?}");
     }
 
     #[test]
@@ -1809,10 +1660,10 @@ mod test {
         let (_, calm) = decide_now(&sim, id);
         assert!(!calm[0].safe, "{:?}", calm[0]);
         assert_eq!(calm[0].accepted_braking, car().comfy_decel);
-        sim.vehicles[id].frustration = 0.99 * lane_change::FULLY_FRUSTRATED;
+        sim.vehicles[id].lc.set_frustration(0.99 * lane_change::FULLY_FRUSTRATED);
         let (action, frustrated) = decide_now(&sim, id);
         assert!(frustrated[0].safe, "{:?}", frustrated[0]);
-        assert_eq!(action, LaneAction::Indicate(Side::Left));
+        assert_eq!(action, Decision::Indicate(Side::Left));
     }
 
     #[test]
@@ -1821,23 +1672,23 @@ mod test {
         // frustration won't accept it.
         let (mut sim, id) = behind_a_stopped_car(20.0);
         sim.insert(car(), at(0, 300.0 - 6.0, 14.0));
-        sim.vehicles[id].advantage = [lane_change::MAX_ADVANTAGE, 0.0];
-        sim.vehicles[id].frustration = lane_change::FULLY_FRUSTRATED;
+        sim.vehicles[id].lc.set_advantage([lane_change::MAX_ADVANTAGE, 0.0]);
+        sim.vehicles[id].lc.set_frustration(lane_change::FULLY_FRUSTRATED);
         let (action, evals) = decide_now(&sim, id);
         assert!(!evals[0].safe);
         assert_eq!(evals[0].outcome, Outcome::Request);
-        assert_eq!(action, LaneAction::Indicate(Side::Left));
+        assert_eq!(action, Decision::Indicate(Side::Left));
     }
 
     #[test]
     fn it_doesnt_ask_a_stopped_queue_to_make_room() {
         let (mut sim, id) = behind_a_stopped_car(20.0);
         sim.insert(car(), at(0, 300.0 - 2.0, 0.0));
-        sim.vehicles[id].advantage = [lane_change::MAX_ADVANTAGE, 0.0];
-        sim.vehicles[id].frustration = lane_change::FULLY_FRUSTRATED;
+        sim.vehicles[id].lc.set_advantage([lane_change::MAX_ADVANTAGE, 0.0]);
+        sim.vehicles[id].lc.set_frustration(lane_change::FULLY_FRUSTRATED);
         let (action, evals) = decide_now(&sim, id);
         assert_eq!(evals[0].outcome, Outcome::Unsafe);
-        assert_eq!(action, LaneAction::Nothing);
+        assert_eq!(action, Decision::Nothing);
     }
 
     #[test]
@@ -1871,7 +1722,7 @@ mod test {
     fn a_courteous_follower_makes_room_for_an_indicating_car() {
         let (mut sim, indicating, follower) = behind_an_indicator(15.0, 2.0);
         sim.update_accels();
-        assert_eq!(sim.vehicles[follower].yielding, Some(indicating));
+        assert_eq!(sim.vehicles[follower].lc.yielding(), Some(indicating));
         assert!(sim.vehicles[follower].accel < 0.0, "it should ease off");
     }
 
@@ -1880,11 +1731,11 @@ mod test {
         // Making room would take braking harder than 0.2 m/s².
         let (mut sim, _, follower) = behind_an_indicator(15.0, 0.2);
         sim.update_accels();
-        assert_eq!(sim.vehicles[follower].yielding, None);
+        assert_eq!(sim.vehicles[follower].lc.yielding(), None);
         // One with no courtesy never does, however easy.
         let (mut sim, _, follower) = behind_an_indicator(80.0, 0.0);
         sim.update_accels();
-        assert_eq!(sim.vehicles[follower].yielding, None);
+        assert_eq!(sim.vehicles[follower].lc.yielding(), None);
     }
 
     #[test]
@@ -1892,13 +1743,13 @@ mod test {
         // Having chosen to, it carries on even where it wouldn't start: here its
         // courtesy alone wouldn't stretch to it.
         let (mut sim, indicating, follower) = behind_an_indicator(15.0, 0.2);
-        sim.vehicles[follower].yielding = Some(indicating);
+        sim.vehicles[follower].lc.set_yielding(Some(indicating));
         sim.update_accels();
-        assert_eq!(sim.vehicles[follower].yielding, Some(indicating));
+        assert_eq!(sim.vehicles[follower].lc.yielding(), Some(indicating));
         // Once the indicator is gone, there is nothing to make room for.
         sim.cancel_intent(indicating);
         sim.update_accels();
-        assert_eq!(sim.vehicles[follower].yielding, None);
+        assert_eq!(sim.vehicles[follower].lc.yielding(), None);
     }
 
     // Several leaders.

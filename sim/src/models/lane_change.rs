@@ -2,8 +2,135 @@
 //! and safe, from accelerations under the longitudinal model.
 //!
 //! Symmetric for now: no bias toward either side.
+//!
+//! The decision making lives here; the rest of the simulation sees only each
+//! vehicle's indicator and an opaque [`State`]. The simulation measures what a
+//! change would do, by searching the network, and carries out what [`decide`]
+//! returns: indicating, cancelling, or changing lanes.
 
 use crate::models::acceleration::SAFE_BRAKING;
+use crate::network::Side;
+use crate::vehicle::{Intent, VehicleId, VehicleSpec};
+
+/// A driver's lane-change state, owned by this model.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct State {
+    /// The advantage built up so far for changing left and right, in m/s (see
+    /// [`accumulate`]).
+    advantage: [f64; 2],
+    /// How long it has been wanting to change lanes but blocked, in seconds,
+    /// fading while it isn't (see [`frustrate`]).
+    frustration: f64,
+    /// The vehicle whose ghost it has chosen to make room for, if any. Kept so the
+    /// choice sticks rather than flickering on and off.
+    yielding: Option<VehicleId>,
+}
+
+impl State {
+    /// Records whom the driver is making room for, as [`make_room`] chose.
+    pub fn set_yielding(&mut self, yielding: Option<VehicleId>) {
+        self.yielding = yielding;
+    }
+}
+
+#[cfg(test)]
+impl State {
+    pub fn advantage(&self) -> [f64; 2] {
+        self.advantage
+    }
+
+    pub fn frustration(&self) -> f64 {
+        self.frustration
+    }
+
+    pub fn yielding(&self) -> Option<VehicleId> {
+        self.yielding
+    }
+
+    pub fn set_advantage(&mut self, advantage: [f64; 2]) {
+        self.advantage = advantage;
+    }
+
+    pub fn set_frustration(&mut self, frustration: f64) {
+        self.frustration = frustration;
+    }
+}
+
+/// The index of a side in a driver's built-up advantage.
+pub fn index(side: Side) -> usize {
+    match side {
+        Side::Left => 0,
+        Side::Right => 1,
+    }
+}
+
+/// What a lane-change decision asks the simulation to do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Decision {
+    Nothing,
+    /// Start indicating to this side.
+    Indicate(Side),
+    /// Stop indicating.
+    Cancel,
+    /// Change lanes to this side, now.
+    Change(Side),
+}
+
+/// What a change to one side would do, as the simulation measured it: the
+/// accelerations MOBIL weighs.
+#[derive(Clone, Copy, Debug)]
+pub struct Prospect {
+    /// Its own acceleration now, in its own lane.
+    pub own_now: f64,
+    /// Its own acceleration in the target lane.
+    pub own_after: f64,
+    /// The follower it would cut in front of, if one is in reach.
+    pub new_follower: Option<Effect>,
+    /// The follower it would leave behind, if one is in reach.
+    pub old_follower: Option<Effect>,
+}
+
+/// A follower's acceleration now, and if the change it is weighed for went
+/// ahead, and its speed.
+#[derive(Clone, Copy, Debug)]
+pub struct Effect {
+    pub before: f64,
+    pub after: f64,
+    pub speed: f64,
+}
+
+impl Effect {
+    fn change(self) -> f64 {
+        self.after - self.before
+    }
+}
+
+/// How a vehicle weighed up changing lanes to one side, under MOBIL.
+#[derive(Clone, Copy, Debug)]
+pub struct LaneChangeEval {
+    pub side: Side,
+    /// Its own acceleration in the target lane.
+    pub own_after: f64,
+    /// Its own acceleration there less its acceleration now.
+    pub own_gain: f64,
+    /// The change for the follower it would cut in front of, if one is in reach.
+    pub new_follower: Option<f64>,
+    /// The change for the follower it would leave behind, if one is in reach.
+    pub old_follower: Option<f64>,
+    /// MOBIL's net gain, weighing the followers' changes by politeness.
+    pub incentive: f64,
+    /// The advantage built up for this side, after this decision.
+    pub advantage: f64,
+    /// The driver's frustration before this decision, in seconds blocked.
+    pub frustration: f64,
+    /// The hardest braking it accepts from the change, for itself and its new
+    /// follower, at that frustration.
+    pub accepted_braking: f64,
+    /// Whether it and its new follower would brake gently enough.
+    pub safe: bool,
+    pub outcome: Outcome,
+}
 
 /// What a vehicle decided about changing to one side, at a decision tick.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,6 +242,161 @@ pub fn still_intends(advantage: f64) -> bool {
 /// harder than `accepted`.
 pub fn safe(accel: f64, accepted: f64) -> bool {
     accel >= -accepted
+}
+
+/// A driver's lane-change decision, under MOBIL, with advantage built up over
+/// time as in SUMO's lane-change model, `dt` seconds after its last. Updates its
+/// `state`, and returns what it asks the simulation to do, with how it weighed up
+/// each side.
+///
+/// `prospect` measures a change to one side, or gives `None` if changing that way
+/// isn't permitted. It is called at most once per side, when the decision needs
+/// it. The simulation doesn't ask a vehicle partway through a change, or still
+/// straddling, to decide.
+///
+/// Each decision, for each permitted side, it weighs up MOBIL's net gain and
+/// builds up advantage from it (see [`accumulate`]).
+///
+/// - Not indicating: once enough advantage has built up for a side, and the change
+///   would be safe, it starts indicating to it; to the side with more, if both.
+///   Fully frustrated, it also starts when the change is unsafe, asking a moving
+///   follower to make room.
+/// - Indicating: it changes once it has indicated long enough and the change is
+///   safe, and until then keeps indicating, waiting for a gap. It cancels once
+///   its advantage has faded below a lower bar, or the side is no longer
+///   permitted.
+///
+/// A change starts its advantage and frustration afresh.
+pub fn decide(
+    state: &mut State,
+    intent: Option<Intent>,
+    spec: &VehicleSpec,
+    now: f64,
+    dt: f64,
+    mut prospect: impl FnMut(Side) -> Option<Prospect>,
+) -> (Decision, [Option<LaneChangeEval>; 2]) {
+    // The braking a change may ask of it and its new follower, at its frustration.
+    let accepted = accepted_braking(spec.comfy_decel, state.frustration);
+    let mut advantage = [0.0; 2];
+    let mut evals = [Side::Left, Side::Right].map(|side| {
+        let p = prospect(side)?;
+        let own_gain = p.own_after - p.own_now;
+        let new_follower = p.new_follower.map(Effect::change);
+        let old_follower = p.old_follower.map(Effect::change);
+        let incentive = incentive(
+            spec.politeness,
+            own_gain,
+            new_follower.unwrap_or(0.0),
+            old_follower.unwrap_or(0.0),
+        );
+        let built = state.advantage[index(side)];
+        advantage[index(side)] = accumulate(built, incentive, dt);
+        // With nobody within reach behind, nobody is cut off.
+        let follower_safe = p.new_follower.is_none_or(|effect| safe(effect.after, accepted));
+        // Frustrated, it may ask a moving follower to make room.
+        let requestable = forcing(state.frustration)
+            && p.new_follower.is_some_and(|effect| effect.speed >= MOVING);
+        Some(LaneChangeEval {
+            side,
+            own_after: p.own_after,
+            own_gain,
+            new_follower,
+            old_follower,
+            incentive,
+            advantage: advantage[index(side)],
+            frustration: state.frustration,
+            accepted_braking: accepted,
+            safe: safe(p.own_after, accepted) && follower_safe,
+            outcome: if requestable {
+                Outcome::Request
+            } else {
+                Outcome::NotWorthIt
+            },
+        })
+    });
+
+    let decision = match intent {
+        None => {
+            for eval in evals.iter_mut().flatten() {
+                let requestable = eval.outcome == Outcome::Request;
+                eval.outcome = match () {
+                    _ if !intends(eval.advantage) => Outcome::NotWorthIt,
+                    _ if eval.safe => Outcome::Indicate,
+                    _ if requestable => Outcome::Request,
+                    _ => Outcome::Unsafe,
+                };
+            }
+            // It can only indicate one way: the side with more built up.
+            let indicates =
+                |e: &LaneChangeEval| matches!(e.outcome, Outcome::Indicate | Outcome::Request);
+            if let [Some(left), Some(right)] = &mut evals
+                && indicates(left)
+                && indicates(right)
+            {
+                let worse = if left.advantage >= right.advantage {
+                    right
+                } else {
+                    left
+                };
+                worse.outcome = Outcome::OtherSide;
+            }
+            let indicate = evals.iter().flatten().find(|e| indicates(e));
+            indicate.map_or(Decision::Nothing, |e| Decision::Indicate(e.side))
+        }
+        Some(intent) => {
+            let indicated = now - intent.since;
+            for eval in evals.iter_mut().flatten() {
+                eval.outcome = match () {
+                    _ if eval.side != intent.side => Outcome::OtherSide,
+                    _ if !still_intends(eval.advantage) => Outcome::Cancel,
+                    _ if eval.safe && indicated >= MIN_INDICATING => Outcome::Change,
+                    _ => Outcome::Wait,
+                };
+            }
+            match evals[index(intent.side)].map(|e| e.outcome) {
+                // No longer permitted that way.
+                None | Some(Outcome::Cancel) => Decision::Cancel,
+                Some(Outcome::Change) => Decision::Change(intent.side),
+                _ => Decision::Nothing,
+            }
+        }
+    };
+    // Blocked: it wants to change lanes, but can't safely.
+    let blocked = evals
+        .iter()
+        .flatten()
+        .any(|e| intends(e.advantage) && !e.safe && e.outcome != Outcome::OtherSide);
+    state.frustration = frustrate(state.frustration, blocked, dt);
+    state.advantage = advantage;
+    if let Decision::Change(_) = decision {
+        // A new lane, so advantage builds up afresh, and it is no longer blocked.
+        state.advantage = [0.0; 2];
+        state.frustration = 0.0;
+    }
+    (decision, evals)
+}
+
+/// Whom a follower makes room for, if anyone: a vehicle indicating into its lane
+/// ahead, whose ghost it then treats as a leader. `ghost` is the first ghost its
+/// search reached before any leader, if any: whose it is, and the acceleration
+/// following it would take. The simulation records the answer with
+/// [`State::set_yielding`].
+///
+/// It keeps on making room for the one it chose, so the choice doesn't flicker,
+/// unless that would take braking harder than is safe; otherwise it starts if
+/// that takes no more braking than its courtesy allows. A driver with no
+/// courtesy never does. As Hidas's cooperative lane changing and SUMO's
+/// `lcCooperative`.
+pub fn make_room(
+    state: &State,
+    spec: &VehicleSpec,
+    ghost: Option<(VehicleId, f64)>,
+) -> Option<VehicleId> {
+    let (owner, accel) = ghost?;
+    let chosen = state.yielding == Some(owner);
+    let courteous = spec.courtesy > 0.0;
+    let limit = if chosen { SAFE_BRAKING } else { spec.courtesy };
+    ((chosen || courteous) && accel >= -limit).then_some(owner)
 }
 
 #[cfg(test)]

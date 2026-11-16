@@ -2,6 +2,7 @@ use arrayvec::ArrayVec;
 use glam::DVec2;
 
 use crate::lane::LanePos;
+use crate::models::lane_change;
 use crate::models::lateral::LaneChange;
 use crate::network::{LaneId, Side};
 
@@ -91,18 +92,12 @@ pub struct Vehicle {
     pub(crate) old_side: Option<Side>,
     /// The lane change in progress, if any.
     pub(crate) lane_change: Option<LaneChange>,
-    /// The lane change the vehicle is indicating, if any.
+    /// The lane change the vehicle is indicating, if any: its indicator, which
+    /// other vehicles see. Only the simulation sets it, carrying out what the
+    /// lane-change model decides.
     pub(crate) intent: Option<Intent>,
-    /// The advantage built up so far for changing left and right, in m/s (see
-    /// [`lane_change::accumulate`](crate::models::lane_change::accumulate)).
-    pub(crate) advantage: [f64; 2],
-    /// How long it has been wanting to change lanes but blocked, in seconds,
-    /// fading while it isn't (see
-    /// [`lane_change::frustrate`](crate::models::lane_change::frustrate)).
-    pub(crate) frustration: f64,
-    /// The vehicle whose ghost it has chosen to make room for, if any. Kept so the
-    /// choice sticks rather than flickering on and off.
-    pub(crate) yielding: Option<VehicleId>,
+    /// The lane-change model's own state, opaque to the rest of the simulation.
+    pub(crate) lc: lane_change::State,
 }
 
 /// A lane change a vehicle is indicating. It has a ghost record in the target
