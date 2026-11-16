@@ -20,7 +20,7 @@ use crate::lane::LanePos;
 use crate::models::acceleration;
 use crate::models::lateral::LaneChange;
 use crate::network::{LaneId, Side, SimNetwork};
-use crate::vehicle::{PATH_LEN, Vehicle, VehicleId};
+use crate::vehicle::{Vehicle, VehicleId};
 
 /// How far ahead of its front bumper a vehicle looks for leaders, in meters, at
 /// its speed now and its desired speed on `lane`: as far as a leader can matter
@@ -512,8 +512,9 @@ fn split_near(list: &[Occupant], s: f64, near: usize) -> usize {
 /// out, since any of them can be in the way; on the lanes leading into it, one
 /// counts if `lane` is on its path. Its leader search ends where its path does,
 /// so one that doesn't know it will reach `lane` never sees what is there. That
-/// bounds how far back the search goes: a vehicle more lanes back than its path
-/// holds can't have `lane` on it. Ghosts and `skip` are passed over.
+/// bounds how far back the search goes: no vehicle's path reaches more than
+/// `max_reach` beyond its front, so one further back can't have `lane` on it.
+/// Ghosts and `skip` are passed over.
 ///
 /// The first vehicle found is the follower if `s` is within its [`horizon`]:
 /// further back, its own leader search wouldn't reach that far, and nothing
@@ -532,13 +533,16 @@ pub fn find_follower(
     vehicles: &SlotMap<VehicleId, Vehicle>,
     lane: LaneId,
     s: f64,
+    max_reach: f64,
     skip: VehicleId,
 ) -> Option<(VehicleId, f64)> {
-    behind(network, occupants, vehicles, lane, lane, s, 0.0, 0, skip)
+    behind(
+        network, occupants, vehicles, lane, lane, s, 0.0, max_reach, skip,
+    )
 }
 
-/// [`find_follower`]'s search of `lane`, `depth` lanes back from `target`, from
-/// `s` back, where `s` is `travelled` back from the point searched from.
+/// [`find_follower`]'s search of `lane`, from `s` back, where `s` is `travelled`
+/// back from the point searched from, on `target`.
 #[allow(clippy::too_many_arguments)]
 fn behind(
     network: &SimNetwork,
@@ -548,7 +552,7 @@ fn behind(
     lane: LaneId,
     s: f64,
     travelled: f64,
-    depth: usize,
+    max_reach: f64,
     skip: VehicleId,
 ) -> Option<(VehicleId, f64)> {
     let list = &occupants[lane.0 as usize];
@@ -566,10 +570,10 @@ fn behind(
     // None on this lane: on to the ends of the lanes leading into it, as far back
     // as a vehicle could still have `target` on its path. On a loop a lane leads
     // into itself, which that ends too.
-    if depth + 1 >= PATH_LEN {
+    let travelled = travelled + s;
+    if travelled > max_reach {
         return None;
     }
-    let travelled = travelled + s;
     network
         .lane(lane)
         .predecessors()
@@ -577,15 +581,7 @@ fn behind(
         .filter_map(|&p| {
             let length = network.lane(p).length();
             behind(
-                network,
-                occupants,
-                vehicles,
-                target,
-                p,
-                length,
-                travelled,
-                depth + 1,
-                skip,
+                network, occupants, vehicles, target, p, length, travelled, max_reach, skip,
             )
         })
         .min_by(|a, b| a.1.total_cmp(&b.1))

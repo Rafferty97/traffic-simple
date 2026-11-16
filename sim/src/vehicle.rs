@@ -1,13 +1,9 @@
-use arrayvec::ArrayVec;
 use glam::DVec2;
 
 use crate::lane::LanePos;
 use crate::models::lane_change;
 use crate::models::lateral::LaneChange;
 use crate::network::{LaneId, Side};
-
-/// How many lanes a vehicle's path holds: its current lane and the next few.
-pub const PATH_LEN: usize = 4;
 
 slotmap::new_key_type! {
     /// Identifies a vehicle in the simulation.
@@ -83,8 +79,11 @@ pub struct Vehicle {
     pub(crate) accel: f64,
     /// Curvature of the rear axle's path, in 1/m, positive to the left.
     pub(crate) curvature: f64,
-    /// The lane the vehicle is following, then the lanes it will take next.
-    pub(crate) path: ArrayVec<LaneId, PATH_LEN>,
+    /// The lane the vehicle is following, then the lanes it will take next: as
+    /// far ahead as its leader search, path tracking and lane change need to
+    /// know where it is going, however short the lanes, unless it leaves the
+    /// network sooner.
+    pub(crate) path: Vec<LaneId>,
     /// The rear axle's position on `path[0]`.
     pub(crate) lane_pos: LanePos,
     /// After a lane change, the side its old lane is on, until the vehicle has
