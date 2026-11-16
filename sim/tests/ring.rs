@@ -91,7 +91,7 @@ fn held_car_stops_and_its_follower_queues() {
     let follower = sim
         .vehicles()
         .map(|(id, _)| id)
-        .find(|&id| sim.sink().leader(id).unwrap().0 == held);
+        .find(|&id| sim.sink().leader(id).is_some_and(|(leader, _)| leader == held));
     let follower = follower.unwrap();
     assert!(sim.get(follower).unwrap().speed() < 0.1);
     assert!(sim.sink().leader(follower).unwrap().1 > 1.0);

@@ -393,6 +393,7 @@ impl App {
                     AccelSource::Yield { id, gap } => {
                         format!("making room for {id:?}, gap {gap:.2} m")
                     }
+                    AccelSource::PathEnd { gap } => format!("end of known path, gap {gap:.2} m"),
                 };
                 let text = egui::RichText::new(format!("{accel:+.2} m/s²")).monospace();
                 ui.label(name);

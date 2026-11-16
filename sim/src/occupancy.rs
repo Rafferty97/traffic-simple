@@ -17,12 +17,19 @@ use slotmap::SlotMap;
 
 use crate::debug::PassCheck;
 use crate::lane::LanePos;
+use crate::models::acceleration;
 use crate::models::lateral::LaneChange;
 use crate::network::{LaneId, Side, SimNetwork};
-use crate::vehicle::{Vehicle, VehicleId};
+use crate::vehicle::{PATH_LEN, Vehicle, VehicleId};
 
-/// How far ahead of its front bumper a vehicle looks for a leader, in meters.
-pub(crate) const LEADER_HORIZON: f64 = 200.0;
+/// How far ahead of its front bumper a vehicle looks for leaders, in meters, at
+/// its speed now and its desired speed on `lane`: as far as a leader can matter
+/// under the longitudinal model (see [`acceleration::horizon`]).
+pub fn horizon(network: &SimNetwork, vehicle: &Vehicle, lane: LaneId) -> f64 {
+    let desired = vehicle.spec.desired_speed(network.lane(lane).speed_limit());
+    acceleration::horizon(&vehicle.spec, vehicle.speed, desired)
+}
+
 /// The most leaders a search finds. A lane rarely gives more than one or two;
 /// past this many, the rest are beyond what the nearer ones already impose.
 pub const MAX_LEADERS: usize = 8;
@@ -359,9 +366,9 @@ pub struct Search {
     pub ghost: Option<(VehicleId, f64)>,
 }
 
-/// The vehicles ahead along `lanes`, within the leader horizon, that a vehicle
-/// must react to, each with the bumper-to-bumper gap to it. `axle_s` is the
-/// vehicle's rear axle's `s` on the first lane.
+/// The vehicles ahead along `lanes`, within `horizon` of its front (see
+/// [`horizon`]), that a vehicle must react to, each with the bumper-to-bumper gap
+/// to it. `axle_s` is the vehicle's rear axle's `s` on the first lane.
 ///
 /// On the first lane, only occupants whose rear is at or ahead of this vehicle's
 /// rear count, `axle_s` less its rear overhang: [`find_follower`] takes those
@@ -369,10 +376,14 @@ pub struct Search {
 /// later lanes, every occupant counts. The vehicle's own records are skipped,
 /// as are `skip`'s, for asking what if that vehicle weren't there.
 ///
+/// `own` is the index of the vehicle's own record in the first lane's list, if it
+/// has one there: where that split lies is then found by stepping from it, rather
+/// than by a binary search.
+///
 /// Searching lanes beside the course rather than along it, as the old-side search
-/// does, the horizon is where the course's lane change ends instead: after that
-/// the vehicle is wholly on the lanes it follows, so nothing it would only reach
-/// later can be in its way there.
+/// does, the horizon is where the course's lane change ends, if that is nearer:
+/// after that the vehicle is wholly on the lanes it follows, so nothing it would
+/// only reach later can be in its way there.
 ///
 /// Some records may be passed, by the rules in [`passing_side`]. One of those is
 /// passed if, with this vehicle where its `course` puts it as its front reaches
@@ -401,6 +412,8 @@ pub fn find_leader(
     vehicle: &Vehicle,
     lanes: &[LaneId],
     axle_s: f64,
+    own: Option<usize>,
+    horizon: f64,
     course: Course<'_>,
     ghosts: Ghosts,
     skip: Option<VehicleId>,
@@ -409,9 +422,9 @@ pub fn find_leader(
     let half_width = 0.5 * vehicle.spec.width;
     let front = axle_s + vehicle.spec.length - vehicle.spec.rear_axle;
     let horizon = match course.path.first() == lanes.first() {
-        true => LEADER_HORIZON,
+        true => horizon,
         // A gap is how far the rear axle travels before the nose reaches a rear.
-        false => course.remaining().min(LEADER_HORIZON),
+        false => course.remaining().min(horizon),
     };
     let mut found = Search::default();
     // Start of the current lane, measured along `lanes` from the start of the first.
@@ -422,10 +435,10 @@ pub fn find_leader(
             break;
         }
         let list = &occupants[lane.0 as usize];
-        let start = if k == 0 {
-            list.partition_point(|o| o.s < rear)
-        } else {
-            0
+        let start = match (k, own) {
+            (0, Some(own)) => split_near(list, rear, own),
+            (0, None) => list.partition_point(|o| o.s < rear),
+            _ => 0,
         };
         // Past the first vehicle in the lane on this lane, R: only vehicles
         // diverging from it still count, up to the next one in the lane.
@@ -476,15 +489,35 @@ pub fn find_leader(
     found
 }
 
+/// Where the records at or ahead of `s` start in a sorted occupant list, found by
+/// stepping from `near`, an index close to it: the same as
+/// `list.partition_point(|o| o.s < s)`, in a step or two rather than a binary
+/// search when `near` is the searching vehicle's own record.
+fn split_near(list: &[Occupant], s: f64, near: usize) -> usize {
+    let mut i = near.min(list.len());
+    while i > 0 && list[i - 1].s >= s {
+        i -= 1;
+    }
+    while i < list.len() && list[i].s < s {
+        i += 1;
+    }
+    i
+}
+
 /// The nearest vehicle behind `s` on `lane` that would end up behind a vehicle
 /// there, and the gap from its front to `s`: searching back along `lane`'s
-/// occupants, then the lanes leading into it, up to the leader horizon.
+/// occupants, then the lanes leading into it.
 ///
 /// Every vehicle on `lane` itself counts, whether settled, moving in or moving
 /// out, since any of them can be in the way; on the lanes leading into it, one
-/// counts if its path goes on through `lane`. Ghosts and `skip` are passed over.
-/// One further back than the leader horizon is too far away to be affected, and
-/// its own leader search wouldn't reach `s` either.
+/// counts if `lane` is on its path. Its leader search ends where its path does,
+/// so one that doesn't know it will reach `lane` never sees what is there. That
+/// bounds how far back the search goes: a vehicle more lanes back than its path
+/// holds can't have `lane` on it. Ghosts and `skip` are passed over.
+///
+/// The first vehicle found is the follower if `s` is within its [`horizon`]:
+/// further back, its own leader search wouldn't reach that far, and nothing
+/// behind it would either, since it is in the way.
 ///
 /// It splits the lane at `s` with [`find_leader`]: a record whose rear is at or
 /// ahead of `s` is a leader, and one whose rear is behind is a follower, so a
@@ -501,11 +534,11 @@ pub fn find_follower(
     s: f64,
     skip: VehicleId,
 ) -> Option<(VehicleId, f64)> {
-    behind(network, occupants, vehicles, lane, lane, s, 0.0, skip)
+    behind(network, occupants, vehicles, lane, lane, s, 0.0, 0, skip)
 }
 
-/// [`find_follower`]'s search of `lane`, from `s` back, where `s` is `travelled`
-/// back from the point searched from, on `target`.
+/// [`find_follower`]'s search of `lane`, `depth` lanes back from `target`, from
+/// `s` back, where `s` is `travelled` back from the point searched from.
 #[allow(clippy::too_many_arguments)]
 fn behind(
     network: &SimNetwork,
@@ -515,26 +548,28 @@ fn behind(
     lane: LaneId,
     s: f64,
     travelled: f64,
+    depth: usize,
     skip: VehicleId,
 ) -> Option<(VehicleId, f64)> {
     let list = &occupants[lane.0 as usize];
     let end = list.partition_point(|o| o.s < s);
     let counts = |o: &Occupant| {
-        let vehicle = &vehicles[o.id];
-        // Its path is short of `target` only if it is full and `target` lies beyond.
-        let through = vehicle.path.contains(&target) || vehicle.path.is_full();
-        !o.ghost && o.id != skip && (lane == target || through)
+        let through = || vehicles[o.id].path.contains(&target);
+        !o.ghost && o.id != skip && (lane == target || through())
     };
     if let Some(o) = list[..end].iter().rev().find(|o| counts(o)) {
-        let gap = travelled + s - (o.s + vehicles[o.id].spec.length);
-        return (gap <= LEADER_HORIZON).then_some((o.id, gap));
+        let follower = &vehicles[o.id];
+        let gap = travelled + s - (o.s + follower.spec.length);
+        let reach = horizon(network, follower, follower.path[0]);
+        return (gap <= reach).then_some((o.id, gap));
     }
-    // None on this lane: on to the ends of the lanes leading into it. On a loop a
-    // lane leads into itself, which the horizon ends.
-    let travelled = travelled + s;
-    if travelled > LEADER_HORIZON {
+    // None on this lane: on to the ends of the lanes leading into it, as far back
+    // as a vehicle could still have `target` on its path. On a loop a lane leads
+    // into itself, which that ends too.
+    if depth + 1 >= PATH_LEN {
         return None;
     }
+    let travelled = travelled + s;
     network
         .lane(lane)
         .predecessors()
@@ -542,7 +577,15 @@ fn behind(
         .filter_map(|&p| {
             let length = network.lane(p).length();
             behind(
-                network, occupants, vehicles, target, p, length, travelled, skip,
+                network,
+                occupants,
+                vehicles,
+                target,
+                p,
+                length,
+                travelled,
+                depth + 1,
+                skip,
             )
         })
         .min_by(|a, b| a.1.total_cmp(&b.1))
@@ -734,5 +777,27 @@ mod test {
         insertion_sort(&mut list);
         let order: Vec<_> = list.iter().map(|o| o.s).collect();
         assert_eq!(order, [0.5, 1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn stepping_to_the_split_agrees_with_a_binary_search() {
+        let mut ids = SlotMap::<VehicleId, ()>::with_key();
+        let lane = Lane::new(&[glam::DVec2::ZERO, glam::DVec2::X * 10.0], 3.5, 14.0).unwrap();
+        let list: Vec<_> = [1.0, 2.0, 2.0, 2.0, 3.0, 5.0]
+            .into_iter()
+            .map(|s| Occupant {
+                s,
+                id: ids.insert(()),
+                hint: lane.lane_pos(s, 0.0),
+                ghost: false,
+                lateral: Lateral::InLane,
+            })
+            .collect();
+        for s in [0.0, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0] {
+            let expected = list.partition_point(|o| o.s < s);
+            for near in 0..=list.len() + 1 {
+                assert_eq!(split_near(&list, s, near), expected, "s {s} from {near}");
+            }
+        }
     }
 }

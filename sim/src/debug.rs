@@ -78,6 +78,9 @@ pub enum AccelSource {
     /// Making room for a vehicle indicating into its lane ahead, as if that
     /// vehicle's ghost were a leader, with the gap to it.
     Yield { id: VehicleId, gap: f64 },
+    /// The end of the lanes the vehicle knows it will take, as a stop line, with
+    /// the gap to it.
+    PathEnd { gap: f64 },
 }
 
 /// A sink that discards everything.
