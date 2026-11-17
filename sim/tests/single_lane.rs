@@ -25,7 +25,7 @@ fn lane(turn: f64) -> Lane {
 /// Runs a vehicle from rest at the start of the lane until it is removed.
 /// Returns the time taken and the largest |t| seen.
 fn drive(lane: Lane) -> (f64, f64) {
-    let length = lane.length();
+    let length = lane.geometry().length();
     let mut sim = Simulation::new(SimNetwork::new(vec![lane]), NoopSink);
     let at = Placement { lane: LaneId(0), s: 0.0, speed: 0.0 };
     let id = sim.insert(car(), at);
@@ -54,7 +54,7 @@ fn drive(lane: Lane) -> (f64, f64) {
 fn straight_lane_is_driven_end_to_end() {
     let (time, max_t) = drive(lane(0.0));
     // Lower bound: the whole lane at the speed limit.
-    assert!(time > lane(0.0).length() / SPEED_LIMIT);
+    assert!(time > lane(0.0).geometry().length() / SPEED_LIMIT);
     assert!(max_t < 1e-9, "drifted {max_t} m off the centerline");
 }
 

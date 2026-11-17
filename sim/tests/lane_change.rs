@@ -135,7 +135,7 @@ fn respects_one_way_permissions() {
 fn a_change_across_the_seam_keeps_followers_on_the_old_side_informed() {
     // Start the change just before the seam, so the car advances while straddling.
     let mut sim = Simulation::new(ring_road(230.0, 3, SPEED_LIMIT), NoopSink);
-    let length = sim.network().lane(LaneId(1)).length();
+    let length = sim.network().lane(LaneId(1)).geometry().length();
     let id = sim.insert(
         car(),
         Placement { lane: LaneId(1), s: length - 3.0, speed: SPEED_LIMIT },
@@ -168,7 +168,11 @@ fn trailing_corner(sim: &Simulation, id: VehicleId, lane: LaneId) -> Option<f64>
     );
     let l = sim.network().lane(lane);
     let [_, rear_right, ..] = sim.get(id)?.corners();
-    Some(l.world_to_lane_near(rear_right, l.lane_pos(record.s, 0.0)).t)
+    Some(
+        l.geometry()
+            .world_to_lane_near(rear_right, l.geometry().lane_pos(record.s, 0.0))
+            .t,
+    )
 }
 
 /// The smallest distance from any corner of either body to the other body.

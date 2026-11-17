@@ -1,6 +1,14 @@
+use arrayvec::ArrayVec;
 use glam::DVec2;
 
-use crate::lane::{Lane, MAX_PREDECESSORS, MAX_SUCCESSORS};
+use crate::lane::{LaneError, LaneGeometry};
+
+/// The most successors a lane can have.
+pub const MAX_SUCCESSORS: usize = 4;
+
+/// The most predecessors a lane can have. More than successors, since a lane
+/// leaving a junction collects connectors from several approaches.
+pub const MAX_PREDECESSORS: usize = 8;
 
 /// Identifies a lane: its index in [`SimNetwork`]'s lanes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -57,6 +65,80 @@ pub enum NetworkError {
     Disconnected { lane: LaneId, successor: LaneId, gap: f64 },
     #[error("{neighbor:?} is beside {lane:?} but its {end:?} is {offset} m along from {lane:?}'s")]
     NotAligned { lane: LaneId, neighbor: LaneId, end: End, offset: f64 },
+}
+
+/// A lane: its geometry and speed limit, plus its links to other lanes, which
+/// [`SimNetwork`] sets.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Lane {
+    geometry: LaneGeometry,
+    /// Speed limit in meters per second.
+    speed_limit: f64,
+    /// The lanes this one connects to, end to start.
+    successors: ArrayVec<LaneId, MAX_SUCCESSORS>,
+    /// The lanes that connect to this one, end to start: the inverse of `successors`.
+    predecessors: ArrayVec<LaneId, MAX_PREDECESSORS>,
+    /// The lane beside this one on the left, if any.
+    adj_left: Option<Neighbor>,
+    /// The lane beside this one on the right, if any.
+    adj_right: Option<Neighbor>,
+}
+
+impl Lane {
+    /// Builds a lane from its centerline polyline, a constant width in meters,
+    /// centered on it, and a speed limit in meters per second.
+    ///
+    /// Consecutive duplicate points are removed before the lane is built.
+    pub fn new(points: &[DVec2], width: f64, speed_limit: f64) -> Result<Self, LaneError> {
+        let geometry = LaneGeometry::new(points, &vec![[0.5 * width; 2]; points.len()])?;
+        Ok(Self {
+            geometry,
+            speed_limit,
+            successors: ArrayVec::new(),
+            predecessors: ArrayVec::new(),
+            adj_left: None,
+            adj_right: None,
+        })
+    }
+
+    /// Its shape, and the mapping between world positions and lane coordinates.
+    pub fn geometry(&self) -> &LaneGeometry {
+        &self.geometry
+    }
+
+    /// Speed limit in meters per second.
+    pub fn speed_limit(&self) -> f64 {
+        self.speed_limit
+    }
+
+    /// The lanes this one connects to, end to start, in the order they were connected.
+    pub fn successors(&self) -> &[LaneId] {
+        &self.successors
+    }
+
+    /// The lanes that connect to this one, end to start, in the order they were connected.
+    pub fn predecessors(&self) -> &[LaneId] {
+        &self.predecessors
+    }
+
+    /// The lane beside this one on the left, if any.
+    pub fn adj_left(&self) -> Option<Neighbor> {
+        self.adj_left
+    }
+
+    /// The lane beside this one on the right, if any.
+    pub fn adj_right(&self) -> Option<Neighbor> {
+        self.adj_right
+    }
+
+    /// The lane beside this one on the given side, if any.
+    pub fn adj(&self, side: Side) -> Option<Neighbor> {
+        match side {
+            Side::Left => self.adj_left,
+            Side::Right => self.adj_right,
+        }
+    }
 }
 
 /// One end of a lane.
@@ -140,7 +222,8 @@ impl SimNetwork {
     /// check networks once they are built. It scans every lane, so it is not for
     /// hot paths.
     pub fn validate(&self) -> Result<(), NetworkError> {
-        let point = |lane: &Lane, s: f64| lane.lane_to_world(lane.lane_pos(s, 0.0));
+        let point =
+            |lane: &Lane, s: f64| lane.geometry().lane_to_world(lane.geometry().lane_pos(s, 0.0));
         for (id, lane) in self.lanes() {
             for side in [Side::Left, Side::Right] {
                 let Some(neighbor) = lane.adj(side) else {
@@ -155,12 +238,13 @@ impl SimNetwork {
                     });
                 }
                 // Where the neighbor's ends fall along this lane.
-                for (end, s) in [(End::Start, 0.0), (End::End, lane.length())] {
+                for (end, s) in [(End::Start, 0.0), (End::End, lane.geometry().length())] {
                     let at = match end {
                         End::Start => point(beside, 0.0),
-                        End::End => point(beside, beside.length()),
+                        End::End => point(beside, beside.geometry().length()),
                     };
-                    let along = lane.world_to_lane_near(at, lane.lane_pos(s, 0.0)).s;
+                    let along =
+                        lane.geometry().world_to_lane_near(at, lane.geometry().lane_pos(s, 0.0)).s;
                     if (along - s).abs() > COINCIDENT {
                         let offset = along - s;
                         return Err(NetworkError::NotAligned {
@@ -187,7 +271,8 @@ impl SimNetwork {
                 }
             }
             for &successor in lane.successors() {
-                let gap = point(lane, lane.length()).distance(point(self.lane(successor), 0.0));
+                let gap = point(lane, lane.geometry().length())
+                    .distance(point(self.lane(successor), 0.0));
                 if gap > COINCIDENT {
                     return Err(NetworkError::Disconnected { lane: id, successor, gap });
                 }
@@ -213,10 +298,10 @@ impl SimNetwork {
         let mut path = path.into_iter().peekable();
         while let Some(id) = path.next() {
             let lane = self.lane(id);
-            if s < lane.length() || path.peek().is_none() {
-                return lane.lane_to_world(lane.lane_pos(s, t));
+            if s < lane.geometry().length() || path.peek().is_none() {
+                return lane.geometry().lane_to_world(lane.geometry().lane_pos(s, t));
             }
-            s -= lane.length();
+            s -= lane.geometry().length();
         }
         unreachable!("a vehicle's path always holds its current lane")
     }

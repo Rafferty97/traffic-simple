@@ -299,11 +299,11 @@ impl<D: DebugSink> Simulation<D> {
     /// A vehicle placed on a lane's centerline, facing along it, not yet in the simulation.
     fn build_vehicle(&self, spec: VehicleSpec, at: Placement) -> Vehicle {
         let lane = self.state.network.lane(at.lane);
-        let lane_pos = lane.lane_pos(at.s, 0.0);
+        let lane_pos = lane.geometry().lane_pos(at.s, 0.0);
         let mut vehicle = Vehicle {
             spec,
-            pos: lane.lane_to_world(lane_pos),
-            heading: wrap_angle(lane.tangent_at(lane_pos).to_angle()),
+            pos: lane.geometry().lane_to_world(lane_pos),
+            heading: wrap_angle(lane.geometry().tangent_at(lane_pos).to_angle()),
             speed: at.speed,
             accel: 0.0,
             curvature: 0.0,
@@ -485,7 +485,10 @@ impl<D: DebugSink> Simulation<D> {
             return;
         };
         let target = self.state.network.lane(neighbor.lane);
-        let hint = target.lane_pos(vehicle.lane_pos.s / current.length() * target.length(), 0.0);
+        let hint = target.geometry().lane_pos(
+            vehicle.lane_pos.s / current.geometry().length() * target.geometry().length(),
+            0.0,
+        );
         let ghost = Occupant::ghost(&self.state.network, neighbor.lane, id, vehicle, hint);
         let list = &mut self.state.occupants[neighbor.lane.0 as usize];
         let index = list.partition_point(|o| o.s <= ghost.s);
@@ -587,7 +590,7 @@ impl<D: DebugSink> Simulation<D> {
         decisions.clear();
         for (index, list) in occupants.iter().enumerate() {
             let lane = LaneId(index as u32);
-            let half_length = 0.5 * network.lane(lane).length();
+            let half_length = 0.5 * network.lane(lane).geometry().length();
             for (i, o) in list.iter().enumerate().rev() {
                 if o.ghost {
                     continue;
@@ -700,16 +703,16 @@ impl<D: DebugSink> Simulation<D> {
                 kinematics::advance(vehicle.pos, vehicle.heading, vehicle.curvature, dist);
 
             let lane = network.lane(vehicle.path[0]);
-            vehicle.lane_pos = lane.world_to_lane_near(vehicle.pos, vehicle.lane_pos);
+            vehicle.lane_pos = lane.geometry().world_to_lane_near(vehicle.pos, vehicle.lane_pos);
             while vehicle.path.len() > 1 {
-                let length = network.lane(vehicle.path[0]).length();
+                let length = network.lane(vehicle.path[0]).geometry().length();
                 if vehicle.lane_pos.s < length {
                     break;
                 }
                 let previous = vehicle.path.remove(0);
                 let next = network.lane(vehicle.path[0]);
-                let hint = next.lane_pos(vehicle.lane_pos.s - length, 0.0);
-                vehicle.lane_pos = next.world_to_lane_near(vehicle.pos, hint);
+                let hint = next.geometry().lane_pos(vehicle.lane_pos.s - length, 0.0);
+                vehicle.lane_pos = next.geometry().world_to_lane_near(vehicle.pos, hint);
                 if let Some(change) = &mut vehicle.lane_change {
                     change.s0 -= length;
                 }
@@ -726,7 +729,7 @@ impl<D: DebugSink> Simulation<D> {
                 // next lane, so followers there keep seeing it.
                 if let Some(old) = vehicle.old_side.and_then(|side| next.adj(side)) {
                     let old_lane = network.lane(old.lane);
-                    let hint = old_lane.lane_pos(vehicle.lane_pos.s, 0.0);
+                    let hint = old_lane.geometry().lane_pos(vehicle.lane_pos.s, 0.0);
                     let occupant = Occupant::new(network, old.lane, id, vehicle, hint);
                     occupants[old.lane.0 as usize].push(occupant);
                 }
@@ -739,7 +742,7 @@ impl<D: DebugSink> Simulation<D> {
                     match next.adj(intent.side).filter(|n| n.can_change) {
                         Some(n) => {
                             let target = network.lane(n.lane);
-                            let hint = target.lane_pos(vehicle.lane_pos.s, 0.0);
+                            let hint = target.geometry().lane_pos(vehicle.lane_pos.s, 0.0);
                             occupants[n.lane.0 as usize]
                                 .push(Occupant::ghost(network, n.lane, id, vehicle, hint));
                         }
@@ -757,7 +760,7 @@ impl<D: DebugSink> Simulation<D> {
 
             // Past the end with nowhere to advance to: it has left the network.
             let lane = network.lane(vehicle.path[0]);
-            if vehicle.lane_pos.s >= lane.length() && lane.successors().is_empty() {
+            if vehicle.lane_pos.s >= lane.geometry().length() && lane.successors().is_empty() {
                 leavers.push(id);
             }
 
@@ -1067,13 +1070,16 @@ fn plan_change(network: &SimNetwork, vehicle: &Vehicle, target: LaneId) -> (Lane
     let current = network.lane(vehicle.path[0]);
     let lane = network.lane(target);
     // Adjacent lanes start and end together, so the same fraction is a good hint.
-    let hint = lane.lane_pos(vehicle.lane_pos.s / current.length() * lane.length(), 0.0);
-    let lane_pos = lane.world_to_lane_near(vehicle.pos, hint);
+    let hint = lane.geometry().lane_pos(
+        vehicle.lane_pos.s / current.geometry().length() * lane.geometry().length(),
+        0.0,
+    );
+    let lane_pos = lane.geometry().world_to_lane_near(vehicle.pos, hint);
     let ahead = vehicle.lane_pos.s + lateral::lookahead_distance(vehicle.speed);
     let aim = network.point_along(vehicle.path.iter().copied(), ahead, 0.0);
     let beyond = network.point_along(vehicle.path.iter().copied(), ahead + 1.0, 0.0);
-    let start = lane.world_to_lane_near(aim, lane_pos);
-    let next = lane.world_to_lane_near(beyond, start);
+    let start = lane.geometry().world_to_lane_near(aim, lane_pos);
+    let next = lane.geometry().world_to_lane_near(beyond, start);
     let slope = (next.t - start.t) / (next.s - start.s);
     (
         lane_pos,
@@ -1097,21 +1103,22 @@ fn reach(vehicle: &Vehicle, axle_s: f64, change: Option<LaneChange>) -> f64 {
 /// beyond the rear axle, at `axle_s` on its first lane, or reaches a lane that
 /// leads nowhere. Returns how far beyond the rear axle it then reaches.
 fn extend_path(network: &SimNetwork, path: &mut Vec<LaneId>, axle_s: f64, needed: f64) -> f64 {
-    let mut covered = path.iter().map(|&lane| network.lane(lane).length()).sum::<f64>() - axle_s;
+    let mut covered =
+        path.iter().map(|&lane| network.lane(lane).geometry().length()).sum::<f64>() - axle_s;
     while covered < needed {
         let last = *path.last().expect("a path holds the lane it follows");
         let Some(&next) = network.lane(last).successors().first() else {
             break;
         };
         path.push(next);
-        covered += network.lane(next).length();
+        covered += network.lane(next).geometry().length();
     }
     covered
 }
 
 /// How far a vehicle's path reaches beyond its front, in meters.
 fn reach_beyond_front(network: &SimNetwork, vehicle: &Vehicle) -> f64 {
-    let length: f64 = vehicle.path.iter().map(|&lane| network.lane(lane).length()).sum();
+    let length: f64 = vehicle.path.iter().map(|&lane| network.lane(lane).geometry().length()).sum();
     length - vehicle.lane_pos.s - (vehicle.spec.length - vehicle.spec.rear_axle)
 }
 
@@ -1124,8 +1131,8 @@ mod test {
 
     use super::*;
     use crate::debug::DebugEvent;
-    use crate::lane::Lane;
     use crate::models::lane_change::Outcome;
+    use crate::network::Lane;
 
     const LIMIT: f64 = 14.0;
     const WIDTH: f64 = 3.5;
@@ -1962,9 +1969,9 @@ mod test {
         let c = sim.insert(car(), at(1, 60.0, 0.0));
         sim.change_lane(c, Side::Left).unwrap();
         let lane_1 = sim.state.network.lane(LaneId(1));
-        let pos = lane_1.lane_to_world(lane_1.lane_pos(60.0, 2.55));
+        let pos = lane_1.geometry().lane_to_world(lane_1.geometry().lane_pos(60.0, 2.55));
         let lane_0 = sim.state.network.lane(LaneId(0));
-        let on_0 = lane_0.world_to_lane_near(pos, lane_0.lane_pos(60.0, 0.0));
+        let on_0 = lane_0.geometry().world_to_lane_near(pos, lane_0.geometry().lane_pos(60.0, 0.0));
         let v = &mut sim.state.vehicles[c];
         (v.pos, v.heading, v.lane_pos) = (pos, 0.0, on_0);
         sim.update_occupancy();

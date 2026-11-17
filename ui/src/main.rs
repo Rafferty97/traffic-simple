@@ -117,7 +117,7 @@ impl Harness {
         if count < self.target {
             let lanes = sim.network().lanes().count() as u32;
             let lane = LaneId(self.rng.random_range(0..lanes));
-            let s = self.rng.random::<f64>() * sim.network().lane(lane).length();
+            let s = self.rng.random::<f64>() * sim.network().lane(lane).geometry().length();
             // Drivers vary in how hard they'll brake to let someone in, and in how
             // much they weigh others when changing lanes.
             let car = VehicleSpec {
@@ -170,7 +170,10 @@ impl Harness {
 impl App {
     fn new() -> Self {
         let sim = new_sim();
-        let outlines = sim.network().lanes().flat_map(|(_, lane)| lane.outline().map(to_scene));
+        let outlines = sim
+            .network()
+            .lanes()
+            .flat_map(|(_, lane)| lane.geometry().outline().map(to_scene));
         let scene_rect = Rect::from_points(&outlines.collect::<Vec<_>>());
         Self {
             sim,
@@ -536,15 +539,20 @@ fn draw_pretty(painter: &egui::Painter, sim: &Simulation<DebugState>, selected: 
         };
         let back = sim.network().lane(right.lane).adj_left();
         let dashed = right.can_change && back.is_some_and(|n| n.can_change);
-        let edge = |s: f64| to_scene(lane.lane_to_world(lane.lane_pos(s, -0.5 * lane.width())));
+        let geometry = lane.geometry();
+        let edge = |s: f64| {
+            let t = -geometry.half_width(geometry.lane_pos(s, 0.0), Side::Right);
+            to_scene(geometry.lane_to_world(geometry.lane_pos(s, t)))
+        };
         if dashed {
             // 3 m dashes every 9 m.
-            for i in 0..(lane.length() / 9.0) as u32 {
+            for i in 0..(lane.geometry().length() / 9.0) as u32 {
                 let s = 9.0 * i as f64;
                 painter.line_segment([edge(s), edge(s + 3.0)], marking);
             }
         } else {
-            let points = (0..=(lane.length() / 2.0) as u32).map(|i| edge(2.0 * i as f64));
+            let points =
+                (0..=(lane.geometry().length() / 2.0) as u32).map(|i| edge(2.0 * i as f64));
             painter.add(Shape::line(points.collect(), marking));
         }
     }
@@ -602,13 +610,13 @@ fn draw_debug(
     for (lane_id, lane) in sim.network().lanes() {
         if layers.on(Layer::LaneOutlines) {
             painter.add(Shape::closed_line(
-                lane.outline().map(to_scene).collect(),
+                lane.geometry().outline().map(to_scene).collect(),
                 thin,
             ));
         }
 
         if layers.on(Layer::Centerlines) {
-            let centerline: Vec<_> = lane.centerline().map(to_scene).collect();
+            let centerline: Vec<_> = lane.geometry().centerline().map(to_scene).collect();
             for &p in &centerline {
                 painter.circle_filled(p, 0.1, VERTEX);
             }
@@ -616,10 +624,14 @@ fn draw_debug(
         }
 
         if layers.on(Layer::Ticks) {
-            let hw = 0.5 * lane.width();
-            for i in 0..=(lane.length() / 10.0) as u32 {
+            let geometry = lane.geometry();
+            for i in 0..=(geometry.length() / 10.0) as u32 {
                 let s = 10.0 * i as f64;
-                let ends = [hw, -hw].map(|t| to_scene(lane.lane_to_world(lane.lane_pos(s, t))));
+                let pos = geometry.lane_pos(s, 0.0);
+                let left = geometry.half_width(pos, Side::Left);
+                let right = -geometry.half_width(pos, Side::Right);
+                let ends = [left, right]
+                    .map(|t| to_scene(geometry.lane_to_world(geometry.lane_pos(s, t))));
                 painter.line_segment(ends, thin);
             }
         }
@@ -633,11 +645,14 @@ fn draw_debug(
                 } else {
                     MAY_NOT_CHANGE
                 };
-                let edge = if side == Side::Left { 0.45 } else { -0.45 } * lane.width();
-                for i in 0..(lane.length() / 20.0) as u32 {
+                let geometry = lane.geometry();
+                let sign = if side == Side::Left { 1.0 } else { -1.0 };
+                for i in 0..(geometry.length() / 20.0) as u32 {
                     let s = 20.0 * i as f64 + 5.0;
-                    let ends =
-                        [0.0, edge].map(|t| to_scene(lane.lane_to_world(lane.lane_pos(s, t))));
+                    // Short of the edge, so neighbors' markers don't meet.
+                    let edge = 0.9 * sign * geometry.half_width(geometry.lane_pos(s, 0.0), side);
+                    let ends = [0.0, edge]
+                        .map(|t| to_scene(geometry.lane_to_world(geometry.lane_pos(s, t))));
                     painter.line_segment(ends, Stroke::new(0.06, color));
                 }
             }
@@ -645,7 +660,7 @@ fn draw_debug(
 
         if layers.on(Layer::Occupants) {
             for occupant in sim.occupants(lane_id).iter().filter(|o| shown(o.id)) {
-                let p = lane.lane_to_world(lane.lane_pos(occupant.s, 0.0));
+                let p = lane.geometry().lane_to_world(lane.geometry().lane_pos(occupant.s, 0.0));
                 let color = if occupant.ghost { GHOST } else { OCCUPANT };
                 painter.circle_filled(to_scene(p), 0.25, color);
             }
@@ -673,8 +688,13 @@ fn draw_debug(
             let lane = sim.network().lane(v.lane());
             let samples = (0..=40).map(|i| change.s0 + change.length * i as f64 / 40.0);
             let points = samples
-                .take_while(|&s| s <= lane.length())
-                .map(|s| to_scene(lane.lane_to_world(lane.lane_pos(s, change.offset_at(s)))))
+                .take_while(|&s| s <= lane.geometry().length())
+                .map(|s| {
+                    to_scene(
+                        lane.geometry()
+                            .lane_to_world(lane.geometry().lane_pos(s, change.offset_at(s))),
+                    )
+                })
                 .collect();
             painter.add(Shape::line(points, Stroke::new(0.08, LANE_CHANGE)));
         }
@@ -953,7 +973,7 @@ fn rear(v: &Vehicle) -> DVec2 {
 /// quad between ribs is convex, which a filled polygon of the whole outline
 /// would not be on a bend.
 fn lane_surface(lane: &Lane, color: Color32) -> Shape {
-    let outline: Vec<_> = lane.outline().map(to_scene).collect();
+    let outline: Vec<_> = lane.geometry().outline().map(to_scene).collect();
     let n = outline.len() as u32;
     let mut mesh = egui::Mesh::default();
     for &p in &outline {

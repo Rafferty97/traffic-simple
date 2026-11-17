@@ -148,11 +148,11 @@ impl Occupant {
     ) -> (Self, [Corner; 2]) {
         let lane = network.lane(lane_id);
         let [rear_left, rear_right, ..] = vehicle.corners();
-        let left = lane.world_to_lane_near(rear_left, hint);
-        let right = lane.world_to_lane_near(rear_right, hint);
+        let left = lane.geometry().world_to_lane_near(rear_left, hint);
+        let right = lane.geometry().world_to_lane_near(rear_right, hint);
         let corner = |p: LanePos| Corner {
-            past_end: p.s >= lane.length(),
-            beside: p.t.abs() > 0.5 * lane.width(),
+            past_end: p.s >= lane.geometry().length(),
+            beside: !lane.geometry().between_edges(p),
         };
         let hint = if left.s <= right.s { left } else { right };
         // Diverging if this is an old lane it is moving out of sideways: the lane
@@ -180,7 +180,7 @@ impl Occupant {
 #[derive(Clone, Copy, Debug)]
 struct Corner {
     past_end: bool,
-    /// Further from the centerline than half the lane's width.
+    /// Outside the lane's edges, where it is along the lane.
     beside: bool,
 }
 
@@ -352,10 +352,14 @@ impl Along {
         let ahead = match (self, vehicle.path.get(k)) {
             (Along::Leaving(..), Some(&own)) => {
                 let (own_lane, searched) = (network.lane(own), network.lane(lane));
-                let before: f64 = vehicle.path[..k].iter().map(|&l| network.lane(l).length()).sum();
+                let before: f64 =
+                    vehicle.path[..k].iter().map(|&l| network.lane(l).geometry().length()).sum();
                 // Adjacent lanes start and end together, so the same fraction is a good hint.
-                let hint = own_lane.lane_pos(s / searched.length() * own_lane.length(), 0.0);
-                before + own_lane.world_to_lane_near(point, hint).s - nose - axle_s
+                let hint = own_lane.geometry().lane_pos(
+                    s / searched.geometry().length() * own_lane.geometry().length(),
+                    0.0,
+                );
+                before + own_lane.geometry().world_to_lane_near(point, hint).s - nose - axle_s
             }
             _ => gap,
         };
@@ -372,9 +376,9 @@ pub fn axle_beside(network: &SimNetwork, vehicle: &Vehicle, lane: LaneId) -> f64
     let (own, beside) = (network.lane(vehicle.path[0]), network.lane(lane));
     // Adjacent lanes start and end together, so the same fraction along it is a
     // good hint.
-    let fraction = vehicle.lane_pos.s / own.length();
-    let hint = beside.lane_pos(fraction * beside.length(), 0.0);
-    beside.world_to_lane_near(vehicle.pos, hint).s
+    let fraction = vehicle.lane_pos.s / own.geometry().length();
+    let hint = beside.geometry().lane_pos(fraction * beside.geometry().length(), 0.0);
+    beside.geometry().world_to_lane_near(vehicle.pos, hint).s
 }
 
 /// Something ahead that a leader search found.
@@ -521,7 +525,7 @@ pub fn find_leaders<B>(
             }
             if let Some(side) = passing_side(o.lateral, along.leaving(), along.moving(vehicle)) {
                 // The record sits at the other vehicle's rearmost corner.
-                let rearmost = network.lane(lane).lane_to_world(o.hint);
+                let rearmost = network.lane(lane).geometry().lane_to_world(o.hint);
                 let (pos, tangent) =
                     along.reach(network, vehicle, axle_s, k, lane, gap, rearmost, o.s, now);
                 let [rear_left, rear_right, ..] = state.vehicles[o.id].corners();
@@ -548,7 +552,7 @@ pub fn find_leaders<B>(
                 covered = covered.max(shields(lane_at, k, &state.vehicles[o.id].path));
             }
         }
-        offset += network.lane(lane).length();
+        offset += network.lane(lane).geometry().length();
         k += 1;
     }
     // Past the end of its path, with nowhere it knows to go.
@@ -669,7 +673,7 @@ fn behind(
         .predecessors()
         .iter()
         .filter_map(|&p| {
-            let length = network.lane(p).length();
+            let length = network.lane(p).geometry().length();
             behind(state, target, p, length, travelled, skip)
         })
         .min_by(|a, b| a.1.total_cmp(&b.1))
@@ -679,7 +683,7 @@ fn behind(
 mod test {
     use super::*;
     use crate::debug::NoopSink;
-    use crate::lane::Lane;
+    use crate::network::Lane;
     use crate::simulation::Simulation;
     use crate::vehicle::{Placement, VehicleSpec};
 
@@ -777,7 +781,9 @@ mod test {
         let axle_s = axle_beside(&network, &vehicle, LaneId(0));
         let (pos, _) = along.pose(&network, &vehicle, axle_s, 20.0);
         let inside = network.lane(LaneId(0));
-        let on = inside.world_to_lane_near(pos, inside.lane_pos(axle_s + 20.0, 0.0));
+        let on = inside
+            .geometry()
+            .world_to_lane_near(pos, inside.geometry().lane_pos(axle_s + 20.0, 0.0));
         assert!(on.t.abs() < 1e-6, "{on:?}");
         assert!((on.s - (axle_s + 20.0)).abs() < 1e-6, "{on:?}");
     }
@@ -810,7 +816,9 @@ mod test {
         near: f64,
     ) -> f64 {
         let lane = network.lane(lane);
-        lane.world_to_lane_near(pos + tangent * nose, lane.lane_pos(near, 0.0)).s
+        lane.geometry()
+            .world_to_lane_near(pos + tangent * nose, lane.geometry().lane_pos(near, 0.0))
+            .s
     }
 
     /// The test car's nose, ahead of its rear axle.
@@ -824,7 +832,7 @@ mod test {
         let vehicle = car_at(&network, 1, 10.0);
         let lane = network.lane(LaneId(1));
         // A rear corner 60 m along, off the centerline.
-        let corner = lane.lane_to_world(lane.lane_pos(60.0, -0.9));
+        let corner = lane.geometry().lane_to_world(lane.geometry().lane_pos(60.0, -0.9));
         let gap = 60.0 - (10.0 + NOSE);
         let (pos, tangent) = Along::Path(0).reach(
             &network,
@@ -848,7 +856,7 @@ mod test {
         let network = bend();
         let vehicle = car_at(&network, 1, 10.0);
         let beside = network.lane(LaneId(0));
-        let corner = beside.lane_to_world(beside.lane_pos(58.0, -1.2));
+        let corner = beside.geometry().lane_to_world(beside.geometry().lane_pos(58.0, -1.2));
         let along = Along::Leaving(Side::Left, 0);
         let (pos, tangent) = along.reach(
             &network,
@@ -862,7 +870,8 @@ mod test {
             NOWHERE,
         );
         let own = network.lane(LaneId(1));
-        let target = own.world_to_lane_near(corner, own.lane_pos(58.0, 0.0)).s;
+        let target =
+            own.geometry().world_to_lane_near(corner, own.geometry().lane_pos(58.0, 0.0)).s;
         let nose = nose_along(&network, LaneId(1), pos, tangent, NOSE, target);
         assert!(
             (nose - (target - NOSE_GAP)).abs() < 0.02,
@@ -878,7 +887,7 @@ mod test {
         let mut vehicle = car_at(&network, 1, 10.0);
         vehicle.lane_change = Some(LaneChange::new(10.0, 3.5, 0.0, 0.0));
         let lane = network.lane(LaneId(1));
-        let corner = lane.lane_to_world(lane.lane_pos(25.0, 0.0));
+        let corner = lane.geometry().lane_to_world(lane.geometry().lane_pos(25.0, 0.0));
         let gap = 25.0 - (10.0 + NOSE);
         let (pos, tangent) = Along::Path(0).reach(
             &network,
@@ -906,7 +915,7 @@ mod test {
         let now = (DVec2::new(1.0, 2.0), DVec2::Y);
         // The other rear is behind its nose already, and just short of it.
         for s in [11.0, 13.0, 10.0 + NOSE + 0.5 * NOSE_GAP] {
-            let corner = lane.lane_to_world(lane.lane_pos(s, 0.0));
+            let corner = lane.geometry().lane_to_world(lane.geometry().lane_pos(s, 0.0));
             let gap = s - (10.0 + NOSE);
             let reached =
                 Along::Path(0).reach(&network, &vehicle, 10.0, 0, LaneId(1), gap, corner, s, now);
@@ -923,7 +932,7 @@ mod test {
             .map(|s| Occupant {
                 s,
                 id: ids.insert(()),
-                hint: lane.lane_pos(s, 0.0),
+                hint: lane.geometry().lane_pos(s, 0.0),
                 ghost: false,
                 lateral: Lateral::InLane,
             })

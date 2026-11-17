@@ -70,7 +70,7 @@ pub fn fill_ring<D: traffic_sim::DebugSink>(sim: &mut Simulation<D>, count: usiz
 
 /// Inserts `count` cars at rest, evenly spaced along a lane.
 pub fn fill_lane<D: traffic_sim::DebugSink>(sim: &mut Simulation<D>, lane: LaneId, count: usize) {
-    let length = sim.network().lane(lane).length();
+    let length = sim.network().lane(lane).geometry().length();
     for i in 0..count {
         let s = length * i as f64 / count as f64;
         sim.insert(car(), Placement { lane, s, speed: 0.0 });

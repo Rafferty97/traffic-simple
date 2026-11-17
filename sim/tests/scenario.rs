@@ -62,8 +62,8 @@ fn run_scenario(spawn_rate: f64, despawn_rate: f64, minutes: f64) -> Stats {
         ring_road(RING_CIRCUMFERENCE, 3, SPEED_LIMIT),
         Terms::default(),
     );
-    let spawn_s = 0.25 * sim.network().lane(SPAWN_LANE).length();
-    let despawn_s = 0.75 * sim.network().lane(DESPAWN_LANE).length();
+    let spawn_s = 0.25 * sim.network().lane(SPAWN_LANE).geometry().length();
+    let despawn_s = 0.75 * sim.network().lane(DESPAWN_LANE).geometry().length();
     let mut rng = Xoshiro256PlusPlus::seed_from_u64(0);
     let (mut spawn_credit, mut despawn_credit) = (0.0f64, 0.0f64);
     let mut stats = Stats::default();

@@ -57,7 +57,7 @@ fn refuses_to_appear_just_behind_a_stopped_leader_at_speed() {
 #[test]
 fn sees_followers_across_the_seam() {
     let mut sim = Simulation::new(ring(230.0, SPEED_LIMIT), NoopSink);
-    let length = sim.network().lane(LaneId(0)).length();
+    let length = sim.network().lane(LaneId(0)).geometry().length();
     // A fast follower just before the seam; the spot is just after it.
     sim.insert(car(), at(length - 8.0, SPEED_LIMIT));
     assert_eq!(

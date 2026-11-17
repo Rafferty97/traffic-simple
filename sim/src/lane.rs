@@ -1,22 +1,18 @@
+//! A lane's geometry: its centerline as a polyline, its edges, and the mapping
+//! between world positions and lane coordinates.
+
 use std::f64::consts::TAU;
 
-use arrayvec::ArrayVec;
 use glam::DVec2;
 
-use crate::network::{LaneId, Neighbor, Side};
-
-/// The most successors a lane can have.
-pub const MAX_SUCCESSORS: usize = 4;
-
-/// The most predecessors a lane can have. More than successors, since a lane
-/// leaving a junction collects connectors from several approaches.
-pub const MAX_PREDECESSORS: usize = 8;
+use crate::network::Side;
 
 /// The sharpest turn allowed at a single vertex: 1/16 of a revolution.
 const MAX_TURN: f64 = TAU / 16.0;
 
-/// A lane described by a polyline centerline, a constant width and a speed limit,
-/// plus its links to other lanes, which [`SimNetwork`](crate::SimNetwork) sets.
+/// A lane's shape: a polyline centerline, and how far its edges lie to either
+/// side of it at each vertex. The centerline needn't be centered: each side's
+/// half-width is its own, and varies linearly in `s` between vertices.
 ///
 /// Positions are expressed in lane coordinates `(s, t)`: `s` is the distance in
 /// meters along the centerline and `t` is the lateral offset in meters, positive
@@ -24,23 +20,14 @@ const MAX_TURN: f64 = TAU / 16.0;
 /// along the lane without `s` jumping.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Lane {
+pub struct LaneGeometry {
     /// The segments comprising the lane.
     segs: Vec<Segment>,
-    /// Width of the lane in meters.
-    width: f64,
+    /// How far the left and right edges lie from the centerline at each vertex,
+    /// in meters: one more than there are segments.
+    half_widths: Vec<[f64; 2]>,
     /// Length of the lane in meters.
     length: f64,
-    /// Speed limit in meters per second.
-    speed_limit: f64,
-    /// The lanes this one connects to, end to start.
-    pub(crate) successors: ArrayVec<LaneId, MAX_SUCCESSORS>,
-    /// The lanes that connect to this one, end to start: the inverse of `successors`.
-    pub(crate) predecessors: ArrayVec<LaneId, MAX_PREDECESSORS>,
-    /// The lane beside this one on the left, if any.
-    pub(crate) adj_left: Option<Neighbor>,
-    /// The lane beside this one on the right, if any.
-    pub(crate) adj_right: Option<Neighbor>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -59,9 +46,9 @@ struct Segment {
 /// A position in lane coordinates.
 ///
 /// Besides `s` and `t`, this carries a private cache of the segment the point was
-/// found in, which [`Lane::world_to_lane_near`] uses to make the next query cheap.
-/// The cache is only ever a hint: a stale one (even from a different lane) makes a
-/// query slower, never wrong.
+/// found in, which [`LaneGeometry::world_to_lane_near`] uses to make the next query
+/// cheap. The cache is only ever a hint: a stale one (even from a different lane)
+/// makes a query slower, never wrong.
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LanePos {
@@ -83,19 +70,27 @@ pub enum LaneError {
     Folds { segment: usize },
 }
 
-impl Lane {
-    /// Builds a lane from its centerline polyline, a constant width in meters and a
-    /// speed limit in meters per second.
+impl LaneGeometry {
+    /// Builds a lane's geometry from its centerline polyline and, at each point,
+    /// how far its left and right edges lie from it, in meters.
     ///
-    /// Consecutive duplicate points are removed before the lane is built.
-    pub fn new(points: &[DVec2], width: f64, speed_limit: f64) -> Result<Self, LaneError> {
+    /// Consecutive duplicate points are removed before the lane is built, with
+    /// their half-widths.
+    pub(crate) fn new(points: &[DVec2], half_widths: &[[f64; 2]]) -> Result<Self, LaneError> {
+        assert_eq!(
+            points.len(),
+            half_widths.len(),
+            "a half-width pair per point"
+        );
         let max_tan_half = (0.5 * MAX_TURN).tan();
 
-        let mut points = points.to_vec();
-        points.dedup_by(|a, b| a.distance_squared(*b) < 1e-12);
-        if points.len() < 2 {
+        let mut vertices: Vec<(DVec2, [f64; 2])> =
+            points.iter().copied().zip(half_widths.iter().copied()).collect();
+        vertices.dedup_by(|a, b| a.0.distance_squared(b.0) < 1e-12);
+        if vertices.len() < 2 {
             return Err(LaneError::TooFewPoints);
         }
+        let (points, half_widths): (Vec<DVec2>, Vec<[f64; 2]>) = vertices.into_iter().unzip();
 
         let lens: Vec<f64> = points.windows(2).map(|w| w[0].distance(w[1])).collect();
         let dirs: Vec<DVec2> = points.windows(2).map(|w| (w[1] - w[0]).normalize()).collect();
@@ -112,29 +107,22 @@ impl Lane {
             tan_half[i] = th;
         }
 
-        let hw = 0.5 * width;
         let mut cum_s = 0.0;
         let mut segs = Vec::with_capacity(n);
         for i in 0..n {
             let t0 = -tan_half[i];
             let t1 = tan_half[i + 1];
             let k = (t0 - t1) / lens[i];
-            if hw * k.abs() >= 1.0 {
+            // The mapping stretches by 1 + t·k across the segment, which mustn't
+            // reach zero anywhere between its edges, on either side.
+            let [left, right] = [0, 1].map(|e| half_widths[i][e].max(half_widths[i + 1][e]));
+            if 1.0 + left * k <= 0.0 || 1.0 - right * k <= 0.0 {
                 return Err(LaneError::Folds { segment: i });
             }
             segs.push(Segment { start: points[i], dir: dirs[i], cum_s, adj: (t0, k) });
             cum_s += lens[i];
         }
-        Ok(Self {
-            segs,
-            length: cum_s,
-            width,
-            speed_limit,
-            successors: ArrayVec::new(),
-            predecessors: ArrayVec::new(),
-            adj_left: None,
-            adj_right: None,
-        })
+        Ok(Self { segs, half_widths, length: cum_s })
     }
 
     /// Length of the centerline in meters.
@@ -142,42 +130,24 @@ impl Lane {
         self.length
     }
 
-    /// Width of the lane in meters.
-    pub fn width(&self) -> f64 {
-        self.width
+    /// How far the edge on `side` lies from the centerline at `pos`, in meters:
+    /// interpolated linearly in `s` between the vertices either side of it.
+    pub fn half_width(&self, pos: LanePos, side: Side) -> f64 {
+        let i = pos.seg as usize;
+        let s0 = self.segs[i].cum_s;
+        let s1 = self.segs.get(i + 1).map_or(self.length, |seg| seg.cum_s);
+        let u = ((pos.s - s0) / (s1 - s0)).clamp(0.0, 1.0);
+        let e = match side {
+            Side::Left => 0,
+            Side::Right => 1,
+        };
+        let (a, b) = (self.half_widths[i][e], self.half_widths[i + 1][e]);
+        a + u * (b - a)
     }
 
-    /// Speed limit in meters per second.
-    pub fn speed_limit(&self) -> f64 {
-        self.speed_limit
-    }
-
-    /// The lanes this one connects to, end to start, in the order they were connected.
-    pub fn successors(&self) -> &[LaneId] {
-        &self.successors
-    }
-
-    /// The lanes that connect to this one, end to start, in the order they were connected.
-    pub fn predecessors(&self) -> &[LaneId] {
-        &self.predecessors
-    }
-
-    /// The lane beside this one on the left, if any.
-    pub fn adj_left(&self) -> Option<Neighbor> {
-        self.adj_left
-    }
-
-    /// The lane beside this one on the right, if any.
-    pub fn adj_right(&self) -> Option<Neighbor> {
-        self.adj_right
-    }
-
-    /// The lane beside this one on the given side, if any.
-    pub fn adj(&self, side: Side) -> Option<Neighbor> {
-        match side {
-            Side::Left => self.adj_left,
-            Side::Right => self.adj_right,
-        }
+    /// Whether `pos` lies between the lane's edges, at its `s`.
+    pub fn between_edges(&self, pos: LanePos) -> bool {
+        pos.t <= self.half_width(pos, Side::Left) && -pos.t <= self.half_width(pos, Side::Right)
     }
 
     /// Creates a new `LanePos` for the given `s` and `t`.
@@ -199,9 +169,10 @@ impl Lane {
 
     /// Converts a world position to lane coordinates, searching the whole lane.
     ///
-    /// Use this for the first query; afterwards prefer [`Lane::world_to_lane_near`].
-    /// The result is only meaningful for points within roughly the lane's width of
-    /// the centerline, since the lines of constant `s` can cross further out.
+    /// Use this for the first query; afterwards prefer
+    /// [`LaneGeometry::world_to_lane_near`]. The result is only meaningful for
+    /// points within roughly the lane's width of the centerline, since the lines
+    /// of constant `s` can cross further out.
     pub fn world_to_lane(&self, pos: DVec2) -> LanePos {
         let seg = self.nearest_start(pos);
         self.world_to_lane_near(pos, LanePos { s: 0.0, t: 0.0, seg: seg as u32 })
@@ -222,14 +193,23 @@ impl Lane {
         self.segs.iter().map(|s| s.start).chain(std::iter::once(end))
     }
 
-    /// The closed outline of the lane: the left edge forwards, then the right edge backwards.
+    /// The closed outline of the lane: the left edge forwards, then the right edge
+    /// backwards, through each vertex's own half-widths.
     pub fn outline(&self) -> impl Iterator<Item = DVec2> + '_ {
-        let hw = self.width / 2.0;
-        let left = self.segs.iter().map(move |s| s.lane_to_world(s.cum_s, hw));
-        let right = self.segs.iter().map(move |s| s.lane_to_world(s.cum_s, -hw));
-        let last_seg = self.segs.last().unwrap();
-        let end = [hw, -hw].map(|t| last_seg.lane_to_world(self.length, t));
-        left.chain(end).chain(right.rev())
+        let last = self.segs.len() - 1;
+        // The vertices' `s`, and the segment that each lies on, the last one's end
+        // on the last segment.
+        let vertex = move |i: usize| match i {
+            i if i <= last => (i, self.segs[i].cum_s),
+            _ => (last, self.length),
+        };
+        let edge = move |i: usize, e: usize, sign: f64| {
+            let (seg, s) = vertex(i);
+            self.segs[seg].lane_to_world(s, sign * self.half_widths[i][e])
+        };
+        let left = (0..=last + 1).map(move |i| edge(i, 0, 1.0));
+        let right = (0..=last + 1).rev().map(move |i| edge(i, 1, -1.0));
+        left.chain(right)
     }
 
     /// The last segment whose start is at or before `s`.
@@ -295,10 +275,14 @@ mod test {
     use proptest::sample::Index;
 
     const WIDTH: f64 = 3.5;
-    const SPEED_LIMIT: f64 = 14.0;
     const EPS: f64 = 1e-9;
 
-    fn arb_lane() -> impl Strategy<Value = Lane> {
+    /// A lane `WIDTH` wide, centered on `points`.
+    fn lane(points: &[DVec2]) -> Result<LaneGeometry, LaneError> {
+        LaneGeometry::new(points, &vec![[0.5 * WIDTH; 2]; points.len()])
+    }
+
+    fn arb_lane() -> impl Strategy<Value = LaneGeometry> {
         prop::collection::vec((0.5f64..5.0, -0.5f64..0.5), 1..20).prop_filter_map(
             "lane folds",
             |steps| {
@@ -310,13 +294,13 @@ mod test {
                     p += len * DVec2::from_angle(heading);
                     pts.push(p);
                 }
-                Lane::new(&pts, WIDTH, SPEED_LIMIT).ok()
+                lane(&pts).ok()
             },
         )
     }
 
     /// A lane position inside segment `i`, from unit parameters.
-    fn pos_in(lane: &Lane, i: usize, u: f64, v: f64) -> LanePos {
+    fn pos_in(lane: &LaneGeometry, i: usize, u: f64, v: f64) -> LanePos {
         let s0 = lane.segs[i].cum_s;
         let s1 = lane.segs.get(i + 1).map_or(lane.length, |s| s.cum_s);
         LanePos { s: s0 + u * (s1 - s0), t: v * 0.5 * WIDTH, seg: i as u32 }
@@ -379,7 +363,7 @@ mod test {
     #[test]
     fn centerline_s_is_arc_length() {
         let pts = [DVec2::ZERO, DVec2::new(8.0, 0.0), DVec2::new(16.0, 0.5)];
-        let lane = Lane::new(&pts, WIDTH, SPEED_LIMIT).unwrap();
+        let lane = lane(&pts).unwrap();
         let p = DVec2::new(12.0, 0.25); // midway along the second chord
         let c = lane.world_to_lane(p);
         let expected_s = 8.0 + DVec2::new(4.0, 0.25).length();
@@ -390,7 +374,7 @@ mod test {
     #[test]
     fn centerline_iterator_matches_input() {
         let pts = [DVec2::ZERO, DVec2::new(8.0, 0.0), DVec2::new(16.0, 0.5)];
-        let lane = Lane::new(&pts, WIDTH, SPEED_LIMIT).unwrap();
+        let lane = lane(&pts).unwrap();
         let got: Vec<_> = lane.centerline().collect();
         assert_eq!(got.len(), pts.len());
         for (a, b) in got.iter().zip(pts) {
@@ -408,7 +392,7 @@ mod test {
             DVec2::new(8.0, 0.0),
             DVec2::new(8.0, 0.0) + 8.0 * bend,
         ];
-        let lane = Lane::new(&pts, WIDTH, SPEED_LIMIT).unwrap();
+        let lane = lane(&pts).unwrap();
         assert!(lane.tangent_at(lane.lane_pos(4.0, 0.0)).distance(DVec2::X) < EPS);
         assert!(lane.tangent_at(lane.lane_pos(12.0, 0.0)).distance(bend) < EPS);
     }
@@ -416,13 +400,52 @@ mod test {
     #[test]
     fn errors_report_where() {
         assert_eq!(
-            Lane::new(&[DVec2::ZERO, DVec2::ZERO], WIDTH, SPEED_LIMIT).unwrap_err(),
+            lane(&[DVec2::ZERO, DVec2::ZERO]).unwrap_err(),
             LaneError::TooFewPoints
         );
         let hairpin = [DVec2::ZERO, DVec2::new(5.0, 0.0), DVec2::new(5.0, 5.0)];
         assert_eq!(
-            Lane::new(&hairpin, WIDTH, SPEED_LIMIT).unwrap_err(),
+            lane(&hairpin).unwrap_err(),
             LaneError::TurnTooSharp { vertex: 1 }
+        );
+    }
+
+    #[test]
+    fn each_side_has_its_own_half_width_varying_along_the_lane() {
+        // 10 m straight: 1 m to the left and 2 m to the right at the start, 3 m
+        // and 4 m at the end.
+        let pts = [DVec2::ZERO, DVec2::new(10.0, 0.0)];
+        let lane = LaneGeometry::new(&pts, &[[1.0, 2.0], [3.0, 4.0]]).unwrap();
+        let pos = lane.lane_pos(5.0, 0.0);
+        assert!((lane.half_width(pos, Side::Left) - 2.0).abs() < EPS);
+        assert!((lane.half_width(pos, Side::Right) - 3.0).abs() < EPS);
+        assert!(lane.between_edges(lane.lane_pos(5.0, 1.9)));
+        assert!(!lane.between_edges(lane.lane_pos(5.0, 2.1)));
+        assert!(lane.between_edges(lane.lane_pos(5.0, -2.9)));
+        assert!(!lane.between_edges(lane.lane_pos(5.0, -3.1)));
+        let outline: Vec<_> = lane.outline().collect();
+        let expected = [(0.0, 1.0), (10.0, 3.0), (10.0, -4.0), (0.0, -2.0)];
+        assert_eq!(outline.len(), expected.len());
+        for (got, (x, y)) in outline.iter().zip(expected) {
+            assert!(got.distance(DVec2::new(x, y)) < EPS, "{got}");
+        }
+    }
+
+    #[test]
+    fn a_lane_too_wide_on_the_inside_of_a_bend_folds() {
+        // A 0.3 rad bend to the left over 2 m segments: lines of constant `s` meet
+        // about 13 m inside it, so a lane that wide on the left folds, however
+        // narrow on the right, and one that wide on the right doesn't.
+        let bend = DVec2::from_angle(0.3);
+        let pts = [
+            DVec2::ZERO,
+            DVec2::new(2.0, 0.0),
+            DVec2::new(2.0, 0.0) + 2.0 * bend,
+        ];
+        assert!(LaneGeometry::new(&pts, &[[0.1, 14.0]; 3]).is_ok());
+        assert_eq!(
+            LaneGeometry::new(&pts, &[[14.0, 0.1]; 3]).unwrap_err(),
+            LaneError::Folds { segment: 0 }
         );
     }
 }

@@ -34,7 +34,7 @@ fn trace(seed: u64, seconds: f64) -> Vec<u64> {
         if roll < 0.04 {
             let lane = LaneId(2);
             let spec = VehicleSpec { speed_factor: 0.8 + 0.4 * rng.random::<f64>(), ..car() };
-            let s = rng.random::<f64>() * sim.network().lane(lane).length();
+            let s = rng.random::<f64>() * sim.network().lane(lane).geometry().length();
             let speed = spec.desired_speed(SPEED_LIMIT);
             let _ = sim.try_insert(spec, Placement { lane, s, speed });
         } else if let Some(id) = picked {

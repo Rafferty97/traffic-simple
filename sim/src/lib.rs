@@ -14,13 +14,15 @@ mod simulation;
 mod vehicle;
 
 pub use debug::{AccelSource, DebugEvent, DebugSink, NoopSink, PassCheck};
-pub use lane::{Lane, LaneError, LanePos, MAX_PREDECESSORS, MAX_SUCCESSORS};
+pub use lane::{LaneError, LaneGeometry, LanePos};
 pub use models::acceleration::SAFE_BRAKING;
 pub use models::lane_change::{
     INTENT as LANE_CHANGE_INTENT, LaneChangeEval, MIN_INDICATING, Outcome,
 };
 pub use models::lateral::LaneChange;
-pub use network::{End, LaneId, Neighbor, NetworkError, Side, SimNetwork};
+pub use network::{
+    End, Lane, LaneId, MAX_PREDECESSORS, MAX_SUCCESSORS, Neighbor, NetworkError, Side, SimNetwork,
+};
 pub use occupancy::{Lateral, Occupant};
 pub use simulation::{InsertError, LaneChangeError, Simulation, Snapshot};
 pub use vehicle::{Intent, Placement, Vehicle, VehicleId, VehicleSpec};
