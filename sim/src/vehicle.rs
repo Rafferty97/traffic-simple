@@ -97,6 +97,23 @@ pub struct Vehicle {
     pub(crate) intent: Option<Intent>,
     /// The lane-change model's own state, opaque to the rest of the simulation.
     pub(crate) lc: lane_change::State,
+    /// The vehicle behind it that it holds up most, as of the last longitudinal
+    /// update: its old follower, if it changed lanes.
+    pub(crate) old_follower: Option<OldFollower>,
+}
+
+/// A vehicle held up by the one ahead of it: that one is the term binding its
+/// acceleration. Weighing up a lane change, the one ahead measures what leaving
+/// would do for it, without searching back for it.
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub(crate) struct OldFollower {
+    pub id: VehicleId,
+    /// The bumper-to-bumper gap from it to the vehicle it is held up by.
+    pub gap: f64,
+    /// Its acceleration from every other term: what it would be, if the vehicle
+    /// ahead were gone and nothing took its place.
+    pub without: f64,
 }
 
 /// A lane change a vehicle is indicating. It has a ghost record in the target

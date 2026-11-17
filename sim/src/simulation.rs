@@ -14,7 +14,7 @@ use crate::network::{LaneId, Side, SimNetwork};
 use crate::occupancy::{
     self, Ahead, Along, Found, Lateral, Occupant, find_follower, find_leaders, for_each_leader,
 };
-use crate::vehicle::{Intent, Placement, Vehicle, VehicleId, VehicleSpec};
+use crate::vehicle::{Intent, OldFollower, Placement, Vehicle, VehicleId, VehicleSpec};
 
 /// Longest substep in seconds. Longer frames are split.
 const MAX_SUBSTEP: f64 = 1.0 / 60.0;
@@ -53,6 +53,9 @@ pub struct Simulation<D: DebugSink = NoopSink> {
     /// Scratch space for the longitudinal update's decisions, reused between
     /// updates.
     decisions: Vec<AccelUpdate>,
+    /// Scratch space for the longitudinal update: each vehicle held up by a
+    /// leader, by that leader, before the leader keeps the one it holds up most.
+    held: Vec<(VehicleId, OldFollower)>,
     /// Scratch space for vehicles leaving the network, reused between substeps.
     leavers: Vec<VehicleId>,
     /// Scratch space for vehicles that lost a record on a lane they had left.
@@ -73,12 +76,30 @@ pub struct Simulation<D: DebugSink = NoopSink> {
 /// What the longitudinal update decided for a vehicle, from one of its records.
 #[derive(Clone, Copy, Debug)]
 enum AccelUpdate {
-    /// From its record on the lane it follows: its acceleration, and whose ghost
-    /// it is making room for.
-    Own { id: VehicleId, accel: f64, yielding: Option<VehicleId> },
+    /// From its record on the lane it follows: its acceleration, whose ghost it is
+    /// making room for, and the leader whose term is the lowest there, if any.
+    Own {
+        id: VehicleId,
+        accel: f64,
+        yielding: Option<VehicleId>,
+        binding: Option<Binding>,
+    },
     /// From its record on its old lane, while it straddles it: the most its old
     /// side allows.
     OldSide { id: VehicleId, accel: f64 },
+}
+
+/// The leader whose term was the lowest in a vehicle's search along its path.
+#[derive(Clone, Copy, Debug)]
+struct Binding {
+    leader: VehicleId,
+    /// The bumper-to-bumper gap to it.
+    gap: f64,
+    /// Its term.
+    term: f64,
+    /// The lowest of every other term from that search: the free road, other
+    /// leaders, the end of the path and the ghost it makes room for.
+    rest: f64,
 }
 
 /// Why [`Simulation::try_insert`] refused.
@@ -164,6 +185,7 @@ impl<D: DebugSink> Simulation<D> {
             decision_budget,
             // Scratch space, cleared before every use.
             decisions: Vec::new(),
+            held: Vec::new(),
             leavers: Vec::new(),
             departed: Vec::new(),
             lane_decisions: Vec::new(),
@@ -183,6 +205,7 @@ impl<D: DebugSink> Simulation<D> {
             caps: Vec::new(),
             accel_clock: 0.0,
             decisions: Vec::new(),
+            held: Vec::new(),
             leavers: Vec::new(),
             departed: Vec::new(),
             time: 0.0,
@@ -242,7 +265,7 @@ impl<D: DebugSink> Simulation<D> {
         // and it stops at the first that refuses.
         let mut speed = vehicle.speed;
         let mut nearest = true;
-        let refused = find_leaders(&self.state, &vehicle, Along::Inserting, None, |found| {
+        find_leaders(&self.state, &vehicle, Along::Inserting, |found| {
             let Found::Ahead(ahead, gap) = found else {
                 return ControlFlow::Continue(());
             };
@@ -253,13 +276,11 @@ impl<D: DebugSink> Simulation<D> {
             nearest = false;
             let accel = acceleration::interaction(&spec, speed, gap, leader_speed);
             match gap <= 0.0 || accel < -acceleration::SAFE_BRAKING {
-                true => ControlFlow::Break(()),
+                true => ControlFlow::Break(InsertError::NoRoom),
                 false => ControlFlow::Continue(()),
             }
-        });
-        if refused.is_break() {
-            return Err(InsertError::NoRoom);
-        }
+        })
+        .continue_ok()?;
         vehicle.speed = speed;
 
         // A key that matches no vehicle, since this one isn't inserted yet.
@@ -292,6 +313,7 @@ impl<D: DebugSink> Simulation<D> {
             lane_change: None,
             intent: None,
             lc: lane_change::State::default(),
+            old_follower: None,
         };
         let needed = reach(&vehicle, at.s, None);
         extend_path(&self.state.network, &mut vehicle.path, at.s, needed);
@@ -514,7 +536,7 @@ impl<D: DebugSink> Simulation<D> {
     /// substep left off and wrapping around. Decisions are computed from a
     /// read-only view of the state, then applied in order.
     fn update_decisions(&mut self, count: usize) {
-        let Self { state, lane_decisions, sink, .. } = self;
+        let Self { state, lane_decisions, caps, sink, .. } = self;
         let vehicles = &state.vehicles;
         let n = vehicles.len();
         if n == 0 {
@@ -526,7 +548,8 @@ impl<D: DebugSink> Simulation<D> {
         for (id, vehicle) in vehicles.iter().chain(vehicles.iter()).skip(start).take(count) {
             sink.record(|| DebugEvent::RecomputeDecision { vehicle: id });
             let mut lc = vehicle.lc;
-            let Some((decision, evals)) = decide(state, self.time, id, vehicle, &mut lc) else {
+            let Some((decision, evals)) = decide(state, caps, self.time, id, vehicle, &mut lc)
+            else {
                 continue;
             };
             for eval in evals.into_iter().flatten() {
@@ -578,8 +601,8 @@ impl<D: DebugSink> Simulation<D> {
                     if (o.s - rear).abs() > half_length {
                         continue;
                     }
-                    let (accel, yielding) = longitudinal(state, sink, o.id, vehicle, i);
-                    decisions.push(AccelUpdate::Own { id: o.id, accel, yielding });
+                    let (accel, yielding, binding) = longitudinal(state, sink, o.id, vehicle, i);
+                    decisions.push(AccelUpdate::Own { id: o.id, accel, yielding, binding });
                 } else if let Some(side) = straddling(network, vehicle, lane) {
                     let accel = old_side(state, sink, o.id, vehicle, side, i);
                     decisions.push(AccelUpdate::OldSide { id: o.id, accel });
@@ -592,11 +615,14 @@ impl<D: DebugSink> Simulation<D> {
             "each vehicle has one record on the lane it follows"
         );
 
-        // Each vehicle's own update first, then what its old side adds.
+        // What its old side and its speed cap allow first, then its own update,
+        // so that whether a leader binds it is judged against all of them.
         for update in &self.decisions {
-            if let AccelUpdate::Own { id, accel, yielding } = *update {
-                self.state.vehicles[id].accel = accel;
-                self.state.vehicles[id].lc.set_yielding(yielding);
+            if let AccelUpdate::Own { id, yielding, .. } = *update {
+                let vehicle = &mut self.state.vehicles[id];
+                vehicle.accel = f64::INFINITY;
+                vehicle.lc.set_yielding(yielding);
+                vehicle.old_follower = None;
             }
         }
         for update in &self.decisions {
@@ -611,6 +637,32 @@ impl<D: DebugSink> Simulation<D> {
             let source = AccelSource::Cap { max_speed };
             self.sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
             vehicle.accel = vehicle.accel.min(term);
+        }
+        self.held.clear();
+        for update in &self.decisions {
+            if let AccelUpdate::Own { id, accel, binding, .. } = *update {
+                let vehicle = &mut self.state.vehicles[id];
+                let others = vehicle.accel;
+                vehicle.accel = accel.min(others);
+                // Held up by that leader: without it, every other term would be left.
+                if let Some(b) = binding {
+                    let without = b.rest.min(others);
+                    if b.term <= without {
+                        let follower = OldFollower { id, gap: b.gap, without };
+                        self.held.push((b.leader, follower));
+                    }
+                }
+            }
+        }
+        // Each leader keeps the one it holds up most: the most it would gain.
+        let vehicles = &mut self.state.vehicles;
+        for &(leader, follower) in &self.held {
+            let gain = |f: &OldFollower| f.without - vehicles[f.id].accel;
+            let better =
+                vehicles[leader].old_follower.is_none_or(|kept| gain(&follower) > gain(&kept));
+            if better {
+                vehicles[leader].old_follower = Some(follower);
+            }
         }
     }
 
@@ -770,26 +822,44 @@ fn longitudinal<D: DebugSink>(
     id: VehicleId,
     vehicle: &Vehicle,
     own: usize,
-) -> (f64, Option<VehicleId>) {
+) -> (f64, Option<VehicleId>, Option<Binding>) {
     let lane = vehicle.path[0];
     let desired_speed = vehicle.spec.desired_speed(state.network.lane(lane).speed_limit());
     let free = acceleration::free_road(&vehicle.spec, vehicle.speed, desired_speed);
     let source = AccelSource::FreeRoad { desired_speed };
     sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: free });
-    let mut accel = free;
+    // The lowest of every term but the binding leader's, and that leader.
+    let mut rest = free;
+    let mut binding: Option<Binding> = None;
 
     // The nearest ghost, if it comes before anything else ahead.
     let mut ghost = None;
     let mut first = true;
-    for_each_leader(state, vehicle, Along::Path(own), None, |found| {
+    for_each_leader(state, vehicle, Along::Path(own), |found| {
         if let Found::Ahead(ahead, gap) = found {
             if let (true, Ahead::Ghost(owner)) = (first, ahead) {
                 ghost = Some((owner, gap));
             }
             first = false;
         }
-        if let Some(term) = react(&state.vehicles, sink, id, vehicle, found) {
-            accel = accel.min(term);
+        let Some(term) = react(&state.vehicles, sink, id, vehicle, found) else {
+            return;
+        };
+        match found {
+            // On a loop shorter than its horizon it can find itself ahead, which
+            // holds nobody up.
+            Found::Ahead(Ahead::Vehicle(leader), gap) if leader != id => {
+                if let Some(b) = binding.filter(|b| b.term <= term) {
+                    binding = Some(b);
+                    rest = rest.min(term);
+                } else {
+                    if let Some(b) = binding {
+                        rest = rest.min(b.term);
+                    }
+                    binding = Some(Binding { leader, gap, term, rest: 0.0 });
+                }
+            }
+            _ => rest = rest.min(term),
         }
     });
 
@@ -808,9 +878,11 @@ fn longitudinal<D: DebugSink>(
     if let Some((owner, gap, term)) = ghost.filter(|_| yielding.is_some()) {
         let source = AccelSource::Yield { id: owner, gap };
         sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
-        accel = accel.min(term);
+        rest = rest.min(term);
     }
-    (accel, yielding)
+    let binding = binding.map(|b| Binding { rest, ..b });
+    let accel = binding.map_or(rest, |b| b.term.min(rest));
+    (accel, yielding, binding)
 }
 
 /// The side of `lane` a vehicle is straddling it from, if it is partway through a
@@ -835,7 +907,7 @@ fn old_side<D: DebugSink>(
     own: usize,
 ) -> f64 {
     let mut accel = f64::INFINITY;
-    for_each_leader(state, vehicle, Along::Leaving(side, own), None, |found| {
+    for_each_leader(state, vehicle, Along::Leaving(side, own), |found| {
         if let Some(term) = react(&state.vehicles, sink, id, vehicle, found) {
             accel = accel.min(term);
         }
@@ -894,6 +966,7 @@ fn remove_ghost(occupants: &mut [Vec<Occupant>], lane: LaneId, id: VehicleId) {
 /// affect, found by searching back from it.
 fn decide(
     state: &SimState,
+    caps: &[(VehicleId, f64)],
     time: f64,
     id: VehicleId,
     vehicle: &Vehicle,
@@ -904,32 +977,36 @@ fn decide(
         return None;
     }
     let lane = network.lane(vehicle.path[0]);
-    // Each lane is split where its leader search splits it, at its rear, so nobody
-    // slips between leader and follower: a vehicle alongside is one or the other,
-    // with no gap, and makes the change unsafe. On its own lane, its rear is its
-    // record's.
-    let own = occupancy::record_index(state, vehicle.path[0], id);
-    let rear = state.occupants[vehicle.path[0].0 as usize][own].s;
-    // Its acceleration now, and its old follower's, behind it in its own lane, are
-    // the same for either side, so they are measured once, when first needed. The
-    // old follower's is as now, and with this vehicle gone.
-    let mut own_now = None;
+    // Its acceleration now is the one it holds, from the last longitudinal
+    // update. A speed cap holds it back in any lane, so it does after changing too.
+    let own_now = vehicle.accel;
+    let cap = caps.iter().find(|&&(capped, _)| capped == id);
+    let cap = cap.map_or(f64::INFINITY, |&(_, max_speed)| {
+        acceleration::capped(&vehicle.spec, vehicle.speed, max_speed)
+    });
+    // Its old follower's, behind it in its own lane, is the same for either side,
+    // so it is measured once, when first needed: as now, and with this vehicle
+    // gone, when it would react to what this one does, as Treiber's MOBIL has it.
     let mut old_follower = None;
     let prospect = |side: Side| {
         let target = lane.adj(side).filter(|n| n.can_change)?;
-        let own_now = *own_now
-            .get_or_insert_with(|| accel_along(state, id, vehicle, Along::Path(own), false, None));
         let old_follower = *old_follower.get_or_insert_with(|| {
-            find_follower(state, vehicle.path[0], rear, id).map(|(follower, _)| {
-                let f = &vehicles[follower];
-                let along = Along::Path(occupancy::record_index(state, f.path[0], follower));
-                let without = accel_along(state, follower, f, along, false, Some(id));
-                Effect { before: f.accel, after: without, speed: f.speed }
-            })
+            let held = vehicle.old_follower?;
+            let f = vehicles.get(held.id)?;
+            let own = occupancy::record_index(state, vehicle.path[0], id);
+            let mut after = held.without;
+            for_each_leader(state, vehicle, Along::Path(own), |found| {
+                if let Found::Ahead(Ahead::Vehicle(leader), gap) = found {
+                    let gap = held.gap + vehicle.spec.length + gap;
+                    let speed = vehicles[leader].speed;
+                    after = after.min(acceleration::interaction(&f.spec, f.speed, gap, speed));
+                }
+            });
+            Some(Effect { before: f.accel, after, speed: f.speed })
         });
         // As if it were already settled in the target lane, level with where it is
         // now, as MOBIL weighs it up: not how it would get there.
-        let own_after = accel_along(state, id, vehicle, Along::Into(side), true, None);
+        let own_after = accel_along(state, id, vehicle, Along::Into(side), true).min(cap);
         // The new follower, behind it in the target lane: as now, but with this
         // vehicle as a leader too. The lane is split at its rear there, as its
         // search there splits it.
@@ -952,8 +1029,8 @@ fn decide(
 }
 
 /// A vehicle's acceleration under the longitudinal model searching `along` some
-/// lanes, against the free road there, its leaders and the end of its path, as
-/// if `skip` weren't there. Ghosts count as leaders if `ghosts_lead`, as when
+/// lanes, against the free road there, its leaders and the end of its path.
+/// Ghosts count as leaders if `ghosts_lead`, as when
 /// weighing up a change into their lane: a vehicle already indicating into the
 /// gap goes first. Its own ghost, `id`'s, is passed over.
 fn accel_along(
@@ -962,12 +1039,11 @@ fn accel_along(
     vehicle: &Vehicle,
     along: Along,
     ghosts_lead: bool,
-    skip: Option<VehicleId>,
 ) -> f64 {
     let lane = along.lane(&state.network, vehicle, 0).unwrap_or(vehicle.path[0]);
     let desired = vehicle.spec.desired_speed(state.network.lane(lane).speed_limit());
     let mut accel = acceleration::free_road(&vehicle.spec, vehicle.speed, desired);
-    for_each_leader(state, vehicle, along, skip, |found| match found {
+    for_each_leader(state, vehicle, along, |found| match found {
         Found::Ahead(Ahead::Ghost(owner), _) if owner == id || !ghosts_lead => {}
         Found::Ahead(ahead, gap) => {
             let speed = speed_of(&state.vehicles, ahead);
@@ -1125,7 +1201,7 @@ mod test {
     ) -> ControlFlow<B> {
         let v = &sim.state.vehicles[id];
         let own = occupancy::record_index(&sim.state, v.path[0], id);
-        find_leaders(&sim.state, v, Along::Path(own), None, f)
+        find_leaders(&sim.state, v, Along::Path(own), f)
     }
 
     /// The nearest vehicle `id` reacts to, stopping the search there.
@@ -1146,7 +1222,7 @@ mod test {
     ) -> (Decision, lane_change::State, Vec<LaneChangeEval>) {
         let vehicle = &sim.state.vehicles[id];
         let mut lc = vehicle.lc;
-        match decide(&sim.state, sim.time, id, vehicle, &mut lc) {
+        match decide(&sim.state, &sim.caps, sim.time, id, vehicle, &mut lc) {
             Some((decision, evals)) => (decision, lc, evals.into_iter().flatten().collect()),
             None => (Decision::Nothing, lc, Vec::new()),
         }
@@ -1401,12 +1477,44 @@ mod test {
     fn its_old_follower_gains_when_it_leaves() {
         let mut sim = two_lanes();
         let id = indicating_behind_a_stopped_car(&mut sim);
-        // Close behind it on lane 1, held back by it now.
+        // Close behind it on lane 1, held back by it now, as the longitudinal update
+        // records.
         let behind = sim.insert(car(), at(1, 290.0, 5.0));
-        sim.state.vehicles[behind].accel = -1.0;
+        sim.update_accels();
+        assert_eq!(
+            sim.state.vehicles[id].old_follower.map(|f| f.id),
+            Some(behind)
+        );
         let (_, evals) = decide_now(&sim, id);
         let gain = evals[0].old_follower.expect("an old follower");
         assert!(gain > 0.0, "gain {gain}");
+    }
+
+    #[test]
+    fn a_car_it_doesnt_hold_up_isnt_its_old_follower() {
+        // Far enough back that the free road binds it, not this car.
+        let mut sim = two_lanes();
+        let id = sim.insert(car(), at(1, 300.0, 5.0));
+        sim.insert(car(), at(1, 240.0, 5.0));
+        sim.update_accels();
+        assert!(sim.state.vehicles[id].old_follower.is_none());
+    }
+
+    #[test]
+    fn a_car_its_speed_cap_holds_back_isnt_held_up_by_the_car_ahead() {
+        // Close behind, but held to a stop: its cap binds, so leaving frees it of
+        // nothing.
+        let mut sim = two_lanes();
+        let id = sim.insert(car(), at(1, 300.0, 5.0));
+        let behind = sim.insert(car(), at(1, 290.0, 5.0));
+        sim.update_accels();
+        assert_eq!(
+            sim.state.vehicles[id].old_follower.map(|f| f.id),
+            Some(behind)
+        );
+        sim.hold(behind);
+        sim.update_accels();
+        assert!(sim.state.vehicles[id].old_follower.is_none());
     }
 
     #[test]
@@ -1666,6 +1774,8 @@ mod test {
         // Nothing ahead: no gain in either lane, so what had built up fades.
         let mut sim = two_lanes();
         let id = sim.insert(car(), at(1, 300.0, 5.0));
+        // What it would gain is against what it holds now.
+        sim.update_accels();
         sim.state.vehicles[id].lc.set_advantage([0.2, 0.0]);
         let (_, state, _) = decision(&sim, id);
         let faded = state.advantage()[lane_change::index(Side::Left)];
@@ -1834,11 +1944,11 @@ mod test {
     /// Everything `id`'s leader search finds now, nearest first.
     fn ahead(sim: &Simulation, id: VehicleId) -> Vec<Ahead> {
         let mut found = Vec::new();
-        let _: ControlFlow<()> = search(sim, id, |f| {
+        let ControlFlow::Continue(()) = search(sim, id, |f| {
             if let Found::Ahead(ahead, _) = f {
                 found.push(ahead);
             }
-            ControlFlow::Continue(())
+            ControlFlow::<!>::Continue(())
         });
         found
     }

@@ -406,8 +406,8 @@ pub enum Found {
 /// Searches for what is ahead of a vehicle, `along` some lanes, within its
 /// [`acceleration::horizon`] of its front, that it must react to, calling `f`
 /// with each thing in order of distance, nearest first. `f` returns whether to go
-/// on: a caller can stop as soon as it has what it needs, and the search returns
-/// what it broke with. See [`for_each_leader`] for a caller that wants it all.
+/// on: a caller can stop as soon as it has what it needs, and the search then
+/// returns what `f` broke with. See [`for_each_leader`] for a caller that wants it all.
 ///
 /// It measures from the vehicle's rear on the first lane searched: its record's
 /// `s`, if it has one there, or else where its rear is, projected onto that lane
@@ -415,8 +415,7 @@ pub enum Found {
 /// lane, only records from just after its own count, or, with none, those at or
 /// ahead of its rear: [`find_follower`] takes those behind, so between them they
 /// find every vehicle, one alongside included. On later lanes, every occupant
-/// counts. `skip`'s records are skipped, for asking what if that vehicle weren't
-/// there.
+/// counts.
 ///
 /// The search doesn't know which vehicle is searching. On a loop shorter than
 /// its horizon, a vehicle can find its own record ahead, which is geometrically
@@ -454,7 +453,6 @@ pub fn find_leaders<B>(
     state: &SimState,
     vehicle: &Vehicle,
     along: Along,
-    skip: Option<VehicleId>,
     mut f: impl FnMut(Found) -> ControlFlow<B>,
 ) -> ControlFlow<B> {
     let network = &state.network;
@@ -509,9 +507,6 @@ pub fn find_leaders<B>(
         }
         let records = &list(lane)[if k == 0 { start } else { 0 }..];
         for o in records {
-            if Some(o.id) == skip {
-                continue;
-            }
             let gap = offset + o.s - front;
             if gap > horizon {
                 return ControlFlow::Continue(());
@@ -571,12 +566,11 @@ pub fn for_each_leader(
     state: &SimState,
     vehicle: &Vehicle,
     along: Along,
-    skip: Option<VehicleId>,
     mut f: impl FnMut(Found),
 ) {
-    let _: ControlFlow<()> = find_leaders(state, vehicle, along, skip, |found| {
+    let ControlFlow::Continue(()) = find_leaders(state, vehicle, along, |found| {
         f(found);
-        ControlFlow::Continue(())
+        ControlFlow::<!>::Continue(())
     });
 }
 
