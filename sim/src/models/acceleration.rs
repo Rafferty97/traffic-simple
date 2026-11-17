@@ -49,22 +49,24 @@ pub fn interaction(spec: &VehicleSpec, speed: f64, gap: f64, leader_speed: f64) 
     accel.max(-MAX_BRAKING)
 }
 
-/// The most a leader beyond a vehicle's [`horizon`] can lower its acceleration,
-/// in m/s²: so a leader coming into view never changes it by more.
-pub const NEGLIGIBLE: f64 = 0.1;
+/// The least distance, in meters, a vehicle looks ahead for leaders: at low
+/// speed, the desired gap to a stopped leader shrinks to the minimum gap, where
+/// a queue comes to rest, and a leader there would flicker in and out of view.
+const MIN_HORIZON: f64 = 5.0;
 
-/// How far ahead of its front bumper a vehicle needs to look, in meters: beyond
-/// this gap, no leader, even a stopped one, brings its acceleration more than
-/// [`NEGLIGIBLE`] below the free-road term.
+/// How far ahead of its front bumper a vehicle looks for leaders, in meters:
+/// `s*`, the desired gap approaching a stopped leader, where that leader's term
+/// is zero, or [`MIN_HORIZON`] if that is further.
 ///
-/// A stopped leader at gap `s` gives `a · (1 − (s* / s)²)`, with `s*` the desired
-/// gap approaching it. That is at least the free-road term `f` less `ε` when
-/// `s ≥ s* · √(a / (a − f + ε))`. So the horizon grows with speed, as the desired
-/// gap does, and shrinks when the free road already holds the vehicle back.
-pub fn horizon(spec: &VehicleSpec, speed: f64, desired_speed: f64) -> f64 {
-    let free = free_road(spec, speed, desired_speed);
-    let stopped = desired_gap(spec, speed, 0.0);
-    stopped * (spec.max_accel / (spec.max_accel - free + NEGLIGIBLE)).sqrt()
+/// A stopped leader at gap `s` gives `a · (1 − (s* / s)²)`, so one coming into
+/// view at `s*` changes nothing unless the free road allows acceleration, and
+/// then it stops accelerating: the point at which a driver lifts off and starts
+/// braking gently. The desired gap behind a leader at the vehicle's own speed,
+/// `s0 + v·T`, is shorter than `s*` by `v² / (2·√(a·b))`, so a leader followed at
+/// steady state is in view, and the floor keeps it clearly so at low speed. The
+/// horizon grows with speed, as `s*` does.
+pub fn horizon(spec: &VehicleSpec, speed: f64) -> f64 {
+    desired_gap(spec, speed, 0.0).max(MIN_HORIZON)
 }
 
 /// How quickly a vehicle eases up to a speed imposed on it from below, in
@@ -133,30 +135,21 @@ mod test {
     }
 
     #[test]
-    fn a_stopped_leader_at_the_horizon_is_negligible() {
+    fn a_stopped_leader_at_the_horizon_doesnt_brake() {
         let spec = spec();
-        for (speed, desired) in [
-            (0.0, 14.0),
-            (5.0, 14.0),
-            (14.0, 14.0),
-            (30.0, 30.0),
-            (20.0, 14.0),
-        ] {
-            let horizon = horizon(&spec, speed, desired);
-            let free = free_road(&spec, speed, desired);
+        for speed in [0.0, 1.0, 2.0, 5.0, 14.0, 30.0] {
+            let horizon = horizon(&spec, speed);
             let at = interaction(&spec, speed, horizon, 0.0);
-            assert!(
-                (at - (free - NEGLIGIBLE)).abs() < 1e-9,
-                "at {speed} m/s: {at} vs free {free}"
-            );
-            // Any further, it matters less, and so does a leader that is moving.
-            assert!(interaction(&spec, speed, 1.01 * horizon, 0.0) > free - NEGLIGIBLE);
-            assert!(interaction(&spec, speed, horizon, 1.0) > free - NEGLIGIBLE - 1e-9);
+            assert!(at > -1e-9, "at {speed} m/s: {at}");
+            // A leader followed at the desired gap, at the same speed, is in view.
+            let following = desired_gap(&spec, speed, speed);
+            assert!(following < horizon - 0.5, "at {speed} m/s");
         }
-        // Faster, it looks further: at motorway speed, about 290 m, past the 200 m
-        // that used to be fixed.
-        assert!(horizon(&spec, 30.0, 30.0) > 280.0);
-        assert!(horizon(&spec, 30.0, 30.0) > horizon(&spec, 14.0, 14.0));
+        // At speed, it is where a stopped leader's term is zero.
+        let at = interaction(&spec, 30.0, horizon(&spec, 30.0), 0.0);
+        assert!(at.abs() < 1e-9);
+        assert_eq!(horizon(&spec, 0.0), MIN_HORIZON);
+        assert!(horizon(&spec, 30.0) > horizon(&spec, 14.0));
     }
 
     #[test]

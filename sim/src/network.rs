@@ -204,10 +204,16 @@ impl SimNetwork {
     /// The point `s` meters along a path from the start of its first lane, `t`
     /// meters left of the centerline. Past the end of the path, the last lane's
     /// final segment is extended.
-    pub(crate) fn point_along(&self, path: &[LaneId], mut s: f64, t: f64) -> DVec2 {
-        for (i, &id) in path.iter().enumerate() {
+    pub(crate) fn point_along(
+        &self,
+        path: impl IntoIterator<Item = LaneId>,
+        mut s: f64,
+        t: f64,
+    ) -> DVec2 {
+        let mut path = path.into_iter().peekable();
+        while let Some(id) = path.next() {
             let lane = self.lane(id);
-            if s < lane.length() || i == path.len() - 1 {
+            if s < lane.length() || path.peek().is_none() {
                 return lane.lane_to_world(lane.lane_pos(s, t));
             }
             s -= lane.length();
