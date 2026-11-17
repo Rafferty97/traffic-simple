@@ -9,7 +9,7 @@ use crate::models::acceleration;
 use crate::models::lane_change::{self, Decision, Effect, LaneChangeEval, Prospect};
 use crate::models::lateral::{self, LaneChange};
 use crate::network::{LaneId, Side, SimNetwork};
-use crate::occupancy::{self, Course, Ghosts, Lateral, Occupant, find_follower};
+use crate::occupancy::{self, Ahead, Course, Found, Lateral, Occupant, find_follower};
 use crate::vehicle::{Intent, Placement, Vehicle, VehicleId, VehicleSpec};
 
 /// Longest substep in seconds. Longer frames are split.
@@ -234,21 +234,23 @@ impl<D: DebugSink> Simulation<D> {
             None,
             occupancy::horizon(&self.network, &vehicle, at.lane),
             Course::of(&vehicle),
-            Ghosts::Lead,
             None,
-            |_| {},
         );
-        // No faster than the nearest leader, and braking gently enough for all.
-        if let Some(&(nearest, _)) = leader.leaders.first() {
-            vehicle.speed = vehicle.speed.min(self.vehicles[nearest].speed);
-        }
-        for &(leader, gap) in &leader.leaders {
-            let leader_speed = self.vehicles[leader].speed;
-            let accel = acceleration::interaction(&spec, vehicle.speed, gap, leader_speed);
+        // No faster than the nearest leader, and braking gently enough for all,
+        // ghosts and the stop line at the end of its path included. The search
+        // goes nearest first, so the speed is capped before anything is checked.
+        let mut speed = vehicle.speed;
+        for (i, (ahead, gap)) in leader.ahead().enumerate() {
+            let leader_speed = speed_of(&self.vehicles, ahead);
+            if i == 0 && ahead != Ahead::PathEnd {
+                speed = speed.min(leader_speed);
+            }
+            let accel = acceleration::interaction(&spec, speed, gap, leader_speed);
             if gap <= 0.0 || accel < -acceleration::SAFE_BRAKING {
                 return Err(InsertError::NoRoom);
             }
         }
+        vehicle.speed = speed;
 
         let follower = find_follower(
             &self.network,
@@ -780,11 +782,22 @@ fn longitudinal<D: DebugSink>(
     let mut accel = free;
     let horizon = occupancy::horizon(network, vehicle, vehicle.path[0]);
 
-    // Takes the sink rather than capturing it, so the searches can record too.
-    let mut react = |sink: &mut D, leader: VehicleId, gap: f64| {
-        let leader_speed = vehicles[leader].speed;
-        let term = acceleration::interaction(&vehicle.spec, vehicle.speed, gap, leader_speed);
-        let source = AccelSource::Leader { id: leader, gap };
+    // Records what a search found, and reacts to it. Ghosts aren't leaders here;
+    // the nearest is weighed up for making room.
+    let mut react = |sink: &mut D, found: Found| {
+        let (ahead, gap) = match found {
+            Found::Ahead(ahead, gap) => (ahead, gap),
+            Found::Pass(check) => {
+                return sink.record(|| DebugEvent::PassCheck { vehicle: id, check });
+            }
+        };
+        let source = match ahead {
+            Ahead::Vehicle(leader) => AccelSource::Leader { id: leader, gap },
+            Ahead::PathEnd => AccelSource::PathEnd { gap },
+            Ahead::Ghost(_) => return,
+        };
+        let term =
+            acceleration::interaction(&vehicle.spec, vehicle.speed, gap, speed_of(vehicles, ahead));
         sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
         accel = accel.min(term);
     };
@@ -801,27 +814,24 @@ fn longitudinal<D: DebugSink>(
         Some(own),
         horizon,
         Course::of(vehicle),
-        Ghosts::Pass,
         None,
-        |check| sink.record(|| DebugEvent::PassCheck { vehicle: id, check }),
     );
-    for &(leader, gap) in &search.leaders {
-        react(sink, leader, gap);
+    // The nearest ghost, if it comes before anything else ahead.
+    let mut ghost = None;
+    let mut first = true;
+    for found in search {
+        if let Found::Ahead(ahead, gap) = found {
+            if let (true, Ahead::Ghost(owner)) = (first, ahead) {
+                ghost = Some((owner, gap));
+            }
+            first = false;
+        }
+        react(sink, found);
     }
-
-    // The end of the lanes it knows it will take, as a stop line.
-    let end_term = path_end(network, &vehicle.path, axle_s, &vehicle.spec)
-        .filter(|&gap| gap <= horizon)
-        .map(|gap| {
-            let term = acceleration::interaction(&vehicle.spec, vehicle.speed, gap, 0.0);
-            let source = AccelSource::PathEnd { gap };
-            sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
-            term
-        });
 
     // Making room for a vehicle indicating into its lane ahead, as the lane-change
     // model chooses, by what following its ghost would take.
-    let ghost = search.ghost.map(|(owner, gap)| {
+    let ghost = ghost.map(|(owner, gap)| {
         let owner_speed = vehicles[owner].speed;
         let term = acceleration::interaction(&vehicle.spec, vehicle.speed, gap, owner_speed);
         (owner, gap, term)
@@ -870,39 +880,26 @@ fn longitudinal<D: DebugSink>(
                 None,
                 horizon,
                 Course::of(vehicle),
-                Ghosts::Pass,
                 None,
-                |check| sink.record(|| DebugEvent::PassCheck { vehicle: id, check }),
             );
-            for &(leader, gap) in &search.leaders {
-                react(sink, leader, gap);
+            for found in search {
+                react(sink, found);
             }
         }
     }
-    for term in [end_term, yield_term].into_iter().flatten() {
+    if let Some(term) = yield_term {
         accel = accel.min(term);
     }
     (accel, yielding)
 }
 
-/// The gap from a vehicle's nose to the end of `lanes`, the lanes it knows it
-/// will take, with its rear axle at `axle_s` on the first, if it must stop there.
-/// Past the end of its path it doesn't know where it is going, so it treats the
-/// end as a stop line, unless it leaves the network there. A routing model will
-/// say where a vehicle leaves; until then, it leaves wherever its path's last
-/// lane leads nowhere.
-fn path_end(
-    network: &SimNetwork,
-    lanes: &[LaneId],
-    axle_s: f64,
-    spec: &VehicleSpec,
-) -> Option<f64> {
-    let last = network.lane(*lanes.last()?);
-    if last.successors().is_empty() {
-        return None;
+/// The speed of something a leader search found: a vehicle's, a ghost's owner's,
+/// or zero for a stop line.
+fn speed_of(vehicles: &SlotMap<VehicleId, Vehicle>, ahead: Ahead) -> f64 {
+    match ahead {
+        Ahead::Vehicle(id) | Ahead::Ghost(id) => vehicles[id].speed,
+        Ahead::PathEnd => 0.0,
     }
-    let length: f64 = lanes.iter().map(|&lane| network.lane(lane).length()).sum();
-    Some(length - (axle_s + spec.length - spec.rear_axle))
 }
 
 /// Removes a vehicle's ghost from a lane's occupants.
@@ -954,7 +951,7 @@ fn decide(
                 &vehicle.path,
                 vehicle.lane_pos.s,
                 Course::of(vehicle),
-                Ghosts::Pass,
+                false,
                 None,
             )
         });
@@ -980,7 +977,7 @@ fn decide(
                     &f.path,
                     f.lane_pos.s,
                     Course::of(f),
-                    Ghosts::Pass,
+                    false,
                     Some(id),
                 );
                 Effect { before: f.accel, after: without, speed: f.speed }
@@ -1026,7 +1023,8 @@ fn decide(
 /// A vehicle's acceleration under the longitudinal model from its rear axle at
 /// `axle_s` on the first of `lanes`, following `course` across them, against the
 /// free road, its leaders there and the end of `lanes`, as if `skip` weren't
-/// there.
+/// there. Ghosts count as leaders if `ghosts_lead`, as when weighing up a change
+/// into their lane: a vehicle already indicating into the gap goes first.
 #[allow(clippy::too_many_arguments)]
 fn accel_along(
     network: &SimNetwork,
@@ -1037,42 +1035,25 @@ fn accel_along(
     lanes: &[LaneId],
     axle_s: f64,
     course: Course<'_>,
-    ghosts: Ghosts,
+    ghosts_lead: bool,
     skip: Option<VehicleId>,
 ) -> f64 {
     let desired = vehicle.spec.desired_speed(network.lane(lanes[0]).speed_limit());
     let mut accel = acceleration::free_road(&vehicle.spec, vehicle.speed, desired);
     let horizon = occupancy::horizon(network, vehicle, lanes[0]);
     let search = occupancy::find_leader(
-        network,
-        occupants,
-        vehicles,
-        id,
-        vehicle,
-        lanes,
-        axle_s,
-        None,
-        horizon,
-        course,
-        ghosts,
-        skip,
-        |_| {},
+        network, occupants, vehicles, id, vehicle, lanes, axle_s, None, horizon, course, skip,
     );
-    for &(leader, gap) in &search.leaders {
-        let leader_speed = vehicles[leader].speed;
+    for (ahead, gap) in search.ahead() {
+        if matches!(ahead, Ahead::Ghost(_)) && !ghosts_lead {
+            continue;
+        }
+        let speed = speed_of(vehicles, ahead);
         accel = accel.min(acceleration::interaction(
             &vehicle.spec,
             vehicle.speed,
             gap,
-            leader_speed,
-        ));
-    }
-    if let Some(gap) = path_end(network, lanes, axle_s, &vehicle.spec).filter(|&g| g <= horizon) {
-        accel = accel.min(acceleration::interaction(
-            &vehicle.spec,
-            vehicle.speed,
-            gap,
-            0.0,
+            speed,
         ));
     }
     accel
@@ -1106,7 +1087,7 @@ fn accel_in(
         path,
         axle_s,
         Course::new(path, Some(change), axle_s),
-        Ghosts::Lead,
+        true,
         None,
     );
     (accel, axle_s)
@@ -1276,13 +1257,13 @@ mod test {
             None,
             occupancy::horizon(&sim.network, v, v.path[0]),
             Course::of(v),
-            Ghosts::Pass,
             None,
-            |_| {},
         )
-        .leaders
-        .first()
-        .copied()
+        .ahead()
+        .find_map(|(ahead, gap)| match ahead {
+            Ahead::Vehicle(leader) => Some((leader, gap)),
+            _ => None,
+        })
     }
 
     /// What `id` decides now, its lane-change state afterwards, and what it
@@ -1975,6 +1956,15 @@ mod test {
 
     /// Every leader `id` reacts to now, nearest first.
     fn leaders(sim: &Simulation, id: VehicleId) -> Vec<VehicleId> {
+        let vehicle = |ahead: Ahead| match ahead {
+            Ahead::Vehicle(leader) => Some(leader),
+            _ => None,
+        };
+        ahead(sim, id).into_iter().filter_map(vehicle).collect()
+    }
+
+    /// Everything `id`'s leader search finds now, nearest first.
+    fn ahead(sim: &Simulation, id: VehicleId) -> Vec<Ahead> {
         let v = &sim.vehicles[id];
         let search = occupancy::find_leader(
             &sim.network,
@@ -1987,11 +1977,9 @@ mod test {
             None,
             occupancy::horizon(&sim.network, v, v.path[0]),
             Course::of(v),
-            Ghosts::Pass,
             None,
-            |_| {},
         );
-        search.leaders.iter().map(|&(leader, _)| leader).collect()
+        search.ahead().map(|(ahead, _)| ahead).collect()
     }
 
     #[test]
@@ -2059,6 +2047,43 @@ mod test {
         let stopped = sim.insert(car(), at(0, 120.0, 0.0));
         sim.hold(stopped);
         assert_eq!(leaders(&sim, a), [b]);
+    }
+
+    #[test]
+    fn a_leader_going_the_same_way_shields_the_lanes_beyond() {
+        // B carries on from lane 0 onto lane 1, as A will: what is on lane 1
+        // reaches A through B.
+        let mut sim = Simulation::new(road(&[(0.0, 100.0), (100.0, 200.0)], 1), NoopSink);
+        let a = sim.insert(car(), at(0, 50.0, 10.0));
+        let b = sim.insert(car(), at(0, 80.0, 10.0));
+        let stopped = sim.insert(car(), at(1, 20.0, 0.0));
+        sim.hold(stopped);
+        assert_eq!(sim.vehicles[b].path[1], LaneId(1));
+        assert_eq!(leaders(&sim, a), [b]);
+    }
+
+    #[test]
+    fn a_ghost_beyond_the_leader_is_still_found_and_shields_nothing() {
+        // C, in lane 1, indicates into lane 0 beyond B. B shields the in-lane
+        // vehicles beyond it, but not a ghost, which only partly blocks the lane.
+        let mut sim = two_lanes();
+        let a = sim.insert(car(), at(0, 20.0, 10.0));
+        let b = sim.insert(car(), at(0, 40.0, 10.0));
+        let c = sim.insert(car(), at(1, 60.0, 10.0));
+        sim.indicate(c, Side::Left);
+        assert_eq!(ahead(&sim, a), [Ahead::Vehicle(b), Ahead::Ghost(c)]);
+    }
+
+    #[test]
+    fn a_ghost_doesnt_shield_the_lane_beyond_it() {
+        // C's ghost is A's nearest record, but only partly blocks the lane, so B
+        // beyond it is still a leader.
+        let mut sim = two_lanes();
+        let a = sim.insert(car(), at(0, 20.0, 10.0));
+        let c = sim.insert(car(), at(1, 40.0, 10.0));
+        sim.indicate(c, Side::Left);
+        let b = sim.insert(car(), at(0, 60.0, 10.0));
+        assert_eq!(ahead(&sim, a), [Ahead::Ghost(c), Ahead::Vehicle(b)]);
     }
 
     // The end of the known path.
