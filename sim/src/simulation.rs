@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::ops::ControlFlow;
 
 use glam::DVec2;
@@ -333,6 +334,7 @@ impl<D: DebugSink> Simulation<D> {
             id,
             &self.state.vehicles[id],
             lane_pos,
+            Lateral::InLane,
         );
         let list = &mut self.state.occupants[lane_id.0 as usize];
         let index = list.partition_point(|o| o.s <= occupant.s);
@@ -469,6 +471,7 @@ impl<D: DebugSink> Simulation<D> {
                 id,
                 &self.state.vehicles[id],
                 lane_pos,
+                Lateral::InLane,
             );
             let index = list.partition_point(|o| o.s <= occupant.s);
             list.insert(index, occupant);
@@ -721,17 +724,44 @@ impl<D: DebugSink> Simulation<D> {
                 let s = vehicle.lane_pos.s;
                 let needed = reach(vehicle, s, vehicle.lane_change);
                 extend_path(network, &mut vehicle.path, s, needed);
+                // It joins every lane the ones it is leaving lead to, as it would
+                // the lane it leaves by changing lanes: it overlaps them where they
+                // part, and each record is dropped once it is clear of that lane.
                 // Joins unsorted; `update_occupancy` sets its `s` and sorts.
-                let occupant =
-                    Occupant::new(network, vehicle.path[0], id, vehicle, vehicle.lane_pos);
-                occupants[vehicle.path[0].0 as usize].push(occupant);
-                // Still straddling after a lane change: also join the old side's
-                // next lane, so followers there keep seeing it.
-                if let Some(old) = vehicle.old_side.and_then(|side| next.adj(side)) {
-                    let old_lane = network.lane(old.lane);
-                    let hint = old_lane.geometry().lane_pos(vehicle.lane_pos.s, 0.0);
-                    let occupant = Occupant::new(network, old.lane, id, vehicle, hint);
-                    occupants[old.lane.0 as usize].push(occupant);
+                let followed = vehicle.path[0];
+                let s = vehicle.lane_pos.s;
+                let mut join = |lane: LaneId, lateral: Lateral| {
+                    let hint = match lane == followed {
+                        true => vehicle.lane_pos,
+                        false => network.lane(lane).geometry().lane_pos(s, 0.0),
+                    };
+                    let occupant = Occupant::new(network, lane, id, vehicle, hint, lateral);
+                    occupants[lane.0 as usize].push(occupant);
+                };
+                join(followed, Lateral::InLane);
+                // Successors are ordered left to right, so the others lie to the
+                // left of the one it follows, or to the right, and it is moving
+                // out of them toward it.
+                let successors = network.lane(previous).successors();
+                if let Some(taken) = successors.iter().position(|&lane| lane == followed) {
+                    for (i, &lane) in successors.iter().enumerate() {
+                        match i.cmp(&taken) {
+                            Ordering::Less => join(lane, Lateral::Diverging(Side::Right)),
+                            Ordering::Equal => {}
+                            Ordering::Greater => join(lane, Lateral::Diverging(Side::Left)),
+                        }
+                    }
+                }
+                // Still straddling after a lane change: also join the lanes its old
+                // lane leads to, all on its old side, so followers there keep seeing
+                // it, except those the lane it is leaving leads to as well.
+                let old = vehicle.old_side.and_then(|side| network.lane(previous).adj(side));
+                if let (Some(side), Some(old)) = (vehicle.old_side, old) {
+                    for &lane in network.lane(old.lane).successors() {
+                        if !successors.contains(&lane) {
+                            join(lane, Lateral::Diverging(side.opposite()));
+                        }
+                    }
                 }
                 // Indicating: the ghost moves to the new lane's neighbor, or the
                 // intent is cancelled if there's none to change into.
@@ -1334,14 +1364,15 @@ mod test {
 
     #[test]
     fn on_lanes_leading_in_only_vehicles_headed_this_way_count() {
-        // Lane 0 splits into lane 1, straight on, and lane 2, its first successor.
-        let straight = |x0: f64, x1: f64| {
-            Lane::new(&[DVec2::new(x0, 0.0), DVec2::new(x1, 0.0)], WIDTH, LIMIT).unwrap()
+        // Lane 0 splits into lane 1, straight on, and lane 2, bearing left: its
+        // first successor, since successors run left to right.
+        let lane = |x0: f64, x1: f64, y1: f64| {
+            Lane::new(&[DVec2::new(x0, 0.0), DVec2::new(x1, y1)], WIDTH, LIMIT).unwrap()
         };
         let mut network = SimNetwork::new(vec![
-            straight(0.0, 100.0),
-            straight(100.0, 200.0),
-            straight(100.0, 200.0),
+            lane(0.0, 100.0, 0.0),
+            lane(100.0, 200.0, 0.0),
+            lane(100.0, 200.0, 10.0),
         ]);
         network.connect(LaneId(0), LaneId(2));
         network.connect(LaneId(0), LaneId(1));
@@ -1579,6 +1610,46 @@ mod test {
             sim.update_occupancy();
         }
         panic!("never reached lane {lane}");
+    }
+
+    #[test]
+    fn at_a_fork_it_joins_every_branch_and_leaves_those_it_doesnt_take() {
+        // Lane 0 forks at 100 m into lane 1, straight on, and lane 2, bearing left.
+        let lane = |x0: f64, x1: f64, y1: f64| {
+            Lane::new(&[DVec2::new(x0, 0.0), DVec2::new(x1, y1)], WIDTH, LIMIT).unwrap()
+        };
+        let mut network = SimNetwork::new(vec![
+            lane(0.0, 100.0, 0.0),
+            lane(100.0, 200.0, 0.0),
+            lane(100.0, 200.0, 20.0),
+        ]);
+        network.connect(LaneId(0), LaneId(1));
+        network.connect(LaneId(0), LaneId(2));
+        let mut sim = Simulation::new(network, NoopSink);
+        let id = sim.insert(car(), at(0, 90.0, 10.0));
+        // Straight on, though lane 2, on the left, is its first successor.
+        let path = &mut sim.state.vehicles[id].path;
+        path.clear();
+        path.extend([LaneId(0), LaneId(1)]);
+        advance_onto(&mut sim, id, 1);
+        let mine = records(&sim, id);
+        assert!(mine.contains(&(1, false, Lateral::InLane)), "{mine:?}");
+        // Lane 1 lies to the right of lane 2, so it is moving out of it that way.
+        assert!(
+            mine.contains(&(2, false, Lateral::Diverging(Side::Right))),
+            "{mine:?}"
+        );
+        // Clear of lane 2 once the branches have parted, it leaves it.
+        for _ in 0..600 {
+            sim.update_motion(1.0 / 60.0);
+            sim.update_occupancy();
+            if records(&sim, id).iter().all(|r| r.0 != 2) {
+                break;
+            }
+        }
+        let mine = records(&sim, id);
+        assert!(mine.iter().all(|r| r.0 != 2), "{mine:?}");
+        assert!(mine.contains(&(1, false, Lateral::InLane)), "{mine:?}");
     }
 
     /// Lanes holding a record of `id`, and whether each is its ghost.

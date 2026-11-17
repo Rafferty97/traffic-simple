@@ -166,7 +166,43 @@ impl SimNetwork {
         Self { lanes }
     }
 
+    /// The side of `lane` toward which `toward`, a lane starting level with it, lies
+    /// or departs. A neighbor's side is known; otherwise `toward`'s centerline is
+    /// walked, a meter at a time, until it is clearly beside `lane`, more than a
+    /// quarter of its half-width from its centerline, and failing that, the side
+    /// it last was before `lane` ends. Lanes that never part are one lane in all
+    /// but name, and left is as good a side as any for them.
+    fn side_toward(&self, lane: LaneId, toward: LaneId) -> Side {
+        let beside = self.lane(lane);
+        let sides = [Side::Left, Side::Right];
+        let neighbor = |side: Side| beside.adj(side).is_some_and(|n| n.lane == toward);
+        if let Some(side) = sides.into_iter().find(|&side| neighbor(side)) {
+            return side;
+        }
+        let (from, to) = (beside.geometry(), self.lane(toward).geometry());
+        let side_of = |t: f64| if t < 0.0 { Side::Right } else { Side::Left };
+        let mut at = from.lane_pos(0.0, 0.0);
+        let mut last = 0.0;
+        for i in 0..=to.length().ceil() as usize {
+            let point = to.lane_to_world(to.lane_pos((i as f64).min(to.length()), 0.0));
+            at = from.world_to_lane_near(point, at);
+            if at.s > from.length() {
+                break;
+            }
+            last = at.t;
+            let side = side_of(at.t);
+            if at.t.abs() > 0.25 * from.half_width(at, side) {
+                return side;
+            }
+        }
+        side_of(last)
+    }
+
     /// Connects the end of `from` to the start of `to`. A lane may connect to itself.
+    ///
+    /// A lane's successors are kept in order from left to right, by the way they
+    /// part, so a vehicle taking one knows at once which side of the others it is
+    /// heading. Its predecessors keep the order they were connected in.
     ///
     /// The end of `from` and the start of `to` should coincide; [`SimNetwork::validate`]
     /// checks this.
@@ -174,12 +210,18 @@ impl SimNetwork {
     /// has [`MAX_PREDECESSORS`] predecessors.
     pub fn connect(&mut self, from: LaneId, to: LaneId) {
         assert!((to.0 as usize) < self.lanes.len(), "no lane {to:?}");
+        // Before the first it lies to the left of.
+        let successors = self.lanes[from.0 as usize].successors();
+        let index = successors
+            .iter()
+            .position(|&other| self.side_toward(other, to) == Side::Left)
+            .unwrap_or(successors.len());
         let successors = &mut self.lanes[from.0 as usize].successors;
         assert!(
             !successors.is_full(),
             "{from:?} already has {MAX_SUCCESSORS} successors"
         );
-        successors.push(to);
+        successors.insert(index, to);
         let predecessors = &mut self.lanes[to.0 as usize].predecessors;
         assert!(
             !predecessors.is_full(),
@@ -342,18 +384,26 @@ mod test {
     }
 
     #[test]
-    fn successors_keep_the_order_they_were_connected_in() {
-        let mut net = network(3);
-        let (a, b, c) = (LaneId(0), LaneId(1), LaneId(2));
-        net.connect(a, c);
-        net.connect(b, b);
-        net.connect(a, b);
-        assert_eq!(net.lane(a).successors(), [c, b]);
-        assert_eq!(net.lane(b).successors(), [b]);
-        assert!(net.lane(c).successors().is_empty());
-        assert!(net.lane(a).predecessors().is_empty());
-        assert_eq!(net.lane(b).predecessors(), [b, a]);
-        assert_eq!(net.lane(c).predecessors(), [a]);
+    fn successors_are_ordered_left_to_right_and_predecessors_as_connected() {
+        // Lane 0 forks three ways at x = 10: lane 1 bears left, lane 2 runs
+        // straight on and lane 3 bears right. Connected out of order.
+        let lane = |points: &[DVec2]| Lane::new(points, 3.5, 14.0).unwrap();
+        let from = DVec2::new(10.0, 0.0);
+        let mut net = SimNetwork::new(vec![
+            lane(&[DVec2::ZERO, from]),
+            lane(&[from, DVec2::new(30.0, 6.0)]),
+            lane(&[from, DVec2::new(30.0, 0.0)]),
+            lane(&[from, DVec2::new(30.0, -6.0)]),
+        ]);
+        let [a, left, straight, right] = [0, 1, 2, 3].map(LaneId);
+        net.connect(a, straight);
+        net.connect(a, right);
+        net.connect(a, left);
+        assert_eq!(net.lane(a).successors(), [left, straight, right]);
+        net.connect(left, left);
+        net.connect(right, left);
+        assert_eq!(net.lane(left).predecessors(), [a, left, right]);
+        assert!(net.lane(straight).successors().is_empty());
     }
 
     #[test]

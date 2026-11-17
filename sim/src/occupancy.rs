@@ -114,15 +114,20 @@ fn clearance(
 }
 
 impl Occupant {
-    /// Projects a vehicle's rear corners onto `lane`, searching from `hint`.
+    /// Projects a vehicle's rear corners onto `lane`, searching from `hint`, for a
+    /// record that is `lateral` to it. A record's lateral status is fixed when it
+    /// is made, from how the lanes lie, not from where the vehicle is: on a lane
+    /// it is joining sideways, its corners start out level with the centerline,
+    /// where their side says nothing.
     pub fn new(
         network: &SimNetwork,
         lane: LaneId,
         id: VehicleId,
         vehicle: &Vehicle,
         hint: LanePos,
+        lateral: Lateral,
     ) -> Self {
-        Self::project(network, lane, id, vehicle, hint, false).0
+        Self::project(network, lane, id, vehicle, hint, false, lateral).0
     }
 
     /// As [`Occupant::new`], as the ghost of a vehicle indicating a change into `lane`.
@@ -133,7 +138,7 @@ impl Occupant {
         vehicle: &Vehicle,
         hint: LanePos,
     ) -> Self {
-        Self::project(network, lane, id, vehicle, hint, true).0
+        Self::project(network, lane, id, vehicle, hint, true, Lateral::InLane).0
     }
 
     /// As [`Occupant::new`] or [`Occupant::ghost`], also saying where each rear
@@ -145,32 +150,17 @@ impl Occupant {
         vehicle: &Vehicle,
         hint: LanePos,
         ghost: bool,
+        lateral: Lateral,
     ) -> (Self, [Corner; 2]) {
-        let lane = network.lane(lane_id);
+        let geometry = network.lane(lane_id).geometry();
         let [rear_left, rear_right, ..] = vehicle.corners();
-        let left = lane.geometry().world_to_lane_near(rear_left, hint);
-        let right = lane.geometry().world_to_lane_near(rear_right, hint);
+        let left = geometry.world_to_lane_near(rear_left, hint);
+        let right = geometry.world_to_lane_near(rear_right, hint);
         let corner = |p: LanePos| Corner {
-            past_end: p.s >= lane.geometry().length(),
-            beside: !lane.geometry().between_edges(p),
+            past_end: p.s >= geometry.length(),
+            beside: !geometry.between_edges(p),
         };
         let hint = if left.s <= right.s { left } else { right };
-        // Diverging if this is an old lane it is moving out of sideways: the lane
-        // beside it, away from the vehicle's old side, is the lane it follows or,
-        // just after a section boundary, the lane before that.
-        let following = vehicle.path[0];
-        let toward = vehicle.old_side.map(Side::opposite);
-        let moving_out = |side: Side| {
-            lane.adj(side).is_some_and(|n| {
-                n.lane == following || network.lane(n.lane).successors().contains(&following)
-            })
-        };
-        let lateral = match toward {
-            Some(side) if !ghost && lane_id != following && moving_out(side) => {
-                Lateral::Diverging(side)
-            }
-            _ => Lateral::InLane,
-        };
         let occupant = Self { s: hint.s, id, hint, ghost, lateral };
         (occupant, [corner(left), corner(right)])
     }
@@ -203,8 +193,9 @@ pub fn update(
         let lane_id = LaneId(i as u32);
         list.retain_mut(|occupant| {
             let vehicle = &vehicles[occupant.id];
-            let (id, hint, ghost) = (occupant.id, occupant.hint, occupant.ghost);
-            let (updated, corners) = Occupant::project(network, lane_id, id, vehicle, hint, ghost);
+            let Occupant { id, hint, ghost, lateral, .. } = *occupant;
+            let (updated, corners) =
+                Occupant::project(network, lane_id, id, vehicle, hint, ghost, lateral);
             *occupant = updated;
             if occupant.ghost {
                 return true;
