@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["sim", "ui"]
+members = ["sim", "network", "ui"]
 
 [workspace.package]
 version = "0.0.0"
@@ -11,6 +11,7 @@ repository = "https://github.com/Rafferty97/traffic-simple"
 
 [workspace.dependencies]
 traffic-sim = { path = "sim" }
+traffic-network = { path = "network" }
 glam = "0.34.3"
 rand = { version = "0.10.3", default-features = false }
 # For freeze-frame snapshots. `float_roundtrip` so f64s read back exactly.

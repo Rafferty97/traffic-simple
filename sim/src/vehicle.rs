@@ -3,6 +3,7 @@ use glam::DVec2;
 use crate::lane::LanePos;
 use crate::models::lane_change;
 use crate::models::lateral::LaneChange;
+use crate::models::routing::Route;
 use crate::network::{LaneId, Side};
 
 slotmap::new_key_type! {
@@ -60,6 +61,8 @@ pub struct Placement {
     /// Position of the rear axle along the lane's centerline, as in [`Vehicle::lane_pos`].
     pub s: f64,
     pub speed: f64,
+    /// How it chooses its way at forks.
+    pub route: Route,
 }
 
 /// A vehicle in the simulation.
@@ -86,6 +89,8 @@ pub struct Vehicle {
     pub(crate) path: Vec<LaneId>,
     /// The rear axle's position on `path[0]`.
     pub(crate) lane_pos: LanePos,
+    /// How it chooses the lanes it adds to `path`, with any state that needs.
+    pub(crate) route: Route,
     /// After a lane change, the side its old lane is on, until the vehicle has
     /// left the old lane. The old lanes are the neighbors of `path` on this side.
     pub(crate) old_side: Option<Side>,
@@ -163,6 +168,11 @@ impl Vehicle {
     /// The lane the vehicle is following, then the lanes it will take next.
     pub fn path(&self) -> &[LaneId] {
         &self.path
+    }
+
+    /// How it chooses its way at forks, as it is now.
+    pub fn route(&self) -> Route {
+        self.route
     }
 
     /// The rear axle's position on [`Vehicle::lane`].

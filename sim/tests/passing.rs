@@ -3,7 +3,7 @@
 //! `occupancy`.
 
 use traffic_sim::{
-    DebugEvent, DebugSink, Lane, LaneId, PassCheck, Placement, Side, SimNetwork, Simulation,
+    DebugEvent, DebugSink, Lane, LaneId, PassCheck, Placement, Route, Side, SimNetwork, Simulation,
     VehicleId,
 };
 
@@ -37,10 +37,23 @@ fn checks_against_a_held_car(ahead: f64) -> usize {
     let mut network = SimNetwork::new(vec![lane(3.5), lane(0.0)]);
     network.set_adjacent(LaneId(0), LaneId(1), true, true);
     let mut sim = Simulation::new(network, Checks::default());
-    let changer = sim.insert(car(), Placement { lane: LaneId(1), s: 100.0, speed: 10.0 });
+    let changer = sim.insert(
+        car(),
+        Placement {
+            lane: LaneId(1),
+            s: 100.0,
+            speed: 10.0,
+            route: Route::default(),
+        },
+    );
     let held = sim.insert(
         car(),
-        Placement { lane: LaneId(1), s: 100.0 + ahead, speed: 0.0 },
+        Placement {
+            lane: LaneId(1),
+            s: 100.0 + ahead,
+            speed: 0.0,
+            route: Route::default(),
+        },
     );
     sim.hold(held);
     sim.change_lane(changer, Side::Left).unwrap();

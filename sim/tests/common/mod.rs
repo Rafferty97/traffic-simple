@@ -3,12 +3,13 @@
 
 #[cfg(feature = "serde")]
 pub mod frame;
+#[cfg(feature = "serde")]
 pub mod replay;
 
 use std::f64::consts::TAU;
 
 use glam::DVec2;
-use traffic_sim::{Lane, LaneId, Placement, SimNetwork, Simulation, VehicleSpec};
+use traffic_sim::{Lane, LaneId, Placement, Route, SimNetwork, Simulation, VehicleSpec};
 
 pub fn car() -> VehicleSpec {
     VehicleSpec {
@@ -73,7 +74,10 @@ pub fn fill_lane<D: traffic_sim::DebugSink>(sim: &mut Simulation<D>, lane: LaneI
     let length = sim.network().lane(lane).geometry().length();
     for i in 0..count {
         let s = length * i as f64 / count as f64;
-        sim.insert(car(), Placement { lane, s, speed: 0.0 });
+        sim.insert(
+            car(),
+            Placement { lane, s, speed: 0.0, route: Route::default() },
+        );
     }
 }
 

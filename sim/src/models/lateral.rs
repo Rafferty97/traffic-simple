@@ -37,8 +37,7 @@ pub struct LaneChange {
 
 impl LaneChange {
     pub fn new(s0: f64, offset: f64, slope: f64, speed: f64) -> Self {
-        let length = (speed * LANE_CHANGE_TIME).max(MIN_LANE_CHANGE_LENGTH);
-        Self { s0, length, offset, slope }
+        Self { s0, length: change_length(speed), offset, slope }
     }
 
     /// The target offset at `s`. With `x = (s − s0) / length`, clamped to [0, 1]:
@@ -53,6 +52,11 @@ impl LaneChange {
     pub fn end(&self) -> f64 {
         self.s0 + self.length
     }
+}
+
+/// How far a lane change started at `speed` runs, in meters.
+pub fn change_length(speed: f64) -> f64 {
+    (speed * LANE_CHANGE_TIME).max(MIN_LANE_CHANGE_LENGTH)
 }
 
 /// How far ahead along the path to aim, in meters.

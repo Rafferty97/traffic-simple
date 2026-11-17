@@ -12,6 +12,7 @@ use crate::math::wrap_angle;
 use crate::models::acceleration;
 use crate::models::lane_change::{self, Decision, Effect, LaneChangeEval, Prospect};
 use crate::models::lateral::{self, LaneChange};
+use crate::models::routing::Route;
 use crate::network::{Conflict, ConflictKind, JunctionId, LaneId, Side, SimNetwork};
 use crate::occupancy::{
     self, Ahead, Along, Found, Lateral, Occupant, find_follower, find_leaders, for_each_leader,
@@ -324,6 +325,7 @@ impl<D: DebugSink> Simulation<D> {
             curvature: 0.0,
             path: vec![at.lane],
             lane_pos,
+            route: at.route,
             old_side: None,
             lane_change: None,
             intent: None,
@@ -331,7 +333,13 @@ impl<D: DebugSink> Simulation<D> {
             old_follower: None,
         };
         let needed = reach(&vehicle, at.s, None);
-        extend_path(&self.state.network, &mut vehicle.path, at.s, needed);
+        extend_path(
+            &self.state.network,
+            &mut vehicle.path,
+            &mut vehicle.route,
+            at.s,
+            needed,
+        );
         vehicle
     }
 
@@ -489,7 +497,13 @@ impl<D: DebugSink> Simulation<D> {
         vehicle.lane_change = Some(change);
         vehicle.intent = None;
         let needed = reach(vehicle, lane_pos.s, Some(change));
-        extend_path(&self.state.network, &mut vehicle.path, lane_pos.s, needed);
+        extend_path(
+            &self.state.network,
+            &mut vehicle.path,
+            &mut vehicle.route,
+            lane_pos.s,
+            needed,
+        );
         let beyond_front = reach_beyond_front(&self.state.network, vehicle);
         self.state.max_reach = self.state.max_reach.max(beyond_front);
 
@@ -793,7 +807,7 @@ impl<D: DebugSink> Simulation<D> {
                 // again: it needs to know where it goes beyond this one.
                 let s = vehicle.lane_pos.s;
                 let needed = reach(vehicle, s, vehicle.lane_change);
-                extend_path(network, &mut vehicle.path, s, needed);
+                extend_path(network, &mut vehicle.path, &mut vehicle.route, s, needed);
                 // It joins every lane the ones it is leaving lead to, as it would
                 // the lane it leaves by changing lanes: it overlaps them where they
                 // part, and each record is dropped once it is clear of that lane.
@@ -854,7 +868,7 @@ impl<D: DebugSink> Simulation<D> {
             // Far enough ahead to know where it is going, at its new speed.
             let s = vehicle.lane_pos.s;
             let needed = reach(vehicle, s, vehicle.lane_change);
-            let covered = extend_path(network, &mut vehicle.path, s, needed);
+            let covered = extend_path(network, &mut vehicle.path, &mut vehicle.route, s, needed);
             let nose = vehicle.spec.length - vehicle.spec.rear_axle;
             *max_reach = max_reach.max(covered - nose);
 
@@ -1270,6 +1284,9 @@ fn decide(
     let mut old_follower = None;
     let prospect = |side: Side| {
         let target = lane.adj(side).filter(|n| n.can_change)?;
+        if !room_to_change(network, vehicle, side) {
+            return None;
+        }
         let old_follower = *old_follower.get_or_insert_with(|| {
             let held = vehicle.old_follower?;
             let f = vehicles.get(held.id)?;
@@ -1306,6 +1323,29 @@ fn decide(
         DECISION_PERIOD,
         prospect,
     ))
+}
+
+/// Whether a change to `side` that a vehicle started now would be over, its
+/// whole body in the new lane, before the lanes beside its path on that side
+/// run out, as they do into a junction, whose lanes have no neighbors. Changing
+/// lanes through a junction would put it where the junction doesn't know it is.
+/// SUMO likewise allows no lane changes on a junction's internal lanes.
+fn room_to_change(network: &SimNetwork, vehicle: &Vehicle, side: Side) -> bool {
+    // The change starts where pure pursuit aims, and the body trails the axle.
+    let needed = lateral::lookahead_distance(vehicle.speed)
+        + lateral::change_length(vehicle.speed)
+        + vehicle.spec.length;
+    let mut room = -vehicle.lane_pos.s;
+    for &lane in &vehicle.path {
+        if room >= needed {
+            return true;
+        }
+        if network.lane(lane).adj(side).is_none() {
+            return false;
+        }
+        room += network.lane(lane).geometry().length();
+    }
+    room >= needed
 }
 
 /// A vehicle's acceleration under the longitudinal model searching `along` some
@@ -1376,17 +1416,39 @@ fn reach(vehicle: &Vehicle, axle_s: f64, change: Option<LaneChange>) -> f64 {
     search.max(tracking).max(change)
 }
 
-/// Extends `path` by each lane's first successor until it reaches `needed`
+/// Extends `path` by the lanes `route` chooses until it reaches `needed`
 /// beyond the rear axle, at `axle_s` on its first lane, or reaches a lane that
 /// leads nowhere. Returns how far beyond the rear axle it then reaches.
-fn extend_path(network: &SimNetwork, path: &mut Vec<LaneId>, axle_s: f64, needed: f64) -> f64 {
+///
+/// A path that ends inside a junction goes on until it is out of it, so a
+/// vehicle registered at a junction knows its way through: the junction keeps
+/// others clear of the lanes it will take, and one that chose its way only as
+/// it went could be committed to a conflict before another learns it is in
+/// the way.
+fn extend_path(
+    network: &SimNetwork,
+    path: &mut Vec<LaneId>,
+    route: &mut Route,
+    axle_s: f64,
+    needed: f64,
+) -> f64 {
     let mut covered =
         path.iter().map(|&lane| network.lane(lane).geometry().length()).sum::<f64>() - axle_s;
-    while covered < needed {
+    // Bounds the lanes added to get out of a junction, should its lanes loop.
+    let mut inside = 0;
+    loop {
         let last = *path.last().expect("a path holds the lane it follows");
-        let Some(&next) = network.lane(last).successors().first() else {
+        let junction = network.lane(last).junction();
+        let through = junction.is_some_and(|j| inside < network.junction(j).lanes().len());
+        if covered >= needed && !through {
+            break;
+        }
+        let Some(next) = route.choose(network.lane(last).successors()) else {
             break;
         };
+        if covered >= needed {
+            inside += 1;
+        }
         path.push(next);
         covered += network.lane(next).geometry().length();
     }
@@ -1463,7 +1525,7 @@ mod test {
     }
 
     fn at(lane: u32, s: f64, speed: f64) -> Placement {
-        Placement { lane: LaneId(lane), s, speed }
+        Placement { lane: LaneId(lane), s, speed, route: Route::default() }
     }
 
     /// A vehicle's rear, where both searches split its lane.
@@ -1611,8 +1673,7 @@ mod test {
 
     #[test]
     fn on_lanes_leading_in_only_vehicles_headed_this_way_count() {
-        // Lane 0 splits into lane 1, straight on, and lane 2, bearing left: its
-        // first successor, since successors run left to right.
+        // Lane 0 splits into lane 1, straight on, and lane 2, bearing left.
         let lane = |x0: f64, x1: f64, y1: f64| {
             Lane::new(&[DVec2::new(x0, 0.0), DVec2::new(x1, y1)], WIDTH, LIMIT).unwrap()
         };
@@ -1624,9 +1685,11 @@ mod test {
         network.connect(LaneId(0), LaneId(2));
         network.connect(LaneId(0), LaneId(1));
         let mut sim = Simulation::new(network, NoopSink);
-        // Its path follows the first successor, lane 2, so it isn't lane 1's follower.
+        // It turns onto lane 2, so it isn't lane 1's follower.
         let turning = sim.insert(car(), at(0, 80.0, LIMIT));
-        assert_eq!(sim.state.vehicles[turning].path[1], LaneId(2));
+        let path = &mut sim.state.vehicles[turning].path;
+        path.clear();
+        path.extend([LaneId(0), LaneId(2)]);
         assert!(follower(&sim, 1, 10.0, VehicleId::null()).is_none());
         assert_eq!(
             follower(&sim, 2, 10.0, VehicleId::null()).map(|(id, _)| id),
@@ -2324,7 +2387,9 @@ mod test {
         let queued = sim.insert(car(), at(1, 5.0, 0.0));
         sim.hold(queued);
         let b = sim.insert(car(), at(0, 80.0, 10.0));
-        assert_eq!(sim.state.vehicles[b].path[1], LaneId(2));
+        let path = &mut sim.state.vehicles[b].path;
+        path.clear();
+        path.extend([LaneId(0), LaneId(2)]);
         let a = sim.insert(car(), at(0, 50.0, 10.0));
         let path = &mut sim.state.vehicles[a].path;
         path.clear();

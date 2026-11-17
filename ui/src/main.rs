@@ -10,6 +10,12 @@ mod replay;
 #[allow(unexpected_cfgs)]
 mod common;
 
+/// The simulation's replay reader, for checking that replays read back exactly.
+#[cfg(test)]
+#[path = "../../sim/tests/common/replay.rs"]
+#[allow(dead_code)]
+mod replay_reader;
+
 use std::collections::HashMap;
 use std::f64::consts::TAU;
 use std::path::PathBuf;
@@ -19,16 +25,16 @@ use glam::DVec2;
 use rand::rngs::Xoshiro256PlusPlus;
 use rand::{RngExt, SeedableRng};
 use replay::Recorded;
+use traffic_network::{MarkingStyle, RenderGeometry, RoadNetwork, Strip, compile, scenarios};
 use traffic_sim::{
-    AccelSource, ConflictKind, DebugEvent, DebugSink, Lane, LaneChangeError, LaneChangeEval,
-    LaneId, PassCheck, Placement, Side, SimNetwork, Simulation, Vehicle, VehicleId, VehicleSpec,
+    AccelSource, ConflictKind, DebugEvent, DebugSink, LaneChangeError, LaneChangeEval, LaneId,
+    PassCheck, Placement, Route, Side, Simulation, Vehicle, VehicleId, VehicleSpec,
 };
 
 /// The inner lane's circumference: about 160 m across, roomy enough for
 /// vehicles to accelerate, settle into gaps and change lanes.
 const RING_CIRCUMFERENCE: f64 = 1000.0;
 const RING_LANES: usize = 3;
-const LANE_WIDTH: f64 = 3.5;
 const SPEED_LIMIT: f64 = 50.0 / 3.6;
 
 /// Most spawns or despawns per simulated second, while the count is off target.
@@ -48,6 +54,36 @@ fn main() -> eframe::Result {
     )
 }
 
+/// A network to run, and how vehicles come and go on it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scenario {
+    Ring,
+    Crossroads,
+}
+
+impl Scenario {
+    const ALL: [Scenario; 2] = [Scenario::Ring, Scenario::Crossroads];
+
+    fn name(self) -> &'static str {
+        match self {
+            Scenario::Ring => "Three-lane ring",
+            Scenario::Crossroads => "Crossroads",
+        }
+    }
+
+    fn network(self) -> RoadNetwork {
+        match self {
+            Scenario::Ring => scenarios::ring(RING_CIRCUMFERENCE, RING_LANES, SPEED_LIMIT),
+            Scenario::Crossroads => scenarios::crossroads(2, SPEED_LIMIT),
+        }
+    }
+
+    /// Whether the network is closed: vehicles neither enter nor leave it.
+    fn closed(self) -> bool {
+        matches!(self, Scenario::Ring)
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum View {
     Pretty,
@@ -56,6 +92,9 @@ enum View {
 
 struct App {
     sim: Recorded<DebugState>,
+    /// What to draw for the network.
+    render: RenderGeometry,
+    scenario: Scenario,
     view: View,
     paused: bool,
     /// Simulated seconds per real second.
@@ -72,25 +111,32 @@ struct App {
     harness: Harness,
 }
 
-/// Spawns vehicles into the outer lane and despawns them from the inner lane,
-/// each at a rate.
+/// Keeps vehicles coming. On a closed network, such as the ring, it keeps a
+/// target number on the road, spawning and despawning anywhere; on an open one,
+/// it spawns at a flow into each lane that nothing leads into, and vehicles
+/// leave where lanes lead nowhere.
 struct Harness {
-    /// How many vehicles it keeps on the road, spawning and despawning them
-    /// anywhere: in any lane, at any point along it.
+    /// Whether the network is closed: nowhere to come in or leave.
+    closed: bool,
+    /// How many vehicles it keeps on a closed network.
     target: usize,
-    /// Spawns or despawns owed while off target: grows at [`CHANGE_RATE`], and a
+    /// Vehicles per hour into each entry lane of an open network.
+    flow: f64,
+    /// Spawns or despawns owed: grows at [`CHANGE_RATE`], or at the flow, and a
     /// refused spawn waits here.
     credit: f64,
     spawned: u32,
     despawned: u32,
-    /// Draws drivers' speed factors. Seeded, so every run spawns the same drivers.
+    /// Draws drivers and their routes. Seeded, so every run spawns the same.
     rng: Xoshiro256PlusPlus,
 }
 
 impl Default for Harness {
     fn default() -> Self {
         Self {
+            closed: true,
             target: 60,
+            flow: 600.0,
             credit: 0.0,
             spawned: 0,
             despawned: 0,
@@ -100,10 +146,18 @@ impl Default for Harness {
 }
 
 impl Harness {
-    /// Runs after each simulation step of `dt` simulated seconds: while the count
-    /// is off target, spawns or despawns at up to [`CHANGE_RATE`], each at a
-    /// random lane and point, or a random vehicle other than the `selected` one.
+    /// Runs after each simulation step of `dt` simulated seconds.
     fn step(&mut self, sim: &mut Recorded<DebugState>, selected: Option<VehicleId>, dt: f64) {
+        match self.closed {
+            true => self.keep_count(sim, selected, dt),
+            false => self.keep_flowing(sim, dt),
+        }
+    }
+
+    /// While the count is off target, spawns or despawns at up to
+    /// [`CHANGE_RATE`], each at a random lane and point, or a random vehicle
+    /// other than the `selected` one.
+    fn keep_count(&mut self, sim: &mut Recorded<DebugState>, selected: Option<VehicleId>, dt: f64) {
         let count = sim.vehicles().count();
         if count == self.target {
             self.credit = 0.0;
@@ -118,20 +172,7 @@ impl Harness {
             let lanes = sim.network().lanes().count() as u32;
             let lane = LaneId(self.rng.random_range(0..lanes));
             let s = self.rng.random::<f64>() * sim.network().lane(lane).geometry().length();
-            // Drivers vary in how hard they'll brake to let someone in, and in how
-            // much they weigh others when changing lanes.
-            let car = VehicleSpec {
-                speed_factor: self.speed_factor(),
-                courtesy: 2.0 * self.rng.random::<f64>(),
-                politeness: 0.1 + 0.3 * self.rng.random::<f64>(),
-                ..demo_car()
-            };
-            let at = Placement { lane, s, speed: car.desired_speed(SPEED_LIMIT) };
-            // Refused where there is no safe room: the credit waits for another try.
-            if sim.try_insert(car, at).is_ok() {
-                self.credit -= 1.0;
-                self.spawned += 1;
-            }
+            self.spawn(sim, lane, s);
         } else {
             // Never the one being inspected.
             let others = || sim.vehicles().map(|(id, _)| id).filter(|&id| Some(id) != selected);
@@ -142,6 +183,51 @@ impl Harness {
                 self.credit -= 1.0;
                 self.despawned += 1;
             }
+        }
+    }
+
+    /// Spawns at the flow, each into a random entry lane, near its start.
+    fn keep_flowing(&mut self, sim: &mut Recorded<DebugState>, dt: f64) {
+        let entries: Vec<LaneId> = sim
+            .network()
+            .lanes()
+            .filter(|(_, lane)| lane.predecessors().is_empty())
+            .map(|(id, _)| id)
+            .collect();
+        if entries.is_empty() {
+            return;
+        }
+        let rate = self.flow / 3600.0 * entries.len() as f64;
+        // A few owed at most: a long backlog would arrive as a burst.
+        self.credit = (self.credit + rate * dt).min(entries.len() as f64);
+        if self.credit >= 1.0 {
+            let lane = entries[self.rng.random_range(0..entries.len())];
+            self.spawn(sim, lane, 5.0);
+        }
+    }
+
+    /// Tries to spawn a driver at `s` on `lane`, at its desired speed, taking
+    /// one from the credit if it fits.
+    fn spawn(&mut self, sim: &mut Recorded<DebugState>, lane: LaneId, s: f64) {
+        // Drivers vary in how hard they'll brake to let someone in, and in how
+        // much they weigh others when changing lanes.
+        let car = VehicleSpec {
+            speed_factor: self.speed_factor(),
+            courtesy: 2.0 * self.rng.random::<f64>(),
+            politeness: 0.1 + 0.3 * self.rng.random::<f64>(),
+            ..demo_car()
+        };
+        let limit = sim.network().lane(lane).speed_limit();
+        let at = Placement {
+            lane,
+            s,
+            speed: car.desired_speed(limit),
+            route: Route::random(self.rng.random()),
+        };
+        // Refused where there is no safe room: the credit waits for another try.
+        if sim.try_insert(car, at).is_ok() {
+            self.credit -= 1.0;
+            self.spawned += 1;
         }
     }
 
@@ -157,7 +243,12 @@ impl Harness {
 
     fn controls(&mut self, ui: &mut egui::Ui, on_road: usize) {
         ui.horizontal(|ui| {
-            ui.add(egui::Slider::new(&mut self.target, 0..=300).text("target vehicles"));
+            if self.closed {
+                ui.add(egui::Slider::new(&mut self.target, 0..=300).text("target vehicles"));
+            } else {
+                let slider = egui::Slider::new(&mut self.flow, 0.0..=1800.0);
+                ui.add(slider.text("vehicles per hour per entry lane"));
+            }
             ui.separator();
             ui.label(format!(
                 "spawned {}, despawned {}, on the road {on_road}",
@@ -169,24 +260,43 @@ impl Harness {
 
 impl App {
     fn new() -> Self {
-        let sim = new_sim();
-        let outlines = sim
-            .network()
-            .lanes()
-            .flat_map(|(_, lane)| lane.geometry().outline().map(to_scene));
-        let scene_rect = Rect::from_points(&outlines.collect::<Vec<_>>());
-        Self {
+        let scenario = Scenario::Ring;
+        let (sim, render) = new_sim(scenario);
+        let mut app = Self {
             sim,
+            render,
+            scenario,
             view: View::Pretty,
             paused: false,
             speed: 1.0,
-            scene_rect: scene_rect.expand(10.0),
+            scene_rect: Rect::NOTHING,
             selected: None,
             layers: Layers::default(),
             lane_change_error: None,
             capture_status: None,
             harness: Harness::default(),
-        }
+        };
+        app.load(scenario);
+        app
+    }
+
+    /// Starts the scenario afresh, with the harness's settings kept, and fits
+    /// the view to it.
+    fn load(&mut self, scenario: Scenario) {
+        (self.sim, self.render) = new_sim(scenario);
+        self.scenario = scenario;
+        self.selected = None;
+        self.capture_status = None;
+        let Harness { target, flow, .. } = self.harness;
+        self.harness = Harness {
+            closed: scenario.closed(),
+            target,
+            flow,
+            ..Harness::default()
+        };
+        let road_points = self.render.roads.iter().flat_map(|r| r.left.iter().chain(&r.right));
+        let points: Vec<Pos2> = road_points.map(|&p| to_scene(p)).collect();
+        self.scene_rect = Rect::from_points(&points).expand(10.0);
     }
 
     fn step(&mut self, dt: f64) {
@@ -248,12 +358,17 @@ impl App {
                 ui.selectable_value(&mut self.speed, speed, label);
             }
             ui.separator();
-            if ui.button("Reset").clicked() {
-                self.sim = new_sim();
-                self.selected = None;
-                let target = self.harness.target;
-                self.harness = Harness { target, ..Harness::default() };
-                self.capture_status = None;
+            let mut scenario = self.scenario;
+            egui::ComboBox::from_id_salt("scenario").selected_text(scenario.name()).show_ui(
+                ui,
+                |ui| {
+                    for option in Scenario::ALL {
+                        ui.selectable_value(&mut scenario, option, option.name());
+                    }
+                },
+            );
+            if scenario != self.scenario || ui.button("Reset").clicked() {
+                self.load(scenario);
             }
             if ui
                 .button("Capture")
@@ -517,7 +632,9 @@ impl eframe::App for App {
             let scene = egui::Scene::new().zoom_range(0.1..=200.0).scroll_zooms(true);
             let response = scene
                 .show(ui, &mut self.scene_rect, |ui| match self.view {
-                    View::Pretty => draw_pretty(ui.painter(), &self.sim, self.selected),
+                    View::Pretty => {
+                        draw_pretty(ui.painter(), &self.sim, &self.render, self.selected)
+                    }
                     View::Debug => draw_debug(ui.painter(), &self.sim, self.selected, &self.layers),
                 })
                 .response;
@@ -532,34 +649,32 @@ impl eframe::App for App {
     }
 }
 
-fn draw_pretty(painter: &egui::Painter, sim: &Simulation<DebugState>, selected: Option<VehicleId>) {
-    for (_, lane) in sim.network().lanes() {
-        painter.add(lane_surface(lane, Color32::from_gray(60)));
+fn draw_pretty(
+    painter: &egui::Painter,
+    sim: &Simulation<DebugState>,
+    render: &RenderGeometry,
+    selected: Option<VehicleId>,
+) {
+    let asphalt = Color32::from_gray(60);
+    for surface in &render.intersections {
+        painter.add(fan_mesh(surface, asphalt));
     }
-    // Lane lines, drawn once per pair along the right edge of the left lane:
-    // dashed where changes are allowed both ways, solid otherwise.
-    let marking = Stroke::new(0.15, Color32::from_gray(230));
-    for (_, lane) in sim.network().lanes() {
-        let Some(right) = lane.adj_right() else {
-            continue;
-        };
-        let back = sim.network().lane(right.lane).adj_left();
-        let dashed = right.can_change && back.is_some_and(|n| n.can_change);
-        let geometry = lane.geometry();
-        let edge = |s: f64| {
-            let t = -geometry.half_width(geometry.lane_pos(s, 0.0), Side::Right);
-            to_scene(geometry.lane_to_world(geometry.lane_pos(s, t)))
-        };
-        if dashed {
+    for strip in &render.roads {
+        painter.add(strip_mesh(strip, asphalt));
+    }
+    let white = Stroke::new(0.15, Color32::from_gray(230));
+    let yellow = Stroke::new(0.15, Color32::from_rgb(240, 200, 40));
+    for marking in &render.markings {
+        let points: Vec<Pos2> = marking.points.iter().map(|&p| to_scene(p)).collect();
+        match marking.style {
+            MarkingStyle::Edge => drop(painter.add(Shape::line(points, white))),
+            MarkingStyle::Centre => drop(painter.add(Shape::line(points, yellow))),
             // 3 m dashes every 9 m.
-            for i in 0..(lane.geometry().length() / 9.0) as u32 {
-                let s = 9.0 * i as f64;
-                painter.line_segment([edge(s), edge(s + 3.0)], marking);
+            MarkingStyle::Dashed => {
+                for dash in dashes(&marking.points, 3.0, 9.0) {
+                    painter.add(Shape::line(dash.into_iter().map(to_scene).collect(), white));
+                }
             }
-        } else {
-            let points =
-                (0..=(lane.geometry().length() / 2.0) as u32).map(|i| edge(2.0 * i as f64));
-            painter.add(Shape::line(points.collect(), marking));
         }
     }
     for (id, v) in sim.vehicles() {
@@ -972,25 +1087,67 @@ fn rear(v: &Vehicle) -> DVec2 {
     0.5 * (rear_left + rear_right)
 }
 
-/// The lane's surface as a triangle strip between its left and right edges.
-///
-/// [`Lane::outline`] runs forward along the left edge and back along the right,
-/// so the rib at vertex `i` joins `outline[i]` and `outline[n - 1 - i]`. Each
-/// quad between ribs is convex, which a filled polygon of the whole outline
-/// would not be on a bend.
-fn lane_surface(lane: &Lane, color: Color32) -> Shape {
-    let outline: Vec<_> = lane.geometry().outline().map(to_scene).collect();
-    let n = outline.len() as u32;
+/// A polygon every point of which can see its centroid, as a fan of triangles
+/// from there.
+fn fan_mesh(points: &[DVec2], color: Color32) -> Shape {
     let mut mesh = egui::Mesh::default();
-    for &p in &outline {
-        mesh.colored_vertex(p, color);
+    if points.is_empty() {
+        return Shape::mesh(mesh);
     }
-    for i in 0..n / 2 - 1 {
-        let (l0, l1, r0, r1) = (i, i + 1, n - 1 - i, n - 2 - i);
-        mesh.add_triangle(l0, l1, r1);
-        mesh.add_triangle(l0, r1, r0);
+    let centre = points.iter().sum::<DVec2>() / points.len() as f64;
+    mesh.colored_vertex(to_scene(centre), color);
+    for &p in points {
+        mesh.colored_vertex(to_scene(p), color);
+    }
+    let n = points.len() as u32;
+    for i in 0..n {
+        mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
     }
     Shape::mesh(mesh)
+}
+
+/// A road's surface as a mesh of quads between its edges.
+fn strip_mesh(strip: &Strip, color: Color32) -> Shape {
+    let mut mesh = egui::Mesh::default();
+    for (&l, &r) in strip.left.iter().zip(&strip.right) {
+        mesh.colored_vertex(to_scene(l), color);
+        mesh.colored_vertex(to_scene(r), color);
+    }
+    for i in 0..strip.left.len().saturating_sub(1) as u32 {
+        let (l0, r0, l1, r1) = (2 * i, 2 * i + 1, 2 * i + 2, 2 * i + 3);
+        mesh.add_triangle(l0, r0, r1);
+        mesh.add_triangle(l0, r1, l1);
+    }
+    Shape::mesh(mesh)
+}
+
+/// Dashes `on` meters long every `period` meters along a polyline, each as a
+/// polyline of its own, following bends.
+fn dashes(points: &[DVec2], on: f64, period: f64) -> Vec<Vec<DVec2>> {
+    let mut out: Vec<Vec<DVec2>> = Vec::new();
+    let mut s = 0.0;
+    for w in points.windows(2) {
+        let length = w[0].distance(w[1]);
+        if length == 0.0 {
+            continue;
+        }
+        let at = |d: f64| w[0] + (w[1] - w[0]) * ((d - s) / length);
+        // Each dash that overlaps this segment, cut to it.
+        let mut k = (s / period).floor();
+        while k * period < s + length {
+            let (a, b) = ((k * period).max(s), (k * period + on).min(s + length));
+            if a < b {
+                let continues = out.last().is_some_and(|d| d.last() == Some(&at(a)));
+                if !continues {
+                    out.push(vec![at(a)]);
+                }
+                out.last_mut().unwrap().push(at(b));
+            }
+            k += 1.0;
+        }
+        s += length;
+    }
+    out
 }
 
 /// World meters (y up) to scene coordinates (y down).
@@ -998,49 +1155,12 @@ fn to_scene(p: DVec2) -> Pos2 {
     Pos2::new(p.x as f32, -p.y as f32)
 }
 
-/// An empty three-lane ring; the harness fills it.
-fn new_sim() -> Recorded<DebugState> {
-    let network = ring_road(RING_CIRCUMFERENCE, RING_LANES, SPEED_LIMIT);
-    // How the replay rebuilds this network: `ring_road` in `sim/tests/common`.
-    let description = format!(
-        "ring circumference={RING_CIRCUMFERENCE:?} lanes={RING_LANES} width={LANE_WIDTH:?} \
-         speed_limit={SPEED_LIMIT:?}"
-    );
-    Recorded::new(
-        Simulation::new(network, DebugState::default()),
-        &description,
-    )
-}
-
-/// A ring road of concentric lanes, each its own successor, with lane changes
-/// allowed both ways between neighbors. Lane 0 is the innermost, with the given
-/// circumference. Travel is counterclockwise, so lane `i` is on the left of lane `i + 1`.
-///
-/// Chords are sized for at most 1 cm of sagitta. Every lane starts and ends at
-/// angle 0, at the midpoint of a chord, so there is no kink at the seam and the
-/// lanes start and end together.
-fn ring_road(circumference: f64, lanes: usize, speed_limit: f64) -> SimNetwork {
-    let lane = |radius: f64| {
-        let max_chord = (8.0 * radius * 0.01).sqrt();
-        let n = (TAU * radius / max_chord).ceil() as usize;
-        let vertex = |i: usize| radius * DVec2::from_angle(TAU * (i as f64 + 0.5) / n as f64);
-        let seam = 0.5 * (vertex(n - 1) + vertex(0));
-        let mut points = vec![seam];
-        points.extend((0..n).map(vertex));
-        points.push(seam);
-        Lane::new(&points, LANE_WIDTH, speed_limit).expect("ring lane is valid")
-    };
-    let inner = circumference / TAU;
-    let radii = (0..lanes).map(|i| inner + LANE_WIDTH * i as f64);
-    let mut network = SimNetwork::new(radii.map(lane).collect());
-    for i in 0..lanes as u32 {
-        network.connect(LaneId(i), LaneId(i));
-        if i > 0 {
-            network.set_adjacent(LaneId(i - 1), LaneId(i), true, true);
-        }
-    }
-    network.validate().expect("ring road is a valid network");
-    network
+/// An empty simulation of a scenario's network, and what to draw for it; the
+/// harness fills it.
+fn new_sim(scenario: Scenario) -> (Recorded<DebugState>, RenderGeometry) {
+    let compiled = compile(&scenario.network()).expect("every scenario compiles");
+    let sim = Recorded::new(Simulation::new(compiled.sim, DebugState::default()));
+    (sim, compiled.render)
 }
 
 fn demo_car() -> VehicleSpec {

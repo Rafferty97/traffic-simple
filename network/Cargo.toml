@@ -1,0 +1,13 @@
+[package]
+name = "traffic-network"
+description = "Road networks described at road level, compiled to a SimNetwork and render geometry. A proof of concept."
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+glam.workspace = true
+traffic-sim.workspace = true
+

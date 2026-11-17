@@ -93,9 +93,24 @@ impl Lane {
     /// Builds a lane from its centerline polyline, a constant width in meters,
     /// centered on it, and a speed limit in meters per second.
     ///
-    /// Consecutive duplicate points are removed before the lane is built.
+    /// Points are snapped to the nearest millimeter, then consecutive duplicate
+    /// points are removed.
     pub fn new(points: &[DVec2], width: f64, speed_limit: f64) -> Result<Self, LaneError> {
-        let geometry = LaneGeometry::new(points, &vec![[0.5 * width; 2]; points.len()])?;
+        Self::with_half_widths(points, &vec![[0.5 * width; 2]; points.len()], speed_limit)
+    }
+
+    /// Builds a lane from its centerline polyline, how far its left and right
+    /// edges lie from it at each point, in meters, and a speed limit in meters
+    /// per second. Between points, the half-widths vary linearly.
+    ///
+    /// Points and half-widths are snapped to the nearest millimeter, then
+    /// consecutive duplicate points are removed.
+    pub fn with_half_widths(
+        points: &[DVec2],
+        half_widths: &[[f64; 2]],
+        speed_limit: f64,
+    ) -> Result<Self, LaneError> {
+        let geometry = LaneGeometry::new(points, half_widths)?;
         Ok(Self {
             geometry,
             speed_limit,

@@ -1,6 +1,6 @@
 //! Vehicles on a ring road: a single lane that is its own successor.
 
-use traffic_sim::{LaneId, Placement, Simulation};
+use traffic_sim::{LaneId, Placement, Route, Simulation};
 
 mod common;
 use common::{Terms, car, fill_lane, fill_ring, ring, ring_road};
@@ -35,7 +35,10 @@ fn check_occupancy(sim: &Sim) {
 #[test]
 fn lone_car_laps_forever_without_a_leader() {
     let mut sim = Simulation::new(ring(230.0, SPEED_LIMIT), Terms::default());
-    let id = sim.insert(car(), Placement { lane: LaneId(0), s: 0.0, speed: 0.0 });
+    let id = sim.insert(
+        car(),
+        Placement { lane: LaneId(0), s: 0.0, speed: 0.0, route: Route::default() },
+    );
     let mut max_t = 0.0f64;
     run(&mut sim, 120.0, |sim| {
         let v = sim.get(id).expect("car left the ring");

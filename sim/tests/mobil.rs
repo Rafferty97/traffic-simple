@@ -4,8 +4,8 @@ use glam::DVec2;
 use std::collections::HashMap;
 
 use traffic_sim::{
-    AccelSource, DebugEvent, DebugSink, Lane, LaneId, MIN_INDICATING, Placement, SAFE_BRAKING,
-    SimNetwork, Simulation, VehicleId,
+    AccelSource, DebugEvent, DebugSink, Lane, LaneId, MIN_INDICATING, Placement, Route,
+    SAFE_BRAKING, SimNetwork, Simulation, VehicleId,
 };
 
 mod common;
@@ -33,7 +33,7 @@ fn two_lanes_with<D: DebugSink>(sink: D) -> Simulation<D> {
 }
 
 fn place(lane: u32, s: f64, speed: f64) -> Placement {
-    Placement { lane: LaneId(lane), s, speed }
+    Placement { lane: LaneId(lane), s, speed, route: Route::default() }
 }
 
 fn run(sim: &mut Sim, seconds: f64, mut each: impl FnMut(&Sim)) {

@@ -1,6 +1,6 @@
 //! Checked insertion with `try_insert`.
 
-use traffic_sim::{InsertError, LaneId, NoopSink, Placement, Simulation};
+use traffic_sim::{InsertError, LaneId, NoopSink, Placement, Route, Simulation};
 
 mod common;
 use common::{car, ring};
@@ -8,7 +8,7 @@ use common::{car, ring};
 const SPEED_LIMIT: f64 = 14.0;
 
 fn at(s: f64, speed: f64) -> Placement {
-    Placement { lane: LaneId(0), s, speed }
+    Placement { lane: LaneId(0), s, speed, route: Route::default() }
 }
 
 #[test]

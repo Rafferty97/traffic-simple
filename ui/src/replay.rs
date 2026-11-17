@@ -7,11 +7,15 @@
 //! order they were inserted, counting only insertions that succeeded, and floats
 //! are written so they parse back exactly. Lines starting with `#` are comments.
 //!
+//! The first line is the network, as JSON, as a snapshot holds it, so a replay
+//! doesn't depend on whatever built it. Each lane's geometry is a short string
+//! of millimeters (see `LaneGeometry::to_mm_string`).
+//!
 //! ```text
-//! # traffic-sim replay v2
-//! ring circumference=1000.0 lanes=3 width=3.5 speed_limit=13.88888888888889
+//! # traffic-sim replay v3
+//! network {"lanes":[{"geometry":"0,0,1750 100000,0", ...}], ...}
 //! step 0.016666666666666666
-//! try_insert ok length=4.6 width=1.9 ... lane=2 s=255.4 speed=14.18
+//! try_insert ok length=4.6 width=1.9 ... lane=2 s=255.4 speed=14.18 seed=3
 //! cap 3 0.0
 //! cap 4 5.555555555555555
 //! change_lane 7 left refused
@@ -22,8 +26,8 @@ use std::fmt::Write;
 use std::ops::Deref;
 
 use traffic_sim::{
-    DebugSink, InsertError, LaneChangeError, Placement, Side, Simulation, Vehicle, VehicleId,
-    VehicleSpec,
+    DebugSink, InsertError, LaneChangeError, Placement, Route, Side, Simulation, Vehicle,
+    VehicleId, VehicleSpec,
 };
 
 /// A simulation that logs every call that changes it.
@@ -46,10 +50,10 @@ impl<D: DebugSink> Deref for Recorded<D> {
 }
 
 impl<D: DebugSink> Recorded<D> {
-    /// Starts recording a new simulation. `network` is the log line that
-    /// describes how to rebuild its network, such as `ring circumference=…`.
-    pub fn new(sim: Simulation<D>, network: &str) -> Self {
-        let log = format!("# traffic-sim replay v2\n{network}\n");
+    /// Starts recording a new simulation, from its network.
+    pub fn new(sim: Simulation<D>) -> Self {
+        let network = serde_json::to_string(sim.network()).expect("a network serializes");
+        let log = format!("# traffic-sim replay v3\nnetwork {network}\n");
         Self { sim, log, index: HashMap::new() }
     }
 
@@ -80,14 +84,15 @@ impl<D: DebugSink> Recorded<D> {
             courtesy,
             politeness,
         } = spec;
-        let Placement { lane, s, speed } = at;
+        let Placement { lane, s, speed, route } = at;
+        let Route::Random { state: seed } = route;
         writeln!(
             self.log,
             "try_insert {outcome} length={length:?} width={width:?} max_speed={max_speed:?} \
              speed_factor={speed_factor:?} max_accel={max_accel:?} comfy_decel={comfy_decel:?} \
              time_headway={time_headway:?} min_gap={min_gap:?} rear_axle={rear_axle:?} \
              front_axle={front_axle:?} courtesy={courtesy:?} politeness={politeness:?} \
-             lane={} s={s:?} speed={speed:?}",
+             lane={} s={s:?} speed={speed:?} seed={seed}",
             lane.0
         )
         .unwrap();
@@ -143,7 +148,8 @@ mod test {
     use traffic_sim::{LaneId, NoopSink};
 
     use super::*;
-    use crate::common::{car, replay::replay, ring_road};
+    use crate::common::{car, ring_road};
+    use crate::replay_reader::replay;
 
     /// Every vehicle's state and every lane's records, as raw bits.
     fn state<D: DebugSink>(sim: &Simulation<D>) -> Vec<u64> {
@@ -174,9 +180,7 @@ mod test {
     fn a_capture_replays_exactly() {
         let speed_limit = 50.0 / 3.6;
         let network = ring_road(600.0, 3, speed_limit);
-        let description =
-            format!("ring circumference=600.0 lanes=3 width=3.5 speed_limit={speed_limit:?}");
-        let mut sim = Recorded::new(Simulation::new(network, NoopSink), &description);
+        let mut sim = Recorded::new(Simulation::new(network, NoopSink));
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(7);
         let mut ids = Vec::new();
         while sim.time() < 90.0 {
@@ -185,7 +189,12 @@ mod test {
             if roll < 0.05 {
                 let spec = VehicleSpec { speed_factor: 0.8 + 0.4 * rng.random::<f64>(), ..car() };
                 let s = 600.0 * rng.random::<f64>();
-                let at = Placement { lane: LaneId(2), s, speed: spec.desired_speed(speed_limit) };
+                let at = Placement {
+                    lane: LaneId(2),
+                    s,
+                    speed: spec.desired_speed(speed_limit),
+                    route: Route::random(rng.random()),
+                };
                 ids.extend(sim.try_insert(spec, at).ok());
             } else if roll < 0.07 && !ids.is_empty() {
                 let id = ids[rng.random_range(0..ids.len())];

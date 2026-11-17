@@ -3,8 +3,8 @@
 
 use glam::DVec2;
 use traffic_sim::{
-    ConflictKind, JunctionId, Lane, LaneId, NoopSink, Placement, Side, SimNetwork, Simulation,
-    VehicleId,
+    ConflictKind, JunctionId, Lane, LaneId, NoopSink, Placement, Route, Side, SimNetwork,
+    Simulation, VehicleId,
 };
 
 mod common;
@@ -61,7 +61,7 @@ fn merge() -> (SimNetwork, JunctionId) {
 }
 
 fn at(lane: u32, s: f64, speed: f64) -> Placement {
-    Placement { lane: LaneId(lane), s, speed }
+    Placement { lane: LaneId(lane), s, speed, route: Route::default() }
 }
 
 /// Whether two convex bodies, given by their corners, overlap: by the separating

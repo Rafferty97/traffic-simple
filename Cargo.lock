@@ -3661,6 +3661,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "traffic-network"
+version = "0.0.0"
+dependencies = [
+ "glam",
+ "traffic-sim",
+]
+
+[[package]]
 name = "traffic-sim"
 version = "0.0.0"
 dependencies = [
@@ -3720,6 +3728,7 @@ dependencies = [
  "glam",
  "rand",
  "serde_json",
+ "traffic-network",
  "traffic-sim",
 ]
 

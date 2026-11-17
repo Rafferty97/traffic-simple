@@ -8,7 +8,7 @@ use std::f64::consts::TAU;
 
 use rand::rngs::Xoshiro256PlusPlus;
 use rand::{RngExt, SeedableRng};
-use traffic_sim::{LaneId, Placement, Side, Simulation, VehicleId, VehicleSpec};
+use traffic_sim::{LaneId, Placement, Route, Side, Simulation, VehicleId, VehicleSpec};
 
 mod common;
 use common::{Terms, ring_road};
@@ -79,6 +79,7 @@ fn run_scenario(spawn_rate: f64, despawn_rate: f64, minutes: f64) -> Stats {
                 lane: SPAWN_LANE,
                 s: spawn_s,
                 speed: car.desired_speed(SPEED_LIMIT),
+                route: Route::default(),
             };
             if sim.try_insert(car, at).is_ok() {
                 spawn_credit -= 1.0;

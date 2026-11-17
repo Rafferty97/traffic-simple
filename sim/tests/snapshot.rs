@@ -4,7 +4,8 @@
 use rand::rngs::Xoshiro256PlusPlus;
 use rand::{RngExt, SeedableRng};
 use traffic_sim::{
-    DebugSink, Lateral, NoopSink, Placement, Side, Simulation, Snapshot, VehicleId, VehicleSpec,
+    DebugSink, Lateral, NoopSink, Placement, Route, Side, Simulation, Snapshot, VehicleId,
+    VehicleSpec,
 };
 
 mod common;
@@ -61,6 +62,7 @@ fn busy() -> Simulation {
                 lane: traffic_sim::LaneId(2),
                 s: 600.0 * roll * 20.0,
                 speed: 12.0,
+                route: Route::default(),
             };
             let _ = sim.try_insert(spec, at);
         } else if roll < 0.06 {

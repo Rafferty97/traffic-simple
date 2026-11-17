@@ -736,7 +736,15 @@ mod test {
             politeness: 0.2,
         };
         let mut sim = Simulation::new(network.clone(), NoopSink);
-        let id = sim.insert(spec, Placement { lane: LaneId(lane), s, speed: 10.0 });
+        let id = sim.insert(
+            spec,
+            Placement {
+                lane: LaneId(lane),
+                s,
+                speed: 10.0,
+                route: crate::models::routing::Route::default(),
+            },
+        );
         sim.get(id).unwrap().clone()
     }
 

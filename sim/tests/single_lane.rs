@@ -1,7 +1,7 @@
 //! One vehicle drives the length of a single lane from rest.
 
 use glam::DVec2;
-use traffic_sim::{Lane, LaneId, NoopSink, Placement, SimNetwork, Simulation};
+use traffic_sim::{Lane, LaneId, NoopSink, Placement, Route, SimNetwork, Simulation};
 
 mod common;
 use common::car;
@@ -27,7 +27,7 @@ fn lane(turn: f64) -> Lane {
 fn drive(lane: Lane) -> (f64, f64) {
     let length = lane.geometry().length();
     let mut sim = Simulation::new(SimNetwork::new(vec![lane]), NoopSink);
-    let at = Placement { lane: LaneId(0), s: 0.0, speed: 0.0 };
+    let at = Placement { lane: LaneId(0), s: 0.0, speed: 0.0, route: Route::default() };
     let id = sim.insert(car(), at);
 
     let (mut time, mut max_t, mut last_s) = (0.0, 0.0f64, 0.0);
@@ -69,7 +69,7 @@ fn drivers_settle_at_their_share_of_the_limit() {
     for factor in [0.8, 1.2] {
         // Alone on a ring, so nothing gets in the way.
         let mut sim = Simulation::new(common::ring(230.0, SPEED_LIMIT), NoopSink);
-        let at = Placement { lane: LaneId(0), s: 0.0, speed: 0.0 };
+        let at = Placement { lane: LaneId(0), s: 0.0, speed: 0.0, route: Route::default() };
         let id = sim.insert(
             traffic_sim::VehicleSpec { speed_factor: factor, ..car() },
             at,
@@ -94,7 +94,12 @@ fn a_capped_car_slows_to_its_cap_and_goes_on_once_released() {
     let mut sim = Simulation::new(SimNetwork::new(vec![lane]), NoopSink);
     let id = sim.insert(
         car(),
-        Placement { lane: LaneId(0), s: 0.0, speed: SPEED_LIMIT },
+        Placement {
+            lane: LaneId(0),
+            s: 0.0,
+            speed: SPEED_LIMIT,
+            route: Route::default(),
+        },
     );
     let cap = 20.0 / 3.6;
     sim.cap_speed(id, cap);
@@ -126,7 +131,7 @@ fn a_queue_comes_to_rest_at_the_minimum_gap() {
     let lane = Lane::new(&[DVec2::ZERO, DVec2::new(1000.0, 0.0)], 3.5, SPEED_LIMIT).unwrap();
     let mut sim = Simulation::new(SimNetwork::new(vec![lane]), NoopSink);
     let spec = car();
-    let at = |s, speed| Placement { lane: LaneId(0), s, speed };
+    let at = |s, speed| Placement { lane: LaneId(0), s, speed, route: Route::default() };
     let stopped = sim.insert(spec, at(500.0, 0.0));
     sim.hold(stopped);
     let a = sim.insert(spec, at(300.0, SPEED_LIMIT));

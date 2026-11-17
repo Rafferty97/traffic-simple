@@ -21,8 +21,11 @@ const MAX_TURN: f64 = TAU / 16.0;
 /// meters along the centerline and `t` is the lateral offset in meters, positive
 /// to the left. The mapping is continuous across vertices, so a vehicle can move
 /// along the lane without `s` jumping.
+///
+/// Every point and half-width is snapped to a 1 mm grid as the geometry is
+/// built, so that it serializes exactly as a short string: see
+/// [`LaneGeometry::to_mm_string`].
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LaneGeometry {
     /// The segments comprising the lane.
     segs: Vec<Segment>,
@@ -34,7 +37,6 @@ pub struct LaneGeometry {
 }
 
 #[derive(Clone, Copy, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 struct Segment {
     /// Position of the centerline at the start of the segment.
     start: DVec2,
@@ -77,8 +79,8 @@ impl LaneGeometry {
     /// Builds a lane's geometry from its centerline polyline and, at each point,
     /// how far its left and right edges lie from it, in meters.
     ///
-    /// Consecutive duplicate points are removed before the lane is built, with
-    /// their half-widths.
+    /// Points and half-widths are snapped to the nearest millimeter, then
+    /// consecutive duplicate points are removed, with their half-widths.
     pub(crate) fn new(points: &[DVec2], half_widths: &[[f64; 2]]) -> Result<Self, LaneError> {
         assert_eq!(
             points.len(),
@@ -87,9 +89,12 @@ impl LaneGeometry {
         );
         let max_tan_half = (0.5 * MAX_TURN).tan();
 
-        let mut vertices: Vec<(DVec2, [f64; 2])> =
-            points.iter().copied().zip(half_widths.iter().copied()).collect();
-        vertices.dedup_by(|a, b| a.0.distance_squared(b.0) < 1e-12);
+        let mut vertices: Vec<(DVec2, [f64; 2])> = points
+            .iter()
+            .zip(half_widths)
+            .map(|(p, w)| (DVec2::new(snap(p.x), snap(p.y)), w.map(snap)))
+            .collect();
+        vertices.dedup_by(|a, b| a.0 == b.0);
         if vertices.len() < 2 {
             return Err(LaneError::TooFewPoints);
         }
@@ -187,6 +192,65 @@ impl LaneGeometry {
         let seg = self.find_segment_with_hint(pos, hint.seg as usize);
         let (s, t) = self.segs[seg].world_to_lane(pos);
         LanePos { s, t, seg: seg as u32 }
+    }
+
+    /// How far the left and right edges lie from the centerline at each vertex,
+    /// in meters, in the order of [`LaneGeometry::centerline`].
+    pub fn half_widths(&self) -> &[[f64; 2]] {
+        &self.half_widths
+    }
+
+    /// The geometry as a string of vertices in millimeters, separated by spaces,
+    /// each `x,y,left,right`: the centerline point and the half-widths there.
+    /// With three values the half-widths are equal, and with two they are the
+    /// previous vertex's, so a lane of constant width gives them once:
+    ///
+    /// ```text
+    /// 0,0,1750 90000,0 100000,2000,1750,2000
+    /// ```
+    ///
+    /// Everything is on the millimeter grid, so it reads back exactly.
+    pub fn to_mm_string(&self) -> String {
+        let mm = |v: f64| (v * 1000.0).round() as i64;
+        let mut out = String::new();
+        let mut last = None;
+        for (point, &[left, right]) in self.centerline().zip(&self.half_widths) {
+            if last.is_some() {
+                out.push(' ');
+            }
+            out += &format!("{},{}", mm(point.x), mm(point.y));
+            if last != Some([left, right]) {
+                out += &format!(",{}", mm(left));
+                if right != left {
+                    out += &format!(",{}", mm(right));
+                }
+            }
+            last = Some([left, right]);
+        }
+        out
+    }
+
+    /// Reads a string from [`LaneGeometry::to_mm_string`] back into a lane's geometry.
+    pub fn from_mm_string(text: &str) -> Result<Self, ParseLaneError> {
+        let meters = |v: &str| v.parse::<i64>().map(|mm| mm as f64 / 1000.0);
+        let mut points = Vec::new();
+        let mut half_widths: Vec<[f64; 2]> = Vec::new();
+        for vertex in text.split_whitespace() {
+            let values = vertex
+                .split(',')
+                .map(meters)
+                .collect::<Result<Vec<f64>, _>>()
+                .map_err(|_| ParseLaneError::Malformed(vertex.into()))?;
+            let widths = match values[..] {
+                [_, _] => *half_widths.last().ok_or(ParseLaneError::NoWidths)?,
+                [_, _, w] => [w, w],
+                [_, _, left, right] => [left, right],
+                _ => return Err(ParseLaneError::Malformed(vertex.into())),
+            };
+            points.push(DVec2::new(values[0], values[1]));
+            half_widths.push(widths);
+        }
+        Ok(Self::new(&points, &half_widths)?)
     }
 
     /// The centerline vertices, from start to end.
@@ -303,6 +367,37 @@ impl LaneGeometry {
             idx += 1;
         }
         idx
+    }
+}
+
+/// The nearest millimeter to a length in meters.
+fn snap(v: f64) -> f64 {
+    (v * 1000.0).round() / 1000.0
+}
+
+/// Why a string isn't a lane's geometry.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ParseLaneError {
+    #[error("malformed vertex {0:?}: expected 2 to 4 whole millimeters")]
+    Malformed(String),
+    #[error("the first vertex has no half-widths")]
+    NoWidths,
+    #[error(transparent)]
+    Lane(#[from] LaneError),
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for LaneGeometry {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_mm_string())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for LaneGeometry {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+        LaneGeometry::from_mm_string(&text).map_err(serde::de::Error::custom)
     }
 }
 
@@ -491,12 +586,14 @@ mod test {
 
     #[test]
     fn tangent_follows_segments() {
-        // A 0.3 rad (~17°) bend, within MAX_TURN.
-        let bend = DVec2::from_angle(0.3);
+        // A bend of about 0.3 rad (~17°), within MAX_TURN, with its points on the
+        // millimeter grid that lanes are snapped to.
+        let step = DVec2::new(7.642, 2.364);
+        let bend = step.normalize();
         let pts = [
             DVec2::ZERO,
             DVec2::new(8.0, 0.0),
-            DVec2::new(8.0, 0.0) + 8.0 * bend,
+            DVec2::new(8.0, 0.0) + step,
         ];
         let lane = lane(&pts).unwrap();
         assert!(lane.tangent_at(lane.lane_pos(4.0, 0.0)).distance(DVec2::X) < EPS);
@@ -552,6 +649,73 @@ mod test {
         assert_eq!(
             LaneGeometry::new(&pts, &[[14.0, 0.1]; 3]).unwrap_err(),
             LaneError::Folds { segment: 0 }
+        );
+    }
+
+    /// Everything about a lane's geometry, as raw bits.
+    fn bits(lane: &LaneGeometry) -> Vec<u64> {
+        let mut out = vec![lane.length.to_bits()];
+        for seg in &lane.segs {
+            let Segment { start, dir, cum_s, adj } = *seg;
+            out.extend([start.x, start.y, dir.x, dir.y, cum_s, adj.0, adj.1].map(f64::to_bits));
+        }
+        out.extend(lane.half_widths.iter().flatten().map(|w| w.to_bits()));
+        out
+    }
+
+    proptest! {
+        #[test]
+        fn the_mm_string_reads_back_exactly(lane in arb_lane()) {
+            let read = LaneGeometry::from_mm_string(&lane.to_mm_string()).unwrap();
+            prop_assert_eq!(bits(&read), bits(&lane));
+        }
+    }
+
+    #[test]
+    fn points_and_widths_snap_to_the_millimeter() {
+        let lane = LaneGeometry::new(
+            &[DVec2::new(0.0004, 0.0), DVec2::new(10.0006, 0.0)],
+            &[[1.7504; 2], [1.7496, 2.0]],
+        )
+        .unwrap();
+        assert_eq!(lane.centerline().next(), Some(DVec2::ZERO));
+        assert_eq!(lane.length(), 10.001);
+        assert_eq!(lane.half_widths(), [[1.75, 1.75], [1.75, 2.0]]);
+    }
+
+    #[test]
+    fn the_mm_string_gives_widths_only_where_they_change() {
+        let lane = LaneGeometry::new(
+            &[
+                DVec2::ZERO,
+                DVec2::new(90.0, 0.0),
+                DVec2::new(100.0, 2.0),
+                DVec2::new(110.0, 2.0),
+            ],
+            &[[1.75; 2], [1.75; 2], [2.0, 1.75], [2.0, 1.75]],
+        )
+        .unwrap();
+        assert_eq!(
+            lane.to_mm_string(),
+            "0,0,1750 90000,0 100000,2000,2000,1750 110000,2000"
+        );
+    }
+
+    #[test]
+    fn a_malformed_mm_string_is_refused() {
+        let parse = LaneGeometry::from_mm_string;
+        assert_eq!(parse("0,0 10000,0").unwrap_err(), ParseLaneError::NoWidths);
+        assert!(matches!(
+            parse("0,0,1750 1.5,0").unwrap_err(),
+            ParseLaneError::Malformed(_)
+        ));
+        assert!(matches!(
+            parse("0,0,1,2,3 9,0").unwrap_err(),
+            ParseLaneError::Malformed(_)
+        ));
+        assert_eq!(
+            parse("0,0,1750").unwrap_err(),
+            ParseLaneError::Lane(LaneError::TooFewPoints)
         );
     }
 }
