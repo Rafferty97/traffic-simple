@@ -1,3 +1,5 @@
+use std::ops::ControlFlow;
+
 use glam::DVec2;
 use slotmap::{Key, SlotMap};
 
@@ -9,7 +11,9 @@ use crate::models::acceleration;
 use crate::models::lane_change::{self, Decision, Effect, LaneChangeEval, Prospect};
 use crate::models::lateral::{self, LaneChange};
 use crate::network::{LaneId, Side, SimNetwork};
-use crate::occupancy::{self, Ahead, Along, Found, Lateral, Occupant, find_follower, find_leaders};
+use crate::occupancy::{
+    self, Ahead, Along, Found, Lateral, Occupant, find_follower, find_leaders, for_each_leader,
+};
 use crate::vehicle::{Intent, Placement, Vehicle, VehicleId, VehicleSpec};
 
 /// Longest substep in seconds. Longer frames are split.
@@ -232,20 +236,29 @@ impl<D: DebugSink> Simulation<D> {
         // Leader and follower split the lane at its rear, so any vehicle alongside
         // is one or the other, with no gap, and refuses the insertion.
         let rear = vehicle.lane_pos.s - spec.rear_axle;
-        let leader = find_leaders(&self.state, &vehicle, Along::Inserting, None);
         // No faster than the nearest leader, and braking gently enough for all,
         // ghosts and the stop line at the end of its path included. The search
-        // goes nearest first, so the speed is capped before anything is checked.
+        // goes nearest first, so the speed is capped before anything is checked,
+        // and it stops at the first that refuses.
         let mut speed = vehicle.speed;
-        for (i, (ahead, gap)) in leader.ahead().enumerate() {
+        let mut nearest = true;
+        let refused = find_leaders(&self.state, &vehicle, Along::Inserting, None, |found| {
+            let Found::Ahead(ahead, gap) = found else {
+                return ControlFlow::Continue(());
+            };
             let leader_speed = speed_of(&self.state.vehicles, ahead);
-            if i == 0 && ahead != Ahead::PathEnd {
+            if nearest && ahead != Ahead::PathEnd {
                 speed = speed.min(leader_speed);
             }
+            nearest = false;
             let accel = acceleration::interaction(&spec, speed, gap, leader_speed);
-            if gap <= 0.0 || accel < -acceleration::SAFE_BRAKING {
-                return Err(InsertError::NoRoom);
+            match gap <= 0.0 || accel < -acceleration::SAFE_BRAKING {
+                true => ControlFlow::Break(()),
+                false => ControlFlow::Continue(()),
             }
+        });
+        if refused.is_break() {
+            return Err(InsertError::NoRoom);
         }
         vehicle.speed = speed;
 
@@ -765,11 +778,10 @@ fn longitudinal<D: DebugSink>(
     sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: free });
     let mut accel = free;
 
-    let search = find_leaders(state, vehicle, Along::Path(own), None);
     // The nearest ghost, if it comes before anything else ahead.
     let mut ghost = None;
     let mut first = true;
-    for found in search {
+    for_each_leader(state, vehicle, Along::Path(own), None, |found| {
         if let Found::Ahead(ahead, gap) = found {
             if let (true, Ahead::Ghost(owner)) = (first, ahead) {
                 ghost = Some((owner, gap));
@@ -779,7 +791,7 @@ fn longitudinal<D: DebugSink>(
         if let Some(term) = react(&state.vehicles, sink, id, vehicle, found) {
             accel = accel.min(term);
         }
-    }
+    });
 
     // Making room for a vehicle indicating into its lane ahead, as the lane-change
     // model chooses, by what following its ghost would take.
@@ -822,9 +834,13 @@ fn old_side<D: DebugSink>(
     side: Side,
     own: usize,
 ) -> f64 {
-    find_leaders(state, vehicle, Along::Leaving(side, own), None)
-        .filter_map(|found| react(&state.vehicles, sink, id, vehicle, found))
-        .fold(f64::INFINITY, f64::min)
+    let mut accel = f64::INFINITY;
+    for_each_leader(state, vehicle, Along::Leaving(side, own), None, |found| {
+        if let Some(term) = react(&state.vehicles, sink, id, vehicle, found) {
+            accel = accel.min(term);
+        }
+    });
+    accel
 }
 
 /// Records what vehicle `id`'s leader search found and, for a leader or a stop
@@ -951,19 +967,15 @@ fn accel_along(
     let lane = along.lane(&state.network, vehicle, 0).unwrap_or(vehicle.path[0]);
     let desired = vehicle.spec.desired_speed(state.network.lane(lane).speed_limit());
     let mut accel = acceleration::free_road(&vehicle.spec, vehicle.speed, desired);
-    for (ahead, gap) in find_leaders(state, vehicle, along, skip).ahead() {
-        match ahead {
-            Ahead::Ghost(owner) if owner == id || !ghosts_lead => continue,
-            _ => {}
+    for_each_leader(state, vehicle, along, skip, |found| match found {
+        Found::Ahead(Ahead::Ghost(owner), _) if owner == id || !ghosts_lead => {}
+        Found::Ahead(ahead, gap) => {
+            let speed = speed_of(&state.vehicles, ahead);
+            let term = acceleration::interaction(&vehicle.spec, vehicle.speed, gap, speed);
+            accel = accel.min(term);
         }
-        let speed = speed_of(&state.vehicles, ahead);
-        accel = accel.min(acceleration::interaction(
-            &vehicle.spec,
-            vehicle.speed,
-            gap,
-            speed,
-        ));
-    }
+        Found::Pass(_) => {}
+    });
     accel
 }
 
@@ -1104,18 +1116,25 @@ mod test {
         find_follower(&sim.state, LaneId(lane), s, skip)
     }
 
-    /// `id`'s search along its path, from its own record.
-    fn search(sim: &Simulation, id: VehicleId) -> occupancy::Leaders<'_> {
+    /// `id`'s search along its path, from its own record, calling `f` with each
+    /// thing it finds until `f` breaks.
+    fn search<B>(
+        sim: &Simulation,
+        id: VehicleId,
+        f: impl FnMut(Found) -> ControlFlow<B>,
+    ) -> ControlFlow<B> {
         let v = &sim.state.vehicles[id];
         let own = occupancy::record_index(&sim.state, v.path[0], id);
-        find_leaders(&sim.state, v, Along::Path(own), None)
+        find_leaders(&sim.state, v, Along::Path(own), None, f)
     }
 
+    /// The nearest vehicle `id` reacts to, stopping the search there.
     fn leader(sim: &Simulation, id: VehicleId) -> Option<(VehicleId, f64)> {
-        search(sim, id).ahead().find_map(|(ahead, gap)| match ahead {
-            Ahead::Vehicle(leader) => Some((leader, gap)),
-            _ => None,
+        search(sim, id, |found| match found {
+            Found::Ahead(Ahead::Vehicle(leader), gap) => ControlFlow::Break((leader, gap)),
+            _ => ControlFlow::Continue(()),
         })
+        .break_value()
     }
 
     /// What `id` decides now, its lane-change state afterwards, and what it
@@ -1814,7 +1833,14 @@ mod test {
 
     /// Everything `id`'s leader search finds now, nearest first.
     fn ahead(sim: &Simulation, id: VehicleId) -> Vec<Ahead> {
-        search(sim, id).ahead().map(|(ahead, _)| ahead).collect()
+        let mut found = Vec::new();
+        let _: ControlFlow<()> = search(sim, id, |f| {
+            if let Found::Ahead(ahead, _) = f {
+                found.push(ahead);
+            }
+            ControlFlow::Continue(())
+        });
+        found
     }
 
     #[test]

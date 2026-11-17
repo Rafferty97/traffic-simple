@@ -11,6 +11,8 @@
 //! lane's list. Ghosts are kept up to date like any record but are only removed
 //! explicitly, when the intent is cancelled or carried out.
 
+use std::ops::ControlFlow;
+
 use glam::DVec2;
 use slotmap::SlotMap;
 
@@ -390,7 +392,7 @@ pub enum Ahead {
     PathEnd,
 }
 
-/// What a leader search yields, in the order it meets them.
+/// What a leader search finds, in the order it meets them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Found {
     /// Something ahead to react to, with the bumper-to-bumper gap to it: each is
@@ -401,10 +403,11 @@ pub enum Found {
     Pass(PassCheck),
 }
 
-/// Starts a search for what is ahead of a vehicle, `along` some lanes, within its
-/// [`acceleration::horizon`] of its front, that it must react to: an iterator
-/// that yields each thing in order of distance, nearest first, so a caller can
-/// stop as soon as it has what it needs.
+/// Searches for what is ahead of a vehicle, `along` some lanes, within its
+/// [`acceleration::horizon`] of its front, that it must react to, calling `f`
+/// with each thing in order of distance, nearest first. `f` returns whether to go
+/// on: a caller can stop as soon as it has what it needs, and the search returns
+/// what it broke with. See [`for_each_leader`] for a caller that wants it all.
 ///
 /// It measures from the vehicle's rear on the first lane searched: its record's
 /// `s`, if it has one there, or else where its rear is, projected onto that lane
@@ -431,53 +434,53 @@ pub enum Found {
 /// front reaches that record's rear, driving straight ahead would leave at least
 /// [`PASSING_CLEARANCE`] beside the other vehicle's rear corners. That reads the
 /// other vehicle's corners from the state's vehicles, as does working out what a
-/// leader shields. Each such check is yielded, as [`Found::Pass`].
+/// leader shields. Each such check is passed to `f`, as [`Found::Pass`].
 ///
 /// Which records it needs: a vehicle in the lane that this one can't pass, B,
 /// blocks the lane's whole width, so this one can't reach anything beyond it
 /// that B can't, and whatever in the lane beyond constrains B reaches this one
 /// through B. So in-lane vehicles beyond B are skipped, on B's lane and on the
 /// lanes after it, as far as B's path goes along the lanes searched (see
-/// [`Leaders::shields`]): the first lane B doesn't cover is a high-water mark,
+/// [`shields`]): the first lane B doesn't cover is a high-water mark,
 /// the furthest any leader has reached. Ghosts only partly block a lane, and B
 /// may pass a vehicle diverging from it that this one can't, so neither is ever
 /// skipped, and neither shields anything. A vehicle converging onto the lane
 /// after a lane change is in it, so it shields like any other.
 ///
 /// Past the end of its path, it doesn't know where it is going, so it must stop
-/// there, unless it leaves the network: the last thing yielded, since nothing
+/// there, unless it leaves the network: the last thing found, since nothing
 /// lies beyond.
-pub fn find_leaders<'a>(
-    state: &'a SimState,
-    vehicle: &'a Vehicle,
+pub fn find_leaders<B>(
+    state: &SimState,
+    vehicle: &Vehicle,
     along: Along,
     skip: Option<VehicleId>,
-) -> Leaders<'a> {
+    mut f: impl FnMut(Found) -> ControlFlow<B>,
+) -> ControlFlow<B> {
     let network = &state.network;
-    let rear_axle = vehicle.spec.rear_axle;
-    let first = along.lane(network, vehicle, 0);
+    let lane_at = |k: usize| along.lane(network, vehicle, k);
+    let Some(first) = lane_at(0) else {
+        return ControlFlow::Continue(());
+    };
     let list = |lane: LaneId| state.occupants[lane.0 as usize].as_slice();
-    let after_rear = |lane: LaneId, rear: f64| list(lane).partition_point(|o| o.s < rear);
+    let after = |rear: f64| list(first).partition_point(|o| o.s < rear);
+    let rear_axle = vehicle.spec.rear_axle;
     // Where it starts on the first lane, its rear there, and its rear axle along
-    // the lanes it follows.
-    let (next, rear, axle_s) = match (along, first) {
-        (_, None) => (0, 0.0, vehicle.lane_pos.s),
-        (Along::Path(own) | Along::Leaving(_, own), Some(lane)) => {
-            (own + 1, list(lane)[own].s, vehicle.lane_pos.s)
+    // the lanes it follows (see `Along::pose`).
+    let (start, rear, axle_s) = match along {
+        Along::Path(own) | Along::Leaving(_, own) => {
+            (own + 1, list(first)[own].s, vehicle.lane_pos.s)
         }
-        (Along::Inserting, Some(lane)) => {
+        Along::Inserting => {
             let rear = vehicle.lane_pos.s - rear_axle;
-            (after_rear(lane, rear), rear, vehicle.lane_pos.s)
+            (after(rear), rear, vehicle.lane_pos.s)
         }
-        (Along::Into(_), Some(lane)) => {
-            let axle_s = axle_beside(network, vehicle, lane);
-            (
-                after_rear(lane, axle_s - rear_axle),
-                axle_s - rear_axle,
-                axle_s,
-            )
+        Along::Into(_) => {
+            let axle_s = axle_beside(network, vehicle, first);
+            (after(axle_s - rear_axle), axle_s - rear_axle, axle_s)
         }
     };
+    let front = rear + vehicle.spec.length;
     let horizon = acceleration::horizon(&vehicle.spec, vehicle.speed);
     let horizon = match (along, vehicle.lane_change) {
         // A gap is how far the rear axle travels before the nose reaches a rear.
@@ -487,178 +490,113 @@ pub fn find_leaders<'a>(
         }
         _ => horizon,
     };
-    Leaders {
-        state,
-        vehicle,
-        along,
-        skip,
-        axle_s,
-        front: rear + vehicle.spec.length,
-        horizon,
-        k: 0,
-        next,
-        offset: 0.0,
-        covered: 0,
-        pending: None,
-        done: first.is_none(),
-    }
-}
+    // Settled beside its path, it is nowhere yet, so where it is now is where it
+    // would be.
+    let now = match along {
+        Along::Into(_) => along.pose(network, vehicle, axle_s, 0.0),
+        _ => (vehicle.pos, DVec2::from_angle(vehicle.heading)),
+    };
 
-/// A leader search under way: see [`find_leaders`].
-pub struct Leaders<'a> {
-    state: &'a SimState,
-    vehicle: &'a Vehicle,
-    along: Along,
-    skip: Option<VehicleId>,
-    /// The searching vehicle's rear axle along the lanes it follows (see
-    /// [`Along::pose`]).
-    axle_s: f64,
-    /// Its front, along the lanes searched from the start of the first.
-    front: f64,
-    horizon: f64,
-    /// The lane being searched, by its index along them.
-    k: usize,
-    /// The next record to look at in that lane's list.
-    next: usize,
-    /// Start of that lane, along the lanes searched from the start of the first.
-    offset: f64,
-    /// The first lane no leader in the lane shields: on the lanes before it, only
-    /// ghosts and vehicles diverging from them still count.
-    covered: usize,
-    /// A vehicle to yield next, after the failed check for passing it.
-    pending: Option<(Ahead, f64)>,
-    done: bool,
-}
-
-impl Leaders<'_> {
-    /// Only what is ahead, without the passing checks.
-    pub fn ahead(self) -> impl Iterator<Item = (Ahead, f64)> {
-        self.filter_map(|found| match found {
-            Found::Ahead(ahead, gap) => Some((ahead, gap)),
-            Found::Pass(_) => None,
-        })
-    }
-
-    /// The `j`th lane searched.
-    fn lane(&self, j: usize) -> Option<LaneId> {
-        self.along.lane(&self.state.network, self.vehicle, j)
-    }
-
-    /// Moves the high-water mark past what `o`, a vehicle found and not passed,
-    /// shields, if it is in the lane.
-    fn shield(&mut self, o: &Occupant, in_lane: bool) {
-        if in_lane {
-            let path = &self.state.vehicles[o.id].path;
-            self.covered = self.covered.max(self.shields(path));
+    // Start of the `k`th lane, along the lanes searched from the start of the first.
+    let mut offset = 0.0;
+    // The first lane no leader in the lane shields: on the lanes before it, only
+    // ghosts and vehicles diverging from them still count.
+    let mut covered = 0;
+    let mut k = 0;
+    while let Some(lane) = lane_at(k) {
+        if offset - front > horizon {
+            return ControlFlow::Continue(());
         }
-    }
-
-    /// How far along the lanes searched a vehicle in the lane on the current one
-    /// shields, with `path` its own path: the index of the first lane it doesn't.
-    /// It shields the rest of the current lane, and the lanes after it as far as
-    /// its own path goes along them: where its path parts from them, or ends,
-    /// what lies beyond never constrains it.
-    ///
-    /// Its path starts at the lane it follows: the current lane, or, while it
-    /// lingers past the end of the current lane after advancing, usually the
-    /// next. Anything else, it shields the current lane alone.
-    fn shields(&self, path: &[LaneId]) -> usize {
-        let k = self.k;
-        let j = match path.first() {
-            Some(&first) if self.lane(k) == Some(first) => k,
-            Some(&first) if self.lane(k + 1) == Some(first) => k + 1,
-            _ => return k + 1,
-        };
-        let shared = path.iter().enumerate().take_while(|&(n, &l)| self.lane(j + n) == Some(l));
-        (j + shared.count()).max(k + 1)
-    }
-
-    /// Done: yields the stop line at the end of its path if it is within the
-    /// horizon, having searched it all.
-    fn finish(&mut self, searched_all: bool) -> Option<Found> {
-        self.done = true;
-        let network = &self.state.network;
-        let ends = |&l: &LaneId| !network.lane(l).successors().is_empty();
-        let gap = self.offset - self.front;
-        let own_path = matches!(self.along, Along::Path(_) | Along::Inserting);
-        let stop = searched_all && own_path && self.vehicle.path.last().is_some_and(ends);
-        (stop && gap <= self.horizon).then_some(Found::Ahead(Ahead::PathEnd, gap))
-    }
-}
-
-impl Iterator for Leaders<'_> {
-    type Item = Found;
-
-    fn next(&mut self) -> Option<Found> {
-        if let Some((ahead, gap)) = self.pending.take() {
-            return Some(Found::Ahead(ahead, gap));
-        }
-        let (state, vehicle, along) = (self.state, self.vehicle, self.along);
-        let network = &state.network;
-        while !self.done {
-            let Some(lane) = self.lane(self.k) else {
-                return self.finish(true);
-            };
-            let Some(o) = state.occupants[lane.0 as usize].get(self.next) else {
-                self.offset += network.lane(lane).length();
-                (self.k, self.next) = (self.k + 1, 0);
-                if self.offset - self.front > self.horizon {
-                    return self.finish(false);
-                }
-                continue;
-            };
-            self.next += 1;
-            if Some(o.id) == self.skip {
+        let records = &list(lane)[if k == 0 { start } else { 0 }..];
+        for o in records {
+            if Some(o.id) == skip {
                 continue;
             }
-            let gap = self.offset + o.s - self.front;
-            if gap > self.horizon {
-                return self.finish(false);
+            let gap = offset + o.s - front;
+            if gap > horizon {
+                return ControlFlow::Continue(());
             }
             if o.ghost {
-                return Some(Found::Ahead(Ahead::Ghost(o.id), gap));
-            }
-            let in_lane = o.lateral == Lateral::InLane;
-            if in_lane && self.k < self.covered {
+                f(Found::Ahead(Ahead::Ghost(o.id), gap))?;
                 continue;
             }
-            let found = (Ahead::Vehicle(o.id), gap);
-            let Some(side) = passing_side(o.lateral, along.leaving(), along.moving(vehicle)) else {
-                self.shield(o, in_lane);
-                return Some(Found::Ahead(found.0, found.1));
-            };
-            // The record sits at the other vehicle's rearmost corner. Settled
-            // beside its path, it is nowhere yet, so it is where it would be.
-            let rearmost = network.lane(lane).lane_to_world(o.hint);
-            let now = match along {
-                Along::Into(_) => along.pose(network, vehicle, self.axle_s, 0.0),
-                _ => (vehicle.pos, DVec2::from_angle(vehicle.heading)),
-            };
-            let (pos, tangent) = along.reach(
-                network,
-                vehicle,
-                self.axle_s,
-                self.k,
-                lane,
-                gap,
-                rearmost,
-                o.s,
-                now,
-            );
-            let [rear_left, rear_right, ..] = state.vehicles[o.id].corners();
-            let half_width = 0.5 * vehicle.spec.width;
-            let (clearance, corner) =
-                clearance(side, pos, tangent, half_width, [rear_left, rear_right]);
-            let passed = clearance >= PASSING_CLEARANCE;
-            let check = PassCheck { leader: o.id, pos, tangent, side, corner, clearance, passed };
-            if !passed {
-                self.shield(o, in_lane);
-                self.pending = Some(found);
+            let in_lane = o.lateral == Lateral::InLane;
+            if in_lane && k < covered {
+                continue;
             }
-            return Some(Found::Pass(check));
+            if let Some(side) = passing_side(o.lateral, along.leaving(), along.moving(vehicle)) {
+                // The record sits at the other vehicle's rearmost corner.
+                let rearmost = network.lane(lane).lane_to_world(o.hint);
+                let (pos, tangent) =
+                    along.reach(network, vehicle, axle_s, k, lane, gap, rearmost, o.s, now);
+                let [rear_left, rear_right, ..] = state.vehicles[o.id].corners();
+                let half_width = 0.5 * vehicle.spec.width;
+                let (clearance, corner) =
+                    clearance(side, pos, tangent, half_width, [rear_left, rear_right]);
+                let passed = clearance >= PASSING_CLEARANCE;
+                let leader = o.id;
+                f(Found::Pass(PassCheck {
+                    leader,
+                    pos,
+                    tangent,
+                    side,
+                    corner,
+                    clearance,
+                    passed,
+                }))?;
+                if passed {
+                    continue;
+                }
+            }
+            f(Found::Ahead(Ahead::Vehicle(o.id), gap))?;
+            if in_lane {
+                covered = covered.max(shields(lane_at, k, &state.vehicles[o.id].path));
+            }
         }
-        None
+        offset += network.lane(lane).length();
+        k += 1;
     }
+    // Past the end of its path, with nowhere it knows to go.
+    let own_path = matches!(along, Along::Path(_) | Along::Inserting);
+    let ends = |&l: &LaneId| !network.lane(l).successors().is_empty();
+    let gap = offset - front;
+    if own_path && vehicle.path.last().is_some_and(ends) && gap <= horizon {
+        f(Found::Ahead(Ahead::PathEnd, gap))?;
+    }
+    ControlFlow::Continue(())
+}
+
+/// As [`find_leaders`], for a caller that wants everything it finds.
+pub fn for_each_leader(
+    state: &SimState,
+    vehicle: &Vehicle,
+    along: Along,
+    skip: Option<VehicleId>,
+    mut f: impl FnMut(Found),
+) {
+    let _: ControlFlow<()> = find_leaders(state, vehicle, along, skip, |found| {
+        f(found);
+        ControlFlow::Continue(())
+    });
+}
+
+/// How far along the lanes searched, `lane_at` each by index, a vehicle in the
+/// lane on the `k`th of them shields, with `path` its own path: the index of the
+/// first lane it doesn't. It shields the rest of lane `k`, and the lanes after it
+/// as far as its own path goes along them: where its path parts from them, or
+/// ends, what lies beyond never constrains it.
+///
+/// Its path starts at the lane it follows: lane `k`, or, while it lingers past
+/// the end of lane `k` after advancing, usually the next. Anything else, it
+/// shields lane `k` alone.
+fn shields(lane_at: impl Fn(usize) -> Option<LaneId>, k: usize, path: &[LaneId]) -> usize {
+    let j = match path.first() {
+        Some(&first) if lane_at(k) == Some(first) => k,
+        Some(&first) if lane_at(k + 1) == Some(first) => k + 1,
+        _ => return k + 1,
+    };
+    let shared = path.iter().enumerate().take_while(|&(n, &l)| lane_at(j + n) == Some(l));
+    (j + shared.count()).max(k + 1)
 }
 
 /// The index of a vehicle's record, not its ghost, in `lane`'s occupants: where a
