@@ -21,7 +21,8 @@ pub use models::lane_change::{
 };
 pub use models::lateral::LaneChange;
 pub use network::{
-    End, Lane, LaneId, MAX_PREDECESSORS, MAX_SUCCESSORS, Neighbor, NetworkError, Side, SimNetwork,
+    Conflict, ConflictKind, End, Junction, JunctionId, Lane, LaneId, MAX_PREDECESSORS,
+    MAX_SUCCESSORS, Neighbor, NetworkError, Side, SimNetwork,
 };
 pub use occupancy::{Lateral, Occupant};
 pub use simulation::{InsertError, LaneChangeError, Simulation, Snapshot};

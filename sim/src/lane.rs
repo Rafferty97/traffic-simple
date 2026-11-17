@@ -2,6 +2,9 @@
 //! between world positions and lane coordinates.
 
 use std::f64::consts::TAU;
+use std::ops::Range;
+
+use arrayvec::ArrayVec;
 
 use glam::DVec2;
 
@@ -212,6 +215,67 @@ impl LaneGeometry {
         left.chain(right)
     }
 
+    /// Where this lane's outline overlaps `other`'s: the stretch of each, in `s`,
+    /// from the first overlap to the last, or `None` if they don't overlap. Two
+    /// lanes that overlap in several places get the union.
+    ///
+    /// Each segment's piece of the outline, between its ribs, is a convex
+    /// quadrilateral, so every pair of pieces is clipped one against the other.
+    /// Pieces that only touch, as neighboring lanes' do along their shared edge,
+    /// overlap by less than [`MIN_OVERLAP`] and don't count. It compares every
+    /// pair of segments, so it is for building networks, not for hot paths.
+    pub(crate) fn overlap(&self, other: &LaneGeometry) -> Option<[Range<f64>; 2]> {
+        let mut ranges: Option<[Range<f64>; 2]> = None;
+        for i in 0..self.segs.len() {
+            let mine = self.quad(i);
+            let (lo, hi) = bounds(&mine);
+            for j in 0..other.segs.len() {
+                let theirs = other.quad(j);
+                let (other_lo, other_hi) = bounds(&theirs);
+                if lo.cmpgt(other_hi).any() || other_lo.cmpgt(hi).any() {
+                    continue;
+                }
+                let clipped = clip(&mine, &theirs);
+                if area(&clipped) < MIN_OVERLAP {
+                    continue;
+                }
+                for &p in &clipped {
+                    let s = [
+                        self.segs[i].world_to_lane(p).0.clamp(0.0, self.length),
+                        other.segs[j].world_to_lane(p).0.clamp(0.0, other.length),
+                    ];
+                    let ranges = ranges.get_or_insert([s[0]..s[0], s[1]..s[1]]);
+                    for (range, s) in ranges.iter_mut().zip(s) {
+                        range.start = range.start.min(s);
+                        range.end = range.end.max(s);
+                    }
+                }
+            }
+        }
+        ranges
+    }
+
+    /// Segment `i`'s piece of the outline, between its ribs, counterclockwise from
+    /// its rear left corner.
+    fn quad(&self, i: usize) -> [DVec2; 4] {
+        let seg = &self.segs[i];
+        let end = self.segs.get(i + 1).map_or(self.length, |next| next.cum_s);
+        let corner = |s: f64, vertex: usize, side: Side| {
+            let [left, right] = self.half_widths[vertex];
+            let t = match side {
+                Side::Left => left,
+                Side::Right => -right,
+            };
+            seg.lane_to_world(s, t)
+        };
+        [
+            corner(seg.cum_s, i, Side::Left),
+            corner(seg.cum_s, i, Side::Right),
+            corner(end, i + 1, Side::Right),
+            corner(end, i + 1, Side::Left),
+        ]
+    }
+
     /// The last segment whose start is at or before `s`.
     fn seg_for_s(&self, s: f64) -> usize {
         self.segs.partition_point(|g| g.cum_s <= s).saturating_sub(1)
@@ -240,6 +304,48 @@ impl LaneGeometry {
         }
         idx
     }
+}
+
+/// The least area two lanes' outlines must share to overlap, in m²: more than
+/// rounding leaves where neighboring lanes touch along an edge.
+const MIN_OVERLAP: f64 = 1e-3;
+
+/// The corners of the box around a polygon.
+fn bounds(points: &[DVec2]) -> (DVec2, DVec2) {
+    points.iter().fold((DVec2::INFINITY, DVec2::NEG_INFINITY), |(lo, hi), &p| {
+        (lo.min(p), hi.max(p))
+    })
+}
+
+/// The part of `subject` inside `clip`, a convex polygon wound counterclockwise:
+/// Sutherland–Hodgman clipping, one edge of `clip` at a time.
+fn clip(subject: &[DVec2; 4], clip: &[DVec2; 4]) -> ArrayVec<DVec2, 8> {
+    let mut out: ArrayVec<DVec2, 8> = subject.iter().copied().collect();
+    for (k, &a) in clip.iter().enumerate() {
+        let edge = clip[(k + 1) % clip.len()] - a;
+        let inside = |p: DVec2| edge.perp_dot(p - a);
+        let input = std::mem::take(&mut out);
+        for (m, &p) in input.iter().enumerate() {
+            let q = input[(m + 1) % input.len()];
+            let (dp, dq) = (inside(p), inside(q));
+            if dp >= 0.0 {
+                out.push(p);
+            }
+            if (dp >= 0.0) != (dq >= 0.0) {
+                out.push(p + (q - p) * (dp / (dp - dq)));
+            }
+        }
+        if out.is_empty() {
+            break;
+        }
+    }
+    out
+}
+
+/// A polygon's area, by the shoelace formula; positive if wound counterclockwise.
+fn area(points: &[DVec2]) -> f64 {
+    let n = points.len();
+    0.5 * (0..n).map(|i| points[i].perp_dot(points[(i + 1) % n])).sum::<f64>()
 }
 
 impl Segment {

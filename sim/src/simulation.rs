@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 use std::ops::ControlFlow;
 
+use arrayvec::ArrayVec;
 use glam::DVec2;
 use slotmap::{Key, SlotMap};
 
@@ -11,7 +12,7 @@ use crate::math::wrap_angle;
 use crate::models::acceleration;
 use crate::models::lane_change::{self, Decision, Effect, LaneChangeEval, Prospect};
 use crate::models::lateral::{self, LaneChange};
-use crate::network::{LaneId, Side, SimNetwork};
+use crate::network::{Conflict, ConflictKind, JunctionId, LaneId, Side, SimNetwork};
 use crate::occupancy::{
     self, Ahead, Along, Found, Lateral, Occupant, find_follower, find_leaders, for_each_leader,
 };
@@ -41,6 +42,9 @@ pub(crate) struct SimState {
     /// meters: a running maximum, raised wherever a path is extended. It bounds
     /// how far back a follower search goes.
     pub max_reach: f64,
+    /// Each junction's queue, by junction: the vehicles registered there, in the
+    /// order they go.
+    pub queues: Vec<Vec<VehicleId>>,
 }
 
 /// The traffic simulation.
@@ -84,10 +88,15 @@ enum AccelUpdate {
         accel: f64,
         yielding: Option<VehicleId>,
         binding: Option<Binding>,
+        /// The junction whose queue it joins.
+        register: Option<JunctionId>,
     },
     /// From its record on its old lane, while it straddles it: the most its old
     /// side allows.
     OldSide { id: VehicleId, accel: f64 },
+    /// From a junction it is registered at: the most the vehicles ahead of it in
+    /// the queue allow.
+    Junction { id: VehicleId, accel: f64 },
 }
 
 /// The leader whose term was the lowest in a vehicle's search along its path.
@@ -138,6 +147,7 @@ pub struct Snapshot {
     network: SimNetwork,
     vehicles: SlotMap<VehicleId, Vehicle>,
     occupants: Vec<Vec<Occupant>>,
+    queues: Vec<Vec<VehicleId>>,
     caps: Vec<(VehicleId, f64)>,
     accel_clock: f64,
     time: f64,
@@ -152,6 +162,7 @@ impl<D: DebugSink> Simulation<D> {
             network: self.state.network.clone(),
             vehicles: self.state.vehicles.clone(),
             occupants: self.state.occupants.clone(),
+            queues: self.state.queues.clone(),
             caps: self.caps.clone(),
             accel_clock: self.accel_clock,
             time: self.time,
@@ -168,6 +179,7 @@ impl<D: DebugSink> Simulation<D> {
             network,
             vehicles,
             occupants,
+            queues,
             caps,
             accel_clock,
             time,
@@ -178,7 +190,7 @@ impl<D: DebugSink> Simulation<D> {
         let max_reach =
             vehicles.values().map(|v| reach_beyond_front(&network, v)).fold(0.0, f64::max);
         Self {
-            state: SimState { network, vehicles, occupants, max_reach },
+            state: SimState { network, vehicles, occupants, max_reach, queues },
             caps,
             accel_clock,
             time,
@@ -196,12 +208,14 @@ impl<D: DebugSink> Simulation<D> {
 
     pub fn new(network: SimNetwork, sink: D) -> Self {
         let lane_count = network.lanes().count();
+        let junction_count = network.junctions().count();
         Self {
             state: SimState {
                 network,
                 vehicles: SlotMap::with_key(),
                 occupants: vec![Vec::new(); lane_count],
                 max_reach: 0.0,
+                queues: vec![Vec::new(); junction_count],
             },
             caps: Vec::new(),
             accel_clock: 0.0,
@@ -347,6 +361,9 @@ impl<D: DebugSink> Simulation<D> {
         for list in &mut self.state.occupants {
             list.retain(|o| o.id != id);
         }
+        for queue in &mut self.state.queues {
+            queue.retain(|&q| q != id);
+        }
         self.caps.retain(|&(c, _)| c != id);
         self.sink.record(|| DebugEvent::VehicleRemoved { vehicle: id });
         self.state.vehicles.remove(id)
@@ -363,6 +380,11 @@ impl<D: DebugSink> Simulation<D> {
     /// A lane's occupants, sorted by `s`.
     pub fn occupants(&self, lane: LaneId) -> &[Occupant] {
         &self.state.occupants[lane.0 as usize]
+    }
+
+    /// The vehicles registered at a junction, in the order they go.
+    pub fn queue(&self, junction: JunctionId) -> &[VehicleId] {
+        &self.state.queues[junction.0 as usize]
     }
 
     /// The vehicle whose body is nearest to `point`, if any is within `tolerance`.
@@ -443,6 +465,23 @@ impl<D: DebugSink> Simulation<D> {
 
         let (lane_pos, change) = plan_change(&self.state.network, vehicle, neighbor.lane);
         let old_lane = vehicle.path[0];
+        // The queues it is in, of junctions ahead on its path or the one it is in:
+        // it leaves them, and rejoins once in its new lane, in its new place.
+        let mut rejoin = ArrayVec::<JunctionId, 4>::new();
+        for &lane in &vehicle.path {
+            let Some(j) = self.state.network.lane(lane).junction() else {
+                continue;
+            };
+            let queue = &mut self.state.queues[j.0 as usize];
+            // Paths are short, so more than a few junctions on one is unlikely;
+            // past that, it keeps its place in the rest.
+            if let Some(i) = queue.iter().position(|&q| q == id)
+                && !rejoin.is_full()
+            {
+                queue.remove(i);
+                rejoin.push(j);
+            }
+        }
         vehicle.path.clear();
         vehicle.path.push(neighbor.lane);
         vehicle.lane_pos = lane_pos;
@@ -475,6 +514,10 @@ impl<D: DebugSink> Simulation<D> {
             );
             let index = list.partition_point(|o| o.s <= occupant.s);
             list.insert(index, occupant);
+        }
+        let SimState { network, vehicles, queues, .. } = &mut self.state;
+        for j in rejoin {
+            enqueue(network, vehicles, &mut queues[j.0 as usize], id);
         }
         Ok(())
     }
@@ -607,8 +650,7 @@ impl<D: DebugSink> Simulation<D> {
                     if (o.s - rear).abs() > half_length {
                         continue;
                     }
-                    let (accel, yielding, binding) = longitudinal(state, sink, o.id, vehicle, i);
-                    decisions.push(AccelUpdate::Own { id: o.id, accel, yielding, binding });
+                    decisions.push(longitudinal(state, sink, o.id, vehicle, i));
                 } else if let Some(side) = straddling(network, vehicle, lane) {
                     let accel = old_side(state, sink, o.id, vehicle, side, i);
                     decisions.push(AccelUpdate::OldSide { id: o.id, accel });
@@ -620,6 +662,9 @@ impl<D: DebugSink> Simulation<D> {
             vehicles.len(),
             "each vehicle has one record on the lane it follows"
         );
+        for (j, queue) in state.queues.iter().enumerate() {
+            junction_terms(state, sink, JunctionId(j as u32), queue, decisions);
+        }
 
         // What its old side and its speed cap allow first, then its own update,
         // so that whether a leader binds it is judged against all of them.
@@ -632,7 +677,9 @@ impl<D: DebugSink> Simulation<D> {
             }
         }
         for update in &self.decisions {
-            if let AccelUpdate::OldSide { id, accel } = *update {
+            if let AccelUpdate::OldSide { id, accel } | AccelUpdate::Junction { id, accel } =
+                *update
+            {
                 let vehicle = &mut self.state.vehicles[id];
                 vehicle.accel = vehicle.accel.min(accel);
             }
@@ -670,6 +717,29 @@ impl<D: DebugSink> Simulation<D> {
                 vehicles[leader].old_follower = Some(follower);
             }
         }
+        self.update_queues();
+    }
+
+    /// Registers vehicles at the junctions they asked to join, each in its place
+    /// (see [`enqueue`]), and drops those that have left.
+    fn update_queues(&mut self) {
+        let SimState { network, vehicles, occupants, queues, .. } = &mut self.state;
+        for update in &self.decisions {
+            if let AccelUpdate::Own { id, register: Some(j), .. } = *update {
+                enqueue(network, vehicles, &mut queues[j.0 as usize], id);
+            }
+        }
+        for (j, queue) in queues.iter_mut().enumerate() {
+            let lanes = network.junction(JunctionId(j as u32)).lanes();
+            let on = |id: VehicleId, lane: LaneId| {
+                occupants[lane.0 as usize].iter().any(|o| o.id == id && !o.ghost)
+            };
+            // Headed into it, or still on it.
+            let id = JunctionId(j as u32);
+            queue.retain(|&v| {
+                headed(network, &vehicles[v], id) || lanes.iter().any(|&lane| on(v, lane))
+            });
+        }
     }
 
     /// Path tracking and integration: steers, moves, then advances each vehicle
@@ -681,7 +751,7 @@ impl<D: DebugSink> Simulation<D> {
     /// the change's cubic, and the change ends where the cubic does.
     fn update_motion(&mut self, dt: f64) {
         let Self {
-            state: SimState { network, vehicles, occupants, max_reach },
+            state: SimState { network, vehicles, occupants, max_reach, .. },
             leavers,
             sink,
             ..
@@ -841,9 +911,10 @@ impl<D: DebugSink> Simulation<D> {
     }
 }
 
-/// A vehicle's acceleration under the longitudinal model, and whose ghost it is
-/// making room for, if anyone's. `own` is the index of its record in the
-/// occupants of the lane it follows.
+/// A vehicle's acceleration under the longitudinal model, whose ghost it is
+/// making room for, if anyone's, and the junction it joins the queue of, if
+/// any. `own` is the index of its record in the occupants of the lane it
+/// follows.
 ///
 /// The acceleration is the minimum over every term the model considers: the free
 /// road, each leader along its path, the end of its path, and the ghost it makes
@@ -855,7 +926,7 @@ fn longitudinal<D: DebugSink>(
     id: VehicleId,
     vehicle: &Vehicle,
     own: usize,
-) -> (f64, Option<VehicleId>, Option<Binding>) {
+) -> AccelUpdate {
     let lane = vehicle.path[0];
     let desired_speed = vehicle.spec.desired_speed(state.network.lane(lane).speed_limit());
     let free = acceleration::free_road(&vehicle.spec, vehicle.speed, desired_speed);
@@ -915,7 +986,183 @@ fn longitudinal<D: DebugSink>(
     }
     let binding = binding.map(|b| Binding { rest, ..b });
     let accel = binding.map_or(rest, |b| b.term.min(rest));
-    (accel, yielding, binding)
+    let register = registration(state, id, vehicle);
+    AccelUpdate::Own { id, accel, yielding, binding, register }
+}
+
+/// The junction whose queue a vehicle joins at this update, if any: the next
+/// one its front reaches, or is in, if a lane of it starts within its horizon
+/// and the vehicle isn't in its queue already. Never one beyond that: it joins
+/// the next once its front has left this one's lanes, while its tail may still
+/// be in this one's queue.
+///
+/// A fast vehicle sees further, so it can join before a slow one ahead of it on
+/// its lane; [`enqueue`] puts it in its place.
+fn registration(state: &SimState, id: VehicleId, vehicle: &Vehicle) -> Option<JunctionId> {
+    let horizon = acceleration::horizon(&vehicle.spec, vehicle.speed);
+    let front = vehicle.lane_pos.s - vehicle.spec.rear_axle + vehicle.spec.length;
+    // From its front to the start of each lane on its path.
+    let mut start = -front;
+    for &lane in &vehicle.path {
+        let length = state.network.lane(lane).geometry().length();
+        // Lanes its front has passed don't count.
+        if start + length > 0.0 {
+            if start > horizon {
+                break;
+            }
+            if let Some(j) = state.network.lane(lane).junction() {
+                return (!state.queues[j.0 as usize].contains(&id)).then_some(j);
+            }
+        }
+        start += length;
+    }
+    None
+}
+
+/// Whether a vehicle's path takes it onto any of a junction's lanes.
+fn headed(network: &SimNetwork, vehicle: &Vehicle, junction: JunctionId) -> bool {
+    vehicle.path.iter().any(|&lane| network.lane(lane).junction() == Some(junction))
+}
+
+/// The terms the vehicles ahead in a junction's queue impose on each one behind
+/// them, at most one per follower, the lowest, each recorded to the debug sink.
+///
+/// For each pair, ahead and behind, every conflict between a lane of the
+/// follower's path in the junction and a lane of the junction's counts:
+///
+/// - **Crossing:** until the one ahead has cleared the overlap on its lane, the
+///   follower stops short of the overlap on its own, as if at a stopped vehicle
+///   there. A follower whose front is already past the start of the overlap is
+///   committed, and isn't held back.
+/// - **Merging:** the follower follows the one ahead as if it were already on
+///   its own lane, both measured back from the end of their lanes, where they
+///   meet.
+///
+/// O(n²) in the queue's length, which is short.
+fn junction_terms<D: DebugSink>(
+    state: &SimState,
+    sink: &mut D,
+    junction: JunctionId,
+    queue: &[VehicleId],
+    decisions: &mut Vec<AccelUpdate>,
+) {
+    let network = &state.network;
+    let lanes = network.junction(junction).lanes();
+    for (k, &id) in queue.iter().enumerate() {
+        let follower = &state.vehicles[id];
+        let spec = &follower.spec;
+        let mut accel = f64::INFINITY;
+        let front = follower.lane_pos.s - spec.rear_axle + spec.length;
+        // From its front to the start of each lane on its path.
+        let mut start = -front;
+        for &mine in &follower.path {
+            let length = network.lane(mine).geometry().length();
+            if network.lane(mine).junction() == Some(junction) {
+                for &theirs in lanes {
+                    let Some(conflict) = network.conflict_between(mine, theirs) else {
+                        continue;
+                    };
+                    for &other in &queue[..k] {
+                        let Some((gap, speed)) =
+                            conflict_gap(state, conflict, theirs, other, start, length)
+                        else {
+                            continue;
+                        };
+                        let term = acceleration::interaction(spec, follower.speed, gap, speed);
+                        let kind = conflict.kind;
+                        let source = AccelSource::Junction { id: other, kind, gap };
+                        sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
+                        accel = accel.min(term);
+                    }
+                }
+            }
+            start += length;
+        }
+        if accel < f64::INFINITY {
+            decisions.push(AccelUpdate::Junction { id, accel });
+        }
+    }
+}
+
+/// The gap a junction holds a vehicle back by for another ahead of it in the
+/// queue, and the speed of what it is held back by, where the lane it will take,
+/// `start` meters from its front and `length` long, conflicts with `theirs`:
+/// see [`junction_terms`]. `None` if the other one doesn't hold it back there.
+fn conflict_gap(
+    state: &SimState,
+    conflict: &Conflict,
+    theirs: LaneId,
+    other: VehicleId,
+    start: f64,
+    length: f64,
+) -> Option<(f64, f64)> {
+    let network = &state.network;
+    let leader = &state.vehicles[other];
+    // The other one's rear along `theirs`, if its path takes it there.
+    let rear = leader.path.iter().position(|&l| l == theirs).map(|i| {
+        let before: f64 =
+            leader.path[..i].iter().map(|&l| network.lane(l).geometry().length()).sum();
+        leader.lane_pos.s - leader.spec.rear_axle - before
+    });
+    match conflict.kind {
+        ConflictKind::Cross => {
+            let clear = match rear {
+                Some(rear) => rear >= conflict.theirs.end,
+                // Not headed there: only its body, lingering past the lane's end
+                // or beside it, can be in the way.
+                None => state.occupants[theirs.0 as usize]
+                    .iter()
+                    .find(|o| o.id == other && !o.ghost)
+                    .is_none_or(|o| {
+                        o.s >= conflict.theirs.end
+                            || o.s + leader.spec.length <= conflict.theirs.start
+                    }),
+            };
+            let gap = start + conflict.mine.start;
+            // Past the start of the overlap, it is committed.
+            (gap >= 0.0 && !clear).then_some((gap, 0.0))
+        }
+        ConflictKind::Merge => {
+            let theirs_length = network.lane(theirs).geometry().length();
+            rear.map(|rear| ((start + length) - (theirs_length - rear), leader.speed))
+        }
+    }
+}
+
+/// Adds a vehicle to a junction's queue, if it isn't in it, in the order of
+/// vehicles along each lane: just in front of the first vehicle in the queue
+/// that it is ahead of, on that vehicle's path, or else at the end.
+///
+/// Vehicles can't pass each other in a lane, so once in the queue their order
+/// stays consistent with the lanes. Only joining can break it: a fast vehicle
+/// sees the junction from further back than a slow one ahead of it, and a lane
+/// change puts a vehicle in a new place on a new lane, so it leaves and rejoins.
+/// Were a vehicle in the queue ahead of its leader, with a crossing vehicle
+/// between them, the three would wait for each other.
+fn enqueue(
+    network: &SimNetwork,
+    vehicles: &SlotMap<VehicleId, Vehicle>,
+    queue: &mut Vec<VehicleId>,
+    id: VehicleId,
+) {
+    if queue.contains(&id) {
+        return;
+    }
+    let vehicle = &vehicles[id];
+    match queue.iter().position(|&q| ahead_on_path(network, &vehicles[q], vehicle)) {
+        Some(i) => queue.insert(i, id),
+        None => queue.push(id),
+    }
+}
+
+/// Whether `other` is on `vehicle`'s path, following it, ahead of it.
+fn ahead_on_path(network: &SimNetwork, vehicle: &Vehicle, other: &Vehicle) -> bool {
+    let Some(i) = vehicle.path.iter().position(|&lane| lane == other.path[0]) else {
+        return false;
+    };
+    let before: f64 = vehicle.path[..i].iter().map(|&l| network.lane(l).geometry().length()).sum();
+    let rear = |v: &Vehicle| v.lane_pos.s - v.spec.rear_axle;
+    before + rear(other) > rear(vehicle)
 }
 
 /// The side of `lane` a vehicle is straddling it from, if it is partway through a

@@ -639,7 +639,7 @@ fn behind(
     travelled: f64,
     skip: VehicleId,
 ) -> Option<(VehicleId, f64)> {
-    let SimState { network, vehicles, occupants, max_reach } = state;
+    let SimState { network, vehicles, occupants, max_reach, .. } = state;
     let list = &occupants[lane.0 as usize];
     let end = list.partition_point(|o| o.s < s);
     let counts = |o: &Occupant| {

@@ -1,7 +1,7 @@
 use glam::DVec2;
 
 use crate::models::lane_change::LaneChangeEval;
-use crate::network::Side;
+use crate::network::{ConflictKind, Side};
 use crate::vehicle::VehicleId;
 
 /// Receives debug events from the simulation.
@@ -81,6 +81,11 @@ pub enum AccelSource {
     /// The end of the lanes the vehicle knows it will take, as a stop line, with
     /// the gap to it.
     PathEnd { gap: f64 },
+    /// A vehicle ahead of it in a junction's queue, and the conflict between
+    /// them: at a crossing, the gap to the vehicle's own side of the overlap,
+    /// which it waits short of; at a merge, the gap to the other vehicle as if it
+    /// were on the vehicle's own lane.
+    Junction { id: VehicleId, kind: ConflictKind, gap: f64 },
 }
 
 /// A sink that discards everything.

@@ -20,8 +20,8 @@ use rand::rngs::Xoshiro256PlusPlus;
 use rand::{RngExt, SeedableRng};
 use replay::Recorded;
 use traffic_sim::{
-    AccelSource, DebugEvent, DebugSink, Lane, LaneChangeError, LaneChangeEval, LaneId, PassCheck,
-    Placement, Side, SimNetwork, Simulation, Vehicle, VehicleId, VehicleSpec,
+    AccelSource, ConflictKind, DebugEvent, DebugSink, Lane, LaneChangeError, LaneChangeEval,
+    LaneId, PassCheck, Placement, Side, SimNetwork, Simulation, Vehicle, VehicleId, VehicleSpec,
 };
 
 /// The inner lane's circumference: about 160 m across, roomy enough for
@@ -397,6 +397,12 @@ impl App {
                         format!("making room for {id:?}, gap {gap:.2} m")
                     }
                     AccelSource::PathEnd { gap } => format!("end of known path, gap {gap:.2} m"),
+                    AccelSource::Junction { id, kind: ConflictKind::Cross, gap } => {
+                        format!("crossing after {id:?}, gap {gap:.2} m")
+                    }
+                    AccelSource::Junction { id, kind: ConflictKind::Merge, gap } => {
+                        format!("merging after {id:?}, gap {gap:.2} m")
+                    }
                 };
                 let text = egui::RichText::new(format!("{accel:+.2} m/s²")).monospace();
                 ui.label(name);

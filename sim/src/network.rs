@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use arrayvec::ArrayVec;
 use glam::DVec2;
 
@@ -83,6 +85,8 @@ pub struct Lane {
     adj_left: Option<Neighbor>,
     /// The lane beside this one on the right, if any.
     adj_right: Option<Neighbor>,
+    /// The junction it belongs to, if any, and its index among that junction's lanes.
+    junction: Option<(JunctionId, u16)>,
 }
 
 impl Lane {
@@ -99,6 +103,7 @@ impl Lane {
             predecessors: ArrayVec::new(),
             adj_left: None,
             adj_right: None,
+            junction: None,
         })
     }
 
@@ -132,6 +137,11 @@ impl Lane {
         self.adj_right
     }
 
+    /// The junction this lane belongs to, if any.
+    pub fn junction(&self) -> Option<JunctionId> {
+        self.junction.map(|(id, _)| id)
+    }
+
     /// The lane beside this one on the given side, if any.
     pub fn adj(&self, side: Side) -> Option<Neighbor> {
         match side {
@@ -139,6 +149,52 @@ impl Lane {
             Side::Right => self.adj_right,
         }
     }
+}
+
+/// Identifies a junction: its index in [`SimNetwork`]'s junctions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct JunctionId(pub u32);
+
+/// A group of lanes whose vehicles a single queue keeps apart, and where those
+/// lanes conflict.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Junction {
+    /// Its lanes. A lane's index here is its row and column in `conflicts`.
+    lanes: Vec<LaneId>,
+    /// Where each ordered pair of its lanes conflicts, if they do: `lanes.len()²`
+    /// entries, the row the lane it is seen from. Each pair is stored both ways
+    /// round.
+    conflicts: Vec<Option<Conflict>>,
+}
+
+impl Junction {
+    /// Its lanes.
+    pub fn lanes(&self) -> &[LaneId] {
+        &self.lanes
+    }
+}
+
+/// Where two lanes in a junction conflict, seen from one of them.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Conflict {
+    pub kind: ConflictKind,
+    /// The stretch of the lane it is seen from that overlaps the other, in `s`.
+    pub mine: Range<f64>,
+    /// The stretch of the other lane that overlaps it.
+    pub theirs: Range<f64>,
+}
+
+/// How two lanes conflict.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ConflictKind {
+    /// They lead into the same lane: vehicles from both take turns.
+    Merge,
+    /// They cross: vehicles on both must never be in the overlap together.
+    Cross,
 }
 
 /// One end of a lane.
@@ -158,12 +214,13 @@ pub enum End {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SimNetwork {
     lanes: Vec<Lane>,
+    junctions: Vec<Junction>,
 }
 
 impl SimNetwork {
     /// Builds a network from its lanes, with no links. Lane `i` gets id `LaneId(i)`.
     pub fn new(lanes: Vec<Lane>) -> Self {
-        Self { lanes }
+        Self { lanes, junctions: Vec::new() }
     }
 
     /// The side of `lane` toward which `toward`, a lane starting level with it, lies
@@ -321,6 +378,89 @@ impl SimNetwork {
             }
         }
         Ok(())
+    }
+
+    /// Groups `lanes` into a junction, which keeps vehicles on them apart, and
+    /// finds where they conflict. Connect the lanes first: whether two lanes
+    /// merge, diverge or follow one another comes from their links.
+    ///
+    /// Two lanes conflict if they merge, leading into the same lane, or if their
+    /// outlines overlap and they are not linked: not diverging from the same
+    /// lane, one following the other, or neighbors. Vehicles on diverging lanes
+    /// are kept apart by joining every branch, and on linked or neighboring lanes
+    /// by their leader searches.
+    ///
+    /// Panics if a lane is already in a junction, or if `lanes` has more than
+    /// `u16::MAX` lanes. It compares every pair of lanes, segment by segment, so
+    /// it is for building networks, not for hot paths.
+    pub fn add_junction(&mut self, lanes: &[LaneId]) -> JunctionId {
+        let id = JunctionId(self.junctions.len() as u32);
+        let n = lanes.len();
+        assert!(n <= u16::MAX as usize, "too many lanes in one junction");
+        for (i, &lane) in lanes.iter().enumerate() {
+            let lane = &mut self.lanes[lane.0 as usize];
+            assert!(
+                lane.junction.is_none(),
+                "a lane belongs to at most one junction"
+            );
+            lane.junction = Some((id, i as u16));
+        }
+        let mut conflicts = vec![None; n * n];
+        for i in 0..n {
+            for j in i + 1..n {
+                let Some((kind, [mine, theirs])) = self.conflict(lanes[i], lanes[j]) else {
+                    continue;
+                };
+                conflicts[i * n + j] =
+                    Some(Conflict { kind, mine: mine.clone(), theirs: theirs.clone() });
+                conflicts[j * n + i] = Some(Conflict { kind, mine: theirs, theirs: mine });
+            }
+        }
+        self.junctions.push(Junction { lanes: lanes.to_vec(), conflicts });
+        id
+    }
+
+    /// How two lanes conflict, if they do, and the stretch of each in which they
+    /// overlap. A merge where the outlines don't overlap gets the lanes' ends.
+    fn conflict(&self, a: LaneId, b: LaneId) -> Option<(ConflictKind, [Range<f64>; 2])> {
+        let (lane_a, lane_b) = (self.lane(a), self.lane(b));
+        let shares = |x: &[LaneId], y: &[LaneId]| x.iter().any(|l| y.contains(l));
+        let overlap = lane_a.geometry().overlap(lane_b.geometry());
+        if shares(lane_a.successors(), lane_b.successors()) {
+            let ends = [lane_a, lane_b].map(|l| l.geometry().length()..l.geometry().length());
+            return Some((ConflictKind::Merge, overlap.unwrap_or(ends)));
+        }
+        let linked = shares(lane_a.predecessors(), lane_b.predecessors())
+            || lane_a.successors().contains(&b)
+            || lane_b.successors().contains(&a)
+            || [Side::Left, Side::Right]
+                .iter()
+                .any(|&side| lane_a.adj(side).is_some_and(|n| n.lane == b));
+        if linked {
+            return None;
+        }
+        overlap.map(|ranges| (ConflictKind::Cross, ranges))
+    }
+
+    /// The junction with the given id. Panics if it doesn't exist.
+    pub fn junction(&self, id: JunctionId) -> &Junction {
+        &self.junctions[id.0 as usize]
+    }
+
+    /// All junctions with their ids.
+    pub fn junctions(&self) -> impl Iterator<Item = (JunctionId, &Junction)> {
+        self.junctions.iter().enumerate().map(|(i, j)| (JunctionId(i as u32), j))
+    }
+
+    /// Where two lanes in the same junction conflict, seen from `mine`, if they do.
+    pub fn conflict_between(&self, mine: LaneId, theirs: LaneId) -> Option<&Conflict> {
+        let (id, i) = self.lane(mine).junction?;
+        let (other, j) = self.lane(theirs).junction?;
+        if other != id {
+            return None;
+        }
+        let junction = self.junction(id);
+        junction.conflicts[i as usize * junction.lanes.len() + j as usize].as_ref()
     }
 
     /// The lane with the given id. Panics if it doesn't exist.
