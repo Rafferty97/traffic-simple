@@ -2,7 +2,9 @@
 
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
-use crate::{Direction, Intersection, LaneRef, Piece, Pose, Road, RoadId, RoadLane, RoadNetwork};
+use crate::{
+    Direction, Intersection, LaneRef, Piece, Pose, Profile, Road, RoadId, RoadLane, RoadNetwork,
+};
 
 const WIDTH: f64 = 3.5;
 
@@ -69,5 +71,76 @@ pub fn ring(circumference: f64, lanes: usize, speed_limit: f64) -> RoadNetwork {
         speed_limit,
     });
     net.join(road, road);
+    net
+}
+
+/// A one-way freeway, driving on the left, with an on-ramp and then an
+/// off-ramp, both on the left. Two lanes come in from the west. The on-ramp
+/// curves in from the north-west and runs on as an acceleration lane beside
+/// them for 200 m, which then eases into the left lane over 80 m: a lane drop,
+/// where the two merge. 420 m on, the left lane forks: on along the freeway, or
+/// curving away north up the off-ramp, which is slower.
+pub fn ramps(speed_limit: f64, ramp_limit: f64) -> RoadNetwork {
+    let mut net = RoadNetwork::default();
+    let lane = |offset: f64| RoadLane::new(offset, WIDTH, Direction::Forward);
+    // The reference line runs down the middle of the two through lanes: lane 0
+    // is the left one, lane 1 the right.
+    let through = || vec![lane(0.5 * WIDTH), lane(-0.5 * WIDTH)];
+    let straight = |x: f64, length: f64, lanes: Vec<RoadLane>| Road {
+        start: Pose::new(x, 0.0, 0.0),
+        pieces: vec![Piece::Line { length }],
+        lanes,
+        speed_limit,
+    };
+    let accel = 1.5 * WIDTH;
+
+    let approach = net.add_road(straight(-400.0, 400.0, through()));
+    let mut beside = through();
+    beside.insert(0, lane(accel));
+    let parallel = net.add_road(straight(0.0, 200.0, beside));
+    let mut taper = through();
+    taper.insert(
+        0,
+        RoadLane {
+            offset: Profile::Ease { from: accel, to: 0.5 * WIDTH, start: 0.0, end: 80.0 },
+            width: Profile::Constant(WIDTH),
+            direction: Direction::Forward,
+        },
+    );
+    let drop = net.add_road(straight(200.0, 80.0, taper));
+    let middle = net.add_road(straight(280.0, 420.0, through()));
+    let after = net.add_road(straight(700.0, 400.0, through()));
+
+    // Coming in heading south-east, turning left onto the acceleration lane.
+    let on_ramp = net.add_road(Road::ending_at(
+        Pose::new(0.0, accel, 0.0),
+        vec![
+            Piece::Line { length: 150.0 },
+            Piece::Arc { length: 70.0, curvature: 1.0 / 200.0 },
+        ],
+        vec![lane(0.0)],
+        ramp_limit,
+    ));
+    // Leaving the left lane, turning left away from the freeway.
+    let off_ramp = net.add_road(Road {
+        start: Pose::new(700.0, 0.5 * WIDTH, 0.0),
+        pieces: vec![
+            Piece::Arc { length: 90.0, curvature: 1.0 / 250.0 },
+            Piece::Line { length: 150.0 },
+        ],
+        lanes: vec![lane(0.0)],
+        speed_limit: ramp_limit,
+    });
+
+    for (from, to) in [
+        (approach, parallel),
+        (on_ramp, parallel),
+        (parallel, drop),
+        (drop, middle),
+        (middle, after),
+        (middle, off_ramp),
+    ] {
+        net.join(from, to);
+    }
     net
 }

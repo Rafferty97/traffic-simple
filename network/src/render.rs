@@ -65,12 +65,19 @@ pub(crate) fn build(net: &RoadNetwork, polylines: &[Polyline]) -> RenderGeometry
         let s0 = line.s[0];
         let mut order: Vec<usize> = lanes.clone().collect();
         order.sort_by(|&a, &b| road.lanes[b].offset.at(s0).total_cmp(&road.lanes[a].offset.at(s0)));
+        let s1 = *line.s.last().unwrap();
         for pair in order.windows(2) {
             let (upper, lower) = (pair[0], pair[1]);
-            let style = match road.lanes[upper].direction == road.lanes[lower].direction {
+            let (a, b) = (&road.lanes[upper], &road.lanes[lower]);
+            let gap = |s: f64| a.offset.at(s) - b.offset.at(s);
+            let style = match a.direction == b.direction {
                 true => MarkingStyle::Dashed,
                 false => MarkingStyle::Centre,
             };
+            // Where one lane eases into or out of the other, nothing is painted.
+            if style == MarkingStyle::Dashed && (gap(s0) - gap(s1)).abs() > 0.01 {
+                continue;
+            }
             let between = |i: usize| 0.5 * (edge(i, upper, -1.0) + edge(i, lower, 1.0));
             out.markings.push(Marking { points: along(&between), style });
         }

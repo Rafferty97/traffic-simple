@@ -60,14 +60,17 @@ enum Scenario {
     Ring,
     /// Two two-way roads crossing, with this many lanes each way.
     Crossroads(usize),
+    /// A freeway with an on-ramp and an off-ramp.
+    Ramps,
 }
 
 impl Scenario {
-    const ALL: [Scenario; 4] = [
+    const ALL: [Scenario; 5] = [
         Scenario::Ring,
         Scenario::Crossroads(1),
         Scenario::Crossroads(2),
         Scenario::Crossroads(3),
+        Scenario::Ramps,
     ];
 
     fn name(self) -> &'static str {
@@ -76,6 +79,7 @@ impl Scenario {
             Scenario::Crossroads(1) => "Crossroads of 2-lane roads",
             Scenario::Crossroads(2) => "Crossroads of 4-lane roads",
             Scenario::Crossroads(_) => "Crossroads of 6-lane roads",
+            Scenario::Ramps => "Freeway with ramps",
         }
     }
 
@@ -83,6 +87,7 @@ impl Scenario {
         match self {
             Scenario::Ring => scenarios::ring(RING_CIRCUMFERENCE, RING_LANES, SPEED_LIMIT),
             Scenario::Crossroads(lanes) => scenarios::crossroads(lanes, SPEED_LIMIT),
+            Scenario::Ramps => scenarios::ramps(100.0 / 3.6, 80.0 / 3.6),
         }
     }
 

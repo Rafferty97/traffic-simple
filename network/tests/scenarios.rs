@@ -23,6 +23,34 @@ fn crossroads_of_one_and_three_lanes_each_way_compile() {
 }
 
 #[test]
+fn the_freeway_merges_at_the_lane_drop_and_forks_at_the_off_ramp() {
+    let compiled = compile(&scenarios::ramps(100.0 / 3.6, 80.0 / 3.6)).unwrap();
+    let sim = &compiled.sim;
+    // Roads: approach, parallel, drop, middle, after, on-ramp, off-ramp.
+    let lanes = &compiled.road_lanes;
+    let (on_ramp, accel, drop_accel, drop_left) =
+        (lanes[5][0], lanes[1][0], lanes[2][0], lanes[2][1]);
+    assert_eq!(sim.lane(on_ramp).successors(), [accel]);
+    // Alongside, a driver can change into the left lane; on the drop, it merges.
+    assert_eq!(
+        sim.lane(accel).adj_right().map(|n| n.lane),
+        Some(lanes[1][1])
+    );
+    assert!(sim.lane(drop_accel).adj_right().is_none());
+    assert_eq!(
+        sim.lane(drop_accel).successors(),
+        sim.lane(drop_left).successors()
+    );
+    let junction = sim.lane(drop_accel).junction().expect("the drop is a junction");
+    assert_eq!(sim.lane(drop_left).junction(), Some(junction));
+    // The middle's left lane forks, left up the off-ramp and right along the freeway.
+    assert_eq!(
+        sim.lane(lanes[3][0]).successors(),
+        [lanes[6][0], lanes[4][0]]
+    );
+}
+
+#[test]
 fn a_ring_compiles_into_lanes_that_lead_into_themselves() {
     let compiled = compile(&scenarios::ring(1000.0, 3, 14.0)).unwrap();
     for (id, lane) in compiled.sim.lanes() {
@@ -49,8 +77,9 @@ fn overlap(a: [glam::DVec2; 4], b: [glam::DVec2; 4]) -> bool {
     !axes.iter().any(|&axis| separated(axis.perp()))
 }
 
-#[test]
-fn crossroads_flooded_with_traffic_have_no_collisions() {
+/// Floods a network with traffic for `seconds`, a car tried every third of a
+/// second at its entry lanes in turn, asserting that no two bodies ever overlap.
+fn flood(net: &traffic_network::RoadNetwork, seconds: f64) {
     use traffic_sim::{LaneId, NoopSink, Placement, Route, Simulation, VehicleSpec};
     let car = VehicleSpec {
         length: 4.6,
@@ -66,8 +95,8 @@ fn crossroads_flooded_with_traffic_have_no_collisions() {
         courtesy: 1.0,
         politeness: 0.2,
     };
-    for lanes in 1..=3 {
-        let compiled = compile(&scenarios::crossroads(lanes, 50.0 / 3.6)).unwrap();
+    {
+        let compiled = compile(net).unwrap();
         let mut sim = Simulation::new(compiled.sim, NoopSink);
         let entries: Vec<LaneId> = sim
             .network()
@@ -77,10 +106,11 @@ fn crossroads_flooded_with_traffic_have_no_collisions() {
             .collect();
         // A car tried every third of a second, more than the junction can take, so
         // queues build up and drivers change lanes on the way in.
-        for step in 0..(100.0 * 60.0) as u64 {
+        for step in 0..(seconds * 60.0) as u64 {
             if step % 20 == 0 {
                 let lane = entries[(step / 20 * 7) as usize % entries.len()];
-                let at = Placement { lane, s: 5.0, speed: 10.0, route: Route::random(step) };
+                let speed = sim.network().lane(lane).speed_limit();
+                let at = Placement { lane, s: 5.0, speed, route: Route::random(step) };
                 let _ = sim.try_insert(car, at);
             }
             sim.step(1.0 / 60.0);
@@ -101,4 +131,16 @@ fn crossroads_flooded_with_traffic_have_no_collisions() {
             }
         }
     }
+}
+
+#[test]
+fn crossroads_flooded_with_traffic_have_no_collisions() {
+    for lanes in 1..=3 {
+        flood(&scenarios::crossroads(lanes, 50.0 / 3.6), 100.0);
+    }
+}
+
+#[test]
+fn a_freeway_with_ramps_flooded_with_traffic_has_no_collisions() {
+    flood(&scenarios::ramps(100.0 / 3.6, 80.0 / 3.6), 200.0);
 }
