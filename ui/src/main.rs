@@ -58,23 +58,31 @@ fn main() -> eframe::Result {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Scenario {
     Ring,
-    Crossroads,
+    /// Two two-way roads crossing, with this many lanes each way.
+    Crossroads(usize),
 }
 
 impl Scenario {
-    const ALL: [Scenario; 2] = [Scenario::Ring, Scenario::Crossroads];
+    const ALL: [Scenario; 4] = [
+        Scenario::Ring,
+        Scenario::Crossroads(1),
+        Scenario::Crossroads(2),
+        Scenario::Crossroads(3),
+    ];
 
     fn name(self) -> &'static str {
         match self {
             Scenario::Ring => "Three-lane ring",
-            Scenario::Crossroads => "Crossroads",
+            Scenario::Crossroads(1) => "Crossroads of 2-lane roads",
+            Scenario::Crossroads(2) => "Crossroads of 4-lane roads",
+            Scenario::Crossroads(_) => "Crossroads of 6-lane roads",
         }
     }
 
     fn network(self) -> RoadNetwork {
         match self {
             Scenario::Ring => scenarios::ring(RING_CIRCUMFERENCE, RING_LANES, SPEED_LIMIT),
-            Scenario::Crossroads => scenarios::crossroads(2, SPEED_LIMIT),
+            Scenario::Crossroads(lanes) => scenarios::crossroads(lanes, SPEED_LIMIT),
         }
     }
 

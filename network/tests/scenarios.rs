@@ -14,6 +14,15 @@ fn a_crossroads_with_two_lanes_each_way_compiles() {
 }
 
 #[test]
+fn crossroads_of_one_and_three_lanes_each_way_compile() {
+    for (lanes, connectors) in [(1, 12), (3, 20)] {
+        let compiled = compile(&scenarios::crossroads(lanes, 14.0)).unwrap();
+        // Per arm, one straight on from each lane, one right and one left.
+        assert_eq!(compiled.connectors[0].len(), connectors);
+    }
+}
+
+#[test]
 fn a_ring_compiles_into_lanes_that_lead_into_themselves() {
     let compiled = compile(&scenarios::ring(1000.0, 3, 14.0)).unwrap();
     for (id, lane) in compiled.sim.lanes() {
@@ -41,7 +50,7 @@ fn overlap(a: [glam::DVec2; 4], b: [glam::DVec2; 4]) -> bool {
 }
 
 #[test]
-fn a_crossroads_flooded_with_traffic_has_no_collisions() {
+fn crossroads_flooded_with_traffic_have_no_collisions() {
     use traffic_sim::{LaneId, NoopSink, Placement, Route, Simulation, VehicleSpec};
     let car = VehicleSpec {
         length: 4.6,
@@ -57,36 +66,38 @@ fn a_crossroads_flooded_with_traffic_has_no_collisions() {
         courtesy: 1.0,
         politeness: 0.2,
     };
-    let compiled = compile(&scenarios::crossroads(2, 50.0 / 3.6)).unwrap();
-    let mut sim = Simulation::new(compiled.sim, NoopSink);
-    let entries: Vec<LaneId> = sim
-        .network()
-        .lanes()
-        .filter(|(_, lane)| lane.predecessors().is_empty())
-        .map(|(id, _)| id)
-        .collect();
-    // A car tried every third of a second, more than the junction can take, so
-    // queues build up and drivers change lanes on the way in.
-    for step in 0..(150.0 * 60.0) as u64 {
-        if step % 20 == 0 {
-            let lane = entries[(step / 20 * 7) as usize % entries.len()];
-            let at = Placement { lane, s: 5.0, speed: 10.0, route: Route::random(step) };
-            let _ = sim.try_insert(car, at);
-        }
-        sim.step(1.0 / 60.0);
-        // Collisions last for many frames, so a check every tenth of a second
-        // catches them.
-        if step % 6 != 0 {
-            continue;
-        }
-        let bodies: Vec<_> = sim.vehicles().map(|(id, v)| (id, v.corners())).collect();
-        for (i, &(a, body_a)) in bodies.iter().enumerate() {
-            for &(b, body_b) in &bodies[i + 1..] {
-                assert!(
-                    !overlap(body_a, body_b),
-                    "{a:?} and {b:?} collide at {:.2} s",
-                    sim.time()
-                );
+    for lanes in 1..=3 {
+        let compiled = compile(&scenarios::crossroads(lanes, 50.0 / 3.6)).unwrap();
+        let mut sim = Simulation::new(compiled.sim, NoopSink);
+        let entries: Vec<LaneId> = sim
+            .network()
+            .lanes()
+            .filter(|(_, lane)| lane.predecessors().is_empty())
+            .map(|(id, _)| id)
+            .collect();
+        // A car tried every third of a second, more than the junction can take, so
+        // queues build up and drivers change lanes on the way in.
+        for step in 0..(100.0 * 60.0) as u64 {
+            if step % 20 == 0 {
+                let lane = entries[(step / 20 * 7) as usize % entries.len()];
+                let at = Placement { lane, s: 5.0, speed: 10.0, route: Route::random(step) };
+                let _ = sim.try_insert(car, at);
+            }
+            sim.step(1.0 / 60.0);
+            // Collisions last for many frames, so a check every tenth of a second
+            // catches them.
+            if step % 6 != 0 {
+                continue;
+            }
+            let bodies: Vec<_> = sim.vehicles().map(|(id, v)| (id, v.corners())).collect();
+            for (i, &(a, body_a)) in bodies.iter().enumerate() {
+                for &(b, body_b) in &bodies[i + 1..] {
+                    assert!(
+                        !overlap(body_a, body_b),
+                        "{a:?} and {b:?} collide at {:.2} s",
+                        sim.time()
+                    );
+                }
             }
         }
     }
