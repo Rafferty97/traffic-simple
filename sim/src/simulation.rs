@@ -1278,10 +1278,10 @@ fn entered(
         .any(|&lane| occupants[lane.0 as usize].iter().any(|o| o.id == id && !o.ghost))
 }
 
-/// How far a vehicle needs to stop from its speed, braking at its comfortable
-/// deceleration.
+/// How far a vehicle needs to stop from its speed, braking at `SAFE_BRAKING`:
+/// whether it can stop, for committing to a junction and being released.
 fn stopping_distance(vehicle: &Vehicle) -> f64 {
-    vehicle.speed * vehicle.speed / (2.0 * vehicle.spec.comfy_decel)
+    vehicle.speed * vehicle.speed / (2.0 * acceleration::SAFE_BRAKING)
 }
 
 /// Where a lane's first conflict with the rest of its junction starts along it,
@@ -1311,21 +1311,20 @@ fn conflict_distance(network: &SimNetwork, junction: JunctionId, vehicle: &Vehic
 }
 
 /// Whether a vehicle approaching a junction must commit there: it can no
-/// longer stop, braking comfortably, before the first conflict on its path in
-/// the junction, or its front is past the start of it already. One with no
-/// conflict on its path never needs to.
+/// longer stop, braking at `SAFE_BRAKING`, before the first conflict on its
+/// path in the junction, or its front is past the start of it already. One
+/// with no conflict on its path never needs to.
 ///
-/// Committing at comfortable braking keeps the braking a junction imposes
-/// within IDM's gentle range: braking for a stopped obstacle, IDM brakes at
-/// about the square of the deceleration the stop needs over the comfortable
-/// one, so it is gentle only near comfortable.
+/// Vehicles at the front of the ways in already slow for committed vehicles in
+/// their way, so committing late costs no harder braking, and keeps the order
+/// vehicles commit in close to the order they reach their conflicts.
 fn must_commit(network: &SimNetwork, junction: JunctionId, vehicle: &Vehicle) -> bool {
     conflict_distance(network, junction, vehicle)
         .is_some_and(|distance| distance <= stopping_distance(vehicle))
 }
 
 /// Whether the vehicle committed at `index` in a junction's committed list may
-/// be released: it could now stop comfortably a car length short of its
+/// be released: it could now stop, at `SAFE_BRAKING`, a car length short of its
 /// conflict, so it plainly can stop, and no vehicle that committed after it is
 /// behind it on its way in. The car length is the hysteresis against
 /// [`must_commit`], and keeps a vehicle held at the line committed.

@@ -3,8 +3,8 @@
 
 use glam::DVec2;
 use traffic_sim::{
-    ConflictKind, JunctionId, Lane, LaneId, NoopSink, Placement, Route, Side, SimNetwork,
-    Simulation, VehicleId,
+    ConflictKind, JunctionId, Lane, LaneId, NoopSink, Placement, Route, SAFE_BRAKING, Side,
+    SimNetwork, Simulation, VehicleId,
 };
 
 mod common;
@@ -228,10 +228,10 @@ fn a_fast_follower_commits_only_after_the_slow_vehicle_ahead_of_it() {
     let (net, junction) = crossroads();
     let mut sim = Simulation::new(net, NoopSink);
     // The follower closes fast on its slow leader, 10 m short of the crossing:
-    // it needs 49 m to stop comfortably, but is only 40 m from the crossing,
-    // while the leader could still stop.
+    // it needs 24.5 m to stop at safe braking, but is only 24 m from the
+    // crossing, while the leader could still stop.
     let leader = sim.insert(car(), at(0, 84.0, 2.0));
-    let follower = sim.insert(car(), at(0, 55.0, 14.0));
+    let follower = sim.insert(car(), at(0, 70.65, 14.0));
     let spec = car();
     // From its front to the start of the overlap, 8.25 m along lane 2, which
     // follows lane 0, 90 m long.
@@ -247,14 +247,11 @@ fn a_fast_follower_commits_only_after_the_slow_vehicle_ahead_of_it() {
         commit_order(&sim, junction, &mut order);
         if sim.get(leader).is_some() && !order.contains(&leader) {
             let v = sim.get(follower).unwrap();
-            let stop = v.speed() * v.speed() / (2.0 * spec.comfy_decel);
+            let stop = v.speed() * v.speed() / (2.0 * SAFE_BRAKING);
             ready_first |= stop >= to_conflict(&sim, follower);
         }
     }
-    assert!(
-        ready_first,
-        "the follower could no longer stop comfortably first"
-    );
+    assert!(ready_first, "the follower could no longer stop first");
     assert_eq!(order, [leader, follower], "but the leader commits first");
 }
 
@@ -319,11 +316,12 @@ fn a_vehicle_not_yet_committed_stops_gently_for_a_committed_one_in_its_way() {
 fn a_committed_vehicle_held_up_short_of_its_conflict_is_released() {
     let (net, junction) = merge();
     let mut sim = Simulation::new(net, NoopSink);
-    // At 13 m/s, 36 m short of the merge, it can no longer stop comfortably, so
-    // it commits. Then a slow car cuts in ahead of it, and it brakes hard behind
-    // that one, until it could stop comfortably a car length short of the merge.
-    let held = sim.insert(car(), at(0, 60.0, 13.0));
-    let slow = sim.insert(car(), at(1, 75.0, 3.0));
+    // At 14 m/s, 24.4 m short of the merge, it can no longer stop at safe
+    // braking, so it commits. Then a slower car cuts in ahead of it, and it
+    // brakes hard behind that one, until it could stop a car length short of
+    // the merge.
+    let held = sim.insert(car(), at(0, 72.0, 14.0));
+    let slow = sim.insert(car(), at(1, 82.0, 6.0));
     sim.step(DT);
     assert_eq!(sim.queue(junction), [held]);
     sim.change_lane(slow, Side::Left).unwrap();
