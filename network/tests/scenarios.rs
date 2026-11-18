@@ -144,3 +144,78 @@ fn crossroads_flooded_with_traffic_have_no_collisions() {
 fn a_freeway_with_ramps_flooded_with_traffic_has_no_collisions() {
     flood(&scenarios::ramps(100.0 / 3.6, 80.0 / 3.6), 200.0);
 }
+
+/// At a light 300 vehicles an hour into each entry, drivers varied, traffic on
+/// the freeway keeps moving. A vehicle changing out of the acceleration lane near
+/// the merge used to rejoin the junction's queue behind the vehicle following it
+/// there, which waited for it as a leader while it waited for that vehicle at the
+/// merge, and both lanes locked up for good.
+#[test]
+fn a_freeway_with_ramps_in_light_traffic_never_locks_up() {
+    use traffic_sim::{LaneId, NoopSink, Placement, Route, Simulation, VehicleSpec};
+    // SplitMix64, for drivers that vary but are the same every run.
+    let mut state = 1u64;
+    let mut uniform = || {
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let compiled = compile(&scenarios::ramps(100.0 / 3.6, 80.0 / 3.6)).unwrap();
+    let mut sim = Simulation::new(compiled.sim, NoopSink);
+    let entries: Vec<LaneId> = sim
+        .network()
+        .lanes()
+        .filter(|(_, lane)| lane.predecessors().is_empty())
+        .map(|(id, _)| id)
+        .collect();
+    let (mut credit, mut spawned, mut left_before) = (0.0, 0, 0);
+    for step in 1..=600 * 60 {
+        sim.step(1.0 / 60.0);
+        let n = entries.len() as f64;
+        credit = f64::min(credit + 300.0 / 3600.0 * n / 60.0, n);
+        if credit >= 1.0 {
+            let lane = entries[(uniform() * n) as usize];
+            // Normal with mean 1 and deviation 0.1, as SUMO's default, clamped.
+            let (u, v) = (1.0 - uniform(), uniform());
+            let normal = (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos();
+            let car = VehicleSpec {
+                length: 4.6,
+                width: 1.9,
+                max_speed: 30.0,
+                speed_factor: (1.0 + 0.1 * normal).clamp(0.8, 1.2),
+                max_accel: 1.0,
+                comfy_decel: 1.5,
+                time_headway: 1.0,
+                min_gap: 1.5,
+                rear_axle: 1.0,
+                front_axle: 3.7,
+                courtesy: 2.0 * uniform(),
+                politeness: 0.1 + 0.3 * uniform(),
+            };
+            let limit = sim.network().lane(lane).speed_limit();
+            let seed = (uniform() * 1e9) as u64;
+            let at = Placement {
+                lane,
+                s: 5.0,
+                speed: car.desired_speed(limit),
+                route: Route::random(seed),
+            };
+            if sim.try_insert(car, at).is_ok() {
+                credit -= 1.0;
+                spawned += 1;
+            }
+        }
+        // Vehicles keep leaving: at least one a minute.
+        if step % (60 * 60) == 0 {
+            let left = spawned - sim.vehicles().count();
+            assert!(
+                left > left_before,
+                "nobody left in the minute up to {:.0} s",
+                sim.time()
+            );
+            left_before = left;
+        }
+    }
+}

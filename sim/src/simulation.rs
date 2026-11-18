@@ -529,9 +529,9 @@ impl<D: DebugSink> Simulation<D> {
             let index = list.partition_point(|o| o.s <= occupant.s);
             list.insert(index, occupant);
         }
-        let SimState { network, vehicles, queues, .. } = &mut self.state;
+        let SimState { vehicles, occupants, queues, .. } = &mut self.state;
         for j in rejoin {
-            enqueue(network, vehicles, &mut queues[j.0 as usize], id);
+            enqueue(vehicles, occupants, &mut queues[j.0 as usize], id);
         }
         Ok(())
     }
@@ -740,7 +740,7 @@ impl<D: DebugSink> Simulation<D> {
         let SimState { network, vehicles, occupants, queues, .. } = &mut self.state;
         for update in &self.decisions {
             if let AccelUpdate::Own { id, register: Some(j), .. } = *update {
-                enqueue(network, vehicles, &mut queues[j.0 as usize], id);
+                enqueue(vehicles, occupants, &mut queues[j.0 as usize], id);
             }
         }
         for (j, queue) in queues.iter_mut().enumerate() {
@@ -1145,7 +1145,9 @@ fn conflict_gap(
 
 /// Adds a vehicle to a junction's queue, if it isn't in it, in the order of
 /// vehicles along each lane: just in front of the first vehicle in the queue
-/// that it is ahead of, on that vehicle's path, or else at the end.
+/// that it is ahead of, on that vehicle's path, or else at the end. It is ahead
+/// if it has a record ahead on a lane of that path, as that vehicle's leader
+/// search would find it, so a vehicle straddling its old lane counts there too.
 ///
 /// Vehicles can't pass each other in a lane, so once in the queue their order
 /// stays consistent with the lanes. Only joining can break it: a fast vehicle
@@ -1154,29 +1156,40 @@ fn conflict_gap(
 /// Were a vehicle in the queue ahead of its leader, with a crossing vehicle
 /// between them, the three would wait for each other.
 fn enqueue(
-    network: &SimNetwork,
     vehicles: &SlotMap<VehicleId, Vehicle>,
+    occupants: &[Vec<Occupant>],
     queue: &mut Vec<VehicleId>,
     id: VehicleId,
 ) {
     if queue.contains(&id) {
         return;
     }
-    let vehicle = &vehicles[id];
-    match queue.iter().position(|&q| ahead_on_path(network, &vehicles[q], vehicle)) {
+    match queue.iter().position(|&q| ahead_on_path(occupants, q, &vehicles[q], id)) {
         Some(i) => queue.insert(i, id),
         None => queue.push(id),
     }
 }
 
-/// Whether `other` is on `vehicle`'s path, following it, ahead of it.
-fn ahead_on_path(network: &SimNetwork, vehicle: &Vehicle, other: &Vehicle) -> bool {
-    let Some(i) = vehicle.path.iter().position(|&lane| lane == other.path[0]) else {
-        return false;
-    };
-    let before: f64 = vehicle.path[..i].iter().map(|&l| network.lane(l).geometry().length()).sum();
-    let rear = |v: &Vehicle| v.lane_pos.s - v.spec.rear_axle;
-    before + rear(other) > rear(vehicle)
+/// Whether `other` has a record, not a ghost, on `vehicle`'s path ahead of
+/// `vehicle`'s rear: on the lane it follows, at or ahead of its own record, or
+/// on any lane after. Records' `s` are rear corners, as leader searches use.
+fn ahead_on_path(
+    occupants: &[Vec<Occupant>],
+    id: VehicleId,
+    vehicle: &Vehicle,
+    other: VehicleId,
+) -> bool {
+    let records = |lane: LaneId| occupants[lane.0 as usize].iter().filter(move |o| !o.ghost);
+    // Its own rear: its record on the lane it follows, or, without one, where
+    // its rear would be.
+    let first = vehicle.path[0];
+    let rear = records(first)
+        .find(|o| o.id == id)
+        .map_or(vehicle.lane_pos.s - vehicle.spec.rear_axle, |o| o.s);
+    if records(first).any(|o| o.id == other && o.s >= rear) {
+        return true;
+    }
+    vehicle.path[1..].iter().any(|&lane| records(lane).any(|o| o.id == other))
 }
 
 /// The side of `lane` a vehicle is straddling it from, if it is partway through a
