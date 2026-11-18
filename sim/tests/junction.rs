@@ -165,7 +165,7 @@ fn a_lane_belongs_to_at_most_one_junction() {
 }
 
 #[test]
-fn the_second_to_register_waits_for_the_first_to_clear_the_crossing() {
+fn the_second_to_commit_waits_for_the_first_to_clear_the_crossing() {
     let (net, junction) = crossroads();
     let mut sim = Simulation::new(net, NoopSink);
     // Level with each other, 30 m out, at the same speed.
@@ -192,7 +192,7 @@ fn the_second_to_register_waits_for_the_first_to_clear_the_crossing() {
             );
         }
     }
-    assert!(both, "both register, the one on the lower lane first");
+    assert!(both, "both commit, the one on the lower lane first");
     assert!(b_slowest < 5.0, "the second slows to let the first through");
     assert!(
         sim.get(a).is_none() && sim.get(b).is_none(),
@@ -224,84 +224,162 @@ fn streams_from_both_lanes_of_a_merge_take_turns_without_touching() {
 }
 
 #[test]
-fn a_fast_follower_that_registers_first_goes_after_the_vehicle_ahead_of_it() {
+fn a_fast_follower_commits_only_after_the_slow_vehicle_ahead_of_it() {
     let (net, junction) = crossroads();
     let mut sim = Simulation::new(net, NoopSink);
-    // The follower is fast and sees the junction from further back than its slow
-    // leader does, so it registers first.
-    let leader = sim.insert(car(), at(0, 60.0, 2.0));
-    let follower = sim.insert(car(), at(0, 30.0, 14.0));
-    let mut alone = false;
-    let mut both = false;
+    // The follower closes fast on its slow leader, 10 m short of the crossing:
+    // it needs 49 m to stop comfortably, but is only 40 m from the crossing,
+    // while the leader could still stop.
+    let leader = sim.insert(car(), at(0, 84.0, 2.0));
+    let follower = sim.insert(car(), at(0, 55.0, 14.0));
+    let spec = car();
+    // From its front to the start of the overlap, 8.25 m along lane 2, which
+    // follows lane 0, 90 m long.
+    let to_conflict = |sim: &Simulation, id| {
+        let v = sim.get(id).unwrap();
+        let front = v.lane_pos().s - spec.rear_axle + spec.length;
+        8.25 - front + if v.lane() == LaneId(0) { 90.0 } else { 0.0 }
+    };
+    let mut ready_first = false;
+    let mut order = Vec::new();
     for _ in 0..(10.0 / DT) as usize {
         sim.step(DT);
-        let queue = sim.queue(junction);
-        alone |= queue == [follower];
-        if queue.contains(&leader) && queue.contains(&follower) {
-            both = true;
-            assert_eq!(queue, [leader, follower]);
+        commit_order(&sim, junction, &mut order);
+        if sim.get(leader).is_some() && !order.contains(&leader) {
+            let v = sim.get(follower).unwrap();
+            let stop = v.speed() * v.speed() / (2.0 * spec.comfy_decel);
+            ready_first |= stop >= to_conflict(&sim, follower);
         }
     }
-    assert!(alone, "the follower registers first");
-    assert!(both, "then the leader, ahead of it");
+    assert!(
+        ready_first,
+        "the follower could no longer stop comfortably first"
+    );
+    assert_eq!(order, [leader, follower], "but the leader commits first");
+}
+
+/// Adds the vehicles newly committed at a junction to `order`, in the order
+/// they committed.
+fn commit_order(sim: &Simulation, junction: JunctionId, order: &mut Vec<VehicleId>) {
+    for &id in sim.queue(junction) {
+        if !order.contains(&id) {
+            order.push(id);
+        }
+    }
 }
 
 #[test]
-fn a_vehicle_that_cuts_in_ahead_goes_first() {
+fn a_vehicle_that_cuts_in_ahead_commits_first() {
     let (net, junction) = merge();
     let mut sim = Simulation::new(net, NoopSink);
-    // Both register on the same update, lane 0's first, but the one on lane 1
-    // is ahead, and changes into lane 0.
+    // Both arrive as they are inserted, but the one on lane 1 is ahead, and
+    // changes into lane 0.
     let behind = sim.insert(car(), at(0, 85.0, 5.0));
     let ahead = sim.insert(car(), at(1, 92.0, 5.0));
-    for _ in 0..6 {
-        sim.step(DT);
-    }
-    assert_eq!(sim.queue(junction), [behind, ahead]);
+    assert!(sim.queue(junction).is_empty());
+    assert_eq!(sim.approaching(junction), [0, 1, 2, 3].map(LaneId));
     sim.change_lane(ahead, Side::Left).unwrap();
-    for _ in 0..6 {
+    let mut order = Vec::new();
+    for _ in 0..(10.0 / DT) as usize {
         sim.step(DT);
+        commit_order(&sim, junction, &mut order);
     }
-    assert_eq!(sim.queue(junction), [ahead, behind]);
+    assert_eq!(order, [ahead, behind], "both commit, the one ahead first");
 }
 
 #[test]
-fn it_joins_only_the_next_junction_ahead_of_its_front() {
-    // A road through two junctions of one 20 m lane each, 20 m apart: lane 1
-    // is the first junction and lane 3 the second.
+fn a_vehicle_not_yet_committed_stops_gently_for_a_committed_one_in_its_way() {
+    let (net, junction) = crossroads();
+    let mut sim = Simulation::new(net, NoopSink);
+    // Its front past the start of the overlap, 8.25 m along lane 3, so it
+    // commits, and held there.
+    let blocker = sim.insert(car(), at(3, 6.0, 0.0));
+    sim.hold(blocker);
+    // 85 m short of the overlap, 8.25 m along lane 2, which follows lane 0.
+    let id = sim.insert(car(), at(0, 10.0, 14.0));
+    let spec = car();
+    let mut hardest = 0.0f64;
+    for _ in 0..(20.0 / DT) as usize {
+        sim.step(DT);
+        assert_eq!(sim.queue(junction), [blocker], "it never commits");
+        let v = sim.get(id).unwrap();
+        hardest = hardest.min(v.accel());
+        let front = v.lane_pos().s - spec.rear_axle + spec.length;
+        let to_overlap = 8.25 - front + if v.lane() == LaneId(0) { 90.0 } else { 0.0 };
+        assert!(to_overlap > 0.0, "it stops short of the overlap");
+    }
+    assert!(sim.get(id).unwrap().speed() < 0.1, "it stops");
+    assert!(
+        hardest > -2.0 * spec.comfy_decel,
+        "it brakes gently: {hardest:.2} m/s²"
+    );
+}
+
+#[test]
+fn a_committed_vehicle_held_up_short_of_its_conflict_is_released() {
+    let (net, junction) = merge();
+    let mut sim = Simulation::new(net, NoopSink);
+    // At 13 m/s, 36 m short of the merge, it can no longer stop comfortably, so
+    // it commits. Then a slow car cuts in ahead of it, and it brakes hard behind
+    // that one, until it could stop comfortably a car length short of the merge.
+    let held = sim.insert(car(), at(0, 60.0, 13.0));
+    let slow = sim.insert(car(), at(1, 75.0, 3.0));
+    sim.step(DT);
+    assert_eq!(sim.queue(junction), [held]);
+    sim.change_lane(slow, Side::Left).unwrap();
+    let mut released = false;
+    for _ in 0..(5.0 / DT) as usize {
+        sim.step(DT);
+        let short = sim.get(held).is_some_and(|v| v.lane() == LaneId(0));
+        released |= short && !sim.queue(junction).contains(&held);
+        let bodies: Vec<_> = sim.vehicles().map(|(_, v)| v.corners()).collect();
+        if let [x, y] = bodies[..] {
+            assert!(!overlap(x, y), "they overlap");
+        }
+    }
+    assert!(released, "it is released short of the merge");
+}
+
+#[test]
+fn it_arrives_at_the_next_junction_only_once_it_has_entered_the_one_before() {
+    // A road through two junctions 20 m apart, each a 20 m lane crossed halfway
+    // along: lanes 1 and 5 are the first junction, and lanes 3 and 6 the
+    // second.
     let mut net = SimNetwork::new(vec![
         lane(&[p(-100.0, 0.0), p(-10.0, 0.0)]),
         lane(&[p(-10.0, 0.0), p(10.0, 0.0)]),
         lane(&[p(10.0, 0.0), p(30.0, 0.0)]),
         lane(&[p(30.0, 0.0), p(50.0, 0.0)]),
         lane(&[p(50.0, 0.0), p(150.0, 0.0)]),
+        lane(&[p(0.0, -20.0), p(0.0, 20.0)]),
+        lane(&[p(40.0, -20.0), p(40.0, 20.0)]),
     ]);
     for i in 0..4 {
         net.connect(LaneId(i), LaneId(i + 1));
     }
-    let first = net.add_junction(&[LaneId(1)]);
-    let second = net.add_junction(&[LaneId(3)]);
+    let first = net.add_junction(&[LaneId(1), LaneId(5)]);
+    let second = net.add_junction(&[LaneId(3), LaneId(6)]);
     let mut sim = Simulation::new(net, NoopSink);
-    // Both junctions are within its horizon from the start.
+    // Both junctions are on its path from the start.
     let id = sim.insert(car(), at(0, 70.0, 14.0));
-    let spec = car();
-    let mut in_both = false;
+    assert_eq!(sim.approaching(first), [LaneId(0), LaneId(1)]);
+    assert!(sim.approaching(second).is_empty());
+    let mut arrived = false;
     for _ in 0..(8.0 / DT) as usize {
         sim.step(DT);
         let Some(v) = sim.get(id) else {
             break;
         };
-        let front = v.lane_pos().s - spec.rear_axle + spec.length;
-        let in_second = sim.queue(second) == [id];
-        let past_first = v.lane().0 > 1 || (v.lane() == LaneId(1) && front >= 20.0);
+        // On the first junction's lane or beyond: its rear axle has entered it.
+        let at_second = !sim.approaching(second).is_empty() || sim.queue(second) == [id];
         assert!(
-            !in_second || past_first,
-            "it joins the second before its front leaves the first"
+            !at_second || v.lane().0 >= 1,
+            "it arrives at the second before entering the first"
         );
-        in_both |= in_second && sim.queue(first) == [id];
+        arrived |= at_second && sim.queue(first) == [id];
     }
     assert!(
-        in_both,
-        "its tail is still in the first as it joins the second"
+        arrived,
+        "it arrives at the second while still committed at the first"
     );
 }
