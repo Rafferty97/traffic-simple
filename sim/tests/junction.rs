@@ -223,6 +223,49 @@ fn streams_from_both_lanes_of_a_merge_take_turns_without_touching() {
     run_clear(&mut sim, 60.0);
 }
 
+/// Steps for `seconds`, checking after each step that no two bodies overlap,
+/// and returns the lowest speed `id` drops to.
+fn slowest(sim: &mut Simulation, id: VehicleId, seconds: f64) -> f64 {
+    let mut slowest = f64::INFINITY;
+    for _ in 0..(seconds / DT) as usize {
+        sim.step(DT);
+        if let Some(v) = sim.get(id) {
+            slowest = slowest.min(v.speed());
+        }
+        let bodies: Vec<_> = sim.vehicles().map(|(_, v)| v.corners()).collect();
+        for (i, &a) in bodies.iter().enumerate() {
+            for &b in &bodies[i + 1..] {
+                assert!(!overlap(a, b), "bodies overlap at {:.2} s", sim.time());
+            }
+        }
+    }
+    slowest
+}
+
+#[test]
+fn a_vehicle_crossing_behind_another_times_its_arrival_rather_than_stopping() {
+    let (net, _) = crossroads();
+    let mut sim = Simulation::new(net, NoopSink);
+    // The first will have cleared the crossing just before the second reaches
+    // it, so the second, following its progress, needn't slow for it.
+    sim.insert(car(), at(1, 65.0, 10.0));
+    let second = sim.insert(car(), at(0, 45.0, 10.0));
+    let slowest = slowest(&mut sim, second, 12.0);
+    assert!(slowest > 9.5, "it slows to {slowest:.2} m/s");
+}
+
+#[test]
+fn a_vehicle_merging_behind_another_follows_it_through_the_merge() {
+    let (net, _) = merge();
+    let mut sim = Simulation::new(net, NoopSink);
+    // The first is ahead, going the same way, so the second follows it through
+    // the merge, rather than waiting for it to be through.
+    sim.insert(car(), at(1, 85.0, 10.0));
+    let second = sim.insert(car(), at(0, 70.0, 10.0));
+    let slowest = slowest(&mut sim, second, 12.0);
+    assert!(slowest > 9.0, "it slows to {slowest:.2} m/s");
+}
+
 #[test]
 fn a_fast_follower_commits_only_after_the_slow_vehicle_ahead_of_it() {
     let (net, junction) = crossroads();

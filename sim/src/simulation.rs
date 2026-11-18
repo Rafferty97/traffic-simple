@@ -13,7 +13,7 @@ use crate::models::acceleration;
 use crate::models::lane_change::{self, Decision, Effect, LaneChangeEval, Prospect};
 use crate::models::lateral::{self, LaneChange};
 use crate::models::routing::Route;
-use crate::network::{Conflict, ConflictKind, JunctionId, LaneId, Side, SimNetwork};
+use crate::network::{Conflict, JunctionId, LaneId, Side, SimNetwork};
 use crate::occupancy::{
     self, Ahead, Along, Found, Lateral, Occupant, find_follower, find_leaders, for_each_leader,
 };
@@ -1409,15 +1409,8 @@ fn headed(network: &SimNetwork, vehicle: &Vehicle, junction: JunctionId) -> bool
 /// sink.
 ///
 /// For each pair, ahead and behind, every conflict between a lane of the
-/// follower's path in the junction and a lane of the junction's counts:
-///
-/// - **Crossing:** until the one ahead has cleared the overlap on its lane, the
-///   follower stops short of the overlap on its own, as if at a stopped vehicle
-///   there. A follower whose front is already past the start of the overlap
-///   isn't held back.
-/// - **Merging:** the follower follows the one ahead as if it were already on
-///   its own lane, both measured back from the end of their lanes, where they
-///   meet.
+/// follower's path in the junction and a lane of the junction's counts, crossing
+/// or merging alike: see [`conflict_term`].
 ///
 /// O(c·(c + f)) in the numbers committed and at the fronts, which are small.
 fn junction_terms<D: DebugSink>(
@@ -1452,9 +1445,8 @@ fn junction_term<D: DebugSink>(
     let network = &state.network;
     let lanes = network.junction(junction).lanes();
     let follower = &state.vehicles[id];
-    let spec = &follower.spec;
     let mut accel = f64::INFINITY;
-    let front = follower.lane_pos.s - spec.rear_axle + spec.length;
+    let front = follower.lane_pos.s - follower.spec.rear_axle + follower.spec.length;
     // From its front to the start of each lane on its path.
     let mut start = -front;
     for &mine in &follower.path {
@@ -1465,12 +1457,11 @@ fn junction_term<D: DebugSink>(
                     continue;
                 };
                 for &other in ahead {
-                    let Some((gap, speed)) =
-                        conflict_gap(state, conflict, theirs, other, start, length)
+                    let Some((term, gap)) =
+                        conflict_term(state, follower, mine, conflict, theirs, other, start)
                     else {
                         continue;
                     };
-                    let term = acceleration::interaction(spec, follower.speed, gap, speed);
                     let kind = conflict.kind;
                     let source = AccelSource::Junction { id: other, kind, gap };
                     sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
@@ -1483,17 +1474,42 @@ fn junction_term<D: DebugSink>(
     accel
 }
 
-/// The gap a junction holds a vehicle back by for another ahead of it in the
-/// queue, and the speed of what it is held back by, where the lane it will take,
-/// `start` meters from its front and `length` long, conflicts with `theirs`:
-/// see [`junction_terms`]. `None` if the other one doesn't hold it back there.
-fn conflict_gap(
+/// The term a junction imposes on `follower` for `other`, committed before it,
+/// where `mine`, a lane of its path whose start is `start` meters from its front,
+/// conflicts with `theirs`, and the gap that term is for: `None` once `other`
+/// has cleared the conflict on its lane, its rear past the end of it, or, not
+/// headed onto `theirs`, while its body isn't in it.
+///
+/// Until then, the follower takes the gentlest of three ways of keeping out of
+/// the other's way, each safe on its own:
+///
+/// - **Stopping short** of the conflict, as at a stopped vehicle there.
+/// - **Following its progress:** a virtual vehicle at the speed of the other,
+///   as far past the start of the follower's conflict as the other's rear is
+///   past the end of its own, so it reaches that start just as the other clears
+///   its conflict. This is virtual vehicle mapping, as in cooperative merging
+///   (Uno et al., 1999). Only for one headed onto `theirs`.
+/// - **Following it:** while the other moves the same general way as the
+///   follower's conflict runs, and will still be as it leaves its own, its
+///   nearest corner, a rear one, measured along the conflict's direction, at its
+///   speed along that direction. The convex body is nowhere nearer along that
+///   direction, at any angle, for a conflict that is roughly straight on the
+///   follower's side. On the other's side, a lane bends one way by less than
+///   half a turn, so one heading the same way now and as it leaves never swings
+///   back across the follower's way in between. Without that, a vehicle turning
+///   across could lead the follower into its conflict, then swing back into it.
+///
+/// A follower already past the start of its conflict is held back all the same:
+/// it should not be there before the other has cleared, and at a merge, where
+/// driving on never clears the way, dropping back is the only way out.
+fn conflict_term(
     state: &SimState,
+    follower: &Vehicle,
+    mine: LaneId,
     conflict: &Conflict,
     theirs: LaneId,
     other: VehicleId,
     start: f64,
-    length: f64,
 ) -> Option<(f64, f64)> {
     let network = &state.network;
     let leader = &state.vehicles[other];
@@ -1503,29 +1519,55 @@ fn conflict_gap(
             leader.path[..i].iter().map(|&l| network.lane(l).geometry().length()).sum();
         leader.lane_pos.s - leader.spec.rear_axle - before
     });
-    match conflict.kind {
-        ConflictKind::Cross => {
-            let clear = match rear {
-                Some(rear) => rear >= conflict.theirs.end,
-                // Not headed there: only its body, lingering past the lane's end
-                // or beside it, can be in the way.
-                None => state.occupants[theirs.0 as usize]
-                    .iter()
-                    .find(|o| o.id == other && !o.ghost)
-                    .is_none_or(|o| {
-                        o.s >= conflict.theirs.end
-                            || o.s + leader.spec.length <= conflict.theirs.start
-                    }),
-            };
-            let gap = start + conflict.mine.start;
-            // Past the start of the overlap, it is committed.
-            (gap >= 0.0 && !clear).then_some((gap, 0.0))
-        }
-        ConflictKind::Merge => {
-            let theirs_length = network.lane(theirs).geometry().length();
-            rear.map(|rear| ((start + length) - (theirs_length - rear), leader.speed))
-        }
+    let clear = match rear {
+        Some(rear) => rear >= conflict.theirs.end,
+        // Not headed there: only its body, lingering past the lane's end or
+        // beside it, can be in the way.
+        None => state.occupants[theirs.0 as usize]
+            .iter()
+            .find(|o| o.id == other && !o.ghost)
+            .is_none_or(|o| {
+                o.s >= conflict.theirs.end || o.s + leader.spec.length <= conflict.theirs.start
+            }),
+    };
+    if clear {
+        return None;
     }
+    let term = |gap: f64, speed: f64| {
+        (
+            acceleration::interaction(&follower.spec, follower.speed, gap, speed),
+            gap,
+        )
+    };
+    let gentler = |a: (f64, f64), b: (f64, f64)| if b.0 > a.0 { b } else { a };
+    let to_conflict = start + conflict.mine.start;
+    // Stopping short.
+    let mut best = term(to_conflict, 0.0);
+    // Following its progress.
+    if let Some(rear) = rear {
+        best = gentler(
+            best,
+            term(to_conflict + rear - conflict.theirs.end, leader.speed),
+        );
+    }
+    // Following it, measured along the conflict from its start.
+    let geometry = network.lane(mine).geometry();
+    let at = geometry.lane_pos(conflict.mine.start, 0.0);
+    let (origin, along) = (geometry.lane_to_world(at), geometry.tangent_at(at));
+    let heading = DVec2::from_angle(leader.heading);
+    // Leaving its conflict the same general way too: a lane bends one way, by
+    // less than half a turn, so it never swings back across in between.
+    let exit = network.lane(theirs).geometry();
+    let leaving = exit.tangent_at(exit.lane_pos(conflict.theirs.end, 0.0));
+    if heading.dot(along) > 0.0 && leaving.dot(along) > 0.0 {
+        let corners = leader.corners().map(|corner| (corner - origin).dot(along));
+        let nearest = corners.into_iter().fold(f64::INFINITY, f64::min);
+        best = gentler(
+            best,
+            term(to_conflict + nearest, leader.speed * heading.dot(along)),
+        );
+    }
+    Some(best)
 }
 
 /// The side of `lane` a vehicle is straddling it from, if it is partway through a
