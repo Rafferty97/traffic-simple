@@ -70,7 +70,8 @@ impl Built {
 /// becomes a lane in the simulation.
 ///
 /// - Lanes of a road running side by side the same way, keeping their distance,
-///   are neighbors, and may change into each other. Lanes easing toward or away
+///   are neighbors, and may change into each other as their `change_left` and
+///   `change_right` allow. Lanes easing toward or away
 ///   from each other, at a lane drop or where a lane appears, are not.
 /// - Where roads join, a lane connects to each lane of the next road that
 ///   starts where it ends: two meeting one merge, one meeting two diverge.
@@ -171,9 +172,13 @@ pub fn compile(net: &RoadNetwork) -> Result<Compiled, CompileError> {
                 continue;
             }
             let (u, l) = (road_lanes[r][pair[0]], road_lanes[r][pair[1]]);
+            // Going forward, the upper lane is on the left of the lower one;
+            // going backward, on its right.
             match upper.direction {
-                Direction::Forward => sim.set_adjacent(u, l, true, true),
-                Direction::Backward => sim.set_adjacent(l, u, true, true),
+                Direction::Forward => sim.set_adjacent(u, l, upper.change_right, lower.change_left),
+                Direction::Backward => {
+                    sim.set_adjacent(l, u, lower.change_right, upper.change_left)
+                }
             }
         }
     }

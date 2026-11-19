@@ -96,6 +96,8 @@ pub fn ramps(speed_limit: f64, ramp_limit: f64) -> RoadNetwork {
 
     let approach = net.add_road(straight(-400.0, 400.0, through()));
     let mut beside = through();
+    // Nobody changes from the freeway into the acceleration lane.
+    beside[0].change_left = false;
     beside.insert(0, lane(accel));
     let parallel = net.add_road(straight(0.0, 200.0, beside));
     let mut taper = through();
@@ -105,6 +107,8 @@ pub fn ramps(speed_limit: f64, ramp_limit: f64) -> RoadNetwork {
             offset: Profile::Ease { from: accel, to: 0.5 * WIDTH, start: 0.0, end: 80.0 },
             width: Profile::Constant(WIDTH),
             direction: Direction::Forward,
+            change_left: true,
+            change_right: true,
         },
     );
     let drop = net.add_road(straight(200.0, 80.0, taper));

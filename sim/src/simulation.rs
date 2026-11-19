@@ -1362,42 +1362,6 @@ fn may_release(
     !committed[index + 1..].iter().any(behind)
 }
 
-/// Whether a change into `target` that a vehicle started now might not be
-/// over, its whole body in the new lane, before it reached a conflict: the
-/// start of a conflict lies within the change's reach (as [`room_to_change`]
-/// measures it) on some way on from `target`. Its route has yet to choose past
-/// `target`, so every way counts.
-///
-/// Such a change isn't allowed. A vehicle may commit partway through a change,
-/// but must not be stopped at a conflict partway through one: there, its search
-/// of its old lane could wait on a vehicle that waits on it, and both would be
-/// too near the conflict to be released (see [`may_release`]).
-fn conflict_during_change(network: &SimNetwork, vehicle: &Vehicle, target: LaneId) -> bool {
-    // Neighbors start and end together, so the same fraction along is level.
-    let own = network.lane(vehicle.path[0]).geometry().length();
-    let theirs = network.lane(target).geometry().length();
-    let reach = change_reach(vehicle);
-    // Each lane to look at, with how far its start is from the rear axle.
-    let mut ways = ArrayVec::<(LaneId, f64), 16>::new();
-    ways.push((target, -vehicle.lane_pos.s * theirs / own));
-    while let Some((lane, start)) = ways.pop() {
-        if start >= reach {
-            continue;
-        }
-        if conflict_start(network, lane).is_some_and(|conflict| start + conflict < reach) {
-            return true;
-        }
-        let end = start + network.lane(lane).geometry().length();
-        for &next in network.lane(lane).successors() {
-            // So many ways within a change's reach is unheard of: refuse, to be safe.
-            if ways.try_push((next, end)).is_err() {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 /// Whether a vehicle's path takes it onto any of a junction's lanes.
 fn headed(network: &SimNetwork, vehicle: &Vehicle, junction: JunctionId) -> bool {
     vehicle.path.iter().any(|&lane| network.lane(lane).junction() == Some(junction))
@@ -1675,9 +1639,7 @@ fn decide(
     let mut old_follower = None;
     let prospect = |side: Side| {
         let target = lane.adj(side).filter(|n| n.can_change)?;
-        if !room_to_change(network, vehicle, side)
-            || conflict_during_change(network, vehicle, target.lane)
-        {
+        if !room_to_change(network, vehicle, side) {
             return None;
         }
         let old_follower = *old_follower.get_or_insert_with(|| {
@@ -1720,17 +1682,22 @@ fn decide(
 
 /// Whether a change to `side` that a vehicle started now would be over, its
 /// whole body in the new lane, before the lanes beside its path on that side
-/// run out, as they do into a junction, whose lanes have no neighbors. Changing
-/// lanes through a junction would put it where the junction doesn't know it is.
-/// SUMO likewise allows no lane changes on a junction's internal lanes.
+/// run out. They run out where there is no neighbor, and at a junction: where a
+/// lane of its path or the one beside it is in one, whatever neighbors the
+/// network gives them. So no change starts in a junction or runs into one,
+/// which would put the vehicle where the junction doesn't know it is, partway
+/// across its lanes. SUMO likewise allows no lane changes on a junction's
+/// internal lanes.
 fn room_to_change(network: &SimNetwork, vehicle: &Vehicle, side: Side) -> bool {
     let needed = change_reach(vehicle);
     let mut room = -vehicle.lane_pos.s;
+    let in_junction = |lane: LaneId| network.lane(lane).junction().is_some();
     for &lane in &vehicle.path {
         if room >= needed {
             return true;
         }
-        if network.lane(lane).adj(side).is_none() {
+        let beside = network.lane(lane).adj(side);
+        if in_junction(lane) || beside.is_none_or(|n| in_junction(n.lane)) {
             return false;
         }
         room += network.lane(lane).geometry().length();
@@ -2166,8 +2133,8 @@ mod test {
 
     /// Two lanes side by side, 500 m long, limited to 25 m/s, that run on side by
     /// side for 200 m as lanes 2 and 5. Lane 2, on the left, is in a junction,
-    /// crossed 10 m along by lane 3, and runs on as lane 4; lane 5 is beside it,
-    /// so changes are permitted into lane 2, as at the ramps' lane drop.
+    /// crossed 10 m along by lane 3, and runs on as lane 4; the network makes
+    /// lane 5 its neighbor, as at the ramps' lane drop.
     fn two_lanes_into_a_junction() -> Simulation {
         let lane = |a: DVec2, b: DVec2| Lane::new(&[a, b], WIDTH, 25.0).unwrap();
         let p = DVec2::new;
@@ -2201,11 +2168,11 @@ mod test {
     }
 
     #[test]
-    fn it_wont_start_a_change_it_couldnt_finish_before_a_conflict() {
+    fn it_wont_start_a_change_that_would_run_into_a_junction() {
         let mut sim = two_lanes_into_a_junction();
-        // At 20 m/s a change reaches 93 m beyond its rear axle, and the crossing
-        // starts 78 m beyond it on the lane beside it. The lanes beside run on,
-        // so there is room for the change otherwise.
+        // At 20 m/s a change reaches 93 m beyond its rear axle, and the junction
+        // starts 70 m beyond it on the lane beside it. The network gives the
+        // junction's lane a neighbor, but that doesn't count.
         let id = indicating_behind_a_stopped_car_at(&mut sim, 430.0, 20.0);
         let (decision, evals) = decide_now(&sim, id);
         assert_ne!(decision, Decision::Change(Side::Left), "{evals:?}");
@@ -2213,9 +2180,9 @@ mod test {
     }
 
     #[test]
-    fn it_changes_into_a_lane_leading_to_a_conflict_beyond_the_changes_reach() {
+    fn it_changes_into_a_lane_leading_to_a_junction_beyond_the_changes_reach() {
         let mut sim = two_lanes_into_a_junction();
-        // The crossing starts 208 m beyond its rear axle.
+        // The junction starts 200 m beyond its rear axle.
         let id = indicating_behind_a_stopped_car_at(&mut sim, 300.0, 20.0);
         let (decision, evals) = decide_now(&sim, id);
         assert_eq!(decision, Decision::Change(Side::Left), "{evals:?}");

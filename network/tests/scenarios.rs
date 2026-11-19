@@ -31,11 +31,12 @@ fn the_freeway_merges_at_the_lane_drop_and_forks_at_the_off_ramp() {
     let (on_ramp, accel, drop_accel, drop_left) =
         (lanes[5][0], lanes[1][0], lanes[2][0], lanes[2][1]);
     assert_eq!(sim.lane(on_ramp).successors(), [accel]);
-    // Alongside, a driver can change into the left lane; on the drop, it merges.
-    assert_eq!(
-        sim.lane(accel).adj_right().map(|n| n.lane),
-        Some(lanes[1][1])
-    );
+    // Alongside, a driver can change into the left lane, but not back from the
+    // freeway into the acceleration lane; on the drop, it merges.
+    let right = sim.lane(accel).adj_right().unwrap();
+    assert_eq!(right.lane, lanes[1][1]);
+    assert!(right.can_change);
+    assert!(!sim.lane(lanes[1][1]).adj_left().unwrap().can_change);
     assert!(sim.lane(drop_accel).adj_right().is_none());
     assert_eq!(
         sim.lane(drop_accel).successors(),

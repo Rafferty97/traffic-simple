@@ -93,15 +93,23 @@ pub struct RoadLane {
     pub offset: Profile,
     pub width: Profile,
     pub direction: Direction,
+    /// Whether a vehicle on it may change into its neighbour on the left, or
+    /// on the right, of its direction of travel, if it has one: SUMO's
+    /// `changeLeft` and `changeRight`.
+    pub change_left: bool,
+    pub change_right: bool,
 }
 
 impl RoadLane {
-    /// A lane of constant width at a constant offset.
+    /// A lane of constant width at a constant offset, which vehicles may change
+    /// out of either way.
     pub fn new(offset: f64, width: f64, direction: Direction) -> Self {
         Self {
             offset: Profile::Constant(offset),
             width: Profile::Constant(width),
             direction,
+            change_left: true,
+            change_right: true,
         }
     }
 }
