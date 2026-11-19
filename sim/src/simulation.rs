@@ -394,6 +394,7 @@ impl<D: DebugSink> Simulation<D> {
         let index = list.partition_point(|o| o.s <= occupant.s);
         list.insert(index, occupant);
         let SimState { network, vehicles, occupants, queues, .. } = &mut self.state;
+        join_tapers(network, occupants, id, &vehicles[id], lane_id);
         arrive(network, occupants, queues, id, &vehicles[id]);
         id
     }
@@ -557,6 +558,7 @@ impl<D: DebugSink> Simulation<D> {
             list.insert(index, occupant);
         }
         let SimState { network, vehicles, occupants, queues, .. } = &mut self.state;
+        join_tapers(network, occupants, id, &vehicles[id], neighbor.lane);
         arrive(network, occupants, queues, id, &vehicles[id]);
         Ok(())
     }
@@ -822,6 +824,7 @@ impl<D: DebugSink> Simulation<D> {
                 // part, and each record is dropped once it is clear of that lane.
                 // Joins unsorted; `update_occupancy` sets its `s` and sorts.
                 let followed = vehicle.path[0];
+                join_tapers(network, occupants, id, vehicle, followed);
                 let s = vehicle.lane_pos.s;
                 let mut join = |lane: LaneId, lateral: Lateral| {
                     let hint = match lane == followed {
@@ -1262,6 +1265,26 @@ fn stops_on(
         }
     }
     false
+}
+
+/// Joins `vehicle`, which has just joined `lane`, to the other lanes of each
+/// taper `lane` is in, merging into them (see [`SimNetwork::taper_partners`]), so
+/// followers on those lanes find it with their ordinary leader searches.
+fn join_tapers(
+    network: &SimNetwork,
+    occupants: &mut [Vec<Occupant>],
+    id: VehicleId,
+    vehicle: &Vehicle,
+    lane: LaneId,
+) {
+    for other in network.taper_partners(lane) {
+        // They start together, so its `s` along `lane` is a good hint.
+        let hint = network.lane(other).geometry().lane_pos(vehicle.lane_pos.s, 0.0);
+        let occupant = Occupant::new(network, other, id, vehicle, hint, Lateral::Merging);
+        let list = &mut occupants[other.0 as usize];
+        let index = list.partition_point(|o| o.s <= occupant.s);
+        list.insert(index, occupant);
+    }
 }
 
 /// Whether a vehicle has physically entered a junction: it has a record, not a
@@ -2153,6 +2176,99 @@ mod test {
         }
         network.add_junction(&[LaneId(2), LaneId(3)]);
         Simulation::new(network, NoopSink)
+    }
+
+    /// A taper: lane 0, from 0 to 100 m, and lane 1 starting beside it and
+    /// easing into it from 20 m on, both leading into lane 2, from 100 to 300 m.
+    /// Lanes 3 and 4 lead into 0 and 1 from 100 m back. Lane 5 comes in from the
+    /// side and leads into lane 2 as well, without starting with them.
+    fn a_taper() -> Simulation {
+        let p = DVec2::new;
+        let lane = |points: &[DVec2]| Lane::new(points, WIDTH, 25.0).unwrap();
+        let mut network = SimNetwork::new(vec![
+            lane(&[p(0.0, 0.0), p(100.0, 0.0)]),
+            lane(&[p(0.0, -WIDTH), p(20.0, -WIDTH), p(100.0, 0.0)]),
+            lane(&[p(100.0, 0.0), p(300.0, 0.0)]),
+            lane(&[p(-100.0, 0.0), p(0.0, 0.0)]),
+            lane(&[p(-100.0, -WIDTH), p(0.0, -WIDTH)]),
+            lane(&[p(50.0, 50.0), p(100.0, 0.0)]),
+        ]);
+        network.set_adjacent(LaneId(3), LaneId(4), true, true);
+        for (from, to) in [(0, 2), (1, 2), (5, 2), (3, 0), (4, 1)] {
+            network.connect(LaneId(from), LaneId(to));
+        }
+        network.validate().unwrap();
+        Simulation::new(network, NoopSink)
+    }
+
+    #[test]
+    fn lanes_that_start_together_into_one_lane_are_a_taper() {
+        let sim = a_taper();
+        let partners = |lane: u32| {
+            sim.state.network.taper_partners(LaneId(lane)).map(|l| l.0).collect::<Vec<_>>()
+        };
+        assert_eq!(partners(0), [1]);
+        assert_eq!(partners(1), [0]);
+        assert_eq!(
+            partners(5),
+            [] as [u32; 0],
+            "it merges, but doesn't start with them"
+        );
+        assert_eq!(
+            partners(3),
+            [] as [u32; 0],
+            "nothing else leads into lane 0"
+        );
+        assert_eq!(partners(2), [] as [u32; 0]);
+    }
+
+    #[test]
+    fn a_vehicle_entering_a_taper_merges_into_the_other_lane_until_past_it() {
+        let mut sim = a_taper();
+        let id = sim.insert(car(), at(4, 95.0, 15.0));
+        while sim.state.vehicles[id].path[0] != LaneId(1) {
+            sim.step(0.05);
+        }
+        let mine = records(&sim, id);
+        assert!(mine.contains(&(1, false, Lateral::InLane)), "{mine:?}");
+        assert!(mine.contains(&(0, false, Lateral::Merging)), "{mine:?}");
+        // Wholly beside lane 0 at first, but kept on it.
+        for _ in 0..20 {
+            sim.step(0.05);
+        }
+        assert!(sim.state.vehicles[id].lane_pos.s < 20.0);
+        assert!(records(&sim, id).contains(&(0, false, Lateral::Merging)));
+        // Dropped from both once past their end.
+        for _ in 0..200 {
+            sim.step(0.05);
+        }
+        assert_eq!(sim.state.vehicles[id].path[0], LaneId(2));
+        assert_eq!(records(&sim, id), [(2, false, Lateral::InLane)]);
+    }
+
+    #[test]
+    fn a_vehicle_inserted_in_a_taper_merges_into_the_other_lane() {
+        let mut sim = a_taper();
+        let id = sim.insert(car(), at(1, 30.0, 0.0));
+        let mine = records(&sim, id);
+        assert!(mine.contains(&(0, false, Lateral::Merging)), "{mine:?}");
+    }
+
+    #[test]
+    fn a_follower_in_a_taper_stays_behind_a_vehicle_merging_in_beside_it() {
+        let mut sim = a_taper();
+        // Not yet overlapping lane 0 at 30 m, so a follower there could drive by.
+        let merging = sim.insert(car(), at(1, 30.0, 0.0));
+        sim.hold(merging);
+        let follower = sim.insert(car(), at(3, 60.0, 15.0));
+        for _ in 0..600 {
+            sim.step(0.05);
+        }
+        let v = &sim.state.vehicles[follower];
+        assert_eq!(v.path[0], LaneId(0));
+        assert!(v.speed < 0.1, "{}", v.speed);
+        let theirs = sim.state.occupants[0].iter().find(|o| o.id == merging).unwrap();
+        assert!(rear(&sim, follower) + v.spec.length < theirs.s);
     }
 
     /// A car on lane 1 at `s` and `speed`, indicating left for 2 s with

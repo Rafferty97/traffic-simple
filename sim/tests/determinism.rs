@@ -83,6 +83,7 @@ fn trace(seed: u64, seconds: f64) -> Vec<u64> {
                     Lateral::InLane => 0,
                     Lateral::Diverging(Side::Left) => 1,
                     Lateral::Diverging(Side::Right) => 2,
+                    Lateral::Merging => 3,
                 });
             }
         }
