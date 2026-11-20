@@ -86,6 +86,9 @@ pub enum AccelSource {
     /// which it waits short of; at a merge, the gap to the other vehicle as if it
     /// were on the vehicle's own lane.
     Junction { id: VehicleId, kind: ConflictKind, gap: f64 },
+    /// The vehicle before it in a merge's order, with the gap between them as
+    /// each is from the merge point: negative while it is the nearer.
+    Merge { id: VehicleId, gap: f64 },
 }
 
 /// A sink that discards everything.

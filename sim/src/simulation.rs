@@ -9,6 +9,7 @@ use crate::following::{self, Overlaps};
 use crate::kinematics;
 use crate::lane::LanePos;
 use crate::math::wrap_angle;
+use crate::merge::{self, Merges};
 use crate::models::acceleration;
 use crate::models::lane_change::{self, Decision, Effect, LaneChangeEval, Prospect};
 use crate::models::lateral::{self, LaneChange};
@@ -48,6 +49,10 @@ pub(crate) struct SimState {
     /// Each lane's overlapping lanes outside junctions: derived from the network,
     /// so not part of a snapshot.
     pub overlaps: Overlaps,
+    /// Which merge each lane belongs to: derived, like the overlaps.
+    pub merges: Merges,
+    /// Each merge's order: the vehicles approaching it, by estimated arrival.
+    pub orders: Vec<Vec<VehicleId>>,
 }
 
 /// A junction's queue: the vehicles committed there, which can no longer stop
@@ -97,6 +102,8 @@ pub struct Simulation<D: DebugSink = NoopSink> {
     scan_kept: Vec<LaneId>,
     /// Scratch space for vehicles that lost a record on a lane they had left.
     departed: Vec<VehicleId>,
+    /// Scratch space for sorting a merge's order.
+    members: Vec<merge::Member>,
     /// Simulated time, in seconds.
     time: f64,
     /// Where staggered lane-change decisions resume: a position in the
@@ -127,6 +134,9 @@ enum AccelUpdate {
     /// From a junction whose queue it is in: the most the committed vehicles
     /// ahead of it there allow.
     Junction { id: VehicleId, accel: f64 },
+    /// From a merge it is approaching: the most the vehicle before it in the
+    /// merge's order allows.
+    Merge { id: VehicleId, accel: f64 },
 }
 
 /// The leader whose term was the lowest in a vehicle's search along its path.
@@ -178,6 +188,8 @@ pub struct Snapshot {
     vehicles: SlotMap<VehicleId, Vehicle>,
     occupants: Vec<Vec<Occupant>>,
     queues: Vec<Queue>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    orders: Vec<Vec<VehicleId>>,
     caps: Vec<(VehicleId, f64)>,
     accel_clock: f64,
     time: f64,
@@ -193,6 +205,7 @@ impl<D: DebugSink> Simulation<D> {
             vehicles: self.state.vehicles.clone(),
             occupants: self.state.occupants.clone(),
             queues: self.state.queues.clone(),
+            orders: self.state.orders.clone(),
             caps: self.caps.clone(),
             accel_clock: self.accel_clock,
             time: self.time,
@@ -210,6 +223,7 @@ impl<D: DebugSink> Simulation<D> {
             vehicles,
             occupants,
             queues,
+            mut orders,
             caps,
             accel_clock,
             time,
@@ -219,9 +233,14 @@ impl<D: DebugSink> Simulation<D> {
         // Derived from the paths, so not part of the snapshot.
         let max_reach =
             vehicles.values().map(|v| reach_beyond_front(&network, v)).fold(0.0, f64::max);
+        let overlaps = following::overlaps(&network);
+        let merges = merge::merges(&network, &overlaps);
+        orders.resize(merges.len(), Vec::new());
         Self {
             state: SimState {
-                overlaps: following::overlaps(&network),
+                overlaps,
+                merges,
+                orders,
                 network,
                 vehicles,
                 occupants,
@@ -241,6 +260,7 @@ impl<D: DebugSink> Simulation<D> {
             scan_empty: Vec::new(),
             scan_kept: Vec::new(),
             departed: Vec::new(),
+            members: Vec::new(),
             lane_decisions: Vec::new(),
             sink,
         }
@@ -249,9 +269,13 @@ impl<D: DebugSink> Simulation<D> {
     pub fn new(network: SimNetwork, sink: D) -> Self {
         let lane_count = network.lanes().count();
         let junction_count = network.junctions().count();
+        let overlaps = following::overlaps(&network);
+        let merges = merge::merges(&network, &overlaps);
         Self {
             state: SimState {
-                overlaps: following::overlaps(&network),
+                orders: vec![Vec::new(); merges.len()],
+                overlaps,
+                merges,
                 network,
                 vehicles: SlotMap::with_key(),
                 occupants: vec![Vec::new(); lane_count],
@@ -267,6 +291,7 @@ impl<D: DebugSink> Simulation<D> {
             scan_empty: Vec::new(),
             scan_kept: Vec::new(),
             departed: Vec::new(),
+            members: Vec::new(),
             time: 0.0,
             decision_cursor: 0,
             decision_budget: 0.0,
@@ -404,9 +429,19 @@ impl<D: DebugSink> Simulation<D> {
         let list = &mut self.state.occupants[lane_id.0 as usize];
         let index = list.partition_point(|o| o.s() <= occupant.s());
         list.insert(index, occupant);
-        let SimState { network, vehicles, occupants, queues, overlaps, .. } = &mut self.state;
+        let SimState {
+            network,
+            vehicles,
+            occupants,
+            queues,
+            overlaps,
+            merges,
+            orders,
+            ..
+        } = &mut self.state;
         join_overlaps(network, overlaps, occupants, id, &vehicles[id], lane_id);
         arrive(network, occupants, queues, id, &vehicles[id]);
+        merge::arrive(network, merges, vehicles, orders, id);
         id
     }
 
@@ -418,6 +453,9 @@ impl<D: DebugSink> Simulation<D> {
         for queue in &mut self.state.queues {
             queue.committed.retain(|&q| q != id);
             queue.fronts.retain(|&q| q != id);
+        }
+        for order in &mut self.state.orders {
+            order.retain(|&q| q != id);
         }
         self.caps.retain(|&(c, _)| c != id);
         self.sink.record(|| DebugEvent::VehicleRemoved { vehicle: id });
@@ -569,6 +607,8 @@ impl<D: DebugSink> Simulation<D> {
         reclassify(network, overlaps, occupants, id, vehicle, old_lane, false);
         join_overlaps(network, overlaps, occupants, id, vehicle, neighbor.lane);
         arrive(network, occupants, queues, id, vehicle);
+        let SimState { network, vehicles, merges, orders, .. } = &mut self.state;
+        merge::arrive(network, merges, vehicles, orders, id);
         Ok(())
     }
 
@@ -681,7 +721,18 @@ impl<D: DebugSink> Simulation<D> {
     /// its own record rather than looking for it. SUMO plans each lane's vehicles
     /// from the front back in the same way.
     fn update_accels(&mut self) {
-        let Self { state, decisions, sink, .. } = self;
+        let Self { state, decisions, sink, members, .. } = self;
+        // Each merge's order, up to date before anyone's terms are worked out.
+        for (m, order) in state.orders.iter_mut().enumerate() {
+            merge::sort(
+                &state.network,
+                &state.merges,
+                &state.vehicles,
+                order,
+                m,
+                members,
+            );
+        }
         let SimState { network, vehicles, occupants, .. } = &*state;
         sink.record(|| DebugEvent::RecomputeAccels);
         decisions.clear();
@@ -716,6 +767,9 @@ impl<D: DebugSink> Simulation<D> {
         for (j, queue) in state.queues.iter().enumerate() {
             junction_terms(state, sink, JunctionId(j as u32), queue, decisions);
         }
+        for (m, order) in state.orders.iter().enumerate() {
+            merge_terms(state, sink, m, order, members, decisions);
+        }
 
         // What its old side and its speed cap allow first, then its own update,
         // so that whether a leader binds it is judged against all of them.
@@ -728,8 +782,9 @@ impl<D: DebugSink> Simulation<D> {
             }
         }
         for update in &self.decisions {
-            if let AccelUpdate::OldSide { id, accel } | AccelUpdate::Junction { id, accel } =
-                *update
+            if let AccelUpdate::OldSide { id, accel }
+            | AccelUpdate::Junction { id, accel }
+            | AccelUpdate::Merge { id, accel } = *update
             {
                 let vehicle = &mut self.state.vehicles[id];
                 vehicle.accel = vehicle.accel.min(accel);
@@ -926,7 +981,7 @@ impl<D: DebugSink> Simulation<D> {
     /// to commit (see [`commit_along`]).
     fn update_queues(&mut self) {
         let Self {
-            state: SimState { network, vehicles, occupants, queues, .. },
+            state: SimState { network, vehicles, occupants, queues, merges, orders, .. },
             arrivals,
             scan_empty,
             scan_kept,
@@ -936,6 +991,7 @@ impl<D: DebugSink> Simulation<D> {
         for &id in arrivals.iter() {
             if let Some(vehicle) = vehicles.get(id) {
                 arrive(network, occupants, queues, id, vehicle);
+                merge::arrive(network, merges, vehicles, orders, id);
             }
         }
         arrivals.clear();
@@ -1466,6 +1522,35 @@ fn junction_terms<D: DebugSink>(
         if accel < f64::INFINITY {
             decisions.push(AccelUpdate::Junction { id, accel });
         }
+    }
+}
+
+/// Each vehicle in a merge's order takes a term from the one before it (see
+/// [`merge::term`]), each recorded to the debug sink.
+fn merge_terms<D: DebugSink>(
+    state: &SimState,
+    sink: &mut D,
+    merge: usize,
+    order: &[VehicleId],
+    members: &mut Vec<merge::Member>,
+    decisions: &mut Vec<AccelUpdate>,
+) {
+    merge::members(
+        &state.network,
+        &state.merges,
+        &state.vehicles,
+        order,
+        merge,
+        members,
+    );
+    for pair in members.windows(2) {
+        let (leader, follower) = (&pair[0], &pair[1]);
+        let Some((accel, gap)) = merge::term(&state.vehicles, follower, leader) else {
+            continue;
+        };
+        let (id, source) = (follower.id(), AccelSource::Merge { id: leader.id(), gap });
+        sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel });
+        decisions.push(AccelUpdate::Merge { id, accel });
     }
 }
 
@@ -2248,6 +2333,84 @@ mod test {
         }
         network.validate().unwrap();
         Simulation::new(network, NoopSink)
+    }
+
+    // Merges.
+
+    #[test]
+    fn lanes_that_start_to_overlap_are_a_merge_and_branches_of_a_fork_are_not() {
+        let sim = a_taper();
+        let of = |lane: u32| sim.state.merges.of(LaneId(lane));
+        // The taper and the lane coming in from the side, all one merge.
+        assert_eq!(sim.state.merges.len(), 1);
+        assert!(of(0).is_some() && of(0) == of(1) && of(1) == of(5));
+        // The lanes leading in, apart, and the lane they lead into.
+        assert_eq!((of(2), of(3), of(4)), (None, None, None));
+
+        // Lane 0 forks at 100 m into lanes 1 and 2, which overlap where they part.
+        let lane = |x0: f64, x1: f64, y1: f64| {
+            Lane::new(&[DVec2::new(x0, 0.0), DVec2::new(x1, y1)], WIDTH, LIMIT).unwrap()
+        };
+        let mut network = SimNetwork::new(vec![
+            lane(0.0, 100.0, 0.0),
+            lane(100.0, 200.0, 0.0),
+            lane(100.0, 200.0, 20.0),
+        ]);
+        network.connect(LaneId(0), LaneId(1));
+        network.connect(LaneId(0), LaneId(2));
+        let sim = Simulation::new(network, NoopSink);
+        assert!(!sim.state.overlaps[1].is_empty(), "the branches overlap");
+        assert_eq!(sim.state.merges.len(), 0);
+    }
+
+    #[test]
+    fn a_vehicle_joins_a_merges_order_on_the_way_and_leaves_it_once_in_the_merge() {
+        let mut sim = a_taper();
+        let id = sim.insert(car(), at(3, 50.0, 10.0));
+        assert_eq!(sim.state.orders[0], [id]);
+        while sim.state.vehicles[id].path[0] == LaneId(3) {
+            sim.step(0.1);
+            if sim.state.vehicles[id].path[0] == LaneId(3) {
+                assert_eq!(sim.state.orders[0], [id]);
+            }
+        }
+        sim.step(0.1);
+        assert_eq!(sim.state.orders[0], []);
+    }
+
+    #[test]
+    fn the_order_keeps_vehicles_on_one_lane_in_their_order_along_it() {
+        let mut sim = a_taper();
+        // The one behind is faster, so by estimated arrival alone it would go
+        // first: 1.8 s to the merge point against 2.3 s.
+        let ahead = sim.insert(car(), at(3, 85.0, 5.0));
+        let behind = sim.insert(car(), at(3, 60.0, 20.0));
+        sim.step(0.1);
+        assert_eq!(sim.state.orders[0], [ahead, behind]);
+    }
+
+    #[test]
+    fn side_by_side_before_a_merge_one_drops_back_gently_and_they_merge_apart() {
+        let mut sim = a_taper();
+        let a = sim.insert(car(), at(3, 10.0, 15.0));
+        let b = sim.insert(car(), at(4, 10.0, 15.0));
+        let (mut least, mut gap) = (f64::INFINITY, f64::INFINITY);
+        for _ in 0..(10.0 * 60.0) as u32 {
+            sim.step(1.0 / 60.0);
+            for id in [a, b] {
+                least = least.min(sim.state.vehicles[id].accel);
+            }
+            // Once both are past the merge point, how far apart they are.
+            let (va, vb) = (&sim.state.vehicles[a], &sim.state.vehicles[b]);
+            if va.path[0] != LaneId(3) && vb.path[0] != LaneId(4) {
+                gap = gap.min(va.pos.distance(vb.pos));
+            }
+        }
+        assert!(
+            least > -acceleration::SAFE_BRAKING,
+            "braked at {least:.2} m/s²"
+        );
+        assert!(gap > car().length + car().min_gap, "{gap:.2} m apart");
     }
 
     #[test]

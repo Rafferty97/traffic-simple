@@ -8,6 +8,7 @@ mod following;
 mod kinematics;
 mod lane;
 mod math;
+mod merge;
 mod models;
 mod network;
 mod occupancy;

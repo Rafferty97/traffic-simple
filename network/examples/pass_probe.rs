@@ -32,12 +32,21 @@ impl Rng {
 struct Counts {
     checks: u64,
     passed: u64,
+    /// Each vehicle's terms from the last longitudinal update.
+    terms: std::collections::HashMap<VehicleId, Vec<(traffic_sim::AccelSource, f64)>>,
 }
 impl DebugSink for Counts {
     fn record(&mut self, event: impl FnOnce() -> DebugEvent) {
-        if let DebugEvent::PassCheck { check, .. } = event() {
-            self.checks += 1;
-            self.passed += check.passed as u64;
+        match event() {
+            DebugEvent::PassCheck { check, .. } => {
+                self.checks += 1;
+                self.passed += check.passed as u64;
+            }
+            DebugEvent::RecomputeAccels => self.terms.clear(),
+            DebugEvent::AccelTerm { vehicle, source, accel } => {
+                self.terms.entry(vehicle).or_default().push((source, accel));
+            }
+            _ => {}
         }
     }
 }
@@ -274,6 +283,7 @@ fn run<D: DebugSink>(
                 stats.hard += 1;
             }
             stats.min_accel = stats.min_accel.min(v.accel());
+
             let changing = v.lane_change().is_some();
             if changing && !prev.get(&id).copied().unwrap_or(true) {
                 stats.changes += 1;
@@ -282,6 +292,47 @@ fn run<D: DebugSink>(
         }
     }
     (stats, time, sim)
+}
+
+/// What binds vehicles braking harder than 6 m/s², by kind of term and lane.
+fn why(net: &RoadNetwork, demand: Demand, seed: u64, minutes: f64) {
+    use traffic_sim::AccelSource as S;
+    let compiled = compile(net).expect("compiles");
+    let mut sim = Simulation::new(compiled.sim, Counts::default());
+    let entries = sim
+        .network()
+        .lanes()
+        .filter(|(_, l)| l.predecessors().is_empty())
+        .map(|(id, _)| id)
+        .collect();
+    let mut harness = Harness { demand, credit: 0.0, rng: Rng(seed), entries };
+    let mut why: std::collections::BTreeMap<String, u64> = Default::default();
+    for _ in 0..(minutes * 60.0 / DT) as usize {
+        sim.step(DT);
+        harness.step(&mut sim);
+        for (id, v) in sim.vehicles() {
+            if v.accel() >= -6.0 {
+                continue;
+            }
+            let terms = sim.sink().terms.get(&id);
+            let binding = terms.and_then(|t| t.iter().find(|(_, a)| *a == v.accel()));
+            let kind = match binding.map(|b| b.0) {
+                Some(S::Leader { gap, .. }) => {
+                    format!("leader gap{}", if gap < 0.0 { "<0" } else { ">=0" })
+                }
+                Some(S::Merge { .. }) => "merge".into(),
+                Some(S::Junction { .. }) => "junction".into(),
+                Some(S::Yield { .. }) => "yield".into(),
+                Some(S::PathEnd { .. }) => "path end".into(),
+                Some(other) => format!("{other:?}").split(' ').next().unwrap().into(),
+                None => "old side?".into(),
+            };
+            *why.entry(format!("{kind:<14} on {:?}", v.lane())).or_default() += 1;
+        }
+    }
+    for (k, n) in why {
+        println!("    {k}: {n}");
+    }
 }
 
 fn lane(offset: f64) -> RoadLane {
@@ -655,6 +706,9 @@ fn main() {
                 100.0 * c.passed as f64 / c.checks.max(1) as f64,
                 time.as_secs_f64() * 1e3 / steps,
             );
+            if std::env::var("WHY").is_ok() {
+                why(net, *demand, seed, minutes);
+            }
             if std::env::var("RECORDS").is_ok() {
                 println!(
                     "    cut {} missing {} {:?}",

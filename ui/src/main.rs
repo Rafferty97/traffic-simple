@@ -531,6 +531,9 @@ impl App {
                     AccelSource::Junction { id, kind: ConflictKind::Merge, gap } => {
                         format!("merging after {id:?}, gap {gap:.2} m")
                     }
+                    AccelSource::Merge { id, gap } => {
+                        format!("merge order after {id:?}, gap {gap:.2} m")
+                    }
                 };
                 let text = egui::RichText::new(format!("{accel:+.2} m/s²")).monospace();
                 ui.label(name);

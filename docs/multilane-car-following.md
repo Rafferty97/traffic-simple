@@ -8,7 +8,7 @@ with lane changes and lanes that can merge and diverge.
 - Lanes inside junctions, and crossing lanes generally, are out of scope: junctions keep vehicles on them apart.
 - Vehicles that conflict at a merge are already separated longitudinally by the time they reach it. Two vehicles close to
   side by side could each find the other behind it and so miss one another; ordering them beforehand is the responsibility
-  of the merge entity, not of this model.
+  of merges (see Merges in [the design](DESIGN.md)), not of this model.
 - This model only ever turns "follow" into "pass": a record moves from converging to diverging, never back. Making a vehicle
   follow one it was free to pass, such as a vehicle cutting in, is the responsibility of other systems.
 - Vehicles are confined as invariants 2 and 3 say. How that is guaranteed (no corner cutting, lane-change paths that don't
