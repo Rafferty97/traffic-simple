@@ -748,7 +748,9 @@ fn draw_pretty(
         }
     }
     for (id, v) in sim.vehicles() {
-        let corners = poses.corners(id, v, sim.alpha()).map(to_scene).to_vec();
+        // Where it is drawn, between steps: the indicators go with the body.
+        let drawn = poses.corners(id, v, sim.alpha());
+        let corners = drawn.map(to_scene).to_vec();
         let outline = if Some(id) == selected {
             Stroke::new(0.25, SELECTED)
         } else {
@@ -759,13 +761,24 @@ fn draw_pretty(
             Color32::from_rgb(200, 40, 40),
             outline,
         ));
-        draw_indicators(painter, sim, v);
+        draw_indicators(painter, sim, v, drawn);
     }
 }
 
+/// How far in from the body's front and rear ends the indicators sit, in
+/// meters, and their radius.
+const INDICATOR_INSET: f64 = 0.4;
+const INDICATOR_RADIUS: f32 = 0.28;
+
 /// Blinking indicators on the side a vehicle is indicating to, or changing
-/// toward, at about 1.5 Hz.
-fn draw_indicators(painter: &egui::Painter, sim: &Simulation<DebugState>, v: &Vehicle) {
+/// toward, at about 1.5 Hz, on its body as drawn, `corners`: rear left, rear
+/// right, front right, front left.
+fn draw_indicators(
+    painter: &egui::Painter,
+    sim: &Simulation<DebugState>,
+    v: &Vehicle,
+    corners: [DVec2; 4],
+) {
     let side = v
         .intent()
         .map(|i| i.side)
@@ -776,15 +789,16 @@ fn draw_indicators(painter: &egui::Painter, sim: &Simulation<DebugState>, v: &Ve
     if (sim.time() * 1.5).fract() >= 0.5 {
         return;
     }
-    // Corners: rear left, rear right, front right, front left.
-    let [rear_left, rear_right, front_right, front_left] = v.corners();
+    let [rear_left, rear_right, front_right, front_left] = corners;
     let (rear, front) = match side {
         Side::Left => (rear_left, front_left),
         Side::Right => (rear_right, front_right),
     };
+    // A little in from each end, along that side.
+    let along = (front - rear).normalize_or_zero() * INDICATOR_INSET;
     let color = Color32::from_rgb(255, 170, 0);
-    for p in [rear, front] {
-        painter.circle_filled(to_scene(p), 0.35, color);
+    for p in [rear + along, front - along] {
+        painter.circle_filled(to_scene(p), INDICATOR_RADIUS, color);
     }
 }
 
@@ -866,9 +880,17 @@ fn draw_debug(
             } else {
                 VEHICLE
             };
-            let corners = poses.corners(id, v, sim.alpha()).map(to_scene).to_vec();
-            painter.add(Shape::closed_line(corners, Stroke::new(0.1, color)));
-            painter.circle_filled(to_scene(v.pos()), 0.2, color);
+            let drawn = poses.corners(id, v, sim.alpha());
+            painter.add(Shape::closed_line(
+                drawn.map(to_scene).to_vec(),
+                Stroke::new(0.1, color),
+            ));
+            // Its rear axle, on the body as drawn.
+            let [rear_left, rear_right, front_right, front_left] = drawn;
+            let rear = 0.5 * (rear_left + rear_right);
+            let ahead = (0.5 * (front_left + front_right) - rear).normalize_or_zero();
+            let axle = rear + ahead * v.spec().rear_axle;
+            painter.circle_filled(to_scene(axle), 0.2, color);
         }
 
         // From the vehicle's stored cubic, drawn on its current lane only, so it
