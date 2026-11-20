@@ -41,7 +41,7 @@ fn state<D: DebugSink>(sim: &Simulation<D>) -> Vec<u64> {
                 Lateral::InLane => 0,
                 Lateral::Diverging(Side::Left) => 1,
                 Lateral::Diverging(Side::Right) => 2,
-                Lateral::Merging => 3,
+                Lateral::Converging => 3,
             });
         }
     }

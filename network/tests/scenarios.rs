@@ -79,8 +79,43 @@ fn overlap(a: [glam::DVec2; 4], b: [glam::DVec2; 4]) -> bool {
     !axes.iter().any(|&axis| separated(axis.perp()))
 }
 
+/// A vehicle whose body is well inside a lane outside junctions that it has no
+/// record on, if any, other than lanes on its path and those its nose pokes
+/// into past the end of a lane it is on: each vehicle has a record on every lane
+/// it intersects (see `docs/multilane-car-following.md`).
+fn uncovered<D: traffic_sim::DebugSink>(sim: &traffic_sim::Simulation<D>) -> Option<String> {
+    use traffic_sim::Side;
+    const INSIDE: f64 = 0.05;
+    let net = sim.network();
+    let on = |lane, id| sim.occupants(lane).iter().any(|o| o.id == id && !o.ghost);
+    for (id, v) in sim.vehicles() {
+        for (lane_id, lane) in net.lanes() {
+            if lane.junction().is_some() || v.path().contains(&lane_id) || on(lane_id, id) {
+                continue;
+            }
+            if lane.predecessors().iter().any(|&p| on(p, id)) {
+                continue;
+            }
+            let g = lane.geometry();
+            let inside = v.corners().iter().any(|&c| {
+                let p = g.world_to_lane(c);
+                p.s > INSIDE
+                    && p.s < g.length() - INSIDE
+                    && p.t < g.half_width(p, Side::Left) - INSIDE
+                    && -p.t < g.half_width(p, Side::Right) - INSIDE
+                    && g.lane_to_world(p).distance(c) < 0.01
+            });
+            if inside {
+                return Some(format!("{id:?} on {:?} is in {lane_id:?}", v.lane()));
+            }
+        }
+    }
+    None
+}
+
 /// Floods a network with traffic for `seconds`, a car tried every third of a
-/// second at its entry lanes in turn, asserting that no two bodies ever overlap.
+/// second at its entry lanes in turn, asserting that no two bodies ever overlap,
+/// and that every vehicle has a record on each lane its body is in.
 fn flood(net: &traffic_network::RoadNetwork, seconds: f64) {
     use traffic_sim::{LaneId, NoopSink, Placement, Route, Simulation, VehicleSpec};
     let car = VehicleSpec {
@@ -121,6 +156,9 @@ fn flood(net: &traffic_network::RoadNetwork, seconds: f64) {
             if step % 6 != 0 {
                 continue;
             }
+            if let Some(what) = uncovered(&sim) {
+                panic!("{what} with no record there at {:.2} s", sim.time());
+            }
             let bodies: Vec<_> = sim.vehicles().map(|(id, v)| (id, v.corners())).collect();
             for (i, &(a, body_a)) in bodies.iter().enumerate() {
                 for &(b, body_b) in &bodies[i + 1..] {
@@ -154,6 +192,22 @@ fn a_freeway_with_ramps_flooded_with_traffic_has_no_collisions() {
 /// merge, and both lanes locked up for good.
 #[test]
 fn a_freeway_with_ramps_in_light_traffic_never_locks_up() {
+    ramps_traffic(300.0, 600.0);
+}
+
+/// In freely flowing traffic, drivers varied and changing lanes, every vehicle
+/// has a record on each lane its body is in: around the lane drop, where the
+/// acceleration lane bends in toward a lane vehicles are leaving, and where the
+/// off-ramp parts.
+#[test]
+fn a_freeway_with_ramps_keeps_a_record_on_every_lane_a_body_is_in() {
+    ramps_traffic(900.0, 180.0);
+}
+
+/// Runs the ramps for `seconds` at `flow` vehicles an hour into each entry,
+/// drivers varied, asserting that traffic keeps leaving and that every body has
+/// a record on each lane it is in.
+fn ramps_traffic(flow: f64, seconds: f64) {
     use traffic_sim::{LaneId, NoopSink, Placement, Route, Simulation, VehicleSpec};
     // SplitMix64, for drivers that vary but are the same every run.
     let mut state = 1u64;
@@ -173,10 +227,15 @@ fn a_freeway_with_ramps_in_light_traffic_never_locks_up() {
         .map(|(id, _)| id)
         .collect();
     let (mut credit, mut spawned, mut left_before) = (0.0, 0, 0);
-    for step in 1..=600 * 60 {
+    for step in 1..=(seconds * 60.0) as u64 {
         sim.step(1.0 / 60.0);
+        if step % 10 == 0
+            && let Some(what) = uncovered(&sim)
+        {
+            panic!("{what} with no record there at {:.2} s", sim.time());
+        }
         let n = entries.len() as f64;
-        credit = f64::min(credit + 300.0 / 3600.0 * n / 60.0, n);
+        credit = f64::min(credit + flow / 3600.0 * n / 60.0, n);
         if credit >= 1.0 {
             let lane = entries[(uniform() * n) as usize];
             // Normal with mean 1 and deviation 0.1, as SUMO's default, clamped.

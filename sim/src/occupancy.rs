@@ -39,52 +39,79 @@ pub struct Occupant {
     pub s: f64,
     pub id: VehicleId,
     /// Lane coordinates of that rear corner, a hint for the next projection.
-    hint: LanePos,
+    pub(crate) hint: LanePos,
     /// Whether this is the ghost of a vehicle indicating a change into this lane.
     pub ghost: bool,
-    /// Whether the vehicle is in this lane or moving out of it sideways.
+    /// Whether the vehicle is in this lane, converging on it or diverging from it.
     pub lateral: Lateral,
+    /// Where a converging record turns diverging: once `s` reaches it. `f64::MAX`
+    /// if it never does (see [`crate::following::classify`]). Finite sentinels,
+    /// so snapshots serialize.
+    #[cfg_attr(feature = "serde", serde(default = "far"))]
+    pub(crate) turn: f64,
+    /// The side it diverges toward, once it does.
+    #[cfg_attr(feature = "serde", serde(default = "left"))]
+    pub(crate) side: Side,
+    /// Where its body leaves the lane for good, as its rear's `s`: how far the
+    /// vehicle's search of this lane reaches, as its old lane. `f64::MAX` if not
+    /// known.
+    #[cfg_attr(feature = "serde", serde(default = "far"))]
+    pub(crate) exit: f64,
 }
 
-/// How a vehicle relates to a lane it has a record on, as followers there see it.
+#[cfg(feature = "serde")]
+fn far() -> f64 {
+    f64::MAX
+}
+
+#[cfg(feature = "serde")]
+fn left() -> Side {
+    Side::Left
+}
+
+/// How a vehicle relates to a lane it has a record on, as followers there see it
+/// (see `docs/multilane-car-following.md`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Lateral {
-    /// In the lane: following it, settled or still converging onto it after a
-    /// lane change, lingering past the end of it after advancing, or the ghost of
-    /// a vehicle indicating into it. A vehicle moving in is treated as already
-    /// there.
+    /// In the lane: following it, settled, or lingering past the end of it
+    /// after advancing; or the ghost of a vehicle indicating into it.
     InLane,
-    /// Moving out of the lane sideways after a lane change, toward this side.
+    /// Its course may yet bring it into the lane, or closer to it: changing lanes
+    /// into it, merging into it from a lane that leads into the same one, or
+    /// leaving it on a course that may come back.
+    Converging,
+    /// Moving away from the lane sideways, toward this side, and never coming
+    /// back to it.
     Diverging(Side),
-    /// Merging into the lane from the other lane of a taper (see
-    /// [`SimNetwork::taper_partners`]): treated as in the lane, and checked for
-    /// passing as if already settled in it.
-    Merging,
 }
 
 /// The side of a vehicle ahead a follower might pass it on, or `None` if it may
-/// never pass it, from how each relates to the lane searched.
+/// never pass it, from how each relates to the lane searched: `own` the
+/// follower, `leader` the vehicle ahead.
 ///
 /// The passing check is a snapshot taken as the follower reaches the other
-/// vehicle's rear, so it is only sound when the follower isn't moving toward it
-/// sideways: then that moment is the tightest, and the gap only grows. So:
-///
-/// - A vehicle in the lane can only be passed by a follower leaving the lane,
-///   on the side it is leaving toward. Two in the same lane, settled or
-///   converging, never pass.
-/// - A vehicle diverging can be passed on the side it is leaving, unless the
-///   follower is itself moving the same way.
-/// - A vehicle merging in is treated as in the lane.
-///
-/// `leaving` is the side the follower is leaving the searched lane toward, and
-/// `moving` the side it is moving across toward, if any.
-fn passing_side(leader: Lateral, leaving: Option<Side>, moving: Option<Side>) -> Option<Side> {
-    match (leader, leaving) {
-        (Lateral::InLane | Lateral::Merging, leaving) => leaving,
-        (Lateral::Diverging(side), _) if moving == Some(side) => None,
-        (Lateral::Diverging(side), _) => Some(side.opposite()),
+/// vehicle's rear, so it is only sound when neither moves toward the other
+/// sideways after that: then that moment is the tightest, and the gap only
+/// grows. So only a diverging leader passed by a follower in the lane, a
+/// diverging follower passing a leader in the lane, and two diverging to
+/// opposite sides are checked; every other pair follows.
+fn passing_side(own: Lateral, leader: Lateral) -> Option<Side> {
+    match (own, leader) {
+        (Lateral::InLane, Lateral::Diverging(side)) => Some(side.opposite()),
+        (Lateral::Diverging(side), Lateral::InLane) => Some(side),
+        (Lateral::Diverging(a), Lateral::Diverging(b)) if a != b => Some(a),
+        _ => None,
     }
+}
+
+/// The corners of a body of `spec`'s size with its rear axle at `pos`, heading
+/// along `tangent`: rear left, rear right, front right, front left.
+pub(crate) fn body(spec: &crate::vehicle::VehicleSpec, pos: DVec2, tangent: DVec2) -> [DVec2; 4] {
+    let left = 0.5 * spec.width * tangent.perp();
+    let rear = pos - spec.rear_axle * tangent;
+    let front = rear + spec.length * tangent;
+    [rear + left, rear - left, front - left, front + left]
 }
 
 /// How much room a follower would have passing a vehicle ahead on `side` of it,
@@ -95,7 +122,7 @@ fn passing_side(leader: Lateral, leaving: Option<Side>, moving: Option<Side>) ->
 /// Only the rear corners are measured, which assumes the other vehicle is
 /// straight or turned away from the follower. That holds for the pairs
 /// [`passing_side`] lets through: one diverging is turned away, and one in the
-/// lane is passed only by a follower moving away from it.
+/// lane is passed only by a follower diverging from it.
 fn clearance(
     side: Side,
     pos: DVec2,
@@ -166,7 +193,16 @@ impl Occupant {
             beside: !geometry.between_edges(p),
         };
         let hint = if left.s <= right.s { left } else { right };
-        let occupant = Self { s: hint.s, id, hint, ghost, lateral };
+        let occupant = Self {
+            s: hint.s,
+            id,
+            hint,
+            ghost,
+            lateral,
+            turn: f64::MAX,
+            side: Side::Left,
+            exit: f64::MAX,
+        };
         (occupant, [corner(left), corner(right)])
     }
 }
@@ -183,9 +219,11 @@ struct Corner {
 /// outside their lane, and restores the order.
 ///
 /// - Ghosts are refreshed but never dropped here.
-/// - A record on the lane a vehicle is following, or merging into from the
-///   other lane of a taper, is never dropped for being beside it, only for being
-///   past its end: merging, it starts out beside the lane.
+/// - A record on the lane a vehicle follows is in the lane, or converging while
+///   it changes lanes. Elsewhere, a converging record turns diverging once its
+///   `s` reaches where its classification said it would.
+/// - Only a diverging record is dropped for being beside its lane. Any record is
+///   dropped once both rear corners are past the lane's end.
 /// - Vehicles that lose a record on a lane they aren't following, by its end or
 ///   its side, have their ids pushed to `departed`, so their old side can be
 ///   checked once every list is up to date.
@@ -202,15 +240,39 @@ pub fn update(
             let Occupant { id, hint, ghost, lateral, .. } = *occupant;
             let (updated, corners) =
                 Occupant::project(network, lane_id, id, vehicle, hint, ghost, lateral);
-            *occupant = updated;
+            (occupant.s, occupant.hint) = (updated.s, updated.hint);
             if occupant.ghost {
                 return true;
             }
             let following = vehicle.path[0] == lane_id;
-            let kept_beside = following || lateral == Lateral::Merging;
-            let outside = |c: &Corner| c.past_end || (c.beside && !kept_beside);
+            if following {
+                occupant.lateral = match vehicle.lane_change {
+                    Some(_) => Lateral::Converging,
+                    None => Lateral::InLane,
+                };
+            } else if occupant.lateral == Lateral::Converging && occupant.s >= occupant.turn {
+                occupant.lateral = Lateral::Diverging(occupant.side);
+            }
+            // Only a vehicle diverging from the lane is ever dropped for being
+            // beside it: one converging may yet come back.
+            let diverging = matches!(occupant.lateral, Lateral::Diverging(_));
+            let outside = |c: &Corner| c.past_end || (c.beside && diverging);
             if !corners.iter().all(outside) {
                 return true;
+            }
+            // Beside the lane, the whole body must be clear of it: where the
+            // lane bends toward it, a vehicle leaving it points back across it,
+            // and its front can still be in the lane after its rear has left.
+            if diverging && !corners.iter().all(|c| c.past_end) {
+                let geometry = network.lane(lane_id).geometry();
+                let [.., front_right, front_left] = vehicle.corners();
+                let in_lane = |c: DVec2| {
+                    let p = geometry.world_to_lane_near(c, occupant.hint);
+                    p.s >= 0.0 && p.s < geometry.length() && geometry.between_edges(p)
+                };
+                if in_lane(front_left) || in_lane(front_right) {
+                    return true;
+                }
             }
             if !following {
                 departed.push(occupant.id);
@@ -275,31 +337,12 @@ impl Along {
         }
     }
 
-    /// The side it is leaving the lanes searched toward, if it is: back toward its
-    /// own.
-    fn leaving(self) -> Option<Side> {
-        match self {
-            Along::Leaving(side, _) => Some(side.opposite()),
-            _ => None,
-        }
-    }
-
-    /// The side it is moving across toward during its lane change, if any: away
-    /// from where the cubic starts.
-    fn moving(self, vehicle: &Vehicle) -> Option<Side> {
-        match self.change(vehicle)?.offset {
-            o if o > 0.0 => Some(Side::Right),
-            o if o < 0.0 => Some(Side::Left),
-            _ => None,
-        }
-    }
-
     /// Its rear axle's position and heading, as a unit tangent, `ahead` meters
     /// further along where it plans to be, from `axle_s` along the lanes it
     /// follows: its path, with its lane change's cubic, or, settled beside it, the
     /// centerlines there. The heading follows the cubic's slope as well as the
     /// lanes' bends.
-    fn pose(
+    pub(crate) fn pose(
         self,
         network: &SimNetwork,
         vehicle: &Vehicle,
@@ -481,14 +524,38 @@ pub fn find_leaders<B>(
         }
     };
     let front = rear + vehicle.spec.length;
+    // Its own record on the first lane, if it searches from one.
+    let own = match along {
+        Along::Path(own) | Along::Leaving(_, own) => Some(list(first)[own]),
+        _ => None,
+    };
     let horizon = acceleration::horizon(&vehicle.spec, vehicle.speed);
-    let horizon = match (along, vehicle.lane_change) {
+    let horizon = match (along, vehicle.lane_change, own) {
         // A gap is how far the rear axle travels before the nose reaches a rear.
-        (Along::Leaving(..), change) => {
+        // Leaving its old lane, it can only reach a vehicle there while it is
+        // still in it: as far as its body leaves the lane for good, and its lane
+        // change ends at the latest.
+        (Along::Leaving(..), change, Some(own)) => {
             let remaining = change.map_or(0.0, |c| (c.end() - axle_s).max(0.0));
-            remaining.min(horizon)
+            let in_lane = (own.exit - own.s).max(0.0);
+            remaining.min(in_lane).min(horizon)
         }
         _ => horizon,
+    };
+    // How it relates to the `k`th lane searched: on its own path, in the lane or
+    // converging while it changes lanes; settled beside it, in the lane; leaving
+    // its old lanes, as its records there say, and converging where it has none.
+    let own_lateral = |k: usize, lane: LaneId| match (along, own) {
+        (Along::Leaving(..), Some(own)) if k == 0 => own.lateral,
+        (Along::Leaving(..), Some(own)) => list(lane)
+            .iter()
+            .find(|o| o.id == own.id && !o.ghost)
+            .map_or(Lateral::Converging, |o| o.lateral),
+        (Along::Into(_), _) => Lateral::InLane,
+        _ => match vehicle.lane_change {
+            Some(_) => Lateral::Converging,
+            None => Lateral::InLane,
+        },
     };
     // Settled beside its path, it is nowhere yet, so where it is now is where it
     // would be.
@@ -517,27 +584,18 @@ pub fn find_leaders<B>(
                 f(Found::Ahead(Ahead::Ghost(o.id), gap))?;
                 continue;
             }
-            let in_lane = matches!(o.lateral, Lateral::InLane | Lateral::Merging);
+            // Converging on the lane, it can't be passed in it, whatever it
+            // covers beyond, so what lies beyond it there can't be reached first.
+            let in_lane = matches!(o.lateral, Lateral::InLane | Lateral::Converging);
             if in_lane && k < covered {
                 continue;
             }
-            if let Some(side) = passing_side(o.lateral, along.leaving(), along.moving(vehicle)) {
+            if let Some(side) = passing_side(own_lateral(k, lane), o.lateral) {
                 let other = &state.vehicles[o.id];
                 let geometry = network.lane(lane).geometry();
-                // The record sits at the other vehicle's rearmost corner. Merging
-                // in, its rear corners are where they would be settled in the
-                // lane: its real ones are beside it, still coming in.
-                let (rearmost, corners) = match o.lateral {
-                    Lateral::Merging => {
-                        let half = 0.5 * other.spec.width;
-                        let at = |t: f64| geometry.lane_to_world(geometry.lane_pos(o.s, t));
-                        (at(0.0), [at(half), at(-half)])
-                    }
-                    _ => {
-                        let [rear_left, rear_right, ..] = other.corners();
-                        (geometry.lane_to_world(o.hint), [rear_left, rear_right])
-                    }
-                };
+                // The record sits at the other vehicle's rearmost corner.
+                let [rear_left, rear_right, ..] = other.corners();
+                let (rearmost, corners) = (geometry.lane_to_world(o.hint), [rear_left, rear_right]);
                 let (pos, tangent) =
                     along.reach(network, vehicle, axle_s, k, lane, gap, rearmost, o.s, now);
                 let half_width = 0.5 * vehicle.spec.width;
@@ -698,33 +756,24 @@ mod test {
     use crate::vehicle::{Placement, VehicleSpec};
 
     #[test]
-    fn the_rules_only_let_through_followers_not_moving_toward_the_leader() {
-        use Lateral::{Diverging, InLane};
+    fn only_pairs_that_move_apart_sideways_are_checked() {
+        use Lateral::{Converging, Diverging, InLane};
         use Side::{Left, Right};
-        // In the same lane, settled or converging: never.
-        assert_eq!(passing_side(InLane, None, None), None);
-        assert_eq!(passing_side(InLane, None, Some(Left)), None);
-        // A follower leaving the lane passes on the side it leaves toward.
-        assert_eq!(passing_side(InLane, Some(Left), Some(Left)), Some(Left));
-        assert_eq!(passing_side(InLane, Some(Right), None), Some(Right));
-        // Merging in, as if in the lane.
-        assert_eq!(passing_side(Lateral::Merging, None, None), None);
-        assert_eq!(
-            passing_side(Lateral::Merging, Some(Left), Some(Left)),
-            Some(Left)
-        );
-        // A diverging vehicle is passed on the side it is leaving...
-        assert_eq!(passing_side(Diverging(Left), None, None), Some(Right));
-        assert_eq!(
-            passing_side(Diverging(Left), Some(Right), Some(Right)),
-            Some(Right)
-        );
-        // ...unless the follower is moving the same way.
-        assert_eq!(passing_side(Diverging(Left), None, Some(Left)), None);
-        assert_eq!(
-            passing_side(Diverging(Right), Some(Right), Some(Right)),
-            None
-        );
+        // Neither diverging: never.
+        for (own, leader) in [(InLane, InLane), (InLane, Converging), (Converging, InLane)] {
+            assert_eq!(passing_side(own, leader), None);
+        }
+        // A converging follower never passes, and a converging leader is never
+        // passed.
+        assert_eq!(passing_side(Converging, Diverging(Left)), None);
+        assert_eq!(passing_side(Diverging(Left), Converging), None);
+        // A diverging leader is passed on the side it is leaving.
+        assert_eq!(passing_side(InLane, Diverging(Left)), Some(Right));
+        // A diverging follower passes on the side it is leaving toward.
+        assert_eq!(passing_side(Diverging(Right), InLane), Some(Right));
+        // Diverging apart, yes; the same way, never.
+        assert_eq!(passing_side(Diverging(Left), Diverging(Right)), Some(Left));
+        assert_eq!(passing_side(Diverging(Left), Diverging(Left)), None);
     }
 
     #[test]
@@ -782,7 +831,6 @@ mod test {
         let mut vehicle = car_at(&network, 0, 0.0);
         vehicle.lane_change = Some(LaneChange::new(0.0, 3.5, 0.0, 0.0));
         let along = Along::Path(0);
-        assert_eq!(along.moving(&vehicle), Some(Side::Right));
         let (pos, tangent) = along.pose(&network, &vehicle, 0.0, 7.5);
         assert!((pos - DVec2::new(7.5, 1.75)).length() < 1e-9, "at {pos}");
         assert!(tangent.y < -0.2, "heading {tangent}");
@@ -801,7 +849,6 @@ mod test {
         let vehicle = car_at(&network, 1, 10.0);
         let along = Along::Into(Side::Left);
         assert_eq!(along.lane(&network, &vehicle, 0), Some(LaneId(0)));
-        assert_eq!(along.moving(&vehicle), None);
         let axle_s = axle_beside(&network, &vehicle, LaneId(0));
         let (pos, _) = along.pose(&network, &vehicle, axle_s, 20.0);
         let inside = network.lane(LaneId(0));
@@ -959,6 +1006,9 @@ mod test {
                 hint: lane.geometry().lane_pos(s, 0.0),
                 ghost: false,
                 lateral: Lateral::InLane,
+                turn: f64::MAX,
+                side: Side::Left,
+                exit: f64::MAX,
             })
             .collect();
         insertion_sort(&mut list);

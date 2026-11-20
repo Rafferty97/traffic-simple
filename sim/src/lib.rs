@@ -4,6 +4,7 @@
 //! the workspace.
 
 mod debug;
+mod following;
 mod kinematics;
 mod lane;
 mod math;

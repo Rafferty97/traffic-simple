@@ -503,37 +503,6 @@ impl SimNetwork {
         unreachable!("a vehicle's path always holds its current lane")
     }
 
-    /// The other lanes of each taper `lane` is in: lanes leading into the same
-    /// lane as it that start together with it, side by side, within a centimeter,
-    /// as at a lane drop. A vehicle joining `lane` joins these too, merging into
-    /// them, so vehicles on both go single file. Lanes that merge without
-    /// starting together, such as connectors meeting in an intersection, are
-    /// left to their junction.
-    ///
-    /// It works from the geometry, so it is for when a vehicle joins a lane, not
-    /// for every substep.
-    pub(crate) fn taper_partners(&self, lane: LaneId) -> impl Iterator<Item = LaneId> + '_ {
-        let geometry = self.lane(lane).geometry();
-        let start = geometry.lane_pos(0.0, 0.0);
-        let together = move |other: LaneId| {
-            let theirs = self.lane(other).geometry();
-            let at = theirs.lane_to_world(theirs.lane_pos(0.0, 0.0));
-            let pos = geometry.world_to_lane_near(at, start);
-            let (mine, beside) = match pos.t >= 0.0 {
-                true => (Side::Left, Side::Right),
-                false => (Side::Right, Side::Left),
-            };
-            let apart = geometry.half_width(pos, mine)
-                + theirs.half_width(theirs.lane_pos(0.0, 0.0), beside);
-            pos.s.abs() <= COINCIDENT && pos.t.abs() <= apart + COINCIDENT
-        };
-        self.lane(lane)
-            .successors()
-            .iter()
-            .flat_map(|&next| self.lane(next).predecessors().iter().copied())
-            .filter(move |&other| other != lane && together(other))
-    }
-
     /// All lanes with their ids.
     pub fn lanes(&self) -> impl Iterator<Item = (LaneId, &Lane)> {
         self.lanes.iter().enumerate().map(|(i, lane)| (LaneId(i as u32), lane))

@@ -95,15 +95,21 @@ trace is skipped and the record is diverging at once. Where X and Z merge, the d
 record stays converging.
 
 Since V is confined to X once its lane change has ended, a record only ever needs dropping as V leaves Z for good: once it
-is diverging and its rear corners are outside Z, or once it is past Z's end. A converging record is never dropped for being
-beside Z.
+is diverging and its whole body is outside Z, or once its rear corners are past Z's end. A converging record is never
+dropped for being beside Z. The whole body, not just the rear corners: where Z bends in toward V as V leaves it, V points
+back across Z, and its front can still be in Z after its rear has left.
+
+A vehicle on a loop shorter than its course can hold two records on one lane. A record a vehicle joins is only a
+duplicate if the vehicle already has one within 20 m of it on that lane.
 
 ### Classifying occupancy records geometrically
 
-Step through V's future course, its lane change and then its lane, until both conditions above hold, and find the point
+Step through V's future course, a sample every metre, the first at its actual pose, its lane change and then its lane, until both conditions above hold, and find the point
 after which these two always hold:
 
-- While it intersects Z, it is moving monotonically away from Z in the specified direction.
+- While it intersects Z, it is moving monotonically away from Z in the specified direction. As a body turns into a lane
+  change its tail swings back toward the lane it leaves by a few centimetres, so coming back by up to 0.1 m, from the
+  furthest it has been, still counts as moving away: well inside the passing check's clearance.
 - Once its body has stopped intersecting Z, it never intersects it again.
 
 Until that point, the record is converging, and after that point, it is diverging. The trace also finds V's exit point,
@@ -122,4 +128,9 @@ and is never reached where they merge.
 Pairs that don't overlap have no diverge point. Once V's lane change has ended it is confined to X, which never meets Z, so
 the trace only has to run to the end of the lane change.
 
+Junctions keep vehicles on their lanes apart, except where branches leave the same lane: they rely on vehicles at a
+fork finding each other, so fork branches are recorded even inside junctions.
+
 The same table says which lanes a vehicle entering a lane is inserted into (invariant 1): every lane that overlaps it.
+That applies to every lane it enters, including the successors of its old lane that a vehicle straddling a section
+boundary joins.

@@ -1,4 +1,3 @@
-use std::cmp::Ordering;
 use std::ops::ControlFlow;
 
 use arrayvec::ArrayVec;
@@ -6,6 +5,7 @@ use glam::DVec2;
 use slotmap::{Key, SlotMap};
 
 use crate::debug::{AccelSource, DebugEvent, DebugSink, NoopSink};
+use crate::following::{self, Overlaps};
 use crate::kinematics;
 use crate::lane::LanePos;
 use crate::math::wrap_angle;
@@ -13,7 +13,7 @@ use crate::models::acceleration;
 use crate::models::lane_change::{self, Decision, Effect, LaneChangeEval, Prospect};
 use crate::models::lateral::{self, LaneChange};
 use crate::models::routing::Route;
-use crate::network::{Conflict, JunctionId, LaneId, Side, SimNetwork};
+use crate::network::{Conflict, JunctionId, LaneId, MAX_SUCCESSORS, Side, SimNetwork};
 use crate::occupancy::{
     self, Ahead, Along, Found, Lateral, Occupant, find_follower, find_leaders, for_each_leader,
 };
@@ -45,6 +45,9 @@ pub(crate) struct SimState {
     pub max_reach: f64,
     /// Each junction's queue, by junction.
     pub queues: Vec<Queue>,
+    /// Each lane's overlapping lanes outside junctions: derived from the network,
+    /// so not part of a snapshot.
+    pub overlaps: Overlaps,
 }
 
 /// A junction's queue: the vehicles committed there, which can no longer stop
@@ -217,7 +220,14 @@ impl<D: DebugSink> Simulation<D> {
         let max_reach =
             vehicles.values().map(|v| reach_beyond_front(&network, v)).fold(0.0, f64::max);
         Self {
-            state: SimState { network, vehicles, occupants, max_reach, queues },
+            state: SimState {
+                overlaps: following::overlaps(&network),
+                network,
+                vehicles,
+                occupants,
+                max_reach,
+                queues,
+            },
             caps,
             accel_clock,
             time,
@@ -241,6 +251,7 @@ impl<D: DebugSink> Simulation<D> {
         let junction_count = network.junctions().count();
         Self {
             state: SimState {
+                overlaps: following::overlaps(&network),
                 network,
                 vehicles: SlotMap::with_key(),
                 occupants: vec![Vec::new(); lane_count],
@@ -393,8 +404,8 @@ impl<D: DebugSink> Simulation<D> {
         let list = &mut self.state.occupants[lane_id.0 as usize];
         let index = list.partition_point(|o| o.s <= occupant.s);
         list.insert(index, occupant);
-        let SimState { network, vehicles, occupants, queues, .. } = &mut self.state;
-        join_tapers(network, occupants, id, &vehicles[id], lane_id);
+        let SimState { network, vehicles, occupants, queues, overlaps, .. } = &mut self.state;
+        join_overlaps(network, overlaps, occupants, id, &vehicles[id], lane_id);
         arrive(network, occupants, queues, id, &vehicles[id]);
         id
     }
@@ -535,16 +546,10 @@ impl<D: DebugSink> Simulation<D> {
         let beyond_front = reach_beyond_front(&self.state.network, vehicle);
         self.state.max_reach = self.state.max_reach.max(beyond_front);
 
-        // Its record on the lane it is leaving is now diverging. Set here rather
-        // than left to the next occupancy update, so searches before then see it.
-        let old = &mut self.state.occupants[old_lane.0 as usize];
-        if let Some(record) = old.iter_mut().find(|o| o.id == id && !o.ghost) {
-            record.lateral = Lateral::Diverging(side);
-        }
-
         let list = &mut self.state.occupants[neighbor.lane.0 as usize];
         if let Some(ghost) = list.iter_mut().find(|o| o.id == id && o.ghost) {
             ghost.ghost = false;
+            ghost.lateral = Lateral::Converging;
         } else {
             let occupant = Occupant::new(
                 &self.state.network,
@@ -552,14 +557,19 @@ impl<D: DebugSink> Simulation<D> {
                 id,
                 &self.state.vehicles[id],
                 lane_pos,
-                Lateral::InLane,
+                Lateral::Converging,
             );
             let index = list.partition_point(|o| o.s <= occupant.s);
             list.insert(index, occupant);
         }
-        let SimState { network, vehicles, occupants, queues, .. } = &mut self.state;
-        join_tapers(network, occupants, id, &vehicles[id], neighbor.lane);
-        arrive(network, occupants, queues, id, &vehicles[id]);
+        let SimState { network, vehicles, occupants, queues, overlaps, .. } = &mut self.state;
+        let vehicle = &vehicles[id];
+        // Its course has changed, so every other record it has is classified
+        // afresh, set here rather than left to the next occupancy update, so
+        // searches before then see it.
+        reclassify(network, overlaps, occupants, id, vehicle, old_lane, false);
+        join_overlaps(network, overlaps, occupants, id, vehicle, neighbor.lane);
+        arrive(network, occupants, queues, id, vehicle);
         Ok(())
     }
 
@@ -770,7 +780,7 @@ impl<D: DebugSink> Simulation<D> {
     /// the change's cubic, and the change ends where the cubic does.
     fn update_motion(&mut self, dt: f64) {
         let Self {
-            state: SimState { network, vehicles, occupants, max_reach, .. },
+            state: SimState { network, vehicles, occupants, max_reach, overlaps, .. },
             leavers,
             arrivals,
             sink,
@@ -819,46 +829,47 @@ impl<D: DebugSink> Simulation<D> {
                 let lanes = vehicle.path.len();
                 extend_path(network, &mut vehicle.path, &mut vehicle.route, s, needed);
                 arrives |= vehicle.path.len() > lanes;
-                // It joins every lane the ones it is leaving lead to, as it would
-                // the lane it leaves by changing lanes: it overlaps them where they
-                // part, and each record is dropped once it is clear of that lane.
-                // Joins unsorted; `update_occupancy` sets its `s` and sorts.
+                // It joins the lane it now follows, and every lane overlapping
+                // it, such as the other branches where lanes part and the other
+                // lanes leading into the same one, each classified from its
+                // course. Joins unsorted; `update_occupancy` sets its `s` and
+                // sorts.
                 let followed = vehicle.path[0];
-                join_tapers(network, occupants, id, vehicle, followed);
-                let s = vehicle.lane_pos.s;
-                let mut join = |lane: LaneId, lateral: Lateral| {
+                let join = |occupants: &mut [Vec<Occupant>], lane: LaneId| {
+                    let geometry = network.lane(lane).geometry();
                     let hint = match lane == followed {
                         true => vehicle.lane_pos,
-                        false => network.lane(lane).geometry().lane_pos(s, 0.0),
+                        false => geometry.world_to_lane(vehicle.pos),
                     };
-                    let occupant = Occupant::new(network, lane, id, vehicle, hint, lateral);
+                    let mut occupant =
+                        Occupant::new(network, lane, id, vehicle, hint, Lateral::InLane);
+                    if lane != followed && has_record_at(occupants, lane, id, occupant.s) {
+                        return;
+                    }
+                    following::classify(network, overlaps, vehicle, lane, &mut occupant);
                     occupants[lane.0 as usize].push(occupant);
                 };
-                join(followed, Lateral::InLane);
-                // Successors are ordered left to right, so the others lie to the
-                // left of the one it follows, or to the right, and it is moving
-                // out of them toward it.
-                let successors = network.lane(previous).successors();
-                if let Some(taken) = successors.iter().position(|&lane| lane == followed) {
-                    for (i, &lane) in successors.iter().enumerate() {
-                        match i.cmp(&taken) {
-                            Ordering::Less => join(lane, Lateral::Diverging(Side::Right)),
-                            Ordering::Equal => {}
-                            Ordering::Greater => join(lane, Lateral::Diverging(Side::Left)),
-                        }
-                    }
-                }
+                join(occupants, followed);
                 // Still straddling after a lane change: also join the lanes its old
-                // lane leads to, all on its old side, so followers there keep seeing
-                // it, except those the lane it is leaving leads to as well.
+                // lane leads to, so followers there keep seeing it.
                 let old = vehicle.old_side.and_then(|side| network.lane(previous).adj(side));
-                if let (Some(side), Some(old)) = (vehicle.old_side, old) {
+                // Every lane it enters, it also joins those overlapping it.
+                let mut entered = arrayvec::ArrayVec::<LaneId, { 1 + MAX_SUCCESSORS }>::new();
+                entered.push(followed);
+                if let Some(old) = old {
                     for &lane in network.lane(old.lane).successors() {
-                        if !successors.contains(&lane) {
-                            join(lane, Lateral::Diverging(side.opposite()));
-                        }
+                        join(occupants, lane);
+                        entered.push(lane);
                     }
                 }
+                for &lane in &entered {
+                    for p in &overlaps[lane.0 as usize] {
+                        join(occupants, p.lane);
+                    }
+                }
+                // What it knows of its course has grown: records that were
+                // converging for want of it are classified again.
+                reclassify(network, overlaps, occupants, id, vehicle, previous, true);
                 // Indicating: the ghost moves to the new lane's neighbor, or the
                 // intent is cancelled if there's none to change into.
                 if let Some(intent) = vehicle.intent {
@@ -1267,23 +1278,61 @@ fn stops_on(
     false
 }
 
-/// Joins `vehicle`, which has just joined `lane`, to the other lanes of each
-/// taper `lane` is in, merging into them (see [`SimNetwork::taper_partners`]), so
-/// followers on those lanes find it with their ordinary leader searches.
-fn join_tapers(
+/// How far apart, in meters, two records of one vehicle on a lane must be to be
+/// two: on a loop shorter than this, it has one record where it is, and none
+/// where it was.
+const SAME_RECORD: f64 = 20.0;
+
+/// Whether `id` has a record, not a ghost, on `lane` near `s`. On a loop, a
+/// vehicle can have a second one, lingering past the end, at the other end.
+fn has_record_at(occupants: &[Vec<Occupant>], lane: LaneId, id: VehicleId, s: f64) -> bool {
+    occupants[lane.0 as usize]
+        .iter()
+        .any(|o| o.id == id && !o.ghost && (o.s - s).abs() < SAME_RECORD)
+}
+
+/// Joins `vehicle`, which has just joined `lane`, to every lane overlapping it
+/// that it isn't on yet, each record classified and kept in order.
+fn join_overlaps(
     network: &SimNetwork,
+    overlaps: &Overlaps,
     occupants: &mut [Vec<Occupant>],
     id: VehicleId,
     vehicle: &Vehicle,
     lane: LaneId,
 ) {
-    for other in network.taper_partners(lane) {
-        // They start together, so its `s` along `lane` is a good hint.
-        let hint = network.lane(other).geometry().lane_pos(vehicle.lane_pos.s, 0.0);
-        let occupant = Occupant::new(network, other, id, vehicle, hint, Lateral::Merging);
-        let list = &mut occupants[other.0 as usize];
+    for p in &overlaps[lane.0 as usize] {
+        let occupant = following::record(network, overlaps, p.lane, id, vehicle);
+        if has_record_at(occupants, p.lane, id, occupant.s) {
+            continue;
+        }
+        let list = &mut occupants[p.lane.0 as usize];
         let index = list.partition_point(|o| o.s <= occupant.s);
         list.insert(index, occupant);
+    }
+}
+
+/// Classifies afresh `vehicle`'s records around `lane` (see
+/// [`following::around`]), other than on the lane it follows: all of them, or,
+/// if `converging_only`, those still converging.
+fn reclassify(
+    network: &SimNetwork,
+    overlaps: &Overlaps,
+    occupants: &mut [Vec<Occupant>],
+    id: VehicleId,
+    vehicle: &Vehicle,
+    lane: LaneId,
+    converging_only: bool,
+) {
+    for lane in following::around(network, overlaps, lane) {
+        if lane == vehicle.path[0] {
+            continue;
+        }
+        for o in occupants[lane.0 as usize].iter_mut() {
+            if o.id == id && !o.ghost && (!converging_only || o.lateral == Lateral::Converging) {
+                following::classify(network, overlaps, vehicle, lane, o);
+            }
+        }
     }
 }
 
@@ -2126,7 +2175,11 @@ mod test {
             Some(Lateral::Diverging(Side::Left)),
             "the lane left"
         );
-        assert_eq!(lateral(0), Some(Lateral::InLane), "the lane moved into");
+        assert_eq!(
+            lateral(0),
+            Some(Lateral::Converging),
+            "the lane moved into, until the change ends"
+        );
         assert_eq!(sim.state.vehicles[id].old_side, Some(Side::Right));
     }
 
@@ -2202,24 +2255,35 @@ mod test {
     }
 
     #[test]
-    fn lanes_that_start_together_into_one_lane_are_a_taper() {
+    fn lanes_leading_into_the_same_lane_overlap_and_never_diverge() {
         let sim = a_taper();
         let partners = |lane: u32| {
-            sim.state.network.taper_partners(LaneId(lane)).map(|l| l.0).collect::<Vec<_>>()
+            let mut found: Vec<_> = sim.state.overlaps[lane as usize]
+                .iter()
+                .map(|p| (p.lane.0, p.diverge))
+                .collect();
+            found.sort_by_key(|p| p.0);
+            found
         };
-        assert_eq!(partners(0), [1]);
-        assert_eq!(partners(1), [0]);
-        assert_eq!(
-            partners(5),
-            [] as [u32; 0],
-            "it merges, but doesn't start with them"
+        // They merge, so never diverge.
+        assert!(
+            partners(0).contains(&(1, f64::INFINITY)),
+            "{:?}",
+            partners(0)
         );
-        assert_eq!(
-            partners(3),
-            [] as [u32; 0],
-            "nothing else leads into lane 0"
+        assert!(
+            partners(1).contains(&(0, f64::INFINITY)),
+            "{:?}",
+            partners(1)
         );
-        assert_eq!(partners(2), [] as [u32; 0]);
+        assert!(
+            partners(5).iter().all(|p| p.1 == f64::INFINITY),
+            "{:?}",
+            partners(5)
+        );
+        // Lanes one after the other, and neighbours, only touch.
+        assert_eq!(partners(3), []);
+        assert_eq!(partners(2), []);
     }
 
     #[test]
@@ -2231,13 +2295,13 @@ mod test {
         }
         let mine = records(&sim, id);
         assert!(mine.contains(&(1, false, Lateral::InLane)), "{mine:?}");
-        assert!(mine.contains(&(0, false, Lateral::Merging)), "{mine:?}");
+        assert!(mine.contains(&(0, false, Lateral::Converging)), "{mine:?}");
         // Wholly beside lane 0 at first, but kept on it.
         for _ in 0..20 {
             sim.step(0.05);
         }
         assert!(sim.state.vehicles[id].lane_pos.s < 20.0);
-        assert!(records(&sim, id).contains(&(0, false, Lateral::Merging)));
+        assert!(records(&sim, id).contains(&(0, false, Lateral::Converging)));
         // Dropped from both once past their end.
         for _ in 0..200 {
             sim.step(0.05);
@@ -2251,7 +2315,7 @@ mod test {
         let mut sim = a_taper();
         let id = sim.insert(car(), at(1, 30.0, 0.0));
         let mine = records(&sim, id);
-        assert!(mine.contains(&(0, false, Lateral::Merging)), "{mine:?}");
+        assert!(mine.contains(&(0, false, Lateral::Converging)), "{mine:?}");
     }
 
     #[test]
