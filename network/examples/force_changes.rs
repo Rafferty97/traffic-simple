@@ -41,6 +41,7 @@ fn main() {
                 courtesy: 1.0,
                 politeness: 0.2,
                 assertiveness: 0.3,
+                accel_noise: 0.0,
             };
             let at = if entries.is_empty() {
                 let lane = LaneId((uniform() * lanes as f64) as u32);
@@ -74,7 +75,7 @@ fn main() {
             }
         }
         let before = sim.time();
-        sim.step(1.0 / 60.0);
+        sim.step_variable(1.0 / 60.0);
         for (id, v) in sim.vehicles() {
             let lane = v.lane();
             // On a loop, a second record lingers at the far end: not its own.

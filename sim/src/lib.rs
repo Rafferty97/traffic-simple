@@ -19,14 +19,14 @@ pub use debug::{AccelSource, DebugEvent, DebugSink, NoopSink, PassCheck};
 pub use lane::{LaneError, LaneGeometry, LanePos, ParseLaneError};
 pub use models::acceleration::SAFE_BRAKING;
 pub use models::lane_change::{
-    INTENT as LANE_CHANGE_INTENT, LaneChangeEval, MIN_INDICATING, Outcome,
+    D_COOP, D_FREE, D_SYNC, Incentives, LaneChangeEval, MIN_INDICATING, Outcome,
 };
 pub use models::lateral::LaneChange;
 pub use models::routing::Route;
 pub use network::{
-    Conflict, ConflictKind, End, Junction, JunctionId, Lane, LaneId, MAX_PREDECESSORS,
-    MAX_SUCCESSORS, Neighbor, NetworkError, Side, SimNetwork,
+    Conflict, ConflictKind, End, Junction, JunctionId, Keep, Lane, LaneId, Leaving,
+    MAX_PREDECESSORS, MAX_SUCCESSORS, Neighbor, NetworkError, Side, SimNetwork,
 };
 pub use occupancy::{Lateral, Occupant};
-pub use simulation::{InsertError, LaneChangeError, Simulation, Snapshot};
+pub use simulation::{Config, InsertError, LaneChangeError, Simulation, Snapshot};
 pub use vehicle::{Intent, Placement, Vehicle, VehicleId, VehicleSpec};

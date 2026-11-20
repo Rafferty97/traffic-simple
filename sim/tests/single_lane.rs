@@ -43,7 +43,7 @@ fn drive(lane: Lane) -> (f64, f64) {
             max_t = max_t.max(pos.t.abs());
         }
         last_s = pos.s;
-        sim.step(DT);
+        sim.step_variable(DT);
         time += DT;
         assert!(time < 120.0, "never reached the end of the lane");
     }
@@ -75,7 +75,7 @@ fn drivers_settle_at_their_share_of_the_limit() {
             at,
         );
         for _ in 0..(40.0 / DT) as usize {
-            sim.step(DT);
+            sim.step_variable(DT);
         }
         // Free-road IDM approaches the desired speed from below.
         let speed = sim.get(id).unwrap().speed();
@@ -106,7 +106,7 @@ fn a_capped_car_slows_to_its_cap_and_goes_on_once_released() {
     assert_eq!(sim.speed_cap(id), Some(cap));
     assert!(!sim.is_held(id));
     for _ in 0..(10.0 / DT) as usize {
-        sim.step(DT);
+        sim.step_variable(DT);
     }
     let speed = sim.get(id).unwrap().speed();
     assert!(
@@ -116,7 +116,7 @@ fn a_capped_car_slows_to_its_cap_and_goes_on_once_released() {
     sim.release(id);
     assert_eq!(sim.speed_cap(id), None);
     for _ in 0..(5.0 / DT) as usize {
-        sim.step(DT);
+        sim.step_variable(DT);
     }
     assert!(
         sim.get(id).unwrap().speed() > cap + 2.0,
@@ -142,7 +142,7 @@ fn a_queue_comes_to_rest_at_the_minimum_gap() {
         s(leader) - s(follower) - spec.length
     };
     for _ in 0..(60.0 / DT) as usize {
-        sim.step(DT);
+        sim.step_variable(DT);
         for (follower, leader) in [(a, stopped), (b, a)] {
             let gap = gap(&sim, follower, leader);
             assert!(gap > spec.min_gap - 0.05, "closed to {gap} m");

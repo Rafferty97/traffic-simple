@@ -47,9 +47,39 @@ pub struct VehicleSpec {
     /// faster lane and slow it, so a fast lane doesn't form.
     #[cfg_attr(feature = "serde", serde(default))]
     pub assertiveness: f64,
+    /// How much its acceleration wanders on the open road, in m/s², the
+    /// standard deviation of a slowly varying noise added to its free-road
+    /// term: drivers don't hold a speed exactly, as in Treiber and Kesting's
+    /// IDM with acceleration noise (2017). 0 for none. Following stays exact.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub accel_noise: f64,
 }
 
 impl VehicleSpec {
+    /// A passenger car with textbook parameters: IDM's as calibrated with LMRS
+    /// (Schakel, Knoop and van Arem, 2012), as OpenTrafficSim uses them, a
+    /// = 1.25 m/s², b = 2.09 m/s², s0 = 3 m and T = 1.2 s, and MOBIL's
+    /// politeness of 0.2 as Treiber's simulator uses it. Its speed factor,
+    /// courtesy, politeness and assertiveness are the caller's to vary.
+    pub const fn passenger_car() -> Self {
+        Self {
+            length: 4.6,
+            width: 1.9,
+            max_speed: 50.0,
+            speed_factor: 1.0,
+            max_accel: 1.25,
+            comfy_decel: 2.09,
+            time_headway: 1.2,
+            min_gap: 3.0,
+            rear_axle: 1.0,
+            front_axle: 3.7,
+            courtesy: 1.0,
+            politeness: 0.2,
+            assertiveness: 0.0,
+            accel_noise: 0.2,
+        }
+    }
+
     /// The speed the driver wants on a lane with the given limit.
     pub fn desired_speed(&self, speed_limit: f64) -> f64 {
         (speed_limit * self.speed_factor).min(self.max_speed)
@@ -112,6 +142,13 @@ pub struct Vehicle {
     /// The vehicle behind it that it holds up most, as of the last longitudinal
     /// update: its old follower, if it changed lanes.
     pub(crate) old_follower: Option<OldFollower>,
+    /// Its acceleration noise now, added to its free-road term, in m/s² (see
+    /// [`VehicleSpec::accel_noise`]).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) noise: f64,
+    /// The state of its own generator for that noise.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) noise_rng: u64,
 }
 
 /// A vehicle held up by the one ahead of it: that one is the term binding its
@@ -121,8 +158,6 @@ pub struct Vehicle {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct OldFollower {
     pub id: VehicleId,
-    /// The bumper-to-bumper gap from it to the vehicle it is held up by.
-    pub gap: f64,
     /// Its acceleration from every other term: what it would be, if the vehicle
     /// ahead were gone and nothing took its place.
     pub without: f64,

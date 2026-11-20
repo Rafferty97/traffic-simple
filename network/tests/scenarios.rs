@@ -118,21 +118,8 @@ fn uncovered<D: traffic_sim::DebugSink>(sim: &traffic_sim::Simulation<D>) -> Opt
 /// and that every vehicle has a record on each lane its body is in.
 fn flood(net: &traffic_network::RoadNetwork, seconds: f64) {
     use traffic_sim::{LaneId, NoopSink, Placement, Route, Simulation, VehicleSpec};
-    let car = VehicleSpec {
-        length: 4.6,
-        width: 1.9,
-        max_speed: 30.0,
-        speed_factor: 1.0,
-        max_accel: 1.0,
-        comfy_decel: 1.5,
-        time_headway: 1.0,
-        min_gap: 1.5,
-        rear_axle: 1.0,
-        front_axle: 3.7,
-        courtesy: 1.0,
-        politeness: 0.2,
-        assertiveness: 0.0,
-    };
+    let car = VehicleSpec::passenger_car();
+
     {
         let compiled = compile(net).unwrap();
         let mut sim = Simulation::new(compiled.sim, NoopSink);
@@ -151,7 +138,7 @@ fn flood(net: &traffic_network::RoadNetwork, seconds: f64) {
                 let at = Placement { lane, s: 5.0, speed, route: Route::random(step) };
                 let _ = sim.try_insert(car, at);
             }
-            sim.step(1.0 / 60.0);
+            sim.step_variable(1.0 / 60.0);
             // Collisions last for many frames, so a check every tenth of a second
             // catches them.
             if step % 6 != 0 {
@@ -229,7 +216,7 @@ fn ramps_traffic(flow: f64, seconds: f64) {
         .collect();
     let (mut credit, mut spawned, mut left_before) = (0.0, 0, 0);
     for step in 1..=(seconds * 60.0) as u64 {
-        sim.step(1.0 / 60.0);
+        sim.step_variable(1.0 / 60.0);
         if step % 10 == 0
             && let Some(what) = uncovered(&sim)
         {
@@ -243,20 +230,13 @@ fn ramps_traffic(flow: f64, seconds: f64) {
             let (u, v) = (1.0 - uniform(), uniform());
             let normal = (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos();
             let car = VehicleSpec {
-                length: 4.6,
-                width: 1.9,
-                max_speed: 30.0,
                 speed_factor: (1.0 + 0.1 * normal).clamp(0.8, 1.2),
-                max_accel: 1.0,
-                comfy_decel: 1.5,
-                time_headway: 1.0,
-                min_gap: 1.5,
-                rear_axle: 1.0,
-                front_axle: 3.7,
                 courtesy: 2.0 * uniform(),
                 politeness: 0.1 + 0.3 * uniform(),
                 assertiveness: uniform().powi(3),
+                ..VehicleSpec::passenger_car()
             };
+
             let limit = sim.network().lane(lane).speed_limit();
             let seed = (uniform() * 1e9) as u64;
             let at = Placement {

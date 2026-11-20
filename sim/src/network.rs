@@ -69,6 +69,42 @@ pub enum NetworkError {
     NotAligned { lane: LaneId, neighbor: LaneId, end: End, offset: f64 },
 }
 
+/// Which side drivers on a lane keep to when they can: an incentive to change
+/// lanes toward it, LMRS's keep-right bias. In Australia, keep left applies on
+/// roads with limits above 80 km/h; the network decides where.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum Keep {
+    #[default]
+    NoPreference,
+    Left,
+    Right,
+}
+
+impl Keep {
+    /// The side to keep to, if any.
+    pub fn side(self) -> Option<Side> {
+        match self {
+            Keep::NoPreference => None,
+            Keep::Left => Some(Side::Left),
+            Keep::Right => Some(Side::Right),
+        }
+    }
+}
+
+/// How drivers leave a lane that ends by merging into its neighbour, as an
+/// acceleration lane does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum Leaving {
+    /// They stay on it to the merge, where they take turns: a zipper.
+    #[default]
+    Zipper,
+    /// They change out of it along the way, wanting to more the nearer its end:
+    /// LMRS's route desire.
+    Early,
+}
+
 /// A lane: its geometry and speed limit, plus its links to other lanes, which
 /// [`SimNetwork`] sets.
 #[derive(Clone, Debug)]
@@ -87,6 +123,13 @@ pub struct Lane {
     adj_right: Option<Neighbor>,
     /// The junction it belongs to, if any, and its index among that junction's lanes.
     junction: Option<(JunctionId, u16)>,
+    /// Which side drivers keep to.
+    #[cfg_attr(feature = "serde", serde(default))]
+    keep: Keep,
+    /// How drivers leave it, if it ends by merging into its neighbour: `None`
+    /// if it doesn't.
+    #[cfg_attr(feature = "serde", serde(default))]
+    leaving: Option<Leaving>,
 }
 
 impl Lane {
@@ -119,7 +162,29 @@ impl Lane {
             adj_left: None,
             adj_right: None,
             junction: None,
+            keep: Keep::NoPreference,
+            leaving: None,
         })
+    }
+
+    /// Which side drivers keep to on it.
+    pub fn keep(&self) -> Keep {
+        self.keep
+    }
+
+    /// As [`Lane::keep`], to set.
+    pub fn with_keep(self, keep: Keep) -> Self {
+        Self { keep, ..self }
+    }
+
+    /// How drivers leave it, if it ends by merging into its neighbour.
+    pub fn leaving(&self) -> Option<Leaving> {
+        self.leaving
+    }
+
+    /// As [`Lane::leaving`], to set.
+    pub fn with_leaving(self, leaving: Option<Leaving>) -> Self {
+        Self { leaving, ..self }
     }
 
     /// Its shape, and the mapping between world positions and lane coordinates.

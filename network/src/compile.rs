@@ -3,7 +3,7 @@
 use std::fmt;
 
 use glam::DVec2;
-use traffic_sim::{Lane, LaneError, LaneId, NetworkError, SimNetwork};
+use traffic_sim::{Keep, Lane, LaneError, LaneId, NetworkError, SimNetwork};
 
 use crate::reference::Polyline;
 use crate::render;
@@ -100,7 +100,13 @@ pub fn compile(net: &RoadNetwork) -> Result<Compiled, CompileError> {
             }
             let what = || format!("road {r} lane {i}");
             let b = Built { points, half_widths };
-            lanes.push(build(&b, road.speed_limit, what)?);
+            let keep = if road.speed_limit > net.keep_above {
+                net.keep
+            } else {
+                Keep::NoPreference
+            };
+            let built_lane = build(&b, road.speed_limit, what)?;
+            lanes.push(built_lane.with_keep(keep).with_leaving(lane.leaving));
             ids.push(LaneId(built.len() as u32));
             built.push(b);
         }

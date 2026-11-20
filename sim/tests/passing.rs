@@ -58,7 +58,7 @@ fn checks_against_a_held_car(ahead: f64) -> usize {
     sim.hold(held);
     sim.change_lane(changer, Side::Left).unwrap();
     for _ in 0..(10.0 / DT) as usize {
-        sim.step(DT);
+        sim.step_variable(DT);
     }
     sim.sink().0.iter().filter(|(id, c)| *id == changer && c.leader == held).count()
 }

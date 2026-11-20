@@ -51,11 +51,13 @@ pub fn replay<D: DebugSink>(log: &str, sink: D) -> Replay<D> {
             ids[index]
         };
         match call {
-            "step" => sim.step(
-                words
-                    .next()
-                    .and_then(|w| w.parse().ok())
-                    .unwrap_or_else(|| panic!("malformed {}", at())),
+            "step" => drop(
+                sim.step_variable(
+                    words
+                        .next()
+                        .and_then(|w| w.parse().ok())
+                        .unwrap_or_else(|| panic!("malformed {}", at())),
+                ),
             ),
             "try_insert" => {
                 let outcome = words.next().unwrap_or_else(|| panic!("malformed {}", at()));
@@ -75,6 +77,7 @@ pub fn replay<D: DebugSink>(log: &str, sink: D) -> Replay<D> {
                     politeness: f.get("politeness"),
                     // Absent from replays made before drivers had it.
                     assertiveness: f.get_or("assertiveness", 0.0),
+                    accel_noise: f.get_or("accel_noise", 0.0),
                 };
                 let lane = LaneId(f.get("lane") as u32);
                 let at_ = Placement {

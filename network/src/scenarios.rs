@@ -2,6 +2,8 @@
 
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
+use traffic_sim::{Keep, Leaving};
+
 use crate::{
     Direction, Intersection, LaneRef, Piece, Pose, Profile, Road, RoadId, RoadLane, RoadNetwork,
 };
@@ -79,9 +81,21 @@ pub fn ring(circumference: f64, lanes: usize, speed_limit: f64) -> RoadNetwork {
 /// curves in from the north-west and runs on as an acceleration lane beside
 /// them for 200 m, which then eases into the left lane over 80 m: a lane drop,
 /// where the two merge. 420 m on, the left lane forks: on along the freeway, or
-/// curving away north up the off-ramp, which is slower.
+/// curving away north up the off-ramp, which is slower. Drivers keep left, as
+/// in Australia above 80 km/h, and stay in the acceleration lane to the merge,
+/// where they take turns: a zipper.
 pub fn ramps(speed_limit: f64, ramp_limit: f64) -> RoadNetwork {
-    let mut net = RoadNetwork::default();
+    ramps_leaving(speed_limit, ramp_limit, Leaving::Zipper)
+}
+
+/// As [`ramps`], with drivers leaving the acceleration lane as `leaving` says:
+/// early, as broken lines beside it now ask in Australia, or at the merge.
+pub fn ramps_leaving(speed_limit: f64, ramp_limit: f64, leaving: Leaving) -> RoadNetwork {
+    let mut net = RoadNetwork {
+        keep: Keep::Left,
+        keep_above: 80.0 / 3.6,
+        ..RoadNetwork::default()
+    };
     let lane = |offset: f64| RoadLane::new(offset, WIDTH, Direction::Forward);
     // The reference line runs down the middle of the two through lanes: lane 0
     // is the left one, lane 1 the right.
@@ -98,7 +112,7 @@ pub fn ramps(speed_limit: f64, ramp_limit: f64) -> RoadNetwork {
     let mut beside = through();
     // Nobody changes from the freeway into the acceleration lane.
     beside[0].change_left = false;
-    beside.insert(0, lane(accel));
+    beside.insert(0, RoadLane { leaving: Some(leaving), ..lane(accel) });
     let parallel = net.add_road(straight(0.0, 200.0, beside));
     let mut taper = through();
     taper.insert(
@@ -109,6 +123,7 @@ pub fn ramps(speed_limit: f64, ramp_limit: f64) -> RoadNetwork {
             direction: Direction::Forward,
             change_left: true,
             change_right: true,
+            leaving: None,
         },
     );
     let drop = net.add_road(straight(200.0, 80.0, taper));

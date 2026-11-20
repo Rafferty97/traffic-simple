@@ -29,7 +29,7 @@ fn trace(seed: u64, seconds: f64) -> Vec<u64> {
     while sim.time() < seconds {
         // Irregular frames, some long enough to be split into substeps.
         let dt = 0.005 + 0.06 * rng.random::<f64>();
-        sim.step(dt);
+        sim.step_variable(dt);
 
         let roll = rng.random::<f64>();
         let picked = sim.vehicles().nth((roll * 1000.0) as usize % 50).map(|(id, _)| id);

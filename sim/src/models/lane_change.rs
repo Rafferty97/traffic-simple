@@ -1,27 +1,73 @@
-//! MOBIL (Kesting, Treiber and Helbing, 2007): whether a lane change is worth it
-//! and safe, from accelerations under the longitudinal model.
+//! LMRS, the Lane-change Model with Relaxation and Synchronization (Schakel,
+//! Knoop and van Arem, 2012): whether a driver wants to change lanes, from
+//! desires for its route, for speed and for keeping to one side, and whether
+//! the gap lets it.
 //!
-//! Symmetric for now: no bias toward either side.
+//! At each update, each driver's desire for each side is worked out cheaply, from
+//! how fast traffic goes in each lane ahead, and smoothed over time. Only once
+//! it reaches the threshold for a free lane change does the driver check the
+//! gap, which takes searches of the network; a check that fails waits a few
+//! updates before the next. With enough desire it indicates and synchronises
+//! with the target lane, and with more, followers there make room for it.
 //!
 //! The decision making lives here; the rest of the simulation sees only each
-//! vehicle's indicator and an opaque [`State`]. The simulation measures what a
-//! change would do, by searching the network, and carries out what [`decide`]
-//! returns: indicating, cancelling, or changing lanes.
+//! vehicle's indicator and an opaque [`State`]. The simulation measures the
+//! incentives and, when asked, the gap, by searching the network, and carries
+//! out what [`resolve`] returns: indicating, cancelling, or changing lanes.
 
 use crate::models::acceleration::SAFE_BRAKING;
 use crate::network::Side;
 use crate::vehicle::{Intent, VehicleId, VehicleSpec};
 
+/// Desire at which a driver changes lanes if the gap lets it, after indicating
+/// for [`MIN_INDICATING`].
+pub const D_FREE: f64 = 0.365;
+/// Desire at which a driver indicates even without a gap, and adjusts its
+/// speed to the target lane's: synchronisation.
+pub const D_SYNC: f64 = 0.577;
+/// Desire at which followers in the target lane make room for the driver, and
+/// at which it changes even if it would be left straddling.
+pub const D_COOP: f64 = 0.788;
+/// The speed difference, in m/s, that makes a full desire to change lanes for
+/// speed: 69.6 km/h.
+pub const V_GAIN: f64 = 69.6 / 3.6;
+/// How far ahead, in meters, a lane's end makes a driver want to leave it,
+/// per lane change still to make: its route desire rises linearly from zero
+/// this far out to one at the end.
+pub const ROUTE_DISTANCE: f64 = 295.0;
+/// As [`ROUTE_DISTANCE`], in seconds at the driver's speed.
+pub const ROUTE_TIME: f64 = 43.0;
+/// How long, in seconds, desire takes to follow its incentives: their changes
+/// are smoothed over about this long, so a fleeting gain doesn't make a driver
+/// change lanes.
+pub const DESIRE_TIME: f64 = 1.0;
+/// The least time a driver indicates before changing lanes, in seconds.
+pub const MIN_INDICATING: f64 = 0.5;
+/// How many updates a driver waits after a gap it checked was refused, before
+/// it checks again, at a politeness of 0: 0.2 s at 20 Hz. More polite drivers
+/// wait longer, and more assertive ones less, so drivers' checks don't fall in
+/// step.
+pub const COOLDOWN: f64 = 4.0;
+/// How much an assertive driver lowers its thresholds: at an assertiveness of
+/// 1, to this share less, so it changes for smaller gains, as SUMO's
+/// `lcSpeedGain` makes a driver more eager.
+pub const ASSERTIVE: f64 = 0.5;
+
 /// A driver's lane-change state, owned by this model.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct State {
-    /// The advantage built up so far for changing left and right, in m/s (see
-    /// [`accumulate`]).
-    advantage: [f64; 2],
-    /// How long it has been wanting to change lanes but blocked, in seconds,
-    /// fading while it isn't (see [`frustrate`]).
-    frustration: f64,
+    /// Desire to change left and right, from -1 to 1, smoothed over time (see
+    /// [`DESIRE_TIME`]).
+    #[cfg_attr(feature = "serde", serde(default))]
+    desire: [f64; 2],
+    /// The desire its incentives make for each side, which its desire follows:
+    /// `None` where it may not change (see [`aim`]).
+    #[cfg_attr(feature = "serde", serde(default))]
+    target: [Option<f64>; 2],
+    /// Steps until it may check a gap again, after one was refused.
+    #[cfg_attr(feature = "serde", serde(default))]
+    cooldown: u16,
     /// The vehicle whose ghost it has chosen to make room for, if any. Kept so the
     /// choice sticks rather than flickering on and off.
     yielding: Option<VehicleId>,
@@ -33,43 +79,106 @@ impl State {
         self.yielding = yielding;
     }
 
-    /// Whether the driver wants to change lanes: enough advantage has built up
-    /// for a side to keep indicating to it, the lower bar, so the wish doesn't
+    /// Whether there is nothing for a step to do: no side it may change to, no
+    /// desire left to fade, and no cooldown. Most vehicles on a road with no
+    /// lanes beside them, which the simulation then skips.
+    pub fn idle(&self) -> bool {
+        self.target == [None, None] && self.desire == [0.0, 0.0] && self.cooldown == 0
+    }
+
+    /// Its desire to change to `side`.
+    pub fn desire(&self, side: Side) -> f64 {
+        self.desire[index(side)]
+    }
+
+    /// Whether the driver wants to change lanes: its desire for a side has
+    /// reached half its threshold for changing, a lower bar, so the wish doesn't
     /// flicker.
     pub fn wants_change(&self, assertiveness: f64) -> bool {
-        self.advantage.iter().any(|&a| still_intends(a, assertiveness))
+        self.desire.iter().any(|&d| d >= 0.5 * free(assertiveness))
     }
 }
 
 #[cfg(test)]
 impl State {
-    pub fn advantage(&self) -> [f64; 2] {
-        self.advantage
-    }
-
-    pub fn frustration(&self) -> f64 {
-        self.frustration
-    }
-
     pub fn yielding(&self) -> Option<VehicleId> {
         self.yielding
     }
 
-    pub fn set_advantage(&mut self, advantage: [f64; 2]) {
-        self.advantage = advantage;
+    pub fn set_desire(&mut self, desire: [f64; 2]) {
+        self.desire = desire;
     }
 
-    pub fn set_frustration(&mut self, frustration: f64) {
-        self.frustration = frustration;
+    pub fn cooldown(&self) -> u16 {
+        self.cooldown
     }
 }
 
-/// The index of a side in a driver's built-up advantage.
+/// The index of a side in a driver's desires.
 pub fn index(side: Side) -> usize {
     match side {
         Side::Left => 0,
         Side::Right => 1,
     }
+}
+
+/// A driver's threshold for a free lane change, lowered by its assertiveness.
+pub fn free(assertiveness: f64) -> f64 {
+    D_FREE * (1.0 - ASSERTIVE * assertiveness.clamp(0.0, 1.0))
+}
+
+/// What makes a driver want to change to one side, as the simulation measured
+/// it, each in units of desire.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Incentives {
+    /// Its route: positive toward a lane it must reach, negative away from it.
+    pub route: f64,
+    /// Speed: how much faster traffic goes in that lane ahead than in its own,
+    /// over [`V_GAIN`].
+    pub speed: f64,
+    /// Keeping to one side: [`D_FREE`] toward the side the lane says to keep to.
+    pub keep: f64,
+    /// Courtesy: letting by the follower it holds up, its gain weighed by the
+    /// driver's politeness.
+    pub courtesy: f64,
+}
+
+impl Incentives {
+    /// The total desire, LMRS's `d = d_r + θ · (d_s + d_b + d_c)`: the
+    /// voluntary incentives count fully unless they work against the route,
+    /// and not at all once the route's desire is strong enough to cooperate.
+    pub fn desire(&self) -> f64 {
+        let voluntary = self.speed + self.keep + self.courtesy;
+        let route = self.route.abs();
+        let theta = if self.route * voluntary >= 0.0 || route <= D_SYNC {
+            1.0
+        } else if route >= D_COOP {
+            0.0
+        } else {
+            (D_COOP - route) / (D_COOP - D_SYNC)
+        };
+        (self.route + theta * voluntary).clamp(-1.0, 1.0)
+    }
+}
+
+/// LMRS's route desire to leave a lane that ends `distance` ahead, at
+/// `speed`, with `changes` lane changes to make before then: rising linearly
+/// to one at the end, by distance or by time, whichever is the higher.
+pub fn route_desire(distance: f64, speed: f64, changes: u32) -> f64 {
+    let n = f64::from(changes.max(1));
+    let by_distance = 1.0 - distance / (n * ROUTE_DISTANCE);
+    let by_time = 1.0 - distance / speed.max(0.1) / (n * ROUTE_TIME);
+    by_distance.max(by_time).clamp(0.0, 1.0)
+}
+
+/// What a step of the model asks of the simulation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ask {
+    Nothing,
+    /// Check the gap for a change to this side, and [`resolve`] it.
+    Check(Side),
+    /// Stop indicating.
+    Cancel,
 }
 
 /// What a lane-change decision asks the simulation to do.
@@ -84,18 +193,78 @@ pub enum Decision {
     Change(Side),
 }
 
-/// What a change to one side would do, as the simulation measured it: the
-/// accelerations MOBIL weighs.
+/// A driver's desire after `dt` seconds following `target`: smoothed, so it
+/// moves `dt / DESIRE_TIME` of the way there.
+fn smooth(desire: f64, target: f64, dt: f64) -> f64 {
+    desire + (target - desire) * (dt / DESIRE_TIME).min(1.0)
+}
+
+/// Sets what a driver's desire follows from its incentives for each side,
+/// `None` where it may not change.
+pub fn aim(state: &mut State, incentives: [Option<Incentives>; 2]) {
+    state.target = incentives.map(|i| i.map(|i| i.desire()));
+}
+
+/// One update of a driver's lane-change model, `dt` seconds after the last:
+/// cheap, so it runs for every vehicle, as often as the longitudinal model. Its desires follow what its
+/// incentives last made them (see [`aim`]). Updates its desires and cooldown,
+/// and returns whether it wants a gap checked.
+///
+/// - Indicating: it cancels once its desire for that side falls below half its
+///   threshold, or the side is no longer permitted; otherwise, once it has
+///   indicated long enough and isn't cooling down, it asks for the gap.
+/// - Not indicating: once its desire for a side reaches its threshold, the
+///   stronger side if both, and it isn't cooling down, it asks for the gap.
+pub fn step(
+    state: &mut State,
+    intent: Option<Intent>,
+    spec: &VehicleSpec,
+    now: f64,
+    dt: f64,
+) -> Ask {
+    let permitted = state.target.map(|t| t.is_some());
+    for i in 0..2 {
+        state.desire[i] = smooth(state.desire[i], state.target[i].unwrap_or(0.0), dt);
+    }
+    let threshold = free(spec.assertiveness);
+    let waiting = state.cooldown > 0;
+    state.cooldown = state.cooldown.saturating_sub(1);
+    match intent {
+        Some(intent) => {
+            let i = index(intent.side);
+            if !permitted[i] || state.desire[i] < 0.5 * threshold {
+                return Ask::Cancel;
+            }
+            if waiting || now - intent.since < MIN_INDICATING {
+                return Ask::Nothing;
+            }
+            Ask::Check(intent.side)
+        }
+        None => {
+            let [left, right] = state.desire;
+            let (side, d) = if left >= right {
+                (Side::Left, left)
+            } else {
+                (Side::Right, right)
+            };
+            if !permitted[index(side)] || d < threshold || waiting {
+                return Ask::Nothing;
+            }
+            Ask::Check(side)
+        }
+    }
+}
+
+/// What a change to one side would do, as the simulation measured it once the
+/// driver asked for the gap: with its time headway, and its new follower's,
+/// shortened by its desire (see [`headway`]).
 #[derive(Clone, Copy, Debug)]
 pub struct Prospect {
-    /// Its own acceleration now, in its own lane.
-    pub own_now: f64,
     /// Its own acceleration in the target lane.
     pub own_after: f64,
-    /// The follower it would cut in front of, if one is in reach.
-    pub new_follower: Option<Effect>,
-    /// The follower it would leave behind, if one is in reach.
-    pub old_follower: Option<Effect>,
+    /// The acceleration of the follower it would cut in front of, if one is in
+    /// reach, with it as a leader.
+    pub new_follower: Option<f64>,
     /// Whether it would be at least halfway through the change before it had
     /// to stop behind its leader in its own lane. Otherwise it would be left
     /// straddling both lanes, blocking them, so it doesn't change yet, though
@@ -103,41 +272,38 @@ pub struct Prospect {
     pub room: bool,
 }
 
-/// A follower's acceleration now, and if the change it is weighed for went
-/// ahead, and its speed.
-#[derive(Clone, Copy, Debug)]
-pub struct Effect {
-    pub before: f64,
-    pub after: f64,
-    pub speed: f64,
+/// The share of their time headways a driver and the follower it cuts in front
+/// of accept with this desire: LMRS shortens the headway with desire, from the
+/// whole of it to [`RELAXED_HEADWAY`](crate::models::acceleration::RELAXED_HEADWAY)
+/// of it, `T_min / T_max`, at a desire of one.
+pub fn headway(desire: f64) -> f64 {
+    let relaxed = crate::models::acceleration::RELAXED_HEADWAY;
+    1.0 - desire.clamp(0.0, 1.0) * (1.0 - relaxed)
 }
 
-impl Effect {
-    fn change(self) -> f64 {
-        self.after - self.before
-    }
+/// The hardest braking, positive, a driver accepts from a change at this
+/// desire, for itself and its new follower: LMRS's desire times its
+/// comfortable deceleration, raised toward [`SAFE_BRAKING`] by its
+/// assertiveness, as SUMO's `lcAssertive` accepts smaller gaps.
+pub fn accepted_braking(spec: &VehicleSpec, desire: f64) -> f64 {
+    let desire = desire.clamp(0.0, 1.0);
+    let comfy = desire * spec.comfy_decel;
+    comfy + (SAFE_BRAKING - comfy).max(0.0) * spec.assertiveness.clamp(0.0, 1.0) * desire
 }
 
-/// How a vehicle weighed up changing lanes to one side, under MOBIL.
+/// How a vehicle weighed up changing lanes to one side.
 #[derive(Clone, Copy, Debug)]
 pub struct LaneChangeEval {
     pub side: Side,
-    /// Its own acceleration in the target lane.
-    pub own_after: f64,
-    /// Its own acceleration there less its acceleration now.
-    pub own_gain: f64,
-    /// The change for the follower it would cut in front of, if one is in reach.
+    /// What made it want to change that way.
+    pub incentives: Incentives,
+    /// Its desire for that side, smoothed.
+    pub desire: f64,
+    /// The gap, if it was checked: its own acceleration there, and its new
+    /// follower's.
+    pub own_after: Option<f64>,
     pub new_follower: Option<f64>,
-    /// The change for the follower it would leave behind, if one is in reach.
-    pub old_follower: Option<f64>,
-    /// MOBIL's net gain, weighing the followers' changes by politeness.
-    pub incentive: f64,
-    /// The advantage built up for this side, after this decision.
-    pub advantage: f64,
-    /// The driver's frustration before this decision, in seconds blocked.
-    pub frustration: f64,
-    /// The hardest braking it accepts from the change, for itself and its new
-    /// follower, at that frustration.
+    /// The hardest braking it accepts from the change, at its desire.
     pub accepted_braking: f64,
     /// Whether it and its new follower would brake gently enough.
     pub safe: bool,
@@ -147,289 +313,132 @@ pub struct LaneChangeEval {
     pub outcome: Outcome,
 }
 
-/// What a vehicle decided about changing to one side, at a decision tick.
+/// What a vehicle decided about changing to one side, this step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
-    /// Not indicating: not enough advantage has built up yet.
+    /// Not enough desire.
     NotWorthIt,
-    /// Not indicating: enough advantage has built up, but it, or the follower it
-    /// would cut in front of, would have to brake too hard.
+    /// Enough desire, but waiting a few steps after a refused gap, or for its
+    /// turn, the simulation checking only so many gaps a step.
+    Waiting,
+    /// Enough desire, but it, or the follower it would cut in front of, would
+    /// brake too hard, or it would be left straddling.
     Unsafe,
-    /// Not indicating to this side: the other has more built up, or it is
-    /// already indicating the other way.
+    /// Not this side: the other has more desire, or it is indicating the other
+    /// way.
     OtherSide,
     /// Started indicating.
     Indicate,
-    /// Started indicating without a safe gap, frustrated, asking the follower in
-    /// the target lane to make room.
+    /// Started indicating without a gap, its desire strong enough to
+    /// synchronise and ask for room.
     Request,
-    /// Still indicating, waiting for a gap: until the change is safe and it has
-    /// indicated long enough.
+    /// Still indicating, waiting for a gap.
     Wait,
     /// Changing lanes now.
     Change,
-    /// Stopped indicating: its advantage has faded, or the side is no longer permitted.
+    /// Stopped indicating.
     Cancel,
 }
 
-/// The least net gain, in m/s², worth changing lanes for.
-pub const THRESHOLD: f64 = 0.1;
-/// The least time a driver indicates before changing lanes, in seconds.
-pub const MIN_INDICATING: f64 = 0.5;
-
-/// The net gain of a lane change: the driver's own change in acceleration plus
-/// its `politeness` times the changes for its new and old followers.
-pub fn incentive(politeness: f64, own_gain: f64, new_follower: f64, old_follower: f64) -> f64 {
-    own_gain + politeness * (new_follower + old_follower)
-}
-
-/// How long a driver must have been blocked, in seconds, before it accepts
-/// braking as hard as [`SAFE_BRAKING`], and indicates even without a gap.
-pub const FULLY_FRUSTRATED: f64 = 10.0;
-/// How fast frustration fades while a driver isn't blocked: it halves every
-/// this many seconds.
-pub const FRUSTRATION_HALF_LIFE: f64 = 5.0;
-/// The least speed, in m/s, the follower in the target lane must have for a
-/// frustrated driver to indicate without a gap: in a stopped queue, there is
-/// nobody to make room.
-pub const MOVING: f64 = 2.0;
-
-/// Frustration after `dt` seconds, in seconds blocked: a driver that wants to
-/// change lanes but can't safely grows frustrated, and otherwise its frustration
-/// fades. As the critical gap shrinks with waiting in Ahmed's (1999) model and
-/// SUMO's impatience grows while a driver is held up.
-pub fn frustrate(frustration: f64, blocked: bool, dt: f64) -> f64 {
-    match blocked {
-        true => (frustration + dt).min(FULLY_FRUSTRATED),
-        false => frustration * 0.5f64.powf(dt / FRUSTRATION_HALF_LIFE),
+/// How a driver weighed up a side it didn't check the gap for this step.
+pub fn unchecked(
+    side: Side,
+    incentives: Incentives,
+    desire: f64,
+    outcome: Outcome,
+) -> LaneChangeEval {
+    LaneChangeEval {
+        side,
+        incentives,
+        desire,
+        own_after: None,
+        new_follower: None,
+        accepted_braking: 0.0,
+        safe: false,
+        room: false,
+        outcome,
     }
 }
 
-/// The hardest braking, positive, a driver accepts from a lane change, for
-/// itself and for the follower it cuts in front of: its comfortable deceleration
-/// when calm, rising to [`SAFE_BRAKING`] when fully frustrated. An assertive
-/// driver accepts as much calm as it would that share frustrated: at 1, safe
-/// braking from the start, as SUMO's `lcAssertive` accepts smaller gaps.
-pub fn accepted_braking(comfy_decel: f64, frustration: f64, assertiveness: f64) -> f64 {
-    let f = (frustration / FULLY_FRUSTRATED).max(assertiveness).clamp(0.0, 1.0);
-    comfy_decel + (SAFE_BRAKING - comfy_decel).max(0.0) * f
-}
-
-/// Whether a driver is frustrated enough to indicate without a gap, asking the
-/// follower in the target lane to make room.
-pub fn forcing(frustration: f64) -> bool {
-    frustration >= FULLY_FRUSTRATED
-}
-
-/// How much advantage must build up before a driver intends a change, in m/s:
-/// the net gain above [`THRESHOLD`], summed over time. A clear gain of 1 m/s²
-/// gets there in about a third of a second; a marginal one has to last.
-pub const INTENT: f64 = 0.3;
-/// The most advantage that builds up, so that a long wait for a gap doesn't leave
-/// a store that takes long to fade.
-pub const MAX_ADVANTAGE: f64 = 2.0 * INTENT;
-/// How fast built-up advantage fades while changing isn't worth it: it halves
-/// every this many seconds.
-pub const HALF_LIFE: f64 = 1.0;
-
-/// Built-up advantage for a change, after `dt` seconds with this net gain: the
-/// gain above [`THRESHOLD`] adds up while there is some, and otherwise what has
-/// built up fades. As SUMO's lane-change model builds up a speed gain before
-/// changing, so a fleeting or marginal advantage doesn't make a driver change.
-pub fn accumulate(advantage: f64, incentive: f64, dt: f64) -> f64 {
-    match incentive > THRESHOLD {
-        true => (advantage + (incentive - THRESHOLD) * dt).min(MAX_ADVANTAGE),
-        false => advantage * 0.5f64.powf(dt / HALF_LIFE),
-    }
-}
-
-/// How much an assertive driver lowers its bar for intending a change: at an
-/// assertiveness of 1, to this share of [`INTENT`] less, so it changes for
-/// smaller gains, as SUMO's `lcSpeedGain` makes a driver more eager.
-pub const ASSERTIVE_BAR: f64 = 2.0 / 3.0;
-
-/// The advantage a driver of this assertiveness must build up to intend a change.
-fn bar(assertiveness: f64) -> f64 {
-    INTENT * (1.0 - ASSERTIVE_BAR * assertiveness.clamp(0.0, 1.0))
-}
-
-/// Whether enough advantage has built up for a driver to intend a change.
-pub fn intends(advantage: f64, assertiveness: f64) -> bool {
-    advantage >= bar(assertiveness)
-}
-
-/// Whether a driver already indicating should keep going: a lower bar than
-/// starting, so advantage hovering around the bar doesn't make the indicator
-/// flicker.
-pub fn still_intends(advantage: f64, assertiveness: f64) -> bool {
-    advantage >= 0.5 * bar(assertiveness)
-}
-
-/// Whether an acceleration after a change is gentle enough to accept, braking no
-/// harder than `accepted`.
-pub fn safe(accel: f64, accepted: f64) -> bool {
-    accel >= -accepted
-}
-
-/// A driver's lane-change decision, under MOBIL, with advantage built up over
-/// time as in SUMO's lane-change model, `dt` seconds after its last. Updates its
-/// `state`, and returns what it asks the simulation to do, with how it weighed up
-/// each side.
+/// Resolves a gap check for a change to `side`, measured as `prospect`, and
+/// returns what to do, with how it was weighed up.
 ///
-/// `prospect` measures a change to one side, or gives `None` if changing that way
-/// isn't permitted. It is called at most once per side, when the decision needs
-/// it. The simulation doesn't ask a vehicle partway through a change, or still
-/// straddling, to decide.
+/// - Not indicating: if the gap is safe and leaves room, it starts indicating;
+///   if not, it starts all the same once its desire reaches [`D_SYNC`], asking
+///   followers to make room; otherwise it waits a few steps before checking
+///   again.
+/// - Indicating: it changes if the gap is safe and leaves room, or, its desire
+///   reaching [`D_COOP`], without room; otherwise it waits a few steps.
 ///
-/// Each decision, for each permitted side, it weighs up MOBIL's net gain and
-/// builds up advantage from it (see [`accumulate`]).
-///
-/// - Not indicating: once enough advantage has built up for a side, and the change
-///   would be safe, it starts indicating to it; to the side with more, if both.
-///   Fully frustrated, it also starts when the change is unsafe, asking a moving
-///   follower to make room.
-/// - Indicating: it changes once it has indicated long enough and the change is
-///   safe, and until then keeps indicating, waiting for a gap. It cancels once
-///   its advantage has faded below a lower bar, or the side is no longer
-///   permitted.
-///
-/// A change starts its advantage and frustration afresh.
-pub fn decide(
+/// A change starts its desires afresh.
+pub fn resolve(
     state: &mut State,
     intent: Option<Intent>,
     spec: &VehicleSpec,
-    now: f64,
-    dt: f64,
-    mut prospect: impl FnMut(Side) -> Option<Prospect>,
-) -> (Decision, [Option<LaneChangeEval>; 2]) {
-    // The braking a change may ask of it and its new follower, at its frustration.
-    let accepted = accepted_braking(spec.comfy_decel, state.frustration, spec.assertiveness);
-    let mut advantage = [0.0; 2];
-    let mut evals = [Side::Left, Side::Right].map(|side| {
-        let p = prospect(side)?;
-        let own_gain = p.own_after - p.own_now;
-        let new_follower = p.new_follower.map(Effect::change);
-        let old_follower = p.old_follower.map(Effect::change);
-        let incentive = incentive(
-            spec.politeness,
-            own_gain,
-            new_follower.unwrap_or(0.0),
-            old_follower.unwrap_or(0.0),
-        );
-        let built = state.advantage[index(side)];
-        advantage[index(side)] = accumulate(built, incentive, dt);
-        // With nobody within reach behind, nobody is cut off.
-        let follower_safe = p.new_follower.is_none_or(|effect| safe(effect.after, accepted));
-        // Frustrated, it may ask a moving follower to make room.
-        let requestable = forcing(state.frustration)
-            && p.new_follower.is_some_and(|effect| effect.speed >= MOVING);
-        Some(LaneChangeEval {
-            side,
-            own_after: p.own_after,
-            own_gain,
-            new_follower,
-            old_follower,
-            incentive,
-            advantage: advantage[index(side)],
-            frustration: state.frustration,
-            accepted_braking: accepted,
-            safe: safe(p.own_after, accepted) && follower_safe,
-            room: p.room,
-            outcome: if requestable {
-                Outcome::Request
-            } else {
-                Outcome::NotWorthIt
-            },
-        })
-    });
-
-    let decision = match intent {
-        None => {
-            for eval in evals.iter_mut().flatten() {
-                let requestable = eval.outcome == Outcome::Request;
-                eval.outcome = match () {
-                    _ if !intends(eval.advantage, spec.assertiveness) => Outcome::NotWorthIt,
-                    _ if eval.safe => Outcome::Indicate,
-                    _ if requestable => Outcome::Request,
-                    _ => Outcome::Unsafe,
-                };
-            }
-            // It can only indicate one way: the side with more built up.
-            let indicates =
-                |e: &LaneChangeEval| matches!(e.outcome, Outcome::Indicate | Outcome::Request);
-            if let [Some(left), Some(right)] = &mut evals
-                && indicates(left)
-                && indicates(right)
-            {
-                let worse = if left.advantage >= right.advantage {
-                    right
-                } else {
-                    left
-                };
-                worse.outcome = Outcome::OtherSide;
-            }
-            let indicate = evals.iter().flatten().find(|e| indicates(e));
-            indicate.map_or(Decision::Nothing, |e| Decision::Indicate(e.side))
-        }
-        Some(intent) => {
-            let indicated = now - intent.since;
-            for eval in evals.iter_mut().flatten() {
-                eval.outcome = match () {
-                    _ if eval.side != intent.side => Outcome::OtherSide,
-                    _ if !still_intends(eval.advantage, spec.assertiveness) => Outcome::Cancel,
-                    // Without room to get halfway, it would be left straddling;
-                    // fully frustrated, it goes all the same, or it might never.
-                    _ if eval.safe
-                        && (eval.room || forcing(eval.frustration))
-                        && indicated >= MIN_INDICATING =>
-                    {
-                        Outcome::Change
-                    }
-                    _ => Outcome::Wait,
-                };
-            }
-            match evals[index(intent.side)].map(|e| e.outcome) {
-                // No longer permitted that way.
-                None | Some(Outcome::Cancel) => Decision::Cancel,
-                Some(Outcome::Change) => Decision::Change(intent.side),
-                _ => Decision::Nothing,
-            }
-        }
+    side: Side,
+    incentives: Incentives,
+    prospect: Prospect,
+) -> (Decision, LaneChangeEval) {
+    let desire = state.desire[index(side)];
+    let accepted = accepted_braking(spec, desire);
+    let safe =
+        prospect.own_after >= -accepted && prospect.new_follower.is_none_or(|a| a >= -accepted);
+    let room = prospect.room || desire >= D_COOP;
+    let (decision, outcome) = match intent {
+        None if safe && room => (Decision::Indicate(side), Outcome::Indicate),
+        None if desire >= D_SYNC => (Decision::Indicate(side), Outcome::Request),
+        None => (Decision::Nothing, Outcome::Unsafe),
+        Some(_) if safe && room => (Decision::Change(side), Outcome::Change),
+        Some(_) => (Decision::Nothing, Outcome::Wait),
     };
-    // Blocked: it wants to change lanes, but can't safely, or without being
-    // left straddling.
-    let blocked = evals.iter().flatten().any(|e| {
-        let possible = e.safe && e.room;
-        intends(e.advantage, spec.assertiveness) && !possible && e.outcome != Outcome::OtherSide
-    });
-    state.frustration = frustrate(state.frustration, blocked, dt);
-    state.advantage = advantage;
-    if let Decision::Change(_) = decision {
-        // A new lane, so advantage builds up afresh, and it is no longer blocked.
-        state.advantage = [0.0; 2];
-        state.frustration = 0.0;
+    match decision {
+        Decision::Change(_) => {
+            *state = State { yielding: state.yielding, ..State::default() };
+        }
+        Decision::Nothing => state.cooldown = cooldown(spec),
+        _ => {}
     }
-    (decision, evals)
+    let eval = LaneChangeEval {
+        side,
+        incentives,
+        desire,
+        own_after: Some(prospect.own_after),
+        new_follower: prospect.new_follower,
+        accepted_braking: accepted,
+        safe,
+        room: prospect.room,
+        outcome,
+    };
+    (decision, eval)
+}
+
+/// How many steps a driver waits after a refused gap: [`COOLDOWN`], longer for
+/// a more polite driver and shorter for a more assertive one, so drivers don't
+/// check in step.
+pub fn cooldown(spec: &VehicleSpec) -> u16 {
+    let scale = 1.0 + spec.politeness - 0.5 * spec.assertiveness;
+    (COOLDOWN * scale).round().clamp(1.0, f64::from(u16::MAX)) as u16
 }
 
 /// Whom a follower makes room for, if anyone: a vehicle indicating into its lane
-/// ahead, whose ghost it then treats as a leader. `ghost` is the first ghost its
-/// search reached before any leader, if any: whose it is, and the acceleration
-/// following it would take. The simulation records the answer with
-/// [`State::set_yielding`].
-///
-/// It keeps on making room for the one it chose, so the choice doesn't flicker,
-/// unless that would take braking harder than is safe; otherwise it starts if
-/// that takes no more braking than its courtesy allows. A driver with no
-/// courtesy never does. As Hidas's cooperative lane changing and SUMO's
-/// `lcCooperative`.
+/// ahead, whose ghost it then treats as a leader, if that vehicle's desire is
+/// at least [`D_COOP`], LMRS's cooperation. `ghost` is the first ghost its
+/// search met before any leader, with its owner's desire and the acceleration
+/// following it would take. A follower that has already chosen a ghost keeps
+/// making room for it up to [`SAFE_BRAKING`]; otherwise it starts only if that
+/// takes no more braking than its courtesy, so nearer followers often drive on
+/// and a later one, further back or more courteous, opens the gap. This is
+/// Hidas's (2002, 2005) cooperative lane changing, and SUMO's `lcCooperative`.
 pub fn make_room(
     state: &State,
     spec: &VehicleSpec,
-    ghost: Option<(VehicleId, f64)>,
+    ghost: Option<(VehicleId, f64, f64)>,
 ) -> Option<VehicleId> {
-    let (owner, accel) = ghost?;
+    let (owner, desire, accel) = ghost?;
     let chosen = state.yielding == Some(owner);
+    if !chosen && desire < D_COOP {
+        return None;
+    }
     let courteous = spec.courtesy > 0.0;
     let limit = if chosen { SAFE_BRAKING } else { spec.courtesy };
     ((chosen || courteous) && accel >= -limit).then_some(owner)
@@ -439,73 +448,177 @@ pub fn make_room(
 mod test {
     use super::*;
 
-    #[test]
-    fn politeness_weighs_followers() {
-        assert_eq!(incentive(0.2, 0.5, -1.0, 0.0), 0.5 - 0.2);
-        assert_eq!(incentive(0.0, 0.5, -1.0, 0.0), 0.5, "an impolite driver");
+    fn spec() -> VehicleSpec {
+        VehicleSpec {
+            length: 4.6,
+            width: 1.9,
+            max_speed: 30.0,
+            speed_factor: 1.0,
+            max_accel: 1.0,
+            comfy_decel: 1.5,
+            time_headway: 1.0,
+            min_gap: 1.5,
+            rear_axle: 1.0,
+            front_axle: 3.7,
+            courtesy: 1.0,
+            politeness: 0.2,
+            assertiveness: 0.0,
+            accel_noise: 0.0,
+        }
     }
 
     #[test]
-    fn frustration_builds_while_blocked_and_fades_after() {
-        let blocked = (0..25).fold(0.0, |f, _| frustrate(f, true, 0.2));
-        assert!((blocked - 5.0).abs() < 1e-9);
-        assert_eq!(
-            frustrate(FULLY_FRUSTRATED, true, 0.2),
-            FULLY_FRUSTRATED,
-            "capped"
+    fn voluntary_desire_gives_way_to_a_strong_route_desire_against_it() {
+        let toward = Incentives { route: 0.0, speed: 0.4, keep: 0.0, courtesy: 0.0 };
+        assert_eq!(toward.desire(), 0.4);
+        // A weak route desire the other way leaves the speed desire whole.
+        let weak = Incentives { route: -0.3, ..toward };
+        assert!((weak.desire() - 0.1).abs() < 1e-12);
+        // A route desire strong enough to cooperate overrides it.
+        let strong = Incentives { route: -0.8, ..toward };
+        assert_eq!(strong.desire(), -0.8);
+        // In between, it counts in part.
+        let some = Incentives { route: -0.7, ..toward };
+        assert!(
+            some.desire() < -0.3 && some.desire() > -0.7,
+            "{}",
+            some.desire()
         );
-        assert!((frustrate(4.0, false, FRUSTRATION_HALF_LIFE) - 2.0).abs() < 1e-12);
-        assert!(forcing(FULLY_FRUSTRATED) && !forcing(0.99 * FULLY_FRUSTRATED));
     }
 
     #[test]
-    fn assertiveness_lowers_the_bar_and_raises_the_braking_accepted_calm() {
-        assert_eq!(accepted_braking(1.5, 0.0, 1.0), SAFE_BRAKING);
-        assert!((accepted_braking(1.5, 0.0, 0.5) - (1.5 + SAFE_BRAKING) / 2.0).abs() < 1e-12);
-        // Frustration still raises it, beyond what assertiveness gives.
-        assert_eq!(accepted_braking(1.5, FULLY_FRUSTRATED, 0.2), SAFE_BRAKING);
-        assert!(!intends(0.2, 0.0) && intends(0.2, 0.5) && intends(0.1, 1.0));
+    fn route_desire_rises_to_one_at_the_lane_end() {
+        assert_eq!(route_desire(ROUTE_DISTANCE, 1.0, 1), 0.0);
+        assert!((route_desire(0.5 * ROUTE_DISTANCE, 1.0, 1) - 0.5).abs() < 1e-12);
+        assert_eq!(route_desire(0.0, 10.0, 1), 1.0);
+        // Fast, time runs out before distance does.
+        assert!(route_desire(ROUTE_DISTANCE, 30.0, 1) > 0.0);
+        // With two changes to make, it starts twice as far out.
+        assert!((route_desire(ROUTE_DISTANCE, 1.0, 2) - 0.5).abs() < 1e-12);
     }
 
     #[test]
-    fn frustration_raises_the_braking_a_change_accepts() {
+    fn desire_is_smoothed_and_a_check_waits_for_the_threshold() {
+        let mut state = State::default();
+        let wants = Incentives { speed: 0.9, ..Incentives::default() };
+        let dt = 1.0 / 60.0;
+        // A fleeting desire: one step doesn't get there.
+        aim(&mut state, [Some(wants), None]);
+        let ask = step(&mut state, None, &spec(), 0.0, dt);
+        assert_eq!(ask, Ask::Nothing);
+        assert!(state.desire(Side::Left) > 0.0 && state.desire(Side::Left) < D_FREE);
+        // Lasting, it does, and asks for the gap.
+        let mut ask = Ask::Nothing;
+        for _ in 0..60 {
+            ask = step(&mut state, None, &spec(), 0.0, dt);
+            if ask != Ask::Nothing {
+                break;
+            }
+        }
+        assert_eq!(ask, Ask::Check(Side::Left));
+        // Not permitted that way: no check, however strong.
+        let mut state = State { desire: [0.9, 0.0], ..State::default() };
         assert_eq!(
-            accepted_braking(1.5, 0.0, 0.0),
-            1.5,
-            "calm: comfortable braking"
+            {
+                aim(&mut state, [None, None]);
+                step(&mut state, None, &spec(), 0.0, dt)
+            },
+            Ask::Nothing
         );
-        assert_eq!(accepted_braking(1.5, FULLY_FRUSTRATED, 0.0), SAFE_BRAKING);
+    }
+
+    #[test]
+    fn a_refused_gap_cools_off_before_the_next_check() {
+        let mut state = State { desire: [0.5, 0.0], ..State::default() };
+        let refused = Prospect { own_after: -5.0, new_follower: None, room: true };
+        let (decision, eval) = resolve(
+            &mut state,
+            None,
+            &spec(),
+            Side::Left,
+            Incentives::default(),
+            refused,
+        );
         assert_eq!(
-            accepted_braking(1.5, 2.0 * FULLY_FRUSTRATED, 0.0),
-            SAFE_BRAKING,
-            "capped"
+            (decision, eval.outcome),
+            (Decision::Nothing, Outcome::Unsafe)
         );
-        let half = accepted_braking(1.5, 0.5 * FULLY_FRUSTRATED, 0.0);
-        assert!((half - (1.5 + SAFE_BRAKING) / 2.0).abs() < 1e-12);
+        let wait = state.cooldown();
+        assert_eq!(wait, cooldown(&spec()));
+        let wants = Some(Incentives { speed: 0.5, ..Incentives::default() });
+        aim(&mut state, [wants, None]);
+        for _ in 0..wait {
+            let ask = step(&mut state, None, &spec(), 0.0, 1.0 / 60.0);
+            assert_eq!(ask, Ask::Nothing);
+        }
+        let ask = step(&mut state, None, &spec(), 0.0, 1.0 / 60.0);
+        assert_eq!(ask, Ask::Check(Side::Left));
+        // Politer drivers wait longer, more assertive ones less.
+        let polite = VehicleSpec { politeness: 0.5, ..spec() };
+        let assertive = VehicleSpec { assertiveness: 1.0, ..spec() };
+        assert!(cooldown(&polite) > cooldown(&spec()));
+        assert!(cooldown(&assertive) < cooldown(&spec()));
     }
 
     #[test]
-    fn advantage_builds_up_above_the_threshold_and_fades_below_it() {
-        let dt = 0.2;
-        // A clear gain intends a change within a few decisions...
-        let clear = (0..2).fold(0.0, |a, _| accumulate(a, 1.0, dt));
-        assert!(intends(clear, 0.0), "{clear}");
-        // ...a marginal one only after several seconds of it.
-        let marginal = |ticks| (0..ticks).fold(0.0, |a, _| accumulate(a, 0.15, dt));
-        assert!(!intends(marginal(25), 0.0), "after 5 s");
-        assert!(intends(marginal(35), 0.0), "after 7 s");
-        // Below the threshold, nothing builds up.
-        assert_eq!(accumulate(0.0, THRESHOLD, dt), 0.0);
-        // It fades by half every half-life, and is capped.
-        assert!((accumulate(0.4, 0.0, HALF_LIFE) - 0.2).abs() < 1e-12);
-        assert_eq!(accumulate(MAX_ADVANTAGE, 5.0, dt), MAX_ADVANTAGE);
-        // Indicating, it keeps going down to half the bar.
-        assert!(still_intends(0.5 * INTENT, 0.0) && !still_intends(0.49 * INTENT, 0.0));
+    fn enough_desire_indicates_without_a_gap_and_more_changes_without_room() {
+        let unsafe_gap = Prospect { own_after: -5.0, new_follower: None, room: true };
+        let mut state = State { desire: [D_SYNC, 0.0], ..State::default() };
+        let (decision, _) = resolve(
+            &mut state,
+            None,
+            &spec(),
+            Side::Left,
+            Incentives::default(),
+            unsafe_gap,
+        );
+        assert_eq!(decision, Decision::Indicate(Side::Left));
+        let no_room = Prospect { own_after: 0.0, new_follower: None, room: false };
+        let intent = Some(Intent { side: Side::Left, since: 0.0 });
+        let mut state = State { desire: [0.5, 0.0], ..State::default() };
+        let (decision, _) = resolve(
+            &mut state,
+            intent,
+            &spec(),
+            Side::Left,
+            Incentives::default(),
+            no_room,
+        );
+        assert_eq!(decision, Decision::Nothing);
+        let mut state = State { desire: [D_COOP, 0.0], ..State::default() };
+        let (decision, _) = resolve(
+            &mut state,
+            intent,
+            &spec(),
+            Side::Left,
+            Incentives::default(),
+            no_room,
+        );
+        assert_eq!(decision, Decision::Change(Side::Left));
     }
 
     #[test]
-    fn safety_is_bounded_braking() {
-        assert!(safe(-2.0, 2.0));
-        assert!(!safe(-2.01, 2.0));
+    fn desire_shortens_the_headway_and_raises_the_braking_accepted() {
+        assert_eq!(headway(0.0), 1.0);
+        let relaxed = crate::models::acceleration::RELAXED_HEADWAY;
+        assert!((headway(1.0) - relaxed).abs() < 1e-12);
+        assert!(accepted_braking(&spec(), 0.5) > accepted_braking(&spec(), 0.4));
+        let assertive = VehicleSpec { assertiveness: 1.0, ..spec() };
+        assert!(accepted_braking(&assertive, 0.5) > accepted_braking(&spec(), 0.5));
+        assert_eq!(accepted_braking(&assertive, 1.0), SAFE_BRAKING);
+    }
+
+    #[test]
+    fn followers_make_room_only_for_a_strong_desire() {
+        let state = State::default();
+        let mut ids = slotmap::SlotMap::<VehicleId, ()>::with_key();
+        let owner = ids.insert(());
+        assert_eq!(make_room(&state, &spec(), Some((owner, 0.5, -0.5))), None);
+        assert_eq!(
+            make_room(&state, &spec(), Some((owner, 0.9, -0.5))),
+            Some(owner)
+        );
+        // Beyond its courtesy, it drives on.
+        assert_eq!(make_room(&state, &spec(), Some((owner, 0.9, -2.0))), None);
     }
 }

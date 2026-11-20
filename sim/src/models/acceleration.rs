@@ -20,10 +20,56 @@ pub const MAX_BRAKING: f64 = 9.0;
 /// inserted ahead of it. MOBIL's `b_safe`; 4 m/s² is Treiber's default.
 pub const SAFE_BRAKING: f64 = 4.0;
 
-/// Free-road term: `a · (1 − (v / v0)^δ)`.
+/// Free-road term: `a · (1 − (v / v0)^δ)` up to the desired speed. Above it,
+/// as Treiber's Improved IDM (IIDM) has it, `−b · (1 − (v0 / v)^(a·δ / b))`:
+/// it slows toward the desired speed at no more than its comfortable
+/// deceleration, where IDM's term would brake as hard as it could well above
+/// it, as when the speed limit or the traffic beside it drops.
 pub fn free_road(spec: &VehicleSpec, speed: f64, desired_speed: f64) -> f64 {
-    let accel = spec.max_accel * (1.0 - (speed / desired_speed).powi(DELTA));
-    accel.max(-MAX_BRAKING)
+    if speed <= desired_speed {
+        return spec.max_accel * (1.0 - (speed / desired_speed).powi(DELTA));
+    }
+    let exponent = spec.max_accel * f64::from(DELTA) / spec.comfy_decel;
+    -spec.comfy_decel * (1.0 - (desired_speed / speed).powf(exponent))
+}
+
+/// The time constant of a driver's acceleration noise, in seconds: how long it
+/// takes to wander away from what it was (see [`VehicleSpec::accel_noise`]).
+pub const NOISE_TIME: f64 = 10.0;
+
+/// How an acceleration noise steps `dt` seconds on: how much of it is left,
+/// and how much of its spread each step's kick carries, so it wanders with
+/// that spread. Worked out once per update, not per driver.
+#[derive(Clone, Copy, Debug)]
+pub struct NoiseStep {
+    decay: f64,
+    kick: f64,
+}
+
+impl NoiseStep {
+    pub fn new(dt: f64) -> Self {
+        let decay = (-dt / NOISE_TIME).exp();
+        Self { decay, kick: (1.0 - decay * decay).sqrt() }
+    }
+}
+
+/// A driver's acceleration noise one `step` on, an Ornstein-Uhlenbeck process:
+/// it decays toward zero with [`NOISE_TIME`] and is kicked by a draw with mean
+/// 0 and deviation 1, so it wanders with standard deviation `spread`. The draw
+/// is the sum of four uniform ones, scaled: near enough normal, and cheaper.
+/// `rng` is the driver's own SplitMix64 state, so the noise is the same every
+/// run.
+pub fn noise(previous: f64, spread: f64, step: NoiseStep, rng: &mut u64) -> f64 {
+    if spread <= 0.0 {
+        return 0.0;
+    }
+    let mut sum = 0.0;
+    for _ in 0..4 {
+        sum += (crate::models::routing::splitmix64(rng) >> 11) as f64 / (1u64 << 53) as f64;
+    }
+    // Four uniforms have mean 2 and variance 1/3.
+    let draw = (sum - 2.0) * 3f64.sqrt();
+    previous * step.decay + spread * step.kick * draw
 }
 
 /// The desired gap behind a leader going at `leader_speed`:
@@ -52,19 +98,24 @@ pub fn interaction(spec: &VehicleSpec, speed: f64, gap: f64, leader_speed: f64) 
 /// The share of its time headway a vehicle keeps to a leader that has just
 /// appeared in front of it, or behind which it has just appeared: by changing
 /// lanes or merging.
-pub const RELAXED_HEADWAY: f64 = 0.5;
+/// LMRS's `T_min / T_max`, 0.56 s over 1.2 s.
+pub const RELAXED_HEADWAY: f64 = 0.56 / 1.2;
 
-/// How long, in seconds, the time headway takes to relax back from
-/// [`RELAXED_HEADWAY`] to the whole of it, linearly.
-pub const RELAXATION_TIME: f64 = 30.0;
+/// LMRS's relaxation time `τ`, in seconds: the time headway relaxes back from
+/// [`RELAXED_HEADWAY`] toward the whole of it exponentially, with this time
+/// constant.
+pub const RELAXATION_TIME: f64 = 25.0;
+
+/// The age of a record long settled, whose headway has relaxed fully: an
+/// inserted vehicle's, and that of a record from before records had one.
+pub const SETTLED: f64 = 1.0e9;
 
 /// The share of its time headway a vehicle keeps to a leader, from how long
 /// the newer of the two has been in the lane: relaxation, as in Schakel, Knoop
 /// and van Arem's LMRS (2012), so a vehicle that cuts in, or is cut in on,
 /// accepts a shorter gap at first and drops back gradually.
 pub fn relaxation(age: f64) -> f64 {
-    let settled = (age / RELAXATION_TIME).clamp(0.0, 1.0);
-    RELAXED_HEADWAY + (1.0 - RELAXED_HEADWAY) * settled
+    1.0 - (1.0 - RELAXED_HEADWAY) * (-age.max(0.0) / RELAXATION_TIME).exp()
 }
 
 /// As [`interaction`], keeping only `headway`, a share, of its time headway.
@@ -128,6 +179,7 @@ mod test {
             courtesy: 1.0,
             politeness: 0.2,
             assertiveness: 0.0,
+            accel_noise: 0.0,
         }
     }
 
@@ -179,11 +231,13 @@ mod test {
     }
 
     #[test]
-    fn the_headway_relaxes_from_half_to_whole() {
-        assert_eq!(relaxation(0.0), RELAXED_HEADWAY);
+    fn the_headway_relaxes_from_lmrs_minimum_to_whole() {
+        assert!((relaxation(0.0) - RELAXED_HEADWAY).abs() < 1e-12);
         assert!(relaxation(RELAXATION_TIME / 2.0) > RELAXED_HEADWAY);
-        assert_eq!(relaxation(RELAXATION_TIME), 1.0);
-        assert_eq!(relaxation(f64::MAX), 1.0);
+        // Most of the way back after one time constant, all of it once settled.
+        let one = 1.0 - (1.0 - RELAXED_HEADWAY) / std::f64::consts::E;
+        assert!((relaxation(RELAXATION_TIME) - one).abs() < 1e-12);
+        assert_eq!(relaxation(SETTLED), 1.0);
         // A relaxed follower brakes less behind the same leader.
         let spec = spec();
         assert!(relaxed(&spec, 20.0, 15.0, 20.0, 0.5) > interaction(&spec, 20.0, 15.0, 20.0));
@@ -194,10 +248,30 @@ mod test {
     }
 
     #[test]
+    fn acceleration_noise_wanders_with_its_spread() {
+        let (mut rng, mut xi) = (7u64, 0.0);
+        let (mut sum, mut squares, n) = (0.0, 0.0, 200_000);
+        let step = NoiseStep::new(0.05);
+        for _ in 0..n {
+            xi = noise(xi, 0.2, step, &mut rng);
+            sum += xi;
+            squares += xi * xi;
+        }
+        let mean = sum / n as f64;
+        let sd = (squares / n as f64 - mean * mean).sqrt();
+        assert!(mean.abs() < 0.03, "{mean}");
+        assert!((sd - 0.2).abs() < 0.03, "{sd}");
+        assert_eq!(noise(0.5, 0.0, step, &mut rng), 0.0);
+    }
+
+    #[test]
     fn braking_is_capped() {
         assert_eq!(interaction(&spec(), 30.0, 0.5, 0.0), -MAX_BRAKING);
         assert_eq!(interaction(&spec(), 30.0, -1.0, 0.0), -MAX_BRAKING);
-        assert_eq!(free_road(&spec(), 30.0, 10.0), -MAX_BRAKING);
+        // Above its desired speed, it slows no harder than comfortably.
+        let over = free_road(&spec(), 30.0, 10.0);
+        assert!(over < 0.0 && over >= -spec().comfy_decel, "{over}");
+        assert!(free_road(&spec(), 10.5, 10.0) > over);
     }
 
     #[test]

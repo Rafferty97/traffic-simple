@@ -12,7 +12,7 @@ const SPEED_LIMIT: f64 = 14.0;
 
 fn run(sim: &mut Sim, seconds: f64, mut each: impl FnMut(&Sim)) {
     for _ in 0..(seconds / DT) as usize {
-        sim.step(DT);
+        sim.step_variable(DT);
         each(sim);
     }
 }

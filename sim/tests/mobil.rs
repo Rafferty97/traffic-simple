@@ -1,4 +1,4 @@
-//! Lane-change decisions under MOBIL, through intents and ghost records.
+//! Lane-change decisions under LMRS, through intents and ghost records.
 
 use glam::DVec2;
 use std::collections::HashMap;
@@ -38,7 +38,7 @@ fn place(lane: u32, s: f64, speed: f64) -> Placement {
 
 fn run(sim: &mut Sim, seconds: f64, mut each: impl FnMut(&Sim)) {
     for _ in 0..(seconds / DT) as usize {
-        sim.step(DT);
+        sim.step_variable(DT);
         each(sim);
     }
 }
@@ -140,19 +140,18 @@ impl DebugSink for Decisions {
 }
 
 #[test]
-fn every_vehicle_decides_about_five_times_a_second() {
+fn every_vehicle_measures_its_lane_change_incentives_twenty_times_a_second() {
     let mut sim = two_lanes_with(Decisions::default());
     let ids: Vec<VehicleId> =
         (0..7).map(|i| sim.insert(car(), place(i % 2, 50.0 * i as f64, 0.0))).collect();
     for _ in 0..(10.0 / DT) as usize {
-        sim.step(DT);
+        sim.step_variable(DT);
     }
     for id in ids {
         let count = sim.sink().0[&id];
-        assert!(
-            (49..=51).contains(&count),
-            "{id:?} decided {count} times in 10 s"
-        );
+        // With the longitudinal model, every third step: its desire follows
+        // them every step, and it checks gaps only once it wants to.
+        assert_eq!(count, 200, "{id:?} measured {count} times in 10 s");
     }
 }
 

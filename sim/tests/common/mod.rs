@@ -26,6 +26,7 @@ pub fn car() -> VehicleSpec {
         courtesy: 1.0,
         politeness: 0.2,
         assertiveness: 0.0,
+        accel_noise: 0.0,
     }
 }
 

@@ -56,7 +56,7 @@ fn busy() -> Simulation {
     let mut sim = Simulation::new(ring_road(600.0, 3, SPEED_LIMIT), NoopSink);
     let mut rng = Xoshiro256PlusPlus::seed_from_u64(3);
     while sim.time() < 60.0 {
-        sim.step(0.005 + 0.03 * rng.random::<f64>());
+        sim.step_variable(0.005 + 0.03 * rng.random::<f64>());
         let roll = rng.random::<f64>();
         if roll < 0.05 {
             let spec = VehicleSpec { speed_factor: 0.8 + 0.4 * rng.random::<f64>(), ..car() };
@@ -84,7 +84,7 @@ fn continue_for_30_s<D: DebugSink>(sim: &mut Simulation<D>) -> Vec<u64> {
     let mut out = Vec::new();
     let end = sim.time() + 30.0;
     while sim.time() < end {
-        sim.step(0.005 + 0.03 * rng.random::<f64>());
+        sim.step_variable(0.005 + 0.03 * rng.random::<f64>());
         let roll = rng.random::<f64>();
         let pick = rng.random_range(0..20);
         let id: Option<VehicleId> = sim.vehicles().nth(pick).map(|(id, _)| id);

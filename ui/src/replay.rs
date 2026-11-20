@@ -57,9 +57,11 @@ impl<D: DebugSink> Recorded<D> {
         Self { sim, log, index: HashMap::new() }
     }
 
-    pub fn step(&mut self, dt: f64) {
-        self.sim.step(dt);
+    /// Advances by a frame's `dt`, as [`Simulation::step_variable`], logged as
+    /// `step`, and returns how many fixed steps it took.
+    pub fn step_variable(&mut self, dt: f64) -> u32 {
         writeln!(self.log, "step {dt:?}").unwrap();
+        self.sim.step_variable(dt)
     }
 
     pub fn try_insert(
@@ -84,6 +86,7 @@ impl<D: DebugSink> Recorded<D> {
             courtesy,
             politeness,
             assertiveness,
+            accel_noise,
         } = spec;
         let Placement { lane, s, speed, route } = at;
         let Route::Random { state: seed } = route;
@@ -93,7 +96,7 @@ impl<D: DebugSink> Recorded<D> {
              speed_factor={speed_factor:?} max_accel={max_accel:?} comfy_decel={comfy_decel:?} \
              time_headway={time_headway:?} min_gap={min_gap:?} rear_axle={rear_axle:?} \
              front_axle={front_axle:?} courtesy={courtesy:?} politeness={politeness:?} \
-             assertiveness={assertiveness:?} \
+             assertiveness={assertiveness:?} accel_noise={accel_noise:?} \
              lane={} s={s:?} speed={speed:?} seed={seed}",
             lane.0
         )
@@ -186,7 +189,7 @@ mod test {
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(7);
         let mut ids = Vec::new();
         while sim.time() < 90.0 {
-            sim.step(0.005 + 0.03 * rng.random::<f64>());
+            sim.step_variable(0.005 + 0.03 * rng.random::<f64>());
             let roll = rng.random::<f64>();
             if roll < 0.05 {
                 let spec = VehicleSpec { speed_factor: 0.8 + 0.4 * rng.random::<f64>(), ..car() };

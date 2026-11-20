@@ -13,7 +13,7 @@ const SPEED_LIMIT: f64 = 14.0;
 
 fn run(sim: &mut Simulation, seconds: f64, mut each: impl FnMut(&Simulation)) {
     for _ in 0..(seconds / DT) as usize {
-        sim.step(DT);
+        sim.step_variable(DT);
         each(sim);
     }
 }
@@ -310,7 +310,7 @@ fn followers_pass_a_car_mostly_out_of_their_lane() {
     let mut passed_while_straddling = false;
     let mut closest = f64::INFINITY;
     for _ in 0..(30.0 / DT) as usize {
-        sim.step(DT);
+        sim.step_variable(DT);
         if !sim.is_held(id) && rear_on_old(&sim).is_some_and(|trailing| trailing >= 1.8) {
             sim.hold(id);
         }
@@ -359,7 +359,7 @@ fn followers_pass_where_they_will_be_not_where_they_are() {
     let trailing = |sim: &Simulation| trailing_corner(sim, ahead, LaneId(1));
     // Held at 0.6 m, it drifts to about 1.1 m while braking to a stop.
     while !trailing(&sim).is_some_and(|t| t >= 0.6) {
-        sim.step(DT);
+        sim.step_variable(DT);
         assert!(sim.time() < 30.0, "never got far enough over");
     }
     sim.hold(ahead);
@@ -537,7 +537,7 @@ fn held_partway_out_of_lane_1() -> (Simulation, VehicleId) {
     );
     sim.change_lane(ahead, Side::Left).unwrap();
     while !trailing_corner(&sim, ahead, LaneId(1)).is_some_and(|t| t >= 0.6) {
-        sim.step(DT);
+        sim.step_variable(DT);
     }
     sim.hold(ahead);
     run(&mut sim, 5.0, |_| {});

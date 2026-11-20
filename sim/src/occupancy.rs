@@ -54,7 +54,7 @@ pub struct Occupant {
 /// The age of a record from before records had one: long settled.
 #[cfg(feature = "serde")]
 fn settled() -> f64 {
-    acceleration::RELAXATION_TIME
+    acceleration::SETTLED
 }
 
 impl Occupant {
@@ -304,7 +304,7 @@ pub fn update(
 }
 
 /// Sorts by `s`. Linear on input that is already sorted, which it nearly always
-/// is: vehicles rarely pass each other within a lane between substeps.
+/// is: vehicles rarely pass each other within a lane between steps.
 fn insertion_sort(list: &mut [Occupant]) {
     for i in 1..list.len() {
         let mut j = i;
@@ -863,6 +863,7 @@ mod test {
             courtesy: 1.0,
             politeness: 0.2,
             assertiveness: 0.0,
+            accel_noise: 0.0,
         };
         let mut sim = Simulation::new(network.clone(), NoopSink);
         let id = sim.insert(

@@ -28,7 +28,7 @@ use replay::Recorded;
 use traffic_network::{MarkingStyle, RenderGeometry, RoadNetwork, Strip, compile, scenarios};
 use traffic_sim::{
     AccelSource, ConflictKind, DebugEvent, DebugSink, LaneChangeError, LaneChangeEval, LaneId,
-    PassCheck, Placement, Route, Side, Simulation, Vehicle, VehicleId, VehicleSpec,
+    Leaving, PassCheck, Placement, Route, Side, Simulation, Vehicle, VehicleId, VehicleSpec,
 };
 
 /// The inner lane's circumference: about 160 m across, roomy enough for
@@ -60,17 +60,19 @@ enum Scenario {
     Ring,
     /// Two two-way roads crossing, with this many lanes each way.
     Crossroads(usize),
-    /// A freeway with an on-ramp and an off-ramp.
-    Ramps,
+    /// A freeway with an on-ramp and an off-ramp, the acceleration lane left as
+    /// this says.
+    Ramps(Leaving),
 }
 
 impl Scenario {
-    const ALL: [Scenario; 5] = [
+    const ALL: [Scenario; 6] = [
         Scenario::Ring,
         Scenario::Crossroads(1),
         Scenario::Crossroads(2),
         Scenario::Crossroads(3),
-        Scenario::Ramps,
+        Scenario::Ramps(Leaving::Zipper),
+        Scenario::Ramps(Leaving::Early),
     ];
 
     fn name(self) -> &'static str {
@@ -79,7 +81,8 @@ impl Scenario {
             Scenario::Crossroads(1) => "Crossroads of 2-lane roads",
             Scenario::Crossroads(2) => "Crossroads of 4-lane roads",
             Scenario::Crossroads(_) => "Crossroads of 6-lane roads",
-            Scenario::Ramps => "Freeway with ramps",
+            Scenario::Ramps(Leaving::Zipper) => "Freeway with ramps, zipper merge",
+            Scenario::Ramps(Leaving::Early) => "Freeway with ramps, early merge",
         }
     }
 
@@ -87,7 +90,7 @@ impl Scenario {
         match self {
             Scenario::Ring => scenarios::ring(RING_CIRCUMFERENCE, RING_LANES, SPEED_LIMIT),
             Scenario::Crossroads(lanes) => scenarios::crossroads(lanes, SPEED_LIMIT),
-            Scenario::Ramps => scenarios::ramps(100.0 / 3.6, 80.0 / 3.6),
+            Scenario::Ramps(leaving) => scenarios::ramps_leaving(100.0 / 3.6, 80.0 / 3.6, leaving),
         }
     }
 
@@ -122,6 +125,30 @@ struct App {
     /// Where the last capture was saved, or why it failed.
     capture_status: Option<String>,
     harness: Harness,
+    /// Each vehicle's corners before the last step, to draw it between there and
+    /// where it is now (see [`Poses`]).
+    poses: Poses,
+}
+
+/// Where vehicles were before the simulation's last fixed step, so they can be
+/// drawn between there and where they are by how far into the next step the
+/// frame has reached ([`Simulation::alpha`]), rather than jumping a step at a
+/// time: interpolation, as in "Fix Your Timestep". Drawn a step behind.
+#[derive(Default)]
+struct Poses {
+    before: HashMap<VehicleId, [DVec2; 4]>,
+}
+
+impl Poses {
+    /// Where to draw `v`'s corners, `alpha` of the way from before the last step
+    /// to now. A vehicle that wasn't there before is drawn where it is.
+    fn corners(&self, id: VehicleId, v: &Vehicle, alpha: f64) -> [DVec2; 4] {
+        let now = v.corners();
+        match self.before.get(&id) {
+            Some(before) => std::array::from_fn(|i| before[i].lerp(now[i], alpha)),
+            None => now,
+        }
+    }
 }
 
 /// Keeps vehicles coming. On a closed network, such as the ring, it keeps a
@@ -290,6 +317,7 @@ impl App {
             lane_change_error: None,
             capture_status: None,
             harness: Harness::default(),
+            poses: Poses::default(),
         };
         app.load(scenario);
         app
@@ -302,6 +330,7 @@ impl App {
         self.scenario = scenario;
         self.selected = None;
         self.capture_status = None;
+        self.poses = Poses::default();
         let Harness { target, flow, .. } = self.harness;
         self.harness = Harness {
             closed: scenario.closed(),
@@ -315,7 +344,10 @@ impl App {
     }
 
     fn step(&mut self, dt: f64) {
-        self.sim.step(dt);
+        let before: HashMap<_, _> = self.sim.vehicles().map(|(id, v)| (id, v.corners())).collect();
+        if self.sim.step_variable(dt) > 0 {
+            self.poses.before = before;
+        }
         self.harness.step(&mut self.sim, self.selected, dt);
     }
 
@@ -472,7 +504,7 @@ impl App {
         });
 
         ui.separator();
-        ui.label("Last lane-change decision (MOBIL)");
+        ui.label("Lane-change desire (LMRS)");
         let evals = self.sim.sink().decisions.get(&id).cloned().unwrap_or_default();
         egui::Grid::new("decision").num_columns(2).show(ui, |ui| {
             for eval in &evals {
@@ -480,26 +512,30 @@ impl App {
                     Side::Left => "left",
                     Side::Right => "right",
                 };
-                // Only while indicating: the change for the new and old followers,
-                // if any is in reach.
-                let replies = match (eval.new_follower, eval.old_follower) {
-                    (None, None) => String::new(),
-                    (new, old) => format!(
-                        ", followers {} / {}",
-                        new.map_or("none".into(), |x| format!("{x:+.2}")),
-                        old.map_or("none".into(), |x| format!("{x:+.2}"))
+                // Only when the gap was checked: its own acceleration there and
+                // its new follower's.
+                let gap = match eval.own_after {
+                    None => String::new(),
+                    Some(own) => format!(
+                        ", gap: own {own:+.2}, follower {}, accepts {:.1} m/s²{}{}",
+                        eval.new_follower.map_or("none".into(), |x| format!("{x:+.2}")),
+                        eval.accepted_braking,
+                        if eval.safe { "" } else { ", unsafe" },
+                        if eval.room { "" } else { ", no room" },
                     ),
                 };
+                let i = eval.incentives;
                 ui.label(format!("{side}: {:?}", eval.outcome));
                 ui.small(format!(
-                    "gain {:+.2}{replies}, net {:+.2}, built up {:.2}/{:.2}, frustrated {:.1} s, accepts {:.1} m/s²{}",
-                    eval.own_gain,
-                    eval.incentive,
-                    eval.advantage,
-                    traffic_sim::LANE_CHANGE_INTENT,
-                    eval.frustration,
-                    eval.accepted_braking,
-                    if eval.safe { "" } else { ", unsafe" }
+                    "desire {:+.2} (free {:.2}, sync {:.2}, coop {:.2}): route {:+.2}, speed {:+.2}, keep {:+.2}, courtesy {:+.2}{gap}",
+                    eval.desire,
+                    traffic_sim::D_FREE,
+                    traffic_sim::D_SYNC,
+                    traffic_sim::D_COOP,
+                    i.route,
+                    i.speed,
+                    i.keep,
+                    i.courtesy,
                 ));
                 ui.end_row();
             }
@@ -534,6 +570,9 @@ impl App {
                     }
                     AccelSource::Junction { id, kind: ConflictKind::Merge, gap } => {
                         format!("merging after {id:?}, gap {gap:.2} m")
+                    }
+                    AccelSource::Sync { id, gap } => {
+                        format!("synchronising with {id:?}, gap {gap:.2} m")
                     }
                     AccelSource::Merge { id, gap } => {
                         format!("merge order after {id:?}, gap {gap:.2} m")
@@ -652,10 +691,20 @@ impl eframe::App for App {
             let scene = egui::Scene::new().zoom_range(0.1..=200.0).scroll_zooms(true);
             let response = scene
                 .show(ui, &mut self.scene_rect, |ui| match self.view {
-                    View::Pretty => {
-                        draw_pretty(ui.painter(), &self.sim, &self.render, self.selected)
-                    }
-                    View::Debug => draw_debug(ui.painter(), &self.sim, self.selected, &self.layers),
+                    View::Pretty => draw_pretty(
+                        ui.painter(),
+                        &self.sim,
+                        &self.render,
+                        self.selected,
+                        &self.poses,
+                    ),
+                    View::Debug => draw_debug(
+                        ui.painter(),
+                        &self.sim,
+                        self.selected,
+                        &self.layers,
+                        &self.poses,
+                    ),
                 })
                 .response;
             if response.clicked()
@@ -674,6 +723,7 @@ fn draw_pretty(
     sim: &Simulation<DebugState>,
     render: &RenderGeometry,
     selected: Option<VehicleId>,
+    poses: &Poses,
 ) {
     let asphalt = Color32::from_gray(60);
     for surface in &render.intersections {
@@ -698,7 +748,7 @@ fn draw_pretty(
         }
     }
     for (id, v) in sim.vehicles() {
-        let corners = v.corners().map(to_scene).to_vec();
+        let corners = poses.corners(id, v, sim.alpha()).map(to_scene).to_vec();
         let outline = if Some(id) == selected {
             Stroke::new(0.25, SELECTED)
         } else {
@@ -743,6 +793,7 @@ fn draw_debug(
     sim: &Simulation<DebugState>,
     selected: Option<VehicleId>,
     layers: &Layers,
+    poses: &Poses,
 ) {
     // With a vehicle selected, only its own marks are drawn; otherwise everyone's.
     // Vehicle bodies and the network are always drawn.
@@ -815,7 +866,7 @@ fn draw_debug(
             } else {
                 VEHICLE
             };
-            let corners = v.corners().map(to_scene).to_vec();
+            let corners = poses.corners(id, v, sim.alpha()).map(to_scene).to_vec();
             painter.add(Shape::closed_line(corners, Stroke::new(0.1, color)));
             painter.circle_filled(to_scene(v.pos()), 0.2, color);
         }
@@ -1209,19 +1260,5 @@ fn new_sim(scenario: Scenario) -> (Recorded<DebugState>, RenderGeometry) {
 }
 
 fn demo_car() -> VehicleSpec {
-    VehicleSpec {
-        length: 4.6,
-        width: 1.9,
-        max_speed: 30.0,
-        speed_factor: 1.0,
-        max_accel: 1.0,
-        comfy_decel: 1.5,
-        time_headway: 1.0,
-        min_gap: 1.5,
-        rear_axle: 1.0,
-        front_axle: 3.7,
-        courtesy: 1.0,
-        politeness: 0.2,
-        assertiveness: 0.0,
-    }
+    VehicleSpec::passenger_car()
 }

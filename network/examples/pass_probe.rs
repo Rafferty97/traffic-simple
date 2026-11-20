@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use glam::DVec2;
 use traffic_network::{Direction, Piece, Pose, Road, RoadLane, RoadNetwork, compile, scenarios};
 use traffic_sim::{
-    DebugEvent, DebugSink, LaneId, NoopSink, Placement, Route, Side, Simulation, VehicleId,
+    DebugEvent, DebugSink, Keep, LaneId, NoopSink, Placement, Route, Side, Simulation, VehicleId,
     VehicleSpec,
 };
 
@@ -56,19 +56,11 @@ fn car(rng: &mut Rng) -> VehicleSpec {
     let v = rng.f();
     let normal = (-2.0 * u.ln()).sqrt() * (TAU * v).cos();
     VehicleSpec {
-        length: 4.6,
-        width: 1.9,
-        max_speed: 40.0,
         speed_factor: (1.0 + 0.1 * normal).clamp(0.8, 1.2),
-        max_accel: 1.0,
-        comfy_decel: 1.5,
-        time_headway: 1.0,
-        min_gap: 1.5,
-        rear_axle: 1.0,
-        front_axle: 3.7,
         courtesy: 2.0 * rng.f(),
         politeness: 0.1 + 0.3 * rng.f(),
         assertiveness: rng.f().powi(3),
+        ..VehicleSpec::passenger_car()
     }
 }
 
@@ -246,7 +238,7 @@ fn run<D: DebugSink>(
     for _ in 0..(minutes * 60.0 / DT) as usize {
         let before = sim.vehicles().count();
         let t = Instant::now();
-        sim.step(DT);
+        sim.step_variable(DT);
         time += t.elapsed();
         let after = sim.vehicles().count();
         stats.exits += before.saturating_sub(after) as u64;
@@ -309,7 +301,7 @@ fn why(net: &RoadNetwork, demand: Demand, seed: u64, minutes: f64) {
     let mut harness = Harness { demand, credit: 0.0, rng: Rng(seed), entries };
     let mut why: std::collections::BTreeMap<String, u64> = Default::default();
     for _ in 0..(minutes * 60.0 / DT) as usize {
-        sim.step(DT);
+        sim.step_variable(DT);
         harness.step(&mut sim);
         for (id, v) in sim.vehicles() {
             if v.accel() >= -6.0 {
@@ -342,7 +334,11 @@ fn lane(offset: f64) -> RoadLane {
 
 /// A straight one-way freeway of `n` lanes.
 fn freeway(n: usize, length: f64) -> RoadNetwork {
-    let mut net = RoadNetwork::default();
+    let mut net = RoadNetwork {
+        keep: Keep::Left,
+        keep_above: 80.0 / 3.6,
+        ..RoadNetwork::default()
+    };
     let lanes = (0..n).map(|i| lane(3.5 * (i as f64 + 0.5))).collect();
     net.add_road(Road {
         start: Pose::new(0.0, 0.0, 0.0),
@@ -355,7 +351,11 @@ fn freeway(n: usize, length: f64) -> RoadNetwork {
 
 /// A winding one-way freeway of `n` lanes: alternating bends of `radius`.
 fn winding(n: usize, radius: f64) -> RoadNetwork {
-    let mut net = RoadNetwork::default();
+    let mut net = RoadNetwork {
+        keep: Keep::Left,
+        keep_above: 80.0 / 3.6,
+        ..RoadNetwork::default()
+    };
     let lanes = (0..n).map(|i| lane(3.5 * (i as f64 + 0.5))).collect();
     let mut pieces = vec![Piece::Line { length: 100.0 }];
     for k in 0..6 {
@@ -438,7 +438,7 @@ fn targeted(
         if b_changes && !done_b && t >= tb {
             done_b = sim.change_lane(b, sb).is_ok() || t > tb + 1.0;
         }
-        sim.step(DT);
+        sim.step_variable(DT);
         let (va_, vb_) = (sim.get(a).unwrap(), sim.get(b).unwrap());
         if overlap(va_.corners(), vb_.corners()) {
             out.collided = true;
@@ -457,7 +457,11 @@ fn targeted(
 }
 
 fn freeway3() -> RoadNetwork {
-    let mut net = RoadNetwork::default();
+    let mut net = RoadNetwork {
+        keep: Keep::Left,
+        keep_above: 80.0 / 3.6,
+        ..RoadNetwork::default()
+    };
     net.add_road(Road {
         start: Pose::new(0.0, 0.0, 0.0),
         pieces: vec![Piece::Line { length: 1500.0 }],
@@ -536,7 +540,7 @@ fn at_the_drop(va: f64, vb: f64, d: f64, x: f64, tb: Option<f64>) -> (bool, u64)
         {
             done = sim.change_lane(b, Side::Right).is_ok() || t > tb + 1.0;
         }
-        sim.step(DT);
+        sim.step_variable(DT);
         let (Some(va_), Some(vb_)) = (sim.get(a), sim.get(b)) else {
             if std::env::var("DEBUG").is_ok() {
                 eprintln!(
@@ -635,7 +639,7 @@ fn merge_probe(flow: f64, minutes: f64, seed: u64) {
     let mut stalled = 0u64;
     let warm = 60.0;
     for _ in 0..(minutes * 60.0 / DT) as usize {
-        sim.step(DT);
+        sim.step_variable(DT);
         harness.step(&mut sim);
         if sim.time() < warm {
             for (id, v) in sim.vehicles() {
@@ -705,7 +709,7 @@ fn merge_probe(flow: f64, minutes: f64, seed: u64) {
     if std::env::var("TRACE").is_ok() {
         use traffic_sim::AccelSource as S;
         for frame in 0..(4.0 / DT) as usize {
-            sim.step(DT);
+            sim.step_variable(DT);
             harness.step(&mut sim);
             if frame % 60 != 0 {
                 continue;

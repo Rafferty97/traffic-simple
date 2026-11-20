@@ -36,6 +36,7 @@ fn demo_car(speed_factor: f64) -> VehicleSpec {
         courtesy: 1.0,
         politeness: 0.2,
         assertiveness: 0.0,
+        accel_noise: 0.0,
     }
 }
 
@@ -71,7 +72,7 @@ fn run_scenario(spawn_rate: f64, despawn_rate: f64, minutes: f64) -> Stats {
     let mut last: std::collections::HashMap<VehicleId, (f64, LaneId, bool)> = Default::default();
 
     for frame in 0..(minutes * 60.0 / DT) as usize {
-        sim.step(DT);
+        sim.step_variable(DT);
 
         spawn_credit = (spawn_credit + spawn_rate * DT).min(1.0);
         if spawn_credit >= 1.0 {

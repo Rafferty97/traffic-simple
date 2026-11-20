@@ -20,10 +20,10 @@ fn ring_step(c: &mut Criterion) {
         common::fill_ring(&mut sim, cars);
         // Settle into moving traffic before measuring.
         for _ in 0..(20.0 / DT) as usize {
-            sim.step(DT);
+            sim.step_variable(DT);
         }
         group.bench_with_input(BenchmarkId::from_parameter(cars), &cars, |b, _| {
-            b.iter(|| sim.step(black_box(DT)))
+            b.iter(|| sim.step_variable(black_box(DT)))
         });
     }
     group.finish();

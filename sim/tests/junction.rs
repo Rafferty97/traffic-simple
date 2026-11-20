@@ -87,7 +87,7 @@ fn overlap(a: [DVec2; 4], b: [DVec2; 4]) -> bool {
 fn run_clear(sim: &mut Simulation, limit: f64) {
     let mut time = 0.0;
     while sim.vehicles().next().is_some() {
-        sim.step(DT);
+        sim.step_variable(DT);
         time += DT;
         assert!(
             time < limit,
@@ -177,7 +177,7 @@ fn the_second_to_commit_waits_for_the_first_to_clear_the_crossing() {
     let mut both = false;
     let mut b_slowest = f64::INFINITY;
     for _ in 0..(20.0 / DT) as usize {
-        sim.step(DT);
+        sim.step_variable(DT);
         if sim.queue(junction) == [a, b] {
             both = true;
         }
@@ -228,7 +228,7 @@ fn streams_from_both_lanes_of_a_merge_take_turns_without_touching() {
 fn slowest(sim: &mut Simulation, id: VehicleId, seconds: f64) -> f64 {
     let mut slowest = f64::INFINITY;
     for _ in 0..(seconds / DT) as usize {
-        sim.step(DT);
+        sim.step_variable(DT);
         if let Some(v) = sim.get(id) {
             slowest = slowest.min(v.speed());
         }
@@ -286,7 +286,7 @@ fn a_fast_follower_commits_only_after_the_slow_vehicle_ahead_of_it() {
     let mut ready_first = false;
     let mut order = Vec::new();
     for _ in 0..(10.0 / DT) as usize {
-        sim.step(DT);
+        sim.step_variable(DT);
         commit_order(&sim, junction, &mut order);
         if sim.get(leader).is_some() && !order.contains(&leader) {
             let v = sim.get(follower).unwrap();
@@ -321,7 +321,7 @@ fn a_vehicle_that_cuts_in_ahead_commits_first() {
     sim.change_lane(ahead, Side::Left).unwrap();
     let mut order = Vec::new();
     for _ in 0..(10.0 / DT) as usize {
-        sim.step(DT);
+        sim.step_variable(DT);
         commit_order(&sim, junction, &mut order);
     }
     assert_eq!(order, [ahead, behind], "both commit, the one ahead first");
@@ -340,7 +340,7 @@ fn a_vehicle_not_yet_committed_stops_gently_for_a_committed_one_in_its_way() {
     let spec = car();
     let mut hardest = 0.0f64;
     for _ in 0..(20.0 / DT) as usize {
-        sim.step(DT);
+        sim.step_variable(DT);
         assert_eq!(sim.queue(junction), [blocker], "it never commits");
         let v = sim.get(id).unwrap();
         hardest = hardest.min(v.accel());
@@ -365,12 +365,12 @@ fn a_committed_vehicle_held_up_short_of_its_conflict_is_released() {
     // the merge.
     let held = sim.insert(car(), at(0, 72.0, 14.0));
     let slow = sim.insert(car(), at(1, 82.0, 6.0));
-    sim.step(DT);
+    sim.step_variable(DT);
     assert_eq!(sim.queue(junction), [held]);
     sim.change_lane(slow, Side::Left).unwrap();
     let mut released = false;
     for _ in 0..(5.0 / DT) as usize {
-        sim.step(DT);
+        sim.step_variable(DT);
         let short = sim.get(held).is_some_and(|v| v.lane() == LaneId(0));
         released |= short && !sim.queue(junction).contains(&held);
         let bodies: Vec<_> = sim.vehicles().map(|(_, v)| v.corners()).collect();
@@ -407,7 +407,7 @@ fn it_arrives_at_the_next_junction_only_once_it_has_entered_the_one_before() {
     assert!(sim.approaching(second).is_empty());
     let mut arrived = false;
     for _ in 0..(8.0 / DT) as usize {
-        sim.step(DT);
+        sim.step_variable(DT);
         let Some(v) = sim.get(id) else {
             break;
         };

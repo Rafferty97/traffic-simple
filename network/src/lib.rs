@@ -16,7 +16,7 @@ mod render;
 pub mod scenarios;
 
 use glam::DVec2;
-use traffic_sim::{LaneId, SimNetwork};
+use traffic_sim::{Keep, LaneId, Leaving, SimNetwork};
 
 pub use compile::{CompileError, compile};
 pub use render::{Marking, MarkingStyle, RenderGeometry, Strip};
@@ -98,6 +98,9 @@ pub struct RoadLane {
     /// `changeLeft` and `changeRight`.
     pub change_left: bool,
     pub change_right: bool,
+    /// How drivers leave it, if it ends by merging into its neighbour, as an
+    /// acceleration lane does: `None` if it doesn't.
+    pub leaving: Option<Leaving>,
 }
 
 impl RoadLane {
@@ -110,6 +113,7 @@ impl RoadLane {
             direction,
             change_left: true,
             change_right: true,
+            leaving: None,
         }
     }
 }
@@ -168,6 +172,11 @@ pub struct Intersection {
 /// A road network at road level.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RoadNetwork {
+    /// Which side drivers keep to on roads with speed limits above
+    /// `keep_above`: in Australia, the left, above 80 km/h.
+    pub keep: Keep,
+    /// In meters per second.
+    pub keep_above: f64,
     pub roads: Vec<Road>,
     /// Each joins the end of the first road to the start of the second, which
     /// should start where and as the first ends. A road may join itself.
