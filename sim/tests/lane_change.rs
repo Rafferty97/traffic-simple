@@ -186,7 +186,7 @@ fn a_change_across_the_seam_keeps_followers_on_the_old_side_informed() {
 /// For a car changing left out of `lane`, the `t` on `lane` of its right rear
 /// corner, the one still furthest into it, while it still has a record there.
 fn trailing_corner(sim: &Simulation, id: VehicleId, lane: LaneId) -> Option<f64> {
-    let record = sim.occupants(lane).iter().find(|o| o.id == id && !o.ghost)?;
+    let record = sim.occupants(lane).iter().find(|o| o.is_record_of(id))?;
     assert_eq!(
         record.lateral,
         Lateral::Diverging(Side::Left),
@@ -196,7 +196,7 @@ fn trailing_corner(sim: &Simulation, id: VehicleId, lane: LaneId) -> Option<f64>
     let [_, rear_right, ..] = sim.get(id)?.corners();
     Some(
         l.geometry()
-            .world_to_lane_near(rear_right, l.geometry().lane_pos(record.s, 0.0))
+            .world_to_lane_near(rear_right, l.geometry().lane_pos(record.s(), 0.0))
             .t,
     )
 }

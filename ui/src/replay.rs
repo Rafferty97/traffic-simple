@@ -170,7 +170,7 @@ mod test {
         }
         for (lane, _) in sim.network().lanes() {
             for o in sim.occupants(lane) {
-                out.extend([o.s.to_bits(), o.ghost as u64]);
+                out.extend([o.s().to_bits(), o.is_ghost() as u64]);
             }
         }
         out

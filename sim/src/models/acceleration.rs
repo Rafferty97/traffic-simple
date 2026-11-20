@@ -73,10 +73,11 @@ pub fn horizon(spec: &VehicleSpec, speed: f64) -> f64 {
 /// seconds: the time constant of its approach.
 const CAP_EASE: f64 = 0.5;
 
-/// The acceleration a speed cap allows: braking at the safe deceleration while above it,
-/// easing up to it from below, and with a cap of 0 braking until it stops.
-/// Like any term, it only binds when it is the lowest.
-pub fn capped(spec: &VehicleSpec, speed: f64, max_speed: f64) -> f64 {
+/// The acceleration a speed cap allows: braking at [`SAFE_BRAKING`] while above
+/// it, so a held vehicle stops promptly, easing up to it from below, and with a
+/// cap of 0 braking until it stops. Like any term, it only binds when it is the
+/// lowest.
+pub fn capped(speed: f64, max_speed: f64) -> f64 {
     if max_speed <= 0.0 {
         -SAFE_BRAKING
     } else {
@@ -161,21 +162,12 @@ mod test {
 
     #[test]
     fn a_speed_cap_brakes_above_it_and_eases_up_to_it() {
-        let spec = spec();
-        assert_eq!(
-            capped(&spec, 14.0, 5.0),
-            -spec.comfy_decel,
-            "well above: comfortable braking"
-        );
-        assert!(capped(&spec, 5.2, 5.0) < 0.0 && capped(&spec, 5.2, 5.0) > -spec.comfy_decel);
+        assert_eq!(capped(14.0, 5.0), -SAFE_BRAKING, "well above: safe braking");
+        assert!(capped(5.2, 5.0) < 0.0 && capped(5.2, 5.0) > -SAFE_BRAKING);
         assert!(
-            capped(&spec, 4.0, 5.0) > 0.0,
+            capped(4.0, 5.0) > 0.0,
             "below it, it doesn't hold the vehicle back"
         );
-        assert_eq!(
-            capped(&spec, 0.0, 0.0),
-            -spec.comfy_decel,
-            "a cap of 0 stops it"
-        );
+        assert_eq!(capped(0.0, 0.0), -SAFE_BRAKING, "a cap of 0 stops it");
     }
 }

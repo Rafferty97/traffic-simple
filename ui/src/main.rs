@@ -794,8 +794,8 @@ fn draw_debug(
 
         if layers.on(Layer::Occupants) {
             for occupant in sim.occupants(lane_id).iter().filter(|o| shown(o.id)) {
-                let p = lane.geometry().lane_to_world(lane.geometry().lane_pos(occupant.s, 0.0));
-                let color = if occupant.ghost { GHOST } else { OCCUPANT };
+                let p = lane.geometry().lane_to_world(lane.geometry().lane_pos(occupant.s(), 0.0));
+                let color = if occupant.is_ghost() { GHOST } else { OCCUPANT };
                 painter.circle_filled(to_scene(p), 0.25, color);
             }
         }

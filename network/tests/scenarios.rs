@@ -87,7 +87,7 @@ fn uncovered<D: traffic_sim::DebugSink>(sim: &traffic_sim::Simulation<D>) -> Opt
     use traffic_sim::Side;
     const INSIDE: f64 = 0.05;
     let net = sim.network();
-    let on = |lane, id| sim.occupants(lane).iter().any(|o| o.id == id && !o.ghost);
+    let on = |lane, id| sim.occupants(lane).iter().any(|o| o.is_record_of(id));
     for (id, v) in sim.vehicles() {
         for (lane_id, lane) in net.lanes() {
             if lane.junction().is_some() || v.path().contains(&lane_id) || on(lane_id, id) {

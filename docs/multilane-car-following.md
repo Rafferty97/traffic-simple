@@ -23,7 +23,7 @@ The simulation relies on a set of invariants that together should guarantee real
 2. Vehicles in a lane are confined to that lane.
 3. Vehicles changing lanes are confined to the union of their old lane and their new lane.
 4. A vehicle searches along its own lane, and its old lane if changing lanes, for occupants, which become its candidate
-   leaders. Its search of its old lane only reaches as far as it will still be in that lane (see Old-lane search).
+   leaders. Its search of its old lane only reaches as far as its lane change's end (see Old-lane search).
 5. Therefore, a vehicle cannot miss a candidate leader unless they will never intersect.
 6. A vehicle follows every candidate leader unless it can prove that their paths don't intersect.
 7. Thus, vehicles can never collide.
@@ -35,32 +35,39 @@ record on lane Z ahead of A's own occupancy record on lane Z.
 
 ### Occupancy records
 
-An occupant is classified as either "in lane", "converging" or "diverging" to a certain side (left/right).
+An occupant is classified as either "in lane", "converging" or "diverging" to a certain side (left/right). A converging
+record also says where it turns diverging, and to which side. A vehicle's ghost, its indicator, is a fourth kind of
+record, which this model never follows or passes.
 
-Occupancy records contain the world-space coordinates of the vehicle's two rear corners.
+A record holds only the vehicle, its classification and the lane coordinates of its rearmost corner, which are both its
+position along the lane and the hint for projecting it next. The pass check reads the leader's rear corners from the
+vehicle itself.
 
 ### Old-lane search
 
 A follower is only ever diverging on its old lane: at a fork it doesn't search the branches it didn't take. Its search of
-its old lane only reaches as far as its exit point, where its body leaves that lane for good (see Classifying occupancy
-records geometrically). That is never later than the end of its lane change, since by then it is confined to its new
-lane.
+its old lane only reaches as far as the end of its lane change, since from there it is confined to its new lane, so
+nothing it would only reach beyond it can be in its way in the old lane. Any collision elsewhere would be in a lane they
+both search, where that lane's check deals with it. Once A has actually left the lane, its record there is dropped, and
+it doesn't search the lane at all.
 
-Before that point A is behind any leader's rear there, which never moves back, and after it A never re-enters the lane,
-so nothing it would only reach beyond it can be in its way in that lane. Any collision elsewhere would be in a lane they
-both search, where that lane's check deals with it. So leaders beyond the exit point are never found, whatever they are
-doing. Once A has actually left the lane, its record there is dropped, and it doesn't search the lane at all.
+Leaders found before the change's end that A will have left the lane by the time it reaches are passed by the check
+below, whatever they are doing.
 
 ### Pass check
 
-A's own record on Z is classified too, so each of A and B is in lane, converging or diverging. A leader within the search
-may be passed only by a projection check:
+A's own record on Z is classified too, so each of A and B is in lane, converging or diverging. Both checks start from A's
+projected pose: the pose A will have when its front reaches B's rear.
 
-- **Projection:** compute the pose that A will have when its front reaches B's rear. If at that point it clears B's rear
-  corners with sufficient margin, it may pass. This only has to check the trailing side of the diverging vehicle, and is
-  only sound where neither vehicle moves toward the other sideways after that point.
+- **Gone:** if A is diverging and its projected body is wholly outside Z, it may pass B, whatever B is doing. A diverging
+  vehicle never comes back into Z once it has left, and B is confined to Z and its own other lanes, so they can only meet
+  in a lane A searches as its own (invariant 1), where that search deals with B. B moves on meanwhile, so A reaches it
+  further on, further out of Z still.
+- **Projection:** if at that pose A clears B's rear corners with sufficient margin, it may pass. This only has to check
+  the trailing side of the diverging vehicle, and is only sound where neither vehicle moves toward the other sideways
+  after that point.
 
-Whether it applies depends on the two classifications:
+The gone check applies whenever A is diverging. Whether the projection applies depends on the two classifications:
 
 | Follower A \ leader B | In lane    | Converging | Diverging                                    |
 | --------------------- | ---------- | ---------- | -------------------------------------------- |
@@ -68,9 +75,9 @@ Whether it applies depends on the two classifications:
 | **Converging**        | follow     | follow     | follow                                       |
 | **Diverging**         | projection | follow     | projection if they diverge to opposite sides |
 
-If the projection doesn't apply, or doesn't succeed, A follows B.
+If neither check applies, or neither succeeds, A follows B.
 
-- A converging leader may still move toward A, so projecting its rear corners proves nothing.
+- A converging leader may still move toward A, so projecting its rear corners proves nothing, though A may be gone.
 - A converging follower can't pass anything. The mirror of the old-lane search's horizon would need B to have left the
   lane before A reaches it, and with no timing, B's only known position is now: if it had left Z, it would have no record
   there to find.
@@ -100,7 +107,7 @@ dropped for being beside Z. The whole body, not just the rear corners: where Z b
 back across Z, and its front can still be in Z after its rear has left.
 
 A vehicle on a loop shorter than its course can hold two records on one lane. A record a vehicle joins is only a
-duplicate if the vehicle already has one within 20 m of it on that lane.
+duplicate if the vehicle already has one within 2 m of it on that lane.
 
 ### Classifying occupancy records geometrically
 
@@ -112,9 +119,8 @@ after which these two always hold:
   furthest it has been, still counts as moving away: well inside the passing check's clearance.
 - Once its body has stopped intersecting Z, it never intersects it again.
 
-Until that point, the record is converging, and after that point, it is diverging. The trace also finds V's exit point,
-the first point after which its body is outside Z for good, which bounds its search of its old lane (see Old-lane search).
-Both are memoised on the record, in Z's coordinates, so the trace only runs once.
+Until that point, the record is converging, and after that point, it is diverging. That point is memoised on the
+converging record, as V's rear's position along Z, with the side it diverges toward, so the trace only runs once.
 
 If the trace runs past the end of X or Z before the conditions hold, the record stays converging. It is classified again
 when V advances onto the next lane, and when it joins the lanes that Z leads to.

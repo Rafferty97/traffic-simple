@@ -36,12 +36,13 @@ fn state<D: DebugSink>(sim: &Simulation<D>) -> Vec<u64> {
     for (lane, _) in sim.network().lanes() {
         for o in sim.occupants(lane) {
             out.extend(format!("{:?}", o.id).bytes().map(u64::from));
-            out.extend([o.s.to_bits(), o.ghost as u64]);
+            out.push(o.s().to_bits());
             out.push(match o.lateral {
                 Lateral::InLane => 0,
                 Lateral::Diverging(Side::Left) => 1,
                 Lateral::Diverging(Side::Right) => 2,
-                Lateral::Converging => 3,
+                Lateral::Converging { turn, side } => turn.to_bits() ^ (3 + side as u64),
+                Lateral::Ghost => 4,
             });
         }
     }

@@ -131,8 +131,8 @@ struct Sample {
     t_max: f64,
 }
 
-/// Classifies `vehicle`'s record `o` on `lane`, and sets where it turns from
-/// converging to diverging, and where its body leaves the lane for good.
+/// Classifies `vehicle`'s record `o` on `lane`: if converging, with where it
+/// turns diverging.
 ///
 /// - On the lane it follows: in the lane, or converging while it changes lanes.
 /// - On the lane before, lingering past its end: likewise.
@@ -149,23 +149,28 @@ pub fn classify(
     lane: LaneId,
     o: &mut Occupant,
 ) {
-    o.turn = f64::MAX;
-    o.exit = f64::MAX;
+    o.lateral = lateral(network, overlaps, vehicle, lane, o);
+}
+
+fn lateral(
+    network: &SimNetwork,
+    overlaps: &Overlaps,
+    vehicle: &Vehicle,
+    lane: LaneId,
+    o: &Occupant,
+) -> Lateral {
     let own = vehicle.path[0];
     let changing = vehicle.lane_change.is_some();
-    let settled = if changing {
-        Lateral::Converging
-    } else {
-        Lateral::InLane
-    };
     if lane == own || network.lane(lane).successors().contains(&own) {
-        o.lateral = settled;
-        return;
+        return if changing {
+            Lateral::CONVERGING
+        } else {
+            Lateral::InLane
+        };
     }
     let diverge = overlaps[own.0 as usize].iter().find(|p| p.lane == lane).map(|p| p.diverge);
     if diverge == Some(f64::INFINITY) {
-        o.lateral = Lateral::Converging;
-        return;
+        return Lateral::CONVERGING;
     }
     let axle = vehicle.lane_pos.s;
     let rear = axle - vehicle.spec.rear_axle;
@@ -210,8 +215,7 @@ pub fn classify(
         let ahead = i as f64 * TRACE_STEP;
         if ahead > known || samples.is_full() {
             // Its course runs beyond what it knows: until it advances.
-            o.lateral = Lateral::Converging;
-            return;
+            return Lateral::CONVERGING;
         }
         let corners = if i == 0 {
             vehicle.corners()
@@ -261,19 +265,11 @@ pub fn classify(
             furthest = furthest.max(away(b));
         }
     }
-    o.side = side;
     if turn == 0 {
-        o.lateral = Lateral::Diverging(side);
-        o.turn = f64::MIN;
+        Lateral::Diverging(side)
     } else {
-        o.lateral = Lateral::Converging;
-        o.turn = samples[turn.min(samples.len() - 1)].rear;
+        Lateral::Converging { turn: samples[turn.min(samples.len() - 1)].rear, side }
     }
-    o.exit = match samples.iter().rposition(|s| s.overlaps) {
-        None => f64::MIN,
-        Some(last) if last + 1 < samples.len() => samples[last + 1].rear,
-        Some(_) => f64::MAX,
-    };
 }
 
 /// The most lanes [`around`] gives.
@@ -309,7 +305,7 @@ pub fn record(
 ) -> Occupant {
     let geometry = network.lane(lane).geometry();
     let hint: LanePos = geometry.world_to_lane(vehicle.pos);
-    let mut o = Occupant::new(network, lane, id, vehicle, hint, Lateral::Converging);
+    let mut o = Occupant::new(network, lane, id, vehicle, hint, Lateral::CONVERGING);
     classify(network, overlaps, vehicle, lane, &mut o);
     o
 }

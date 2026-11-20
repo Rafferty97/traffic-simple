@@ -78,12 +78,13 @@ fn trace(seed: u64, seconds: f64) -> Vec<u64> {
         for &lane in &lanes {
             for o in sim.occupants(lane) {
                 push_id(&mut out, o.id);
-                out.extend([o.s.to_bits(), o.ghost as u64]);
+                out.push(o.s().to_bits());
                 out.push(match o.lateral {
                     Lateral::InLane => 0,
                     Lateral::Diverging(Side::Left) => 1,
                     Lateral::Diverging(Side::Right) => 2,
-                    Lateral::Converging => 3,
+                    Lateral::Converging { turn, side } => turn.to_bits() ^ (3 + side as u64),
+                    Lateral::Ghost => 4,
                 });
             }
         }

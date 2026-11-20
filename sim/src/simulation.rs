@@ -402,7 +402,7 @@ impl<D: DebugSink> Simulation<D> {
             Lateral::InLane,
         );
         let list = &mut self.state.occupants[lane_id.0 as usize];
-        let index = list.partition_point(|o| o.s <= occupant.s);
+        let index = list.partition_point(|o| o.s() <= occupant.s());
         list.insert(index, occupant);
         let SimState { network, vehicles, occupants, queues, overlaps, .. } = &mut self.state;
         join_overlaps(network, overlaps, occupants, id, &vehicles[id], lane_id);
@@ -547,9 +547,8 @@ impl<D: DebugSink> Simulation<D> {
         self.state.max_reach = self.state.max_reach.max(beyond_front);
 
         let list = &mut self.state.occupants[neighbor.lane.0 as usize];
-        if let Some(ghost) = list.iter_mut().find(|o| o.id == id && o.ghost) {
-            ghost.ghost = false;
-            ghost.lateral = Lateral::Converging;
+        if let Some(ghost) = list.iter_mut().find(|o| o.id == id && o.is_ghost()) {
+            ghost.lateral = Lateral::CONVERGING;
         } else {
             let occupant = Occupant::new(
                 &self.state.network,
@@ -557,9 +556,9 @@ impl<D: DebugSink> Simulation<D> {
                 id,
                 &self.state.vehicles[id],
                 lane_pos,
-                Lateral::Converging,
+                Lateral::CONVERGING,
             );
-            let index = list.partition_point(|o| o.s <= occupant.s);
+            let index = list.partition_point(|o| o.s() <= occupant.s());
             list.insert(index, occupant);
         }
         let SimState { network, vehicles, occupants, queues, overlaps, .. } = &mut self.state;
@@ -588,7 +587,7 @@ impl<D: DebugSink> Simulation<D> {
         );
         let ghost = Occupant::ghost(&self.state.network, neighbor.lane, id, vehicle, hint);
         let list = &mut self.state.occupants[neighbor.lane.0 as usize];
-        let index = list.partition_point(|o| o.s <= ghost.s);
+        let index = list.partition_point(|o| o.s() <= ghost.s());
         list.insert(index, ghost);
         self.state.vehicles[id].intent = Some(Intent { side, since: self.time });
     }
@@ -690,7 +689,7 @@ impl<D: DebugSink> Simulation<D> {
             let lane = LaneId(index as u32);
             let half_length = 0.5 * network.lane(lane).geometry().length();
             for (i, o) in list.iter().enumerate().rev() {
-                if o.ghost {
+                if o.is_ghost() {
                     continue;
                 }
                 let vehicle = &vehicles[o.id];
@@ -699,7 +698,7 @@ impl<D: DebugSink> Simulation<D> {
                     // lane it follows, lingering at its end, about a lane's length
                     // from its rear.
                     let rear = vehicle.lane_pos.s - vehicle.spec.rear_axle;
-                    if (o.s - rear).abs() > half_length {
+                    if (o.s() - rear).abs() > half_length {
                         continue;
                     }
                     decisions.push(longitudinal(state, sink, o.id, vehicle, i));
@@ -738,7 +737,7 @@ impl<D: DebugSink> Simulation<D> {
         }
         for &(id, max_speed) in &self.caps {
             let vehicle = &mut self.state.vehicles[id];
-            let term = acceleration::capped(&vehicle.spec, vehicle.speed, max_speed);
+            let term = acceleration::capped(vehicle.speed, max_speed);
             let source = AccelSource::Cap { max_speed };
             self.sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
             vehicle.accel = vehicle.accel.min(term);
@@ -843,7 +842,7 @@ impl<D: DebugSink> Simulation<D> {
                     };
                     let mut occupant =
                         Occupant::new(network, lane, id, vehicle, hint, Lateral::InLane);
-                    if lane != followed && has_record_at(occupants, lane, id, occupant.s) {
+                    if lane != followed && has_record_at(occupants, lane, id, occupant.s()) {
                         return;
                     }
                     following::classify(network, overlaps, vehicle, lane, &mut occupant);
@@ -1009,7 +1008,7 @@ impl<D: DebugSink> Simulation<D> {
             };
             let on = |lane: LaneId| {
                 network.lane(lane).adj(side).is_some_and(|old| {
-                    occupants[old.lane.0 as usize].iter().any(|o| o.id == id && !o.ghost)
+                    occupants[old.lane.0 as usize].iter().any(|o| o.is_record_of(id))
                 })
             };
             let following = vehicle.path[0];
@@ -1253,9 +1252,9 @@ fn stops_on(
     committed: &mut Vec<VehicleId>,
 ) -> bool {
     let list = &scan.occupants[on.0 as usize];
-    let end = list.partition_point(|o| o.s < s);
+    let end = list.partition_point(|o| o.s() < s);
     for o in list[..end].iter().rev() {
-        if o.ghost || committed.contains(&o.id) {
+        if o.is_ghost() || committed.contains(&o.id) {
             continue;
         }
         let vehicle = &scan.vehicles[o.id];
@@ -1279,16 +1278,17 @@ fn stops_on(
 }
 
 /// How far apart, in meters, two records of one vehicle on a lane must be to be
-/// two: on a loop shorter than this, it has one record where it is, and none
-/// where it was.
-const SAME_RECORD: f64 = 20.0;
+/// two. Two projections of the same rear corners are either at the same `s` or
+/// a whole loop apart, so this only has to allow for projections landing a
+/// little differently.
+const SAME_RECORD: f64 = 2.0;
 
 /// Whether `id` has a record, not a ghost, on `lane` near `s`. On a loop, a
 /// vehicle can have a second one, lingering past the end, at the other end.
 fn has_record_at(occupants: &[Vec<Occupant>], lane: LaneId, id: VehicleId, s: f64) -> bool {
     occupants[lane.0 as usize]
         .iter()
-        .any(|o| o.id == id && !o.ghost && (o.s - s).abs() < SAME_RECORD)
+        .any(|o| o.is_record_of(id) && (o.s() - s).abs() < SAME_RECORD)
 }
 
 /// Joins `vehicle`, which has just joined `lane`, to every lane overlapping it
@@ -1303,11 +1303,11 @@ fn join_overlaps(
 ) {
     for p in &overlaps[lane.0 as usize] {
         let occupant = following::record(network, overlaps, p.lane, id, vehicle);
-        if has_record_at(occupants, p.lane, id, occupant.s) {
+        if has_record_at(occupants, p.lane, id, occupant.s()) {
             continue;
         }
         let list = &mut occupants[p.lane.0 as usize];
-        let index = list.partition_point(|o| o.s <= occupant.s);
+        let index = list.partition_point(|o| o.s() <= occupant.s());
         list.insert(index, occupant);
     }
 }
@@ -1329,7 +1329,7 @@ fn reclassify(
             continue;
         }
         for o in occupants[lane.0 as usize].iter_mut() {
-            if o.id == id && !o.ghost && (!converging_only || o.lateral == Lateral::Converging) {
+            if o.is_record_of(id) && (!converging_only || o.lateral.is_converging()) {
                 following::classify(network, overlaps, vehicle, lane, o);
             }
         }
@@ -1347,7 +1347,7 @@ fn entered(
     let lanes = network.junction(junction).lanes();
     lanes
         .iter()
-        .any(|&lane| occupants[lane.0 as usize].iter().any(|o| o.id == id && !o.ghost))
+        .any(|&lane| occupants[lane.0 as usize].iter().any(|o| o.is_record_of(id)))
 }
 
 /// How far a vehicle needs to stop from its speed, braking at `SAFE_BRAKING`:
@@ -1424,11 +1424,11 @@ fn may_release(
     }
     let lane = vehicle.path[0];
     let records = &occupants[lane.0 as usize];
-    let record = |id: VehicleId| records.iter().find(|o| o.id == id && !o.ghost);
-    let rear = record(id).map_or(vehicle.lane_pos.s - vehicle.spec.rear_axle, |o| o.s);
+    let record = |id: VehicleId| records.iter().find(|o| o.is_record_of(id));
+    let rear = record(id).map_or(vehicle.lane_pos.s - vehicle.spec.rear_axle, |o| o.s());
     // Behind it on its lane, or on its way onto it.
     let behind = |&later: &VehicleId| match record(later) {
-        Some(o) => o.s < rear,
+        Some(o) => o.s() < rear,
         None => vehicles[later].path.contains(&lane),
     };
     !committed[index + 1..].iter().any(behind)
@@ -1561,9 +1561,9 @@ fn conflict_term(
         // beside it, can be in the way.
         None => state.occupants[theirs.0 as usize]
             .iter()
-            .find(|o| o.id == other && !o.ghost)
+            .find(|o| o.is_record_of(other))
             .is_none_or(|o| {
-                o.s >= conflict.theirs.end || o.s + leader.spec.length <= conflict.theirs.start
+                o.s() >= conflict.theirs.end || o.s() + leader.spec.length <= conflict.theirs.start
             }),
     };
     if clear {
@@ -1675,7 +1675,7 @@ fn speed_of(vehicles: &SlotMap<VehicleId, Vehicle>, ahead: Ahead) -> f64 {
 
 /// Removes a vehicle's ghost from a lane's occupants.
 fn remove_ghost(occupants: &mut [Vec<Occupant>], lane: LaneId, id: VehicleId) {
-    occupants[lane.0 as usize].retain(|o| !(o.id == id && o.ghost));
+    occupants[lane.0 as usize].retain(|o| !(o.id == id && o.is_ghost()));
 }
 
 /// A vehicle's lane-change decision, by the lane-change model, updating its
@@ -1703,7 +1703,7 @@ fn decide(
     let own_now = vehicle.accel;
     let cap = caps.iter().find(|&&(capped, _)| capped == id);
     let cap = cap.map_or(f64::INFINITY, |&(_, max_speed)| {
-        acceleration::capped(&vehicle.spec, vehicle.speed, max_speed)
+        acceleration::capped(vehicle.speed, max_speed)
     });
     // Its old follower's, behind it in its own lane, is the same for either side,
     // so it is measured once, when first needed: as now, and with this vehicle
@@ -2165,10 +2165,7 @@ mod test {
         let id = sim.insert(car(), at(1, 100.0, 10.0));
         sim.change_lane(id, Side::Left).unwrap();
         let lateral = |lane: usize| {
-            sim.state.occupants[lane]
-                .iter()
-                .find(|o| o.id == id && !o.ghost)
-                .map(|o| o.lateral)
+            sim.state.occupants[lane].iter().find(|o| o.is_record_of(id)).map(|o| o.lateral)
         };
         assert_eq!(
             lateral(1),
@@ -2177,7 +2174,7 @@ mod test {
         );
         assert_eq!(
             lateral(0),
-            Some(Lateral::Converging),
+            Some(Lateral::CONVERGING),
             "the lane moved into, until the change ends"
         );
         assert_eq!(sim.state.vehicles[id].old_side, Some(Side::Right));
@@ -2189,8 +2186,7 @@ mod test {
         let id = sim.insert(car(), at(1, 100.0, 10.0));
         sim.indicate(id, Side::Left);
         let ghost = sim.state.occupants[0].iter().find(|o| o.id == id).unwrap();
-        assert!(ghost.ghost);
-        assert_eq!(ghost.lateral, Lateral::InLane);
+        assert_eq!(ghost.lateral, Lateral::Ghost);
         let own = sim.state.occupants[1].iter().find(|o| o.id == id).unwrap();
         assert_eq!(own.lateral, Lateral::InLane);
     }
@@ -2295,13 +2291,13 @@ mod test {
         }
         let mine = records(&sim, id);
         assert!(mine.contains(&(1, false, Lateral::InLane)), "{mine:?}");
-        assert!(mine.contains(&(0, false, Lateral::Converging)), "{mine:?}");
+        assert!(mine.contains(&(0, false, Lateral::CONVERGING)), "{mine:?}");
         // Wholly beside lane 0 at first, but kept on it.
         for _ in 0..20 {
             sim.step(0.05);
         }
         assert!(sim.state.vehicles[id].lane_pos.s < 20.0);
-        assert!(records(&sim, id).contains(&(0, false, Lateral::Converging)));
+        assert!(records(&sim, id).contains(&(0, false, Lateral::CONVERGING)));
         // Dropped from both once past their end.
         for _ in 0..200 {
             sim.step(0.05);
@@ -2315,7 +2311,7 @@ mod test {
         let mut sim = a_taper();
         let id = sim.insert(car(), at(1, 30.0, 0.0));
         let mine = records(&sim, id);
-        assert!(mine.contains(&(0, false, Lateral::Converging)), "{mine:?}");
+        assert!(mine.contains(&(0, false, Lateral::CONVERGING)), "{mine:?}");
     }
 
     #[test]
@@ -2332,7 +2328,7 @@ mod test {
         assert_eq!(v.path[0], LaneId(0));
         assert!(v.speed < 0.1, "{}", v.speed);
         let theirs = sim.state.occupants[0].iter().find(|o| o.id == merging).unwrap();
-        assert!(rear(&sim, follower) + v.spec.length < theirs.s);
+        assert!(rear(&sim, follower) + v.spec.length < theirs.s());
     }
 
     /// A car on lane 1 at `s` and `speed`, indicating left for 2 s with
@@ -2565,13 +2561,20 @@ mod test {
         assert!(mine.contains(&(1, false, Lateral::InLane)), "{mine:?}");
     }
 
-    /// Lanes holding a record of `id`, and whether each is its ghost.
+    /// Lanes holding a record of `id`, whether each is its ghost, and how it
+    /// relates to the lane, converging records whatever their turn.
     fn records<D: DebugSink>(sim: &Simulation<D>, id: VehicleId) -> Vec<(u32, bool, Lateral)> {
         let lanes = sim.state.occupants.iter().enumerate();
         lanes
             .flat_map(|(i, list)| {
                 let mine = list.iter().filter(move |o| o.id == id);
-                mine.map(move |o| (i as u32, o.ghost, o.lateral))
+                mine.map(move |o| {
+                    let lateral = match o.lateral {
+                        Lateral::Converging { .. } => Lateral::CONVERGING,
+                        other => other,
+                    };
+                    (i as u32, o.is_ghost(), lateral)
+                })
             })
             .collect()
     }
@@ -2587,11 +2590,11 @@ mod test {
         let mut sim = Simulation::new(two_sections(), NoopSink);
         let id = sim.insert(car(), at(1, 97.0, 5.0));
         sim.indicate(id, Side::Left);
-        assert!(records(&sim, id).contains(&(0, true, Lateral::InLane)));
+        assert!(records(&sim, id).contains(&(0, true, Lateral::Ghost)));
         advance_onto(&mut sim, id, 3);
         let mine = records(&sim, id);
         assert!(
-            mine.contains(&(2, true, Lateral::InLane)),
+            mine.contains(&(2, true, Lateral::Ghost)),
             "no ghost beside lane 3: {mine:?}"
         );
         assert!(

@@ -21,7 +21,7 @@ fn run(sim: &mut Sim, seconds: f64, mut each: impl FnMut(&Sim)) {
 fn check_occupancy(sim: &Sim) {
     let list = sim.occupants(LaneId(0));
     assert!(
-        list.windows(2).all(|w| w[0].s <= w[1].s),
+        list.windows(2).all(|w| w[0].s() <= w[1].s()),
         "occupants out of order"
     );
     for (id, _) in sim.vehicles() {
@@ -158,13 +158,13 @@ fn three_lane_ring_occupancy_stays_consistent() {
         for lane_id in (0..3).map(LaneId) {
             let list = sim.occupants(lane_id);
             assert!(
-                list.windows(2).all(|w| w[0].s <= w[1].s),
+                list.windows(2).all(|w| w[0].s() <= w[1].s()),
                 "{lane_id:?} out of order"
             );
             for o in list {
                 let v = sim.get(o.id).unwrap();
                 let beside = |side| sim.network().lane(v.lane()).adj(side).map(|n| n.lane);
-                if o.ghost {
+                if o.is_ghost() {
                     // A ghost belongs to a vehicle indicating into this lane.
                     let side = v.intent().expect("ghost without an intent").side;
                     assert_eq!(beside(side), Some(lane_id), "stray ghost on {lane_id:?}");
@@ -182,7 +182,7 @@ fn three_lane_ring_occupancy_stays_consistent() {
         for (id, v) in sim.vehicles() {
             let own = sim.occupants(v.lane());
             assert!(
-                own.iter().any(|o| o.id == id && !o.ghost),
+                own.iter().any(|o| o.is_record_of(id)),
                 "{id:?} missing from its lane"
             );
         }
