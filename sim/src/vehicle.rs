@@ -40,6 +40,13 @@ pub struct VehicleSpec {
     /// How much the driver weighs other drivers' gains and losses against its own
     /// when changing lanes: MOBIL's politeness.
     pub politeness: f64,
+    /// How readily the driver changes lanes, from 0 to 1: it intends a change
+    /// for a smaller gain, and accepts harder braking, for itself and the
+    /// vehicle it cuts in front of, before it grows frustrated. As SUMO's
+    /// `lcAssertive` and `lcSpeedGain`. A few assertive drivers pull out into a
+    /// faster lane and slow it, so a fast lane doesn't form.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub assertiveness: f64,
 }
 
 impl VehicleSpec {

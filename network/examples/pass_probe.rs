@@ -68,6 +68,7 @@ fn car(rng: &mut Rng) -> VehicleSpec {
         front_axle: 3.7,
         courtesy: 2.0 * rng.f(),
         politeness: 0.1 + 0.3 * rng.f(),
+        assertiveness: rng.f().powi(3),
     }
 }
 
@@ -601,7 +602,212 @@ fn grid2() {
     }
 }
 
+/// At the ramps' merge, at `flow` into each entry: how fast each lane runs,
+/// how vehicles enter the merge, and which lane changes happen.
+fn merge_probe(flow: f64, minutes: f64, seed: u64) {
+    use std::collections::BTreeMap;
+    let compiled = compile(&scenarios::ramps(100.0 / 3.6, 80.0 / 3.6)).expect("compiles");
+    let mut sim = Simulation::new(compiled.sim, Counts::default());
+    let entries = sim
+        .network()
+        .lanes()
+        .filter(|(_, l)| l.predecessors().is_empty())
+        .map(|(id, _)| id)
+        .collect();
+    let mut harness = Harness {
+        demand: Demand::Flow(flow),
+        credit: 0.0,
+        rng: Rng(seed),
+        entries,
+    };
+    let mut binding: BTreeMap<String, (u64, f64)> = BTreeMap::new();
+    let mut speed: BTreeMap<u32, (f64, u64)> = BTreeMap::new();
+    let mut changes: BTreeMap<(u32, u32), u64> = BTreeMap::new();
+    let mut entering: BTreeMap<u32, (u64, f64, u64)> = BTreeMap::new();
+    let mut last: std::collections::HashMap<VehicleId, LaneId> = Default::default();
+    let mut entry_times: Vec<f64> = Vec::new();
+    // Stops within 60 m of the merge point on the lanes leading to it: moving
+    // above 1 m/s, then below 0.2 m/s.
+    let mut moving: std::collections::HashMap<VehicleId, bool> = Default::default();
+    let mut stops = 0u64;
+    // Vehicle-frames spent partway through a lane change, crawling: straddling
+    // two lanes, blocking both.
+    let mut stalled = 0u64;
+    let warm = 60.0;
+    for _ in 0..(minutes * 60.0 / DT) as usize {
+        sim.step(DT);
+        harness.step(&mut sim);
+        if sim.time() < warm {
+            for (id, v) in sim.vehicles() {
+                last.insert(id, v.lane());
+            }
+            continue;
+        }
+        for (id, v) in sim.vehicles() {
+            stalled += (v.lane_change().is_some() && v.speed() < 1.0) as u64;
+            let lane = v.lane();
+            let length = sim.network().lane(lane).geometry().length();
+            if (lane.0 == 2 || lane.0 == 3) && v.lane_pos().s > length - 60.0 {
+                let was = moving.get(&id).copied().unwrap_or(false);
+                if was && v.speed() < 0.2 {
+                    stops += 1;
+                    moving.insert(id, false);
+                } else if v.speed() > 1.0 {
+                    moving.insert(id, true);
+                }
+            }
+            if (lane.0 == 2 || lane.0 == 3) && v.lane_pos().s > length - 40.0 {
+                use traffic_sim::AccelSource as S;
+                let terms = sim.sink().terms.get(&id);
+                let b = terms.and_then(|t| t.iter().find(|(_, a)| *a == v.accel()));
+                let kind = match b.map(|b| b.0) {
+                    Some(S::Leader { id: l, headway, .. }) => {
+                        let other = sim.get(l).map(|o| o.lane());
+                        format!(
+                            "leader on {:?} headway<1:{}",
+                            other.map(|o| o.0),
+                            headway < 1.0
+                        )
+                    }
+                    Some(S::Merge { .. }) => "merge".into(),
+                    Some(S::FreeRoad { .. }) => "free".into(),
+                    Some(other) => format!("{other:?}").split(' ').next().unwrap().into(),
+                    None => "other".into(),
+                };
+                let e = binding.entry(format!("lane {} {kind}", lane.0)).or_default();
+                e.0 += 1;
+                e.1 += v.speed();
+            }
+            let e = speed.entry(lane.0).or_default();
+            e.0 += v.speed();
+            e.1 += 1;
+            if let Some(&before) = last.get(&id)
+                && before != lane
+            {
+                let net = sim.network();
+                if net.lane(before).successors().contains(&lane) {
+                    // Into the merge: lanes 5 and 6.
+                    if lane.0 == 5 || lane.0 == 6 {
+                        let e = entering.entry(lane.0).or_default();
+                        e.0 += 1;
+                        e.1 += v.speed();
+                        e.2 += (v.speed() < 2.0) as u64;
+                        entry_times.push(sim.time());
+                    }
+                } else {
+                    *changes.entry((before.0, lane.0)).or_default() += 1;
+                }
+            }
+            last.insert(id, lane);
+        }
+    }
+    // A few seconds at the head of the queues, in detail.
+    if std::env::var("TRACE").is_ok() {
+        use traffic_sim::AccelSource as S;
+        for frame in 0..(4.0 / DT) as usize {
+            sim.step(DT);
+            harness.step(&mut sim);
+            if frame % 60 != 0 {
+                continue;
+            }
+            println!("t {:.2}", sim.time());
+            let mut rows: Vec<_> = sim
+                .vehicles()
+                .filter_map(|(id, v)| {
+                    let lane = v.lane().0;
+                    let to_end = sim.network().lane(v.lane()).geometry().length()
+                        - v.lane_pos().s
+                        - (v.spec().length - v.spec().rear_axle);
+                    let d = match lane {
+                        2 | 3 => to_end,
+                        5 | 6 => -(v.lane_pos().s),
+                        _ => return None,
+                    };
+                    (d < 120.0 && d > -10.0 && (lane == 3 || lane == 6 || d < 10.0))
+                        .then_some((d, id, lane, v))
+                })
+                .collect();
+            rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+            for o in sim.occupants(LaneId(3)).iter().rev().take(8) {
+                let v = sim.get(o.id).unwrap();
+                let terms = sim.sink().terms.get(&o.id);
+                let b = terms
+                    .and_then(|t| t.iter().find(|(_, a)| *a == v.accel()))
+                    .map(|b| format!("{:?}", b.0));
+                println!(
+                    "  on 3: {:?} s {:.1} {:?} age {:.1} | follows {:?} t {:.2} v {:.2} change {:?} intent {:?} | {}",
+                    o.id,
+                    o.s(),
+                    o.lateral,
+                    o.age,
+                    v.lane(),
+                    v.lane_pos().t,
+                    v.speed(),
+                    v.lane_change().map(|c| (c.s0 as i32, c.length as i32)),
+                    v.intent().map(|i| i.side),
+                    b.unwrap_or_default()
+                );
+            }
+            rows.clear();
+            for (d, id, lane, v) in rows {
+                let terms = sim.sink().terms.get(&id);
+                let b = terms.and_then(|t| t.iter().find(|(_, a)| *a == v.accel()));
+                let why = match b.map(|b| b.0) {
+                    Some(S::Leader { id, gap, headway }) => {
+                        format!("leader {id:?} gap {gap:.1} h {headway:.2}")
+                    }
+                    Some(S::Merge { id, gap }) => format!("merge after {id:?} gap {gap:.1}"),
+                    Some(other) => format!("{other:?}"),
+                    None => "?".into(),
+                };
+                println!(
+                    "  {id:?} lane {lane} d {d:6.1} v {:4.1} a {:5.2}  {why}",
+                    v.speed(),
+                    v.accel()
+                );
+            }
+        }
+        return;
+    }
+    println!("flow {flow} per entry, seed {seed}, {minutes} min (first minute left out)");
+    println!("  mean speed by lane (m/s):");
+    for (lane, (sum, n)) in &speed {
+        println!(
+            "    lane {lane:>2}: {:5.1}  ({:.0} vehicles on average)",
+            sum / *n as f64,
+            *n as f64 / ((minutes * 60.0 - warm) / DT)
+        );
+    }
+    println!("  entering the merge:");
+    for (lane, (n, v, slow)) in &entering {
+        println!(
+            "    onto lane {lane}: {n} vehicles, mean speed {:.1} m/s, {slow} below 2 m/s",
+            v / *n as f64
+        );
+    }
+    entry_times.sort_by(f64::total_cmp);
+    let gaps: Vec<f64> = entry_times.windows(2).map(|w| w[1] - w[0]).collect();
+    if !gaps.is_empty() {
+        let mean = gaps.iter().sum::<f64>() / gaps.len() as f64;
+        println!(
+            "    mean time between entries {mean:.2} s ({:.0} veh/h through the merge)",
+            3600.0 / mean
+        );
+    }
+    println!("  lane changes (from -> to): {changes:?}");
+    println!("  stops within 60 m of the merge point: {stops}");
+    println!("  vehicle-frames stalled partway through a lane change: {stalled}");
+    println!("  binding term in the last 40 m before the merge point (frames, mean speed):");
+    for (k, (n, v)) in &binding {
+        println!("    {k}: {n}, {:.1} m/s", v / *n as f64);
+    }
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("merge") {
+        let flow = std::env::args().nth(2).and_then(|a| a.parse().ok()).unwrap_or(1800.0);
+        return merge_probe(flow, 10.0, 1);
+    }
     if std::env::args().nth(1).as_deref() == Some("drop") {
         return grid2();
     }

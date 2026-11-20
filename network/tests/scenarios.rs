@@ -131,6 +131,7 @@ fn flood(net: &traffic_network::RoadNetwork, seconds: f64) {
         front_axle: 3.7,
         courtesy: 1.0,
         politeness: 0.2,
+        assertiveness: 0.0,
     };
     {
         let compiled = compile(net).unwrap();
@@ -254,6 +255,7 @@ fn ramps_traffic(flow: f64, seconds: f64) {
                 front_axle: 3.7,
                 courtesy: 2.0 * uniform(),
                 politeness: 0.1 + 0.3 * uniform(),
+                assertiveness: uniform().powi(3),
             };
             let limit = sim.network().lane(lane).speed_limit();
             let seed = (uniform() * 1e9) as u64;

@@ -184,9 +184,14 @@ fn a_change_across_the_seam_keeps_followers_on_the_old_side_informed() {
 }
 
 /// For a car changing left out of `lane`, the `t` on `lane` of its right rear
-/// corner, the one still furthest into it, while it still has a record there.
+/// corner, the one still furthest into it, while it has a record there that
+/// is diverging. A change from a crawl is sharp, and its tail swings back
+/// toward `lane` at first, so its record there starts converging.
 fn trailing_corner(sim: &Simulation, id: VehicleId, lane: LaneId) -> Option<f64> {
     let record = sim.occupants(lane).iter().find(|o| o.is_record_of(id))?;
+    if matches!(record.lateral, Lateral::Converging { .. }) {
+        return None;
+    }
     assert_eq!(
         record.lateral,
         Lateral::Diverging(Side::Left),

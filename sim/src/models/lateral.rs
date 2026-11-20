@@ -15,8 +15,6 @@ const TAN_MAX_STEER: f64 = 0.684_136_808_341_692_4;
 /// How long a lane change takes, in seconds. Peak lateral acceleration is about
 /// `6 · offset / T²`: about 1.3 m/s² across a 3.5 m lane.
 const LANE_CHANGE_TIME: f64 = 4.0;
-/// Shortest lane change in meters, used at low speed.
-const MIN_LANE_CHANGE_LENGTH: f64 = 15.0;
 
 /// A lane change in progress. The target path's offset from the new lane's
 /// centerline follows a cubic in `u = s − s0`, from the old path's offset and slope
@@ -36,8 +34,15 @@ pub struct LaneChange {
 }
 
 impl LaneChange {
-    pub fn new(s0: f64, offset: f64, slope: f64, speed: f64) -> Self {
-        Self { s0, length: change_length(speed), offset, slope }
+    /// A change starting at `s0`, `offset` from the new lane's centerline with
+    /// `slope`, by a vehicle at `speed` with `wheelbase`.
+    pub fn new(s0: f64, offset: f64, slope: f64, speed: f64, wheelbase: f64) -> Self {
+        Self {
+            s0,
+            length: change_length(speed, offset, wheelbase),
+            offset,
+            slope,
+        }
     }
 
     /// The target offset at `s`. With `x = (s − s0) / length`, clamped to [0, 1]:
@@ -54,9 +59,20 @@ impl LaneChange {
     }
 }
 
-/// How far a lane change started at `speed` runs, in meters.
-pub fn change_length(speed: f64) -> f64 {
-    (speed * LANE_CHANGE_TIME).max(MIN_LANE_CHANGE_LENGTH)
+/// How far a lane change across `offset`, started at `speed` by a vehicle with
+/// `wheelbase`, runs, in meters: [`LANE_CHANGE_TIME`] at its speed, or, slower,
+/// the shortest it can steer (see [`min_change_length`]).
+pub fn change_length(speed: f64, offset: f64, wheelbase: f64) -> f64 {
+    (speed * LANE_CHANGE_TIME).max(min_change_length(offset, wheelbase))
+}
+
+/// The shortest lane change across `offset` a vehicle with `wheelbase` can
+/// steer, in meters: the cubic's sharpest curvature, `6 · offset / length²` at
+/// its ends, at the steering lock. About 9 m across a 3.5 m lane for a car.
+/// The slope a change starts with, usually small, is left out.
+pub fn min_change_length(offset: f64, wheelbase: f64) -> f64 {
+    let lock = TAN_MAX_STEER / wheelbase;
+    (6.0 * offset.abs() / lock).sqrt()
 }
 
 /// How far ahead along the path to aim, in meters.
@@ -82,7 +98,7 @@ mod test {
 
     #[test]
     fn lane_change_offset_meets_its_ends() {
-        let change = LaneChange::new(10.0, 3.5, 0.05, 14.0);
+        let change = LaneChange::new(10.0, 3.5, 0.05, 14.0, 2.7);
         assert_eq!(change.length, 56.0);
         assert!((change.offset_at(10.0) - 3.5).abs() < 1e-12);
         assert!(change.offset_at(change.end()).abs() < 1e-12);
@@ -96,10 +112,16 @@ mod test {
     }
 
     #[test]
-    fn slow_lane_changes_have_a_minimum_length() {
-        assert_eq!(
-            LaneChange::new(0.0, 3.5, 0.0, 0.0).length,
-            MIN_LANE_CHANGE_LENGTH
+    fn slow_lane_changes_are_as_short_as_the_steering_lock_allows() {
+        let change = LaneChange::new(0.0, 3.5, 0.0, 0.0, 2.7);
+        assert_eq!(change.length, min_change_length(3.5, 2.7));
+        assert!((8.0..10.0).contains(&change.length), "{}", change.length);
+        // At its ends, the cubic turns as sharply as the lock allows, no more.
+        let h = 1e-3;
+        let second = (change.offset_at(2.0 * h) - 2.0 * change.offset_at(h) + 3.5) / (h * h);
+        assert!(
+            (second.abs() - TAN_MAX_STEER / 2.7).abs() < 1e-2,
+            "{second}"
         );
     }
 

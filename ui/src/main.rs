@@ -222,12 +222,14 @@ impl Harness {
     /// Tries to spawn a driver at `s` on `lane`, at its desired speed, taking
     /// one from the credit if it fits.
     fn spawn(&mut self, sim: &mut Recorded<DebugState>, lane: LaneId, s: f64) {
-        // Drivers vary in how hard they'll brake to let someone in, and in how
-        // much they weigh others when changing lanes.
+        // Drivers vary in how hard they'll brake to let someone in, in how much
+        // they weigh others when changing lanes, and in how readily they change:
+        // mostly cautious, about one in ten above 0.7.
         let car = VehicleSpec {
             speed_factor: self.speed_factor(),
             courtesy: 2.0 * self.rng.random::<f64>(),
             politeness: 0.1 + 0.3 * self.rng.random::<f64>(),
+            assertiveness: self.rng.random::<f64>().powi(3),
             ..demo_car()
         };
         let limit = sim.network().lane(lane).speed_limit();
@@ -363,10 +365,9 @@ impl App {
                 (0.5, "0.5×"),
                 (1.0, "1×"),
                 (2.0, "2×"),
-                (3.0, "3×"),
-                (4.0, "4×"),
                 (5.0, "5×"),
                 (10.0, "10×"),
+                (20.0, "20×"),
             ] {
                 ui.selectable_value(&mut self.speed, speed, label);
             }
@@ -516,7 +517,10 @@ impl App {
                     AccelSource::FreeRoad { desired_speed } => {
                         format!("free road, v0 {desired_speed:.1} m/s")
                     }
-                    AccelSource::Leader { id, gap } => format!("leader {id:?}, gap {gap:.2} m"),
+                    AccelSource::Leader { id, gap, headway } if headway < 1.0 => {
+                        format!("leader {id:?}, gap {gap:.2} m, headway ×{headway:.2}")
+                    }
+                    AccelSource::Leader { id, gap, .. } => format!("leader {id:?}, gap {gap:.2} m"),
                     AccelSource::Cap { max_speed: 0.0 } => "held to a stop".into(),
                     AccelSource::Cap { max_speed } => {
                         format!("capped at {:.0} km/h", max_speed * 3.6)
@@ -858,6 +862,31 @@ fn draw_debug(
         }
     }
 
+    // Dashed, from the front bumper to the rear bumper of the vehicle before it in
+    // a merge's order, which it keeps behind as if on its own lane.
+    if layers.on(Layer::Leaders) {
+        for &(id, source, accel) in sim.sink().accel_terms.iter().filter(|t| shown(t.0)) {
+            let AccelSource::Merge { id: leader, .. } = source else {
+                continue;
+            };
+            let (Some(v), Some(leader)) = (sim.get(id), sim.get(leader)) else {
+                continue;
+            };
+            let color = if accel == v.accel() {
+                LEADER_BINDING
+            } else {
+                LEADER_OTHER
+            };
+            let ends = [to_scene(front(v)), to_scene(rear(leader))];
+            painter.extend(Shape::dashed_line(
+                &ends,
+                Stroke::new(0.08, color),
+                0.6,
+                0.4,
+            ));
+        }
+    }
+
     // In world space, as the check is made: the follower's predicted body as its
     // front reaches the other vehicle's rear, that vehicle's nearer rear corner,
     // and the gap between them across the follower's heading.
@@ -1193,5 +1222,6 @@ fn demo_car() -> VehicleSpec {
         front_axle: 3.7,
         courtesy: 1.0,
         politeness: 0.2,
+        assertiveness: 0.0,
     }
 }

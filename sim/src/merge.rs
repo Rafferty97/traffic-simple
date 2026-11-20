@@ -1,34 +1,30 @@
 //! Merges: where lanes outside junctions that were apart start to overlap, the
-//! vehicles approaching are kept in order by estimated arrival, and each takes
-//! a term that opens a gap behind the one before it by the merge point (see
-//! Merges in `docs/DESIGN.md`).
+//! vehicles approaching are ordered by distance to it, and each takes a term
+//! that opens a gap behind the one before it by the merge point (see Merges in
+//! `docs/DESIGN.md`). The order is worked out afresh at each longitudinal
+//! update, from the lanes leading in, so nothing about it is stored.
 
+use arrayvec::ArrayVec;
 use slotmap::SlotMap;
 
 use crate::following::Overlaps;
 use crate::models::acceleration;
 use crate::network::{LaneId, SimNetwork};
+use crate::occupancy::Occupant;
 use crate::vehicle::{Vehicle, VehicleId};
 
-/// How much earlier, in seconds, a vehicle's estimated arrival must be than
-/// that of the one before it, on another lane, for it to go ahead.
-const HYSTERESIS: f64 = 0.5;
-
-/// The least speed, in m/s, an estimated arrival is worked out at, so a stopped
-/// vehicle's doesn't blow up.
-const MIN_ETA_SPEED: f64 = 1.0;
-
-/// Which merge each lane belongs to, if any: derived from the network.
+/// Which merge each lane belongs to, if any, and each merge's lanes: derived
+/// from the network.
 #[derive(Clone, Debug, Default)]
 pub struct Merges {
     of_lane: Vec<Option<u32>>,
-    count: usize,
+    lanes: Vec<Vec<LaneId>>,
 }
 
 impl Merges {
     /// How many merges there are.
     pub fn len(&self) -> usize {
-        self.count
+        self.lanes.len()
     }
 
     /// The merge `lane` belongs to, if any.
@@ -91,22 +87,23 @@ pub fn merges(network: &SimNetwork, overlaps: &Overlaps) -> Merges {
         });
         of_lane[i] = Some(id);
     }
-    Merges { of_lane, count: next as usize }
+    let mut lanes = vec![Vec::new(); next as usize];
+    for (i, m) in of_lane.iter().enumerate() {
+        if let Some(m) = m {
+            lanes[*m as usize].push(LaneId(i as u32));
+        }
+    }
+    Merges { of_lane, lanes }
 }
 
-/// Where `vehicle` is headed into `merge`: the first of its lanes on its path,
-/// and how far its rear axle is from that lane's start, the merge point. `None`
-/// if none of them is on its path, or it is on one already.
-fn ahead(
-    network: &SimNetwork,
-    merges: &Merges,
-    vehicle: &Vehicle,
-    merge: usize,
-) -> Option<(LaneId, f64)> {
+/// How far `vehicle`'s rear axle is from the merge point of `merge`, the start
+/// of the first of its lanes on its path. `None` if none of them is on its
+/// path, or it is on one already.
+fn ahead(network: &SimNetwork, merges: &Merges, vehicle: &Vehicle, merge: usize) -> Option<f64> {
     let mut start = -vehicle.lane_pos.s;
     for (k, &lane) in vehicle.path.iter().enumerate() {
         if merges.of(lane) == Some(merge) {
-            return (k > 0).then_some((lane, start));
+            return (k > 0).then_some(start);
         }
         start += network.lane(lane).geometry().length();
     }
@@ -117,75 +114,20 @@ fn ahead(
 #[derive(Clone, Copy, Debug)]
 pub struct Member {
     id: VehicleId,
-    /// The merge's lane it is headed for.
-    lane: LaneId,
     /// From its front to the merge point, in meters.
     front: f64,
-    /// Its estimated arrival there, in seconds.
-    eta: f64,
 }
 
 fn member(
     network: &SimNetwork,
     merges: &Merges,
-    vehicles: &SlotMap<VehicleId, Vehicle>,
+    vehicle: &Vehicle,
     id: VehicleId,
     merge: usize,
 ) -> Option<Member> {
-    let vehicle = vehicles.get(id)?;
-    let (lane, axle) = ahead(network, merges, vehicle, merge)?;
+    let axle = ahead(network, merges, vehicle, merge)?;
     let front = axle - (vehicle.spec.length - vehicle.spec.rear_axle);
-    let eta = front.max(0.0) / vehicle.speed.max(MIN_ETA_SPEED);
-    Some(Member { id, lane, front, eta })
-}
-
-/// Puts `id` in the order of every merge one of whose lanes is on its path
-/// beyond the lane it follows, if it isn't there yet, at its place by
-/// estimated arrival.
-pub fn arrive(
-    network: &SimNetwork,
-    merges: &Merges,
-    vehicles: &SlotMap<VehicleId, Vehicle>,
-    orders: &mut [Vec<VehicleId>],
-    id: VehicleId,
-) {
-    if merges.len() == 0 {
-        return;
-    }
-    let vehicle = &vehicles[id];
-    for &lane in &vehicle.path[1..] {
-        let Some(merge) = merges.of(lane) else {
-            continue;
-        };
-        let order = &orders[merge];
-        if order.contains(&id) {
-            continue;
-        }
-        let Some(new) = member(network, merges, vehicles, id, merge) else {
-            continue;
-        };
-        let at = order
-            .iter()
-            .position(|&other| {
-                member(network, merges, vehicles, other, merge).is_some_and(|m| m.eta > new.eta)
-            })
-            .unwrap_or(order.len());
-        orders[merge].insert(at, id);
-    }
-}
-
-/// Whether `behind` should go ahead of `before`, the one before it in a
-/// merge's order.
-fn goes_ahead(before: &Member, behind: &Member) -> bool {
-    if before.lane == behind.lane {
-        // Single file along the same lane: in the order they are in along it.
-        behind.front < before.front
-    } else if (behind.front <= 0.0) != (before.front <= 0.0) {
-        // One already at the merge point goes first.
-        behind.front <= 0.0
-    } else {
-        behind.eta < before.eta - HYSTERESIS
-    }
+    Some(Member { id, front })
 }
 
 impl Member {
@@ -194,60 +136,141 @@ impl Member {
     }
 }
 
-/// Works out where each vehicle in a merge's order is, into `members`, in
-/// order, leaving out those no longer headed into it.
-pub fn members(
-    network: &SimNetwork,
-    merges: &Merges,
-    vehicles: &SlotMap<VehicleId, Vehicle>,
-    order: &[VehicleId],
-    merge: usize,
-    members: &mut Vec<Member>,
-) {
-    members.clear();
-    members.extend(order.iter().filter_map(|&id| member(network, merges, vehicles, id, merge)));
+/// The most lanes leading into a merge that [`order`] walks.
+const APPROACH: usize = 32;
+
+/// A lane leading into a merge, as [`order`] marches along it.
+struct Way {
+    lane: LaneId,
+    /// From its end to the merge point, in meters.
+    end: f64,
+    /// How many of its occupants, from its end back, are yet to be taken.
+    left: usize,
+    /// The nearest of those that is in the order, and its rear's distance to
+    /// the merge point.
+    head: Option<(f64, Member)>,
 }
 
-/// Brings a merge's order up to date: drops those no longer headed into it,
-/// works out the rest's positions into `members`, and sorts them by adjacent
-/// swaps (see [`goes_ahead`]).
-pub fn sort(
+/// Calls `f` with each vehicle approaching `merge`, nearest the merge point
+/// first, by the distance from its rear: its order.
+///
+/// From each of the merge's lanes it walks back through the lanes leading in,
+/// as far as a path reaches, [`PATH_TIME`](crate::simulation::PATH_TIME) at the
+/// speed limits. Each lane's occupants are in order already, so it marches
+/// back along all of them at once, as the merge step of a merge sort does,
+/// taking the nearest each time, from those following the lane whose path
+/// leads into the merge. A vehicle that pulls ahead goes first at once, as on
+/// the road; close to the merge point, the terms keep vehicles from being
+/// level, so the order doesn't flicker there.
+pub fn order(
     network: &SimNetwork,
     merges: &Merges,
     vehicles: &SlotMap<VehicleId, Vehicle>,
-    order: &mut Vec<VehicleId>,
+    occupants: &[Vec<Occupant>],
     merge: usize,
-    members: &mut Vec<Member>,
+    mut f: impl FnMut(Member),
 ) {
-    self::members(network, merges, vehicles, order, merge, members);
-    // Adjacent swaps, at most as many passes as members: the comparison isn't
-    // a total order, so this stops rather than insisting on one.
-    for _ in 0..members.len() {
-        let mut swapped = false;
-        for k in 1..members.len() {
-            if goes_ahead(&members[k - 1], &members[k]) {
-                members.swap(k - 1, k);
-                swapped = true;
-            }
+    let mut ways = ArrayVec::<Way, APPROACH>::new();
+    let add = |ways: &mut ArrayVec<Way, APPROACH>, lane: LaneId, end: f64| {
+        let known = ways.iter().any(|w| w.lane == lane) || merges.of(lane) == Some(merge);
+        if !known && !ways.is_full() {
+            let left = occupants[lane.0 as usize].len();
+            ways.push(Way { lane, end, left, head: None });
         }
-        if !swapped {
-            break;
+    };
+    for &lane in &merges.lanes[merge] {
+        for &p in network.lane(lane).predecessors() {
+            add(&mut ways, p, 0.0);
         }
     }
-    order.clear();
-    order.extend(members.iter().map(|m| m.id));
+    // The lanes leading in, back as far as a path reaches at the speed limits.
+    let mut k = 0;
+    let mut times = ArrayVec::<f64, APPROACH>::new();
+    times.extend(ways.iter().map(|_| 0.0));
+    while k < ways.len() {
+        let (lane, end, time) = (ways[k].lane, ways[k].end, times[k]);
+        k += 1;
+        let l = network.lane(lane);
+        let (length, time) = (
+            l.geometry().length(),
+            time + l.geometry().length() / l.speed_limit(),
+        );
+        if time > crate::simulation::PATH_TIME {
+            continue;
+        }
+        for &p in l.predecessors() {
+            let before = ways.len();
+            add(&mut ways, p, end + length);
+            if ways.len() > before {
+                times.push(time);
+            }
+        }
+    }
+    // The next vehicle in the order on a way, from its occupants yet to be taken.
+    let next = |way: &mut Way| {
+        let list = &occupants[way.lane.0 as usize];
+        let length = network.lane(way.lane).geometry().length();
+        way.head = None;
+        while way.head.is_none() && way.left > 0 {
+            way.left -= 1;
+            let o = &list[way.left];
+            let Some(vehicle) = vehicles.get(o.id) else {
+                continue;
+            };
+            // Once each: from the lane it follows.
+            if o.is_ghost() || vehicle.path[0] != way.lane {
+                continue;
+            }
+            if let Some(m) = member(network, merges, vehicle, o.id, merge) {
+                way.head = Some((way.end + length - o.s(), m));
+            }
+        }
+    };
+    for way in &mut ways {
+        next(way);
+    }
+    loop {
+        let nearest = ways
+            .iter()
+            .enumerate()
+            .filter_map(|(i, w)| w.head.map(|(key, m)| (key, m.id, i)))
+            .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        let Some((_, _, i)) = nearest else {
+            break;
+        };
+        let (_, member) = ways[i].head.expect("the nearest has a head");
+        f(member);
+        next(&mut ways[i]);
+    }
 }
 
+/// How long before the merge point, in seconds at its speed, a vehicle starts
+/// making room behind the one before it in the order: further back, it may be
+/// level with it or ahead. Fast, it starts early; crawling in a queue, it
+/// zips in only close to the merge point.
+const MAKING_ROOM: f64 = 8.0;
+
+/// The least distance, in meters, before the merge point a vehicle starts
+/// making room. Shorter, crawling queues reach the merge point side by side
+/// and go through it by turns from rest: at 10 m, a third less gets through.
+const MIN_MAKING_ROOM: f64 = 50.0;
+
 /// The term a merge imposes on `follower` behind `leader`, the one before it
-/// in its order, and the gap between them projected to the merge point: `None`
-/// once the follower's front has reached the merge point, or if the leader is
-/// already far enough past it.
+/// in its order, and the gap between them as if the leader were on the
+/// follower's lane, as far from the merge point: `None` once the follower's
+/// front has reached the merge point.
 ///
-/// The leader's rear is the gap the follower wants behind it past the merge
-/// point at `t`. The follower arrives no sooner by braking evenly until then,
-/// or, if that would stop it first, by stopping at the merge point. The term
-/// is the larger of that and IDM's term for stopping at the merge point, so it
-/// never brakes harder to open a gap than to stop short.
+/// The follower follows that virtual leader (virtual vehicle mapping, Uno et
+/// al., 1999) by IDM, with the headway it will keep just after merging,
+/// [`acceleration::RELAXED_HEADWAY`] of its own, and with slack that shrinks
+/// from [`MAKING_ROOM`] before the merge point to nothing at it: enough, at the
+/// start, for it to be level with the leader. So the gap opens gradually as
+/// both draw near, and in a queue the lanes creep on together, staggered, as
+/// the leader moves off. The order is by distance to the merge point, so the
+/// leader is never further from it, and the slack covers being level: a fast vehicle gives way to a slower
+/// one just ahead in the other lane by easing off on the approach. It never
+/// brakes harder than comfortably: before the merge point the lanes are apart,
+/// and inside it following keeps vehicles apart however they arrive.
 pub fn term(
     vehicles: &SlotMap<VehicleId, Vehicle>,
     follower: &Member,
@@ -258,44 +281,16 @@ pub fn term(
     if d_f <= 0.0 {
         return None;
     }
-    // From the leader's rear to the merge point.
+    // From the leader's rear to the merge point, and from the follower's front
+    // to the leader's rear, as if on the same lane.
     let d_l = leader.front + l.spec.length;
-    let want = f.spec.min_gap + l.speed * f.spec.time_headway;
-    if d_l + want <= 0.0 {
-        return None;
-    }
-    let (v, stop) = (f.speed, -f.speed * f.speed / (2.0 * d_f));
-    let gap_term = if l.speed <= 1e-6 {
-        stop
-    } else {
-        let t = (d_l + want) / l.speed;
-        let a = 2.0 * (d_f - v * t) / (t * t);
-        if v + a * t < 0.0 { stop } else { a }
-    };
-    let stop_term = acceleration::interaction(&f.spec, v, d_f, 0.0);
-    let accel = gap_term.max(stop_term).max(-acceleration::MAX_BRAKING);
-    Some((accel, d_f - d_l))
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    fn at(front: f64, lane: u32, eta: f64) -> Member {
-        let mut ids = SlotMap::<VehicleId, ()>::with_key();
-        Member { id: ids.insert(()), lane: LaneId(lane), front, eta }
-    }
-
-    #[test]
-    fn the_order_swaps_only_past_the_hysteresis_and_never_along_one_lane() {
-        // Another lane: only once clearly earlier.
-        assert!(!goes_ahead(&at(50.0, 0, 2.0), &at(45.0, 1, 1.6)));
-        assert!(goes_ahead(&at(50.0, 0, 2.0), &at(45.0, 1, 1.4)));
-        // The same lane: by position along it, whatever the estimate.
-        assert!(!goes_ahead(&at(20.0, 0, 5.0), &at(30.0, 0, 1.0)));
-        assert!(goes_ahead(&at(30.0, 0, 1.0), &at(20.0, 0, 5.0)));
-        // Already at the merge point: first.
-        assert!(goes_ahead(&at(5.0, 0, 0.2), &at(-0.5, 1, 0.0)));
-        assert!(!goes_ahead(&at(-0.5, 1, 0.0), &at(5.0, 0, 0.0)));
-    }
+    let gap = d_f - d_l;
+    let headway = acceleration::RELAXED_HEADWAY;
+    let room = (MAKING_ROOM * f.speed).max(MIN_MAKING_ROOM);
+    let slack = (d_f / room).clamp(0.0, 1.0)
+        * (f.spec.length + f.spec.min_gap + f.speed * f.spec.time_headway * headway);
+    let follow = acceleration::relaxed(&f.spec, f.speed, gap + slack, l.speed, headway);
+    // Before the merge point the lanes are apart, so this only smooths the way
+    // in: inside, following keeps them apart however they arrive.
+    Some((follow.max(-f.spec.comfy_decel), gap))
 }

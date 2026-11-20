@@ -83,6 +83,7 @@ impl<D: DebugSink> Recorded<D> {
             front_axle,
             courtesy,
             politeness,
+            assertiveness,
         } = spec;
         let Placement { lane, s, speed, route } = at;
         let Route::Random { state: seed } = route;
@@ -92,6 +93,7 @@ impl<D: DebugSink> Recorded<D> {
              speed_factor={speed_factor:?} max_accel={max_accel:?} comfy_decel={comfy_decel:?} \
              time_headway={time_headway:?} min_gap={min_gap:?} rear_axle={rear_axle:?} \
              front_axle={front_axle:?} courtesy={courtesy:?} politeness={politeness:?} \
+             assertiveness={assertiveness:?} \
              lane={} s={s:?} speed={speed:?} seed={seed}",
             lane.0
         )

@@ -35,6 +35,7 @@ fn demo_car(speed_factor: f64) -> VehicleSpec {
         front_axle: 3.7,
         courtesy: 1.0,
         politeness: 0.2,
+        assertiveness: 0.0,
     }
 }
 

@@ -42,6 +42,19 @@ pub struct Occupant {
     /// Whether the vehicle is in this lane, converging on it, diverging from it
     /// or indicating into it.
     pub lateral: Lateral,
+    /// How long, in seconds, the vehicle has been in this lane's traffic: since
+    /// it changed lanes into it, entered a merge onto it or joined it from
+    /// beside. Advancing from one lane to the next carries it over, and an
+    /// inserted vehicle starts settled.
+    /// Leader terms relax with it (see [`acceleration::relaxation`]).
+    #[cfg_attr(feature = "serde", serde(default = "settled"))]
+    pub age: f64,
+}
+
+/// The age of a record from before records had one: long settled.
+#[cfg(feature = "serde")]
+fn settled() -> f64 {
+    acceleration::RELAXATION_TIME
 }
 
 impl Occupant {
@@ -201,7 +214,7 @@ impl Occupant {
             beside: !geometry.between_edges(p),
         };
         let hint = if left.s <= right.s { left } else { right };
-        let occupant = Self { id, hint, lateral };
+        let occupant = Self { id, hint, lateral, age: 0.0 };
         (occupant, [corner(left), corner(right)])
     }
 }
@@ -238,12 +251,14 @@ pub fn update(
     vehicles: &SlotMap<VehicleId, Vehicle>,
     occupants: &mut [Vec<Occupant>],
     departed: &mut Vec<VehicleId>,
+    dt: f64,
 ) {
     for (i, list) in occupants.iter_mut().enumerate() {
         let lane_id = LaneId(i as u32);
         list.retain_mut(|occupant| {
+            occupant.age += dt;
             let vehicle = &vehicles[occupant.id];
-            let Occupant { id, hint, lateral } = *occupant;
+            let Occupant { id, hint, lateral, .. } = *occupant;
             let (updated, corners) =
                 Occupant::project(network, lane_id, id, vehicle, hint, lateral);
             occupant.hint = updated.hint;
@@ -445,9 +460,11 @@ pub enum Ahead {
 /// What a leader search finds, in the order it meets them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Found {
-    /// Something ahead to react to, with the bumper-to-bumper gap to it: each is
-    /// its own term in the longitudinal model, whose minimum binds.
-    Ahead(Ahead, f64),
+    /// Something ahead to react to, with the bumper-to-bumper gap to it, and the
+    /// share of its time headway the searching vehicle keeps to it, as
+    /// relaxation has it (see [`acceleration::relaxation`]): each is its own
+    /// term in the longitudinal model, whose minimum binds.
+    Ahead(Ahead, f64, f64),
     /// A check for passing a vehicle ahead, passed or not. One that fails is
     /// followed by that vehicle, as [`Found::Ahead`].
     Pass(PassCheck),
@@ -536,7 +553,21 @@ pub fn find_leaders<B>(
         Along::Path(own) | Along::Leaving(_, own) => Some(list(first)[own]),
         _ => None,
     };
+    // How long it has been in the lanes searched, which its leader terms relax
+    // with. Weighing up a change or inserting, it is checked unrelaxed: a
+    // driver doesn't change lanes counting on the gap it will settle for after.
+    let own_age = own.map(|own| own.age);
     let horizon = acceleration::horizon(&vehicle.spec, vehicle.speed);
+    // Wanting to change lanes, along its own lanes it looks as far as it keeps
+    // room to get halfway through a change (see `simulation::halfway`).
+    let horizon = match along {
+        Along::Path(_) if crate::simulation::wants_change(vehicle) => horizon.max(
+            vehicle.spec.min_gap
+                + crate::simulation::halfway_from_rest(network, vehicle)
+                + crate::simulation::SPARE_ROOM,
+        ),
+        _ => horizon,
+    };
     let horizon = match (along, vehicle.lane_change) {
         // A gap is how far the rear axle travels before the nose reaches a rear.
         // Leaving its old lane, it can only reach a vehicle there while it is
@@ -585,7 +616,7 @@ pub fn find_leaders<B>(
                 return ControlFlow::Continue(());
             }
             if o.is_ghost() {
-                f(Found::Ahead(Ahead::Ghost(o.id), gap))?;
+                f(Found::Ahead(Ahead::Ghost(o.id), gap, 1.0))?;
                 continue;
             }
             // Converging on the lane, it can't be passed in it, whatever it
@@ -633,7 +664,11 @@ pub fn find_leaders<B>(
                     continue;
                 }
             }
-            f(Found::Ahead(Ahead::Vehicle(o.id), gap))?;
+            let headway = match own_age {
+                Some(own) => acceleration::relaxation(own.min(o.age)),
+                None => 1.0,
+            };
+            f(Found::Ahead(Ahead::Vehicle(o.id), gap, headway))?;
             if in_lane {
                 covered = covered.max(shields(lane_at, k, &state.vehicles[o.id].path));
             }
@@ -646,7 +681,7 @@ pub fn find_leaders<B>(
     let ends = |&l: &LaneId| !network.lane(l).successors().is_empty();
     let gap = offset - front;
     if own_path && vehicle.path.last().is_some_and(ends) && gap <= horizon {
-        f(Found::Ahead(Ahead::PathEnd, gap))?;
+        f(Found::Ahead(Ahead::PathEnd, gap, 1.0))?;
     }
     ControlFlow::Continue(())
 }
@@ -827,6 +862,7 @@ mod test {
             front_axle: 3.7,
             courtesy: 1.0,
             politeness: 0.2,
+            assertiveness: 0.0,
         };
         let mut sim = Simulation::new(network.clone(), NoopSink);
         let id = sim.insert(
@@ -844,14 +880,17 @@ mod test {
     #[test]
     fn a_vehicle_plans_to_follow_its_cubic() {
         // Straight along x, changing from 3.5 m left of the centerline back onto
-        // it over 15 m: halfway, it is 1.75 m left and heading right of x.
+        // it, from rest, as sharply as it can steer: halfway, it is 1.75 m left
+        // and heading right of x.
         let lane = Lane::new(&[DVec2::ZERO, DVec2::new(100.0, 0.0)], 3.5, 14.0).unwrap();
         let network = SimNetwork::new(vec![lane]);
         let mut vehicle = car_at(&network, 0, 0.0);
-        vehicle.lane_change = Some(LaneChange::new(0.0, 3.5, 0.0, 0.0));
+        let change = LaneChange::new(0.0, 3.5, 0.0, 0.0, 2.7);
+        vehicle.lane_change = Some(change);
         let along = Along::Path(0);
-        let (pos, tangent) = along.pose(&network, &vehicle, 0.0, 7.5);
-        assert!((pos - DVec2::new(7.5, 1.75)).length() < 1e-9, "at {pos}");
+        let half = 0.5 * change.length;
+        let (pos, tangent) = along.pose(&network, &vehicle, 0.0, half);
+        assert!((pos - DVec2::new(half, 1.75)).length() < 1e-9, "at {pos}");
         assert!(tangent.y < -0.2, "heading {tangent}");
         // Not changing, it heads straight along the centerline.
         vehicle.lane_change = None;
@@ -975,7 +1014,7 @@ mod test {
         // ahead along that heading, falls a little short, never past.
         let network = bend();
         let mut vehicle = car_at(&network, 1, 10.0);
-        vehicle.lane_change = Some(LaneChange::new(10.0, 3.5, 0.0, 0.0));
+        vehicle.lane_change = Some(LaneChange::new(10.0, 3.5, 0.0, 0.0, 2.7));
         let lane = network.lane(LaneId(1));
         let corner = lane.geometry().lane_to_world(lane.geometry().lane_pos(25.0, 0.0));
         let gap = 25.0 - (10.0 + NOSE);
@@ -1023,6 +1062,7 @@ mod test {
                 id: ids.insert(()),
                 hint: lane.geometry().lane_pos(s, 0.0),
                 lateral: Lateral::InLane,
+                age: 0.0,
             })
             .collect();
         insertion_sort(&mut list);

@@ -25,6 +25,7 @@ pub fn car() -> VehicleSpec {
         front_axle: 3.7,
         courtesy: 1.0,
         politeness: 0.2,
+        assertiveness: 0.0,
     }
 }
 
@@ -112,7 +113,7 @@ impl Terms {
     /// The leader a vehicle reacted to in the last longitudinal update, and the gap.
     pub fn leader(&self, id: traffic_sim::VehicleId) -> Option<(traffic_sim::VehicleId, f64)> {
         self.0.iter().find_map(|&(vehicle, source, _)| match source {
-            traffic_sim::AccelSource::Leader { id: leader, gap } if vehicle == id => {
+            traffic_sim::AccelSource::Leader { id: leader, gap, .. } if vehicle == id => {
                 Some((leader, gap))
             }
             _ => None,

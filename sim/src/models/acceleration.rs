@@ -49,6 +49,30 @@ pub fn interaction(spec: &VehicleSpec, speed: f64, gap: f64, leader_speed: f64) 
     accel.max(-MAX_BRAKING)
 }
 
+/// The share of its time headway a vehicle keeps to a leader that has just
+/// appeared in front of it, or behind which it has just appeared: by changing
+/// lanes or merging.
+pub const RELAXED_HEADWAY: f64 = 0.5;
+
+/// How long, in seconds, the time headway takes to relax back from
+/// [`RELAXED_HEADWAY`] to the whole of it, linearly.
+pub const RELAXATION_TIME: f64 = 30.0;
+
+/// The share of its time headway a vehicle keeps to a leader, from how long
+/// the newer of the two has been in the lane: relaxation, as in Schakel, Knoop
+/// and van Arem's LMRS (2012), so a vehicle that cuts in, or is cut in on,
+/// accepts a shorter gap at first and drops back gradually.
+pub fn relaxation(age: f64) -> f64 {
+    let settled = (age / RELAXATION_TIME).clamp(0.0, 1.0);
+    RELAXED_HEADWAY + (1.0 - RELAXED_HEADWAY) * settled
+}
+
+/// As [`interaction`], keeping only `headway`, a share, of its time headway.
+pub fn relaxed(spec: &VehicleSpec, speed: f64, gap: f64, leader_speed: f64, headway: f64) -> f64 {
+    let spec = VehicleSpec { time_headway: spec.time_headway * headway, ..*spec };
+    interaction(&spec, speed, gap, leader_speed)
+}
+
 /// The least distance, in meters, a vehicle looks ahead for leaders: at low
 /// speed, the desired gap to a stopped leader shrinks to the minimum gap, where
 /// a queue comes to rest, and a leader there would flicker in and out of view.
@@ -103,6 +127,7 @@ mod test {
             front_axle: 3.7,
             courtesy: 1.0,
             politeness: 0.2,
+            assertiveness: 0.0,
         }
     }
 
@@ -151,6 +176,21 @@ mod test {
         assert!(at.abs() < 1e-9);
         assert_eq!(horizon(&spec, 0.0), MIN_HORIZON);
         assert!(horizon(&spec, 30.0) > horizon(&spec, 14.0));
+    }
+
+    #[test]
+    fn the_headway_relaxes_from_half_to_whole() {
+        assert_eq!(relaxation(0.0), RELAXED_HEADWAY);
+        assert!(relaxation(RELAXATION_TIME / 2.0) > RELAXED_HEADWAY);
+        assert_eq!(relaxation(RELAXATION_TIME), 1.0);
+        assert_eq!(relaxation(f64::MAX), 1.0);
+        // A relaxed follower brakes less behind the same leader.
+        let spec = spec();
+        assert!(relaxed(&spec, 20.0, 15.0, 20.0, 0.5) > interaction(&spec, 20.0, 15.0, 20.0));
+        assert_eq!(
+            relaxed(&spec, 20.0, 15.0, 20.0, 1.0),
+            interaction(&spec, 20.0, 15.0, 20.0)
+        );
     }
 
     #[test]

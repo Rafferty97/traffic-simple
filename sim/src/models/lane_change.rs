@@ -32,6 +32,13 @@ impl State {
     pub fn set_yielding(&mut self, yielding: Option<VehicleId>) {
         self.yielding = yielding;
     }
+
+    /// Whether the driver wants to change lanes: enough advantage has built up
+    /// for a side to keep indicating to it, the lower bar, so the wish doesn't
+    /// flicker.
+    pub fn wants_change(&self, assertiveness: f64) -> bool {
+        self.advantage.iter().any(|&a| still_intends(a, assertiveness))
+    }
 }
 
 #[cfg(test)]
@@ -89,6 +96,11 @@ pub struct Prospect {
     pub new_follower: Option<Effect>,
     /// The follower it would leave behind, if one is in reach.
     pub old_follower: Option<Effect>,
+    /// Whether it would be at least halfway through the change before it had
+    /// to stop behind its leader in its own lane. Otherwise it would be left
+    /// straddling both lanes, blocking them, so it doesn't change yet, though
+    /// it may indicate, and makes room while it does.
+    pub room: bool,
 }
 
 /// A follower's acceleration now, and if the change it is weighed for went
@@ -129,6 +141,9 @@ pub struct LaneChangeEval {
     pub accepted_braking: f64,
     /// Whether it and its new follower would brake gently enough.
     pub safe: bool,
+    /// Whether it would be halfway through the change before it had to stop
+    /// behind its leader (see [`Prospect::room`]).
+    pub room: bool,
     pub outcome: Outcome,
 }
 
@@ -192,9 +207,11 @@ pub fn frustrate(frustration: f64, blocked: bool, dt: f64) -> f64 {
 
 /// The hardest braking, positive, a driver accepts from a lane change, for
 /// itself and for the follower it cuts in front of: its comfortable deceleration
-/// when calm, rising to [`SAFE_BRAKING`] when fully frustrated.
-pub fn accepted_braking(comfy_decel: f64, frustration: f64) -> f64 {
-    let f = (frustration / FULLY_FRUSTRATED).clamp(0.0, 1.0);
+/// when calm, rising to [`SAFE_BRAKING`] when fully frustrated. An assertive
+/// driver accepts as much calm as it would that share frustrated: at 1, safe
+/// braking from the start, as SUMO's `lcAssertive` accepts smaller gaps.
+pub fn accepted_braking(comfy_decel: f64, frustration: f64, assertiveness: f64) -> f64 {
+    let f = (frustration / FULLY_FRUSTRATED).max(assertiveness).clamp(0.0, 1.0);
     comfy_decel + (SAFE_BRAKING - comfy_decel).max(0.0) * f
 }
 
@@ -226,16 +243,26 @@ pub fn accumulate(advantage: f64, incentive: f64, dt: f64) -> f64 {
     }
 }
 
+/// How much an assertive driver lowers its bar for intending a change: at an
+/// assertiveness of 1, to this share of [`INTENT`] less, so it changes for
+/// smaller gains, as SUMO's `lcSpeedGain` makes a driver more eager.
+pub const ASSERTIVE_BAR: f64 = 2.0 / 3.0;
+
+/// The advantage a driver of this assertiveness must build up to intend a change.
+fn bar(assertiveness: f64) -> f64 {
+    INTENT * (1.0 - ASSERTIVE_BAR * assertiveness.clamp(0.0, 1.0))
+}
+
 /// Whether enough advantage has built up for a driver to intend a change.
-pub fn intends(advantage: f64) -> bool {
-    advantage >= INTENT
+pub fn intends(advantage: f64, assertiveness: f64) -> bool {
+    advantage >= bar(assertiveness)
 }
 
 /// Whether a driver already indicating should keep going: a lower bar than
 /// starting, so advantage hovering around the bar doesn't make the indicator
 /// flicker.
-pub fn still_intends(advantage: f64) -> bool {
-    advantage >= 0.5 * INTENT
+pub fn still_intends(advantage: f64, assertiveness: f64) -> bool {
+    advantage >= 0.5 * bar(assertiveness)
 }
 
 /// Whether an acceleration after a change is gentle enough to accept, braking no
@@ -276,7 +303,7 @@ pub fn decide(
     mut prospect: impl FnMut(Side) -> Option<Prospect>,
 ) -> (Decision, [Option<LaneChangeEval>; 2]) {
     // The braking a change may ask of it and its new follower, at its frustration.
-    let accepted = accepted_braking(spec.comfy_decel, state.frustration);
+    let accepted = accepted_braking(spec.comfy_decel, state.frustration, spec.assertiveness);
     let mut advantage = [0.0; 2];
     let mut evals = [Side::Left, Side::Right].map(|side| {
         let p = prospect(side)?;
@@ -307,6 +334,7 @@ pub fn decide(
             frustration: state.frustration,
             accepted_braking: accepted,
             safe: safe(p.own_after, accepted) && follower_safe,
+            room: p.room,
             outcome: if requestable {
                 Outcome::Request
             } else {
@@ -320,7 +348,7 @@ pub fn decide(
             for eval in evals.iter_mut().flatten() {
                 let requestable = eval.outcome == Outcome::Request;
                 eval.outcome = match () {
-                    _ if !intends(eval.advantage) => Outcome::NotWorthIt,
+                    _ if !intends(eval.advantage, spec.assertiveness) => Outcome::NotWorthIt,
                     _ if eval.safe => Outcome::Indicate,
                     _ if requestable => Outcome::Request,
                     _ => Outcome::Unsafe,
@@ -348,8 +376,15 @@ pub fn decide(
             for eval in evals.iter_mut().flatten() {
                 eval.outcome = match () {
                     _ if eval.side != intent.side => Outcome::OtherSide,
-                    _ if !still_intends(eval.advantage) => Outcome::Cancel,
-                    _ if eval.safe && indicated >= MIN_INDICATING => Outcome::Change,
+                    _ if !still_intends(eval.advantage, spec.assertiveness) => Outcome::Cancel,
+                    // Without room to get halfway, it would be left straddling;
+                    // fully frustrated, it goes all the same, or it might never.
+                    _ if eval.safe
+                        && (eval.room || forcing(eval.frustration))
+                        && indicated >= MIN_INDICATING =>
+                    {
+                        Outcome::Change
+                    }
                     _ => Outcome::Wait,
                 };
             }
@@ -361,11 +396,12 @@ pub fn decide(
             }
         }
     };
-    // Blocked: it wants to change lanes, but can't safely.
-    let blocked = evals
-        .iter()
-        .flatten()
-        .any(|e| intends(e.advantage) && !e.safe && e.outcome != Outcome::OtherSide);
+    // Blocked: it wants to change lanes, but can't safely, or without being
+    // left straddling.
+    let blocked = evals.iter().flatten().any(|e| {
+        let possible = e.safe && e.room;
+        intends(e.advantage, spec.assertiveness) && !possible && e.outcome != Outcome::OtherSide
+    });
     state.frustration = frustrate(state.frustration, blocked, dt);
     state.advantage = advantage;
     if let Decision::Change(_) = decision {
@@ -423,15 +459,28 @@ mod test {
     }
 
     #[test]
+    fn assertiveness_lowers_the_bar_and_raises_the_braking_accepted_calm() {
+        assert_eq!(accepted_braking(1.5, 0.0, 1.0), SAFE_BRAKING);
+        assert!((accepted_braking(1.5, 0.0, 0.5) - (1.5 + SAFE_BRAKING) / 2.0).abs() < 1e-12);
+        // Frustration still raises it, beyond what assertiveness gives.
+        assert_eq!(accepted_braking(1.5, FULLY_FRUSTRATED, 0.2), SAFE_BRAKING);
+        assert!(!intends(0.2, 0.0) && intends(0.2, 0.5) && intends(0.1, 1.0));
+    }
+
+    #[test]
     fn frustration_raises_the_braking_a_change_accepts() {
-        assert_eq!(accepted_braking(1.5, 0.0), 1.5, "calm: comfortable braking");
-        assert_eq!(accepted_braking(1.5, FULLY_FRUSTRATED), SAFE_BRAKING);
         assert_eq!(
-            accepted_braking(1.5, 2.0 * FULLY_FRUSTRATED),
+            accepted_braking(1.5, 0.0, 0.0),
+            1.5,
+            "calm: comfortable braking"
+        );
+        assert_eq!(accepted_braking(1.5, FULLY_FRUSTRATED, 0.0), SAFE_BRAKING);
+        assert_eq!(
+            accepted_braking(1.5, 2.0 * FULLY_FRUSTRATED, 0.0),
             SAFE_BRAKING,
             "capped"
         );
-        let half = accepted_braking(1.5, 0.5 * FULLY_FRUSTRATED);
+        let half = accepted_braking(1.5, 0.5 * FULLY_FRUSTRATED, 0.0);
         assert!((half - (1.5 + SAFE_BRAKING) / 2.0).abs() < 1e-12);
     }
 
@@ -440,18 +489,18 @@ mod test {
         let dt = 0.2;
         // A clear gain intends a change within a few decisions...
         let clear = (0..2).fold(0.0, |a, _| accumulate(a, 1.0, dt));
-        assert!(intends(clear), "{clear}");
+        assert!(intends(clear, 0.0), "{clear}");
         // ...a marginal one only after several seconds of it.
         let marginal = |ticks| (0..ticks).fold(0.0, |a, _| accumulate(a, 0.15, dt));
-        assert!(!intends(marginal(25)), "after 5 s");
-        assert!(intends(marginal(35)), "after 7 s");
+        assert!(!intends(marginal(25), 0.0), "after 5 s");
+        assert!(intends(marginal(35), 0.0), "after 7 s");
         // Below the threshold, nothing builds up.
         assert_eq!(accumulate(0.0, THRESHOLD, dt), 0.0);
         // It fades by half every half-life, and is capped.
         assert!((accumulate(0.4, 0.0, HALF_LIFE) - 0.2).abs() < 1e-12);
         assert_eq!(accumulate(MAX_ADVANTAGE, 5.0, dt), MAX_ADVANTAGE);
         // Indicating, it keeps going down to half the bar.
-        assert!(still_intends(0.5 * INTENT) && !still_intends(0.49 * INTENT));
+        assert!(still_intends(0.5 * INTENT, 0.0) && !still_intends(0.49 * INTENT, 0.0));
     }
 
     #[test]

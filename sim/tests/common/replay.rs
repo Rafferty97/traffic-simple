@@ -73,6 +73,8 @@ pub fn replay<D: DebugSink>(log: &str, sink: D) -> Replay<D> {
                     front_axle: f.get("front_axle"),
                     courtesy: f.get("courtesy"),
                     politeness: f.get("politeness"),
+                    // Absent from replays made before drivers had it.
+                    assertiveness: f.get_or("assertiveness", 0.0),
                 };
                 let lane = LaneId(f.get("lane") as u32);
                 let at_ = Placement {
@@ -138,6 +140,13 @@ impl<'a> Fields<'a> {
     fn get(&self, key: &str) -> f64 {
         let (_, value) = self.0.iter().find(|(k, _)| *k == key).expect(key);
         value.parse().unwrap_or_else(|_| panic!("bad {key}: {value}"))
+    }
+
+    fn get_or(&self, key: &str, default: f64) -> f64 {
+        let found = self.0.iter().find(|(k, _)| *k == key);
+        found.map_or(default, |(_, value)| {
+            value.parse().unwrap_or_else(|_| panic!("bad {key}: {value}"))
+        })
     }
 
     fn get_u64(&self, key: &str) -> u64 {

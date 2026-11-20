@@ -71,8 +71,10 @@ pub struct PassCheck {
 pub enum AccelSource {
     /// The free road, up to the desired speed.
     FreeRoad { desired_speed: f64 },
-    /// A vehicle ahead, with the bumper-to-bumper gap along the follower's path.
-    Leader { id: VehicleId, gap: f64 },
+    /// A vehicle ahead, with the bumper-to-bumper gap along the follower's path,
+    /// and the share of its time headway the follower keeps to it as relaxation
+    /// has it: less than 1 just after either appeared in the lane.
+    Leader { id: VehicleId, gap: f64, headway: f64 },
     /// A maximum speed imposed on the vehicle, in m/s: 0 holds it to a stop.
     Cap { max_speed: f64 },
     /// Making room for a vehicle indicating into its lane ahead, as if that
