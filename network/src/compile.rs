@@ -1,6 +1,5 @@
 //! Compiling a road network to the simulation's lanes, and to render geometry.
 
-use std::collections::HashMap;
 use std::fmt;
 
 use glam::DVec2;
@@ -79,8 +78,8 @@ impl Built {
 ///   other's start, along their directions, its control points a third of the
 ///   way across. Its width blends from one to the other, and its speed limit
 ///   is lowered for its tightest bend.
-/// - Each intersection's connectors are one junction, and so are road lanes
-///   merging into the same lane.
+/// - Each intersection's connectors are one junction. Road lanes merging into
+///   the same lane are not: vehicles on them keep apart by following.
 pub fn compile(net: &RoadNetwork) -> Result<Compiled, CompileError> {
     let mut lanes: Vec<Lane> = Vec::new();
     let mut built: Vec<Built> = Vec::new();
@@ -188,9 +187,6 @@ pub fn compile(net: &RoadNetwork) -> Result<Compiled, CompileError> {
             sim.add_junction(ids);
         }
     }
-    for group in merging(&sim, road_lanes.iter().flatten().copied()) {
-        sim.add_junction(&group);
-    }
     sim.validate().map_err(CompileError::Network)?;
 
     let render = render::build(net, &polylines);
@@ -245,43 +241,4 @@ fn turn_limit(points: &[DVec2], limit: f64) -> f64 {
         return limit;
     }
     limit.min((TURN_ACCEL / curvature).sqrt().max(MIN_TURN_SPEED))
-}
-
-/// Groups of the given lanes that merge, leading into the same lane, each
-/// closed under merging: a lane merging with two others puts all three in one.
-fn merging(sim: &SimNetwork, lanes: impl Iterator<Item = LaneId>) -> Vec<Vec<LaneId>> {
-    let lanes: Vec<LaneId> = lanes.collect();
-    // Union-find over the lanes, by index in `lanes`.
-    let index: HashMap<LaneId, usize> = lanes.iter().enumerate().map(|(i, &l)| (l, i)).collect();
-    let mut parent: Vec<usize> = (0..lanes.len()).collect();
-    fn root(parent: &mut [usize], mut i: usize) -> usize {
-        while parent[i] != i {
-            parent[i] = parent[parent[i]];
-            i = parent[i];
-        }
-        i
-    }
-    let mut merges = vec![false; lanes.len()];
-    for (_, lane) in sim.lanes() {
-        let into: Vec<usize> =
-            lane.predecessors().iter().filter_map(|p| index.get(p).copied()).collect();
-        if into.len() < 2 {
-            continue;
-        }
-        for &i in &into {
-            merges[i] = true;
-            let (a, b) = (root(&mut parent, i), root(&mut parent, into[0]));
-            parent[a] = b;
-        }
-    }
-    let mut groups: HashMap<usize, Vec<LaneId>> = HashMap::new();
-    for i in 0..lanes.len() {
-        if merges[i] {
-            let r = root(&mut parent, i);
-            groups.entry(r).or_default().push(lanes[i]);
-        }
-    }
-    let mut groups: Vec<Vec<LaneId>> = groups.into_values().collect();
-    groups.sort_by_key(|g| g[0].0);
-    groups
 }

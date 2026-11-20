@@ -73,14 +73,14 @@ pub fn horizon(spec: &VehicleSpec, speed: f64) -> f64 {
 /// seconds: the time constant of its approach.
 const CAP_EASE: f64 = 0.5;
 
-/// The acceleration a speed cap allows: braking at the vehicle's comfortable
-/// deceleration while above it, easing up to it from below, and with a cap of 0
-/// braking until it stops. Like any term, it only binds when it is the lowest.
+/// The acceleration a speed cap allows: braking at the safe deceleration while above it,
+/// easing up to it from below, and with a cap of 0 braking until it stops.
+/// Like any term, it only binds when it is the lowest.
 pub fn capped(spec: &VehicleSpec, speed: f64, max_speed: f64) -> f64 {
     if max_speed <= 0.0 {
-        -spec.comfy_decel
+        -SAFE_BRAKING
     } else {
-        ((max_speed - speed) / CAP_EASE).max(-spec.comfy_decel)
+        ((max_speed - speed) / CAP_EASE).max(-SAFE_BRAKING)
     }
 }
 

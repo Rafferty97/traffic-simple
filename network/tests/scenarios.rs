@@ -42,8 +42,9 @@ fn the_freeway_merges_at_the_lane_drop_and_forks_at_the_off_ramp() {
         sim.lane(drop_accel).successors(),
         sim.lane(drop_left).successors()
     );
-    let junction = sim.lane(drop_accel).junction().expect("the drop is a junction");
-    assert_eq!(sim.lane(drop_left).junction(), Some(junction));
+    // The drop is a taper, not a junction.
+    assert_eq!(sim.lane(drop_accel).junction(), None);
+    assert_eq!(sim.lane(drop_left).junction(), None);
     // The middle's left lane forks, left up the off-ramp and right along the freeway.
     assert_eq!(
         sim.lane(lanes[3][0]).successors(),
