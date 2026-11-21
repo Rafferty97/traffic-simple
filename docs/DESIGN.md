@@ -43,6 +43,7 @@ One Rust workspace. The simulation crate depends on nothing else in the workspac
 | `network`                 | Road-level network format and scenarios; compiles them to a `SimNetwork` and to render geometry          | `sim`            |
 | `ui`                      | egui app with a pretty view and a debug view                                                              | `sim`, `network` |
 | `demand` (**Planned**)    | Spawners, origin–destination demand and vehicle mixes, kept outside the core                              | `sim`            |
+| `validation` (**Planned**) | A headless harness measuring aggregate behaviour against published values                               | `sim`, `network`, `demand` |
 
 `sim` defines `SimNetwork` and `network` produces it, so the dependency graph is one-way and the core never sees authoring concepts like multi-lane roads.
 
@@ -321,6 +322,23 @@ Demand lives outside the `sim` crate. The simulation exposes:
 - **Snapshot and restore** the whole state, network included, for freeze frames: `state` lends the `SimState`, to clone or, with the `serde` feature, serialize, and `restore` builds a simulation from one. A restored simulation continues bit for bit until it inserts a vehicle into a slot freed before the snapshot: `SlotMap` rebuilds its free list in index order, so that vehicle's id, and the update order after it, can differ.
 - **Heterogeneity** comes from inserting vehicles with varied attributes. Distributions are the caller's concern, not the core's.
 
+## Validation (Planned)
+
+Visual realism comes first, but traffic flow mustn't break down in ways real traffic wouldn't, so a headless harness measures the simulator's aggregate behaviour against published values. It is a crate of its own, `validation`, depending on `sim`, `network` and `demand`, run on demand rather than as a test, and printing each measure beside its reference.
+
+- **Measuring:** virtual detectors outside the core, counting the vehicles crossing a point and their speeds, and timing vehicles between points, from the vehicles' poses after each step, on scenarios built for each measure.
+- **What it measures, against what:**
+  - A freeway lane's capacity: about 2,400 veh/h at 120 km/h (Highway Capacity Manual).
+  - A merged lane's throughput: 2,000–2,400 veh/h (see Merge capacity).
+  - Capacity drop once a bottleneck breaks down: discharge a few percent to about 20% below the flow before it (Hall and Agyemang-Duah, 1991; later studies).
+  - Stop-and-go waves: travelling upstream at about 15 km/h, whatever the traffic (Treiber and Kesting), and forming on a ring at Sugiyama's density.
+  - Jam density: about 130–150 vehicles per km per lane.
+  - Saturation flow at signals: about 1,900 veh/h per lane, about 1.9 s between vehicles once a queue is moving, with about 2 s of start-up lost time (Highway Capacity Manual).
+  - Gap acceptance at give-way and stop signs: critical headways of about 4–7 s by movement, and follow-up headways of about 2–3.5 s (Highway Capacity Manual).
+- **Reading it:** each measure prints with its reference range, so a change that moves a capacity shows up; ranges are references, not pass or fail. A measure far outside its range is a bug or a model fault to look into, and the reason goes into this document.
+
+**Suggestion:** later, the same scenarios exported to SUMO, at road level through netconvert's plain XML, as a second reference for network-wide behaviour such as spillback and gridlock.
+
 ## Debug instrumentation
 
 Algorithms report what they are doing through a debug sink that costs nothing when debug output is off: the simulation is generic over `DebugSink`, and events are passed as closures, `sink.record(|| …)`, so a zero-sized no-op sink compiles away entirely. The UI runs with a recording sink, and benchmarks with the no-op one. A feature flag would have kept signatures simpler but needed a separate build for debugging.
@@ -372,6 +390,7 @@ Each milestone is a demo that can be finished on its own; anything after it is o
 6. Hook turns and trams: tram tracks in the middle of the road, tram stops, and vehicle classes restricting lane use.
 7. Unsignalised intersections: priority roads with give-way and stop signs, all-way stops and keep-clear zones.
 8. A procedural grid with destination and random routing, origin–destination demand from the `demand` crate, and a mix of vehicle classes. Random routing is done.
+9. The validation harness, measuring capacities, waves, saturation flows and gaps against published values.
 
 ## References and prior art
 
@@ -385,5 +404,6 @@ These are the established approaches this design borrows from or deliberately de
 - [A/B Street](https://github.com/a-b-street/abstreet): an open-source Rust traffic simulator with detailed write-ups on junction geometry and gridlock.
 - [ASAM OpenDRIVE](https://www.asam.net/standards/detail/opendrive/): road description with s/t lane coordinates and explicit junction connections.
 - [Fix Your Timestep](https://gafferongames.com/post/fix_your_timestep/): fixed timesteps with interpolated rendering.
+- Hall and Agyemang-Duah (1991), capacity drop at freeway bottlenecks; Sugiyama et al. (2008), jams forming on a ring with no bottleneck.
 - Dresner and Stone (2008), autonomous intersection management by reservation; the Highway Capacity Manual (TRB), critical gaps at unsignalised intersections; and ITE's change interval, for amber and all-red times.
 - Pure pursuit and Stanley path tracking: standard lateral controllers from autonomous-vehicle research.
