@@ -324,6 +324,7 @@ fn at_signals_nobody_crosses_a_line_on_red_and_traffic_keeps_flowing() {
                 courtesy: 2.0 * uniform(),
                 politeness: uniform(),
                 line_gap: 0.5 + uniform(),
+                line_gap_spread: 0.3,
                 ..VehicleSpec::passenger_car()
             };
             let speed = sim.network().lane(lane).speed_limit() * car.speed_factor;
@@ -449,6 +450,76 @@ fn at_signals_straight_traffic_never_stops_or_brakes_hard_for_right_turners_on_i
         "{} hard: {:?}",
         hard.len(),
         &hard[..hard.len().min(5)]
+    );
+}
+
+#[test]
+#[ignore = "passes once waiting lines are inside the junction"]
+fn at_signals_a_right_turner_at_its_line_turns_within_a_cycle() {
+    use std::collections::HashMap;
+    use traffic_network::Turn;
+    use traffic_sim::{LaneId, NoopSink, Placement, Route, Simulation, VehicleId, VehicleSpec};
+    let compiled = compile(&scenarios::signalised_crossroads(2, 50.0 / 3.6)).unwrap();
+    let right: Vec<LaneId> = compiled.connectors[0]
+        .iter()
+        .zip(&compiled.turns[0])
+        .filter(|(_, t)| **t == Turn::Right)
+        .map(|(&c, _)| c)
+        .collect();
+    // Two 30 s phases, each with its amber and clearance.
+    let (plan, _) = compiled.sim.signals().next().unwrap();
+    let longest = plan.movements.iter().map(|m| m.amber + m.clearance).fold(0.0, f64::max);
+    let cycle = plan.phases.iter().map(|p| p.duration + longest).sum::<f64>();
+    let mut sim = Simulation::new(compiled.sim, NoopSink);
+    let entries: Vec<LaneId> = sim
+        .network()
+        .lanes()
+        .filter(|(_, lane)| lane.predecessors().is_empty())
+        .map(|(id, _)| id)
+        .collect();
+    // When each right turner first reached its line, at the head of its lane.
+    let mut at_line: HashMap<VehicleId, f64> = HashMap::new();
+    let mut longest_wait: f64 = 0.0;
+    // Busy, with plenty coming the other way.
+    for step in 0..(600.0 * 60.0) as u64 {
+        if step % 45 == 0 {
+            let lane = entries[(step / 45) as usize % entries.len()];
+            let speed = sim.network().lane(lane).speed_limit();
+            let at = Placement { lane, s: 5.0, speed, route: Route::random(step) };
+            let _ = sim.try_insert(VehicleSpec::passenger_car(), at);
+        }
+        sim.step();
+        let network = sim.network();
+        for (id, v) in sim.vehicles() {
+            let path = v.path();
+            match path.get(1) {
+                // On its way in, its front within a few meters of the line.
+                Some(next) if right.contains(next) => {
+                    let length = network.lane(v.lane()).geometry().length();
+                    let front = v.lane_pos().s - v.spec().rear_axle + v.spec().length;
+                    if length - front < 3.0 {
+                        at_line.entry(id).or_insert(sim.time());
+                    }
+                }
+                // Turning: its rear axle onto the connector, past its waiting line.
+                _ if right.contains(&path[0]) => {
+                    let waiting = network.lane(path[0]).barriers().last().map_or(0.0, |b| b.s);
+                    if v.lane_pos().s > waiting + v.spec().length
+                        && let Some(since) = at_line.remove(&id)
+                    {
+                        longest_wait = longest_wait.max(sim.time() - since);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    for &since in at_line.values() {
+        longest_wait = longest_wait.max(sim.time() - since);
+    }
+    assert!(
+        longest_wait < cycle,
+        "a right turner waited {longest_wait:.0} s, a cycle being {cycle:.0} s"
     );
 }
 

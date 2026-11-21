@@ -336,3 +336,109 @@ fn a_give_way_line_waits_for_traffic_with_priority_at_rest_at_a_green_light() {
         "it went ahead of the car about to move off at its green light"
     );
 }
+
+/// The crossroads with every movement's amber `amber` seconds long.
+fn crossroads_with_amber(amber: f64) -> (SimNetwork, [MovementId; 2]) {
+    let (net, _) = crossroads();
+    let mut plan = net.signals().next().unwrap().0.clone();
+    for m in &mut plan.movements {
+        m.amber = amber;
+    }
+    crossroads_with(plan)
+}
+
+#[test]
+fn a_committed_car_stopped_short_of_its_line_is_released_on_red_and_waits() {
+    let (net, movements) = crossroads();
+    let mut sim = Simulation::new(net, NoopSink);
+    // At 14 m/s, 40 m short of its line at 16 s: committed, as it can't stop
+    // comfortably, then held to a stop well short of the line.
+    run_until(&mut sim, 16.0);
+    let id = sim.insert(car(), at(0, 90.0 - 40.0 - 3.6, LIMIT));
+    run_until(&mut sim, 16.2);
+    assert_eq!(
+        sim.get(id).unwrap().committed(),
+        1,
+        "it should have committed on green"
+    );
+    sim.hold(id);
+    // Red from 26 s; the hold lifted while red.
+    run_until(&mut sim, 28.0);
+    assert_eq!(sim.light(movements[0]).light, Light::Red);
+    sim.release(id);
+    run_until(&mut sim, 50.0);
+    assert_ne!(sim.light(movements[0]).light, Light::Green);
+    assert_eq!(
+        sim.get(id).unwrap().committed(),
+        0,
+        "it wasn't released on red"
+    );
+    assert!(front(&sim, id).x < -10.0, "it went on red");
+    // And it goes on the next green.
+    run_until(&mut sim, 62.0);
+    assert!(
+        sim.get(id).is_none_or(|_| front(&sim, id).x > -10.0),
+        "it didn't go on green"
+    );
+}
+
+#[test]
+fn on_red_a_committed_car_goes_on_if_it_cant_stop_safely_and_stops_if_it_can() {
+    // A short amber, so committed cars are still short of the line on red.
+    let (net, movements) = crossroads_with_amber(1.0);
+    let mut sim = Simulation::new(net, NoopSink);
+    // Amber at 22 s, red at 23 s. At 14 m/s, `near` is 20 m short at 22 s and so
+    // 6 m short on red, too near to stop at 4 m/s²; `far` is 47 m short, so
+    // 33 m short on red, with room. Both committed on green, unable to stop
+    // comfortably, and far enough apart that `far` isn't slowed by `near`.
+    run_until(&mut sim, 21.0);
+    let near = sim.insert(car(), at(0, 70.0 - 14.0 - 3.6, LIMIT));
+    let far = sim.insert(car(), at(0, 43.0 - 14.0 - 3.6, LIMIT));
+    run_until(&mut sim, 21.9);
+    assert_eq!(sim.light(movements[0]).light, Light::Green);
+    assert_eq!(sim.get(near).unwrap().committed(), 1);
+    assert_eq!(sim.get(far).unwrap().committed(), 1);
+    run_until(&mut sim, 23.1);
+    assert_eq!(sim.light(movements[0]).light, Light::Red);
+    run_until(&mut sim, 40.0);
+    assert!(
+        sim.get(near).is_none_or(|_| front(&sim, near).x > -10.0),
+        "near stopped"
+    );
+    assert!(front(&sim, far).x < -10.0, "far went on red");
+    assert!(sim.get(far).unwrap().speed() < 0.1, "far isn't stopped");
+}
+
+#[test]
+fn drivers_stop_short_of_a_line_by_a_gap_drawn_for_it() {
+    use traffic_sim::VehicleSpec;
+    let (net, _) = crossroads();
+    let mut sim = Simulation::new(net, NoopSink);
+    // From the south, red for the first 26 s: each car the head of its own run.
+    let mut gaps = Vec::new();
+    for i in 0..6 {
+        // A few meters short of its line, slow, so it settles there in time.
+        // Each its own driver, its generator seeded as its route is.
+        let place = Placement { route: Route::random(i), ..at(1, 80.0, 2.0) };
+        let id = sim.insert(VehicleSpec::passenger_car(), place);
+        let drawn = sim.get(id).unwrap().line_gap();
+        let spec = VehicleSpec::passenger_car();
+        assert!(
+            (drawn - spec.line_gap).abs() <= spec.line_gap_spread,
+            "drew {drawn}"
+        );
+        run_until(&mut sim, 2.0 + 4.0 * (i + 1) as f64);
+        let head = front(&sim, id).y;
+        assert!(
+            (head - (-10.0 - drawn)).abs() < 0.3,
+            "stopped {:.2} short, drew {drawn:.2}",
+            -10.0 - head
+        );
+        gaps.push(drawn);
+        sim.remove(id);
+    }
+    // They vary.
+    let spread = gaps.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+        - gaps.iter().cloned().fold(f64::INFINITY, f64::min);
+    assert!(spread > 0.2, "gaps hardly vary: {gaps:?}");
+}

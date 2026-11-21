@@ -43,6 +43,7 @@ fn main() {
                 assertiveness: 0.3,
                 accel_noise: 0.0,
                 line_gap: 1.0,
+                line_gap_spread: 0.0,
             };
             let at = if entries.is_empty() {
                 let lane = LaneId((uniform() * lanes as f64) as u32);

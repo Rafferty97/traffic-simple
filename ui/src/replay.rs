@@ -88,6 +88,7 @@ impl<D: DebugSink> Recorded<D> {
             assertiveness,
             accel_noise,
             line_gap,
+            line_gap_spread,
         } = spec;
         let Placement { lane, s, speed, route } = at;
         let Route::Random { state: seed } = route;
@@ -98,7 +99,7 @@ impl<D: DebugSink> Recorded<D> {
              time_headway={time_headway:?} min_gap={min_gap:?} rear_axle={rear_axle:?} \
              front_axle={front_axle:?} courtesy={courtesy:?} politeness={politeness:?} \
              assertiveness={assertiveness:?} accel_noise={accel_noise:?} \
-             line_gap={line_gap:?} lane={} s={s:?} speed={speed:?} seed={seed}",
+             line_gap={line_gap:?} line_gap_spread={line_gap_spread:?} lane={} s={s:?} speed={speed:?} seed={seed}",
             lane.0
         )
         .unwrap();

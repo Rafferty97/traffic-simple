@@ -28,6 +28,7 @@ pub fn car() -> VehicleSpec {
         assertiveness: 0.0,
         accel_noise: 0.0,
         line_gap: 1.0,
+        line_gap_spread: 0.0,
     }
 }
 

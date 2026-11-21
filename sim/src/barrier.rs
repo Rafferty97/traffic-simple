@@ -62,9 +62,13 @@ pub(crate) fn committed_to(network: &SimNetwork, vehicle: &Vehicle, lane: LaneId
     }
 }
 
-/// The lane of the barrier `rank`th ahead of `vehicle`'s rear axle on its path,
-/// if there is one.
-pub(crate) fn nth(network: &SimNetwork, vehicle: &Vehicle, rank: usize) -> Option<LaneId> {
+/// The barrier `rank`th ahead of `vehicle`'s rear axle on its path, and its
+/// lane, if there is one.
+pub(crate) fn nth(
+    network: &SimNetwork,
+    vehicle: &Vehicle,
+    rank: usize,
+) -> Option<(LaneId, Barrier)> {
     let mut count = 0;
     for (j, &lane) in vehicle.path.iter().enumerate() {
         let from = if j == 0 {
@@ -72,9 +76,11 @@ pub(crate) fn nth(network: &SimNetwork, vehicle: &Vehicle, rank: usize) -> Optio
         } else {
             f64::NEG_INFINITY
         };
-        count += between(network.lane(lane), from, f64::INFINITY);
-        if count > rank {
-            return Some(lane);
+        for &barrier in network.lane(lane).barriers().iter().filter(|b| b.s > from) {
+            if count == rank {
+                return Some((lane, barrier));
+            }
+            count += 1;
         }
     }
     None
@@ -146,7 +152,7 @@ pub(crate) fn decide(
     let spec = &vehicle.spec;
     let speed = vehicle.speed;
     // Whether it can stop where it would like, a line gap short, at `decel`.
-    let can_stop = |decel: f64| speed * speed / (2.0 * decel) <= gap - spec.line_gap;
+    let can_stop = |decel: f64| speed * speed / (2.0 * decel) <= gap - vehicle.line_gap;
     let room = || room_beyond(state, id, vehicle, k, barrier.s);
     let commit = match barrier.kind {
         // Only on green, once it can no longer stop comfortably: never on amber
@@ -164,7 +170,7 @@ pub(crate) fn decide(
     };
     match commit {
         true => Decision::Commit,
-        false => Decision::Hold(hold(spec, speed, gap)),
+        false => Decision::Hold(hold(spec, vehicle.line_gap, speed, gap)),
     }
 }
 
@@ -318,19 +324,20 @@ fn clear(
 }
 
 /// Whether `vehicle`, committed to `barrier`, `gap` ahead of its front, is
-/// released from it, to decide afresh: at a signal that is no longer green, it
-/// can still stop comfortably before the line, having been slowed short of it
-/// by traffic ahead or a junction, as a driver who could stop does when the
-/// light changes; at a give-way line, it has come to rest short of the line, so
-/// the gap it took is stale. A vehicle that committed to a green light as it
-/// turned amber, unable to stop comfortably, stays committed.
+/// released from it, to decide afresh: at a red light, it can still stop before
+/// the line without braking harder than [`acceleration::SAFE_BRAKING`], having
+/// been slowed short of it by traffic ahead or a junction, as a driver who could
+/// stop does; at a give-way line, it has come to rest short of the line, so the
+/// gap it took is stale. On amber, a committed vehicle goes on: one caught in
+/// the dilemma zone, or a turner waiting past its line for a gap, which comes
+/// as the oncoming traffic stops.
 pub(crate) fn released(state: &SimState, vehicle: &Vehicle, barrier: Barrier, gap: f64) -> bool {
     let speed = vehicle.speed;
     gap > 0.0
         && match barrier.kind {
             BarrierKind::Signal { movement } => {
-                state.lights[movement.0 as usize].light != Light::Green
-                    && speed * speed / (2.0 * vehicle.spec.comfy_decel) <= gap
+                state.lights[movement.0 as usize].light == Light::Red
+                    && speed * speed / (2.0 * acceleration::SAFE_BRAKING) <= gap
             }
             BarrierKind::GiveWay => speed == 0.0,
         }
@@ -343,13 +350,22 @@ fn waits_in_lane(network: &SimNetwork, vehicle: &Vehicle, o: &crate::occupancy::
     let next = nth(network, vehicle, vehicle.committed as usize);
     o.lateral == crate::occupancy::Lateral::InLane
         && vehicle.speed == 0.0
-        && next.is_some_and(|lane| vehicle.path.iter().take(2).any(|&l| l == lane))
+        && next.is_some_and(|(lane, _)| vehicle.path.iter().take(2).any(|&l| l == lane))
+}
+
+/// Draws how far short of the next barrier it heads for `vehicle` will stop,
+/// from its own generator, uniformly within its spec's spread of its mean.
+pub(crate) fn draw_line_gap(vehicle: &mut Vehicle) {
+    let draw = crate::models::routing::splitmix64(&mut vehicle.noise_rng);
+    let unit = (draw >> 11) as f64 / (1u64 << 53) as f64;
+    let spec = &vehicle.spec;
+    vehicle.line_gap = (spec.line_gap + spec.line_gap_spread * (2.0 * unit - 1.0)).max(0.0);
 }
 
 /// The term holding a vehicle `gap` short of a line: a stationary leader there,
-/// with its line gap as the minimum gap.
-pub(crate) fn hold(spec: &VehicleSpec, speed: f64, gap: f64) -> f64 {
-    let at_line = VehicleSpec { min_gap: spec.line_gap, ..*spec };
+/// with its gap to lines, `line_gap`, as the minimum gap.
+pub(crate) fn hold(spec: &VehicleSpec, line_gap: f64, speed: f64, gap: f64) -> f64 {
+    let at_line = VehicleSpec { min_gap: line_gap, ..*spec };
     acceleration::interaction(&at_line, speed, gap, 0.0)
 }
 

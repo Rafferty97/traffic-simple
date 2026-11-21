@@ -53,10 +53,16 @@ pub struct VehicleSpec {
     /// IDM with acceleration noise (2017). 0 for none. Following stays exact.
     #[cfg_attr(feature = "serde", serde(default))]
     pub accel_noise: f64,
-    /// How far short of a line the driver stops, nose to line, in meters: about
-    /// 1 m, varied from driver to driver.
+    /// How far short of a line the driver stops, nose to line, in meters, on
+    /// average: each time it heads for a barrier, it draws how far, uniformly
+    /// within [`VehicleSpec::line_gap_spread`] of this, so a row of vehicles at
+    /// a line doesn't stand in perfect step.
     #[cfg_attr(feature = "serde", serde(default = "default_line_gap"))]
     pub line_gap: f64,
+    /// How far either side of [`VehicleSpec::line_gap`] its gap at a line may
+    /// fall, in meters.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub line_gap_spread: f64,
 }
 
 #[cfg(feature = "serde")]
@@ -87,6 +93,7 @@ impl VehicleSpec {
             assertiveness: 0.0,
             accel_noise: 0.2,
             line_gap: 1.0,
+            line_gap_spread: 0.5,
         }
     }
 
@@ -163,6 +170,10 @@ pub struct Vehicle {
     /// committed to crossing (see `docs/DESIGN.md`, Barriers and signals).
     #[cfg_attr(feature = "serde", serde(default))]
     pub(crate) committed: u8,
+    /// How far short of the barrier it is heading for it will stop, in meters,
+    /// drawn afresh for each (see [`VehicleSpec::line_gap`]).
+    #[cfg_attr(feature = "serde", serde(default = "default_line_gap"))]
+    pub(crate) line_gap: f64,
 }
 
 /// A vehicle held up by the one ahead of it: that one is the term binding its
@@ -251,6 +262,11 @@ impl Vehicle {
     /// committed to crossing.
     pub fn committed(&self) -> u8 {
         self.committed
+    }
+
+    /// How far short of the barrier it is heading for it will stop, in meters.
+    pub fn line_gap(&self) -> f64 {
+        self.line_gap
     }
 
     pub fn intent(&self) -> Option<Intent> {

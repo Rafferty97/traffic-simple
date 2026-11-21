@@ -391,7 +391,9 @@ impl<D: DebugSink> Simulation<D> {
                 }
             },
             committed: 0,
+            line_gap: spec.line_gap,
         };
+        barrier::draw_line_gap(&mut vehicle);
         let needed = reach(&vehicle, at.s, None);
         extend_path(
             &self.state.network,
@@ -560,6 +562,7 @@ impl<D: DebugSink> Simulation<D> {
         vehicle.intent = None;
         // Its barriers ahead are now others.
         vehicle.committed = 0;
+        barrier::draw_line_gap(vehicle);
         let needed = reach(vehicle, lane_pos.s, Some(change));
         extend_path(
             &self.state.network,
@@ -861,7 +864,7 @@ impl<D: DebugSink> Simulation<D> {
                 let commits = committed.saturating_sub(vehicle.committed);
                 for rank in vehicle.committed..committed {
                     let lane = barrier::nth(network, vehicle, usize::from(rank));
-                    let Some(j) = lane.and_then(|l| network.lane(l).junction()) else {
+                    let Some(j) = lane.and_then(|(l, _)| network.lane(l).junction()) else {
                         continue;
                     };
                     let committed = &mut queues[j.0 as usize].committed;
@@ -871,7 +874,11 @@ impl<D: DebugSink> Simulation<D> {
                     }
                 }
                 let vehicle = &mut self.state.vehicles[id];
-                vehicle.committed = committed;
+                // Heading for another barrier now, it draws how far short it stops.
+                if vehicle.committed != committed {
+                    vehicle.committed = committed;
+                    barrier::draw_line_gap(vehicle);
+                }
                 // Committed past a barrier, it may now arrive at a junction beyond.
                 if commits > 0 {
                     self.arrivals.push(id);
@@ -1082,6 +1089,9 @@ impl<D: DebugSink> Simulation<D> {
             if vehicle.committed > 0 {
                 passed += barrier::between(network.lane(vehicle.path[0]), from, vehicle.lane_pos.s);
                 vehicle.committed = vehicle.committed.saturating_sub(passed.min(255) as u8);
+                if passed > 0 {
+                    barrier::draw_line_gap(vehicle);
+                }
             }
 
             // Far enough ahead to know where it is going, at its new speed.
