@@ -559,12 +559,12 @@ pub fn find_leaders<B>(
     let own_age = own.map(|own| own.age);
     let horizon = acceleration::horizon(&vehicle.spec, vehicle.speed);
     // Wanting to change lanes, along its own lanes it looks as far as it keeps
-    // room to get halfway through a change (see `simulation::halfway`).
+    // room to get halfway through a change (see `lane_changing::halfway`).
     let horizon = match along {
-        Along::Path(_) if crate::simulation::wants_change(vehicle) => horizon.max(
+        Along::Path(_) if crate::lane_changing::wants_change(vehicle) => horizon.max(
             vehicle.spec.min_gap
-                + crate::simulation::halfway_from_rest(network, vehicle)
-                + crate::simulation::SPARE_ROOM,
+                + crate::lane_changing::halfway_from_rest(network, vehicle)
+                + crate::lane_changing::SPARE_ROOM,
         ),
         _ => horizon,
     };

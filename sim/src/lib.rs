@@ -8,6 +8,7 @@ mod following;
 mod junction;
 mod kinematics;
 mod lane;
+mod lane_changing;
 mod math;
 mod merge;
 mod models;
