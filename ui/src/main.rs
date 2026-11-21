@@ -846,12 +846,27 @@ fn draw_debug(
     // Vehicle bodies and the network are always drawn.
     let shown = |id: VehicleId| selected.is_none_or(|s| s == id);
     let thin = Stroke::new(0.08, OUTLINE);
-    for (lane_id, lane) in sim.network().lanes() {
+    for (_, lane) in sim.network().lanes() {
         if layers.on(Layer::LaneOutlines) {
-            painter.add(Shape::closed_line(
-                lane.geometry().outline().map(to_scene).collect(),
-                thin,
-            ));
+            let geometry = lane.geometry();
+            // Its sides solid, and its ends dashed and faint, where it meets the
+            // lanes before and after it.
+            let outline: Vec<_> = geometry.outline().collect();
+            let n = outline.len();
+            let (left, right) = outline.split_at(n / 2);
+            for side in [left, right] {
+                painter.add(Shape::line(
+                    side.iter().map(|&p| to_scene(p)).collect(),
+                    thin,
+                ));
+            }
+            let faint = Stroke::new(0.08, OUTLINE.gamma_multiply(0.5));
+            for ends in [
+                [outline[n - 1], outline[0]],
+                [left[left.len() - 1], right[0]],
+            ] {
+                painter.extend(Shape::dashed_line(&ends.map(to_scene), faint, 0.4, 0.3));
+            }
         }
 
         if layers.on(Layer::Centerlines) {
@@ -860,26 +875,6 @@ fn draw_debug(
                 painter.circle_filled(p, 0.1, VERTEX);
             }
             painter.add(Shape::line(centerline, Stroke::new(0.04, CENTERLINE)));
-        }
-
-        if layers.on(Layer::Barriers) {
-            let geometry = lane.geometry();
-            for barrier in lane.barriers() {
-                let colour = match barrier.kind {
-                    BarrierKind::Signal { movement } => match sim.light(movement).light {
-                        Light::Green => LIGHT_GREEN,
-                        Light::Amber => LIGHT_AMBER,
-                        Light::Red => LIGHT_RED,
-                    },
-                    BarrierKind::GiveWay => GIVE_WAY,
-                };
-                let pos = geometry.lane_pos(barrier.s, 0.0);
-                let left = geometry.half_width(pos, Side::Left);
-                let right = -geometry.half_width(pos, Side::Right);
-                let ends = [left, right]
-                    .map(|t| to_scene(geometry.lane_to_world(geometry.lane_pos(barrier.s, t))));
-                painter.line_segment(ends, Stroke::new(0.3, colour));
-            }
         }
 
         if layers.on(Layer::Ticks) {
@@ -916,16 +911,34 @@ fn draw_debug(
                 }
             }
         }
+    }
 
-        if layers.on(Layer::Occupants) {
-            for occupant in sim.occupants(lane_id).iter().filter(|o| shown(o.id)) {
-                let p = lane.geometry().lane_to_world(lane.geometry().lane_pos(occupant.s(), 0.0));
-                let color = if occupant.is_ghost() { GHOST } else { OCCUPANT };
-                painter.circle_filled(to_scene(p), 0.25, color);
+    // Solid, over every lane's dashed ends.
+    if layers.on(Layer::Barriers) {
+        for (_, lane) in sim.network().lanes() {
+            let geometry = lane.geometry();
+            for barrier in lane.barriers() {
+                let colour = match barrier.kind {
+                    BarrierKind::Signal { movement } => match sim.light(movement).light {
+                        Light::Green => LIGHT_GREEN,
+                        Light::Amber => LIGHT_AMBER,
+                        Light::Red => LIGHT_RED,
+                    },
+                    BarrierKind::GiveWay => GIVE_WAY,
+                };
+                let pos = geometry.lane_pos(barrier.s, 0.0);
+                let left = geometry.half_width(pos, Side::Left);
+                let right = -geometry.half_width(pos, Side::Right);
+                let ends = [left, right]
+                    .map(|t| to_scene(geometry.lane_to_world(geometry.lane_pos(barrier.s, t))));
+                painter.line_segment(ends, Stroke::new(0.3, colour));
             }
         }
     }
 
+    // Every mark on a vehicle is placed on its body as drawn, between steps, so
+    // they stay together.
+    let drawn = |id: VehicleId, v: &Vehicle| Drawn(poses.corners(id, v, sim.alpha()));
     for (id, v) in sim.vehicles() {
         if layers.on(Layer::Vehicles) {
             let color = if Some(id) == selected {
@@ -933,17 +946,15 @@ fn draw_debug(
             } else {
                 VEHICLE
             };
-            let drawn = poses.corners(id, v, sim.alpha());
-            painter.add(Shape::closed_line(
-                drawn.map(to_scene).to_vec(),
-                Stroke::new(0.1, color),
+            let body = drawn(id, v);
+            painter.add(Shape::convex_polygon(
+                body.0.map(to_scene).to_vec(),
+                color,
+                Stroke::NONE,
             ));
-            // Its rear axle, on the body as drawn.
-            let [rear_left, rear_right, front_right, front_left] = drawn;
-            let rear = 0.5 * (rear_left + rear_right);
-            let ahead = (0.5 * (front_left + front_right) - rear).normalize_or_zero();
-            let axle = rear + ahead * v.spec().rear_axle;
-            painter.circle_filled(to_scene(axle), 0.2, color);
+            // Its rear axle, across the body.
+            let axle = body.axle(v.spec().rear_axle);
+            painter.line_segment(axle.map(to_scene), Stroke::new(0.12, AXLE));
         }
 
         // From the vehicle's stored cubic, drawn on its current lane only, so it
@@ -967,13 +978,23 @@ fn draw_debug(
         }
     }
 
+    if layers.on(Layer::Occupants) {
+        for (lane_id, lane) in sim.network().lanes() {
+            for occupant in sim.occupants(lane_id).iter().filter(|o| shown(o.id)) {
+                let p = lane.geometry().lane_to_world(lane.geometry().lane_pos(occupant.s(), 0.0));
+                let color = if occupant.is_ghost() { GHOST } else { OCCUPANT };
+                painter.circle_filled(to_scene(p), 0.25, color);
+            }
+        }
+    }
+
     // From the front bumper to the leader's rear bumper.
     if layers.on(Layer::Leaders) {
         for &(id, source, accel) in sim.sink().accel_terms.iter().filter(|t| shown(t.0)) {
             let AccelSource::Leader { id: leader, .. } = source else {
                 continue;
             };
-            let (Some(v), Some(leader)) = (sim.get(id), sim.get(leader)) else {
+            let (Some(v), Some(l)) = (sim.get(id), sim.get(leader)) else {
                 continue;
             };
             let color = if accel == v.accel() {
@@ -982,7 +1003,10 @@ fn draw_debug(
                 LEADER_OTHER
             };
             painter.line_segment(
-                [to_scene(front(v)), to_scene(rear(leader))],
+                [
+                    to_scene(drawn(id, v).front()),
+                    to_scene(drawn(leader, l).rear()),
+                ],
                 Stroke::new(0.08, color),
             );
         }
@@ -995,7 +1019,7 @@ fn draw_debug(
             let AccelSource::Merge { id: leader, .. } = source else {
                 continue;
             };
-            let (Some(v), Some(leader)) = (sim.get(id), sim.get(leader)) else {
+            let (Some(v), Some(l)) = (sim.get(id), sim.get(leader)) else {
                 continue;
             };
             let color = if accel == v.accel() {
@@ -1003,7 +1027,10 @@ fn draw_debug(
             } else {
                 LEADER_OTHER
             };
-            let ends = [to_scene(front(v)), to_scene(rear(leader))];
+            let ends = [
+                to_scene(drawn(id, v).front()),
+                to_scene(drawn(leader, l).rear()),
+            ];
             painter.extend(Shape::dashed_line(
                 &ends,
                 Stroke::new(0.08, color),
@@ -1041,7 +1068,10 @@ fn draw_debug(
                 Stroke::new(0.1, color),
             );
             painter.line_segment(
-                [to_scene(front(v)), to_scene(check.pos + u * ahead)],
+                [
+                    to_scene(drawn(id, v).front()),
+                    to_scene(check.pos + u * ahead),
+                ],
                 Stroke::new(0.03, PASS_BODY),
             );
         }
@@ -1050,8 +1080,9 @@ fn draw_debug(
     if layers.on(Layer::Lookahead) {
         for &(id, point) in sim.sink().lookaheads.iter().filter(|l| shown(l.0)) {
             let Some(v) = sim.get(id) else { continue };
+            let axle = drawn(id, v).axle_mid(v.spec().rear_axle);
             painter.line_segment(
-                [to_scene(v.pos()), to_scene(point)],
+                [to_scene(axle), to_scene(point)],
                 Stroke::new(0.04, LOOKAHEAD),
             );
             painter.circle_filled(to_scene(point), 0.2, LOOKAHEAD);
@@ -1067,7 +1098,9 @@ const MAY_CHANGE: Color32 = Color32::from_rgb(80, 200, 80);
 const MAY_NOT_CHANGE: Color32 = Color32::from_rgb(220, 70, 70);
 const OCCUPANT: Color32 = Color32::from_rgb(200, 160, 255);
 const GHOST: Color32 = Color32::from_rgb(255, 150, 40);
-const VEHICLE: Color32 = Color32::from_rgb(240, 90, 90);
+const VEHICLE: Color32 = Color32::from_rgb(220, 40, 40);
+/// Half-transparent white.
+const AXLE: Color32 = Color32::from_rgba_premultiplied(128, 128, 128, 128);
 const LANE_CHANGE: Color32 = Color32::from_rgb(250, 160, 60);
 const LEADER_BINDING: Color32 = Color32::from_rgb(120, 230, 120);
 const LEADER_OTHER: Color32 = Color32::from_rgb(60, 110, 60);
@@ -1115,7 +1148,11 @@ impl Layer {
     /// Its name, its colors, and what they mean, for the legend.
     fn legend(self) -> (&'static str, &'static [Color32], &'static str) {
         match self {
-            Layer::LaneOutlines => ("Lane outlines", &[OUTLINE], "Each lane's edges"),
+            Layer::LaneOutlines => (
+                "Lane outlines",
+                &[OUTLINE],
+                "Each lane's edges, and its ends dashed and fainter",
+            ),
             Layer::Centerlines => (
                 "Centerlines",
                 &[CENTERLINE, VERTEX],
@@ -1135,7 +1172,7 @@ impl Layer {
             Layer::Vehicles => (
                 "Vehicles",
                 &[VEHICLE, SELECTED],
-                "Bodies and rear axles; the selected vehicle in yellow",
+                "Solid bodies, each with its rear axle across it; the selected vehicle in yellow",
             ),
             Layer::LaneChanges => (
                 "Lane changes",
@@ -1265,16 +1302,42 @@ impl DebugState {
     }
 }
 
-/// Midpoint of the front bumper.
-fn front(v: &Vehicle) -> DVec2 {
-    let [_, _, front_right, front_left] = v.corners();
-    0.5 * (front_right + front_left)
-}
+/// A vehicle's corners where it is drawn: rear left, rear right, front right,
+/// front left.
+#[derive(Clone, Copy)]
+struct Drawn([DVec2; 4]);
 
-/// Midpoint of the rear bumper.
-fn rear(v: &Vehicle) -> DVec2 {
-    let [rear_left, rear_right, ..] = v.corners();
-    0.5 * (rear_left + rear_right)
+impl Drawn {
+    /// Midpoint of the front bumper.
+    fn front(self) -> DVec2 {
+        0.5 * (self.0[2] + self.0[3])
+    }
+
+    /// Midpoint of the rear bumper.
+    fn rear(self) -> DVec2 {
+        0.5 * (self.0[0] + self.0[1])
+    }
+
+    /// The rear axle's ends, at the sides of the body, `rear_axle` ahead of the
+    /// rear bumper.
+    fn axle(self, rear_axle: f64) -> [DVec2; 2] {
+        let length = self.0[0].distance(self.0[3]);
+        let ahead = if length > 0.0 {
+            rear_axle / length
+        } else {
+            0.0
+        };
+        [
+            self.0[0].lerp(self.0[3], ahead),
+            self.0[1].lerp(self.0[2], ahead),
+        ]
+    }
+
+    /// Midpoint of the rear axle.
+    fn axle_mid(self, rear_axle: f64) -> DVec2 {
+        let [left, right] = self.axle(rear_axle);
+        0.5 * (left + right)
+    }
 }
 
 /// A polygon every point of which can see its centroid, as a fan of triangles
