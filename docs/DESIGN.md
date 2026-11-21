@@ -1,6 +1,6 @@
 # Traffic Simulator — Master Design
 
-This is the canonical design document. Change it only with Alexander's approval, ideally in the same commit as the code change it describes.
+This is the canonical design: how the finished simulator works, both what is built and what is planned. Keep it current, changing it in the same commit as the code it describes, and ask Alexander before changing its goals.
 
 ## Goals and working model
 
@@ -9,7 +9,10 @@ The goal is city and freeway traffic that looks realistic at 60 fps, built as si
 **Goals**
 
 - Believable motion through lane changes, merges, diverges and junctions, including hook turns
-- 60 fps rendering with a simple, fast core
+- Intersections controlled as real ones are: signals, give-way and stop signs, all-way stops and keep-clear zones, with turning traffic giving way as drivers do
+- Vehicles that find their way to destinations, changing lanes in good time
+- 60 fps rendering with a simple, fast core: a step for 10,000 vehicles well inside a frame (**Suggestion:** under 2 ms on a laptop, as the benchmarks measure it)
+- Traffic flow that doesn't break down in ways real traffic wouldn't
 - Algorithms made visible in a debug view
 
 **Non-goals**
@@ -17,12 +20,14 @@ The goal is city and freeway traffic that looks realistic at 60 fps, built as si
 - Calibrated aggregate outputs for policy work (SUMO and VISSIM already do this)
 - Building networks from real-world data: networks are hand-crafted or procedural
 - Demand modelling inside the core simulation
+- Pedestrians, cyclists, trams and parking
+- Optimising signals: plans are fixed-time, with actuated control left to a module boundary
 - Preventing gridlock: it is allowed, and fun to watch
 
 **Working model**
 
-- An LLM does almost all the typing. Alexander owns the architecture, data layout and module boundaries.
-- The simulation step, the data layout and anything affecting determinism must be understood line by line before merging.
+- Claude does all the typing, and keeps the code tidy and modular as it goes. Alexander reviews as needed, owns the goals, and is asked about choices of taste or of the project's objectives.
+- New dependencies, non-trivial `unsafe`, and allocation or data-layout changes in the simulation loop are proposed to Alexander first.
 - "Swappable" means a clean module boundary, replaced by editing the module, not by traits or runtime dispatch.
 - Where it can, the simulation follows established technique (SUMO, IDM and LMRS literature, game-engine practice). Its deliberate departures are world coordinates as the truth, how vehicles find their leaders across lanes (see [Multi-lane car following](multilane-car-following.md)), the junction backstop and merges; each is marked **Off the beaten path**.
 - In this doc, unmarked statements are decisions. **Suggestion** marks proposals that haven't been explicitly confirmed yet. **Planned** marks designed parts not yet built. Open items are collected under Hard parts and open questions.
@@ -36,17 +41,19 @@ One Rust workspace. The simulation crate depends on nothing else in the workspac
 | `sim`                     | Simulation state, models, update pipeline, public API, and the `SimNetwork` type it consumes             | —                |
 | `network`                 | Road-level network format and scenarios; compiles them to a `SimNetwork` and to render geometry          | `sim`            |
 | `ui`                      | egui app with a pretty view and a debug view                                                              | `sim`, `network` |
-| `demand` (**Suggestion**) | Routing models and vehicle spawners, kept outside the core                                                | `sim`            |
+| `demand` (**Planned**)    | Spawners, origin–destination demand and vehicle mixes, kept outside the core                              | `sim`            |
 
 `sim` defines `SimNetwork` and `network` produces it, so the dependency graph is one-way and the core never sees authoring concepts like multi-lane roads.
+
+Inside `sim`, each part of the design has its own module: `lane` (geometry), `network` (`SimNetwork`), `occupancy` and `following` (records, the leader and follower searches, and classification), `junction` (the backstop), `merge`, `barrier` (**Planned:** barriers, commitment and gap acceptance), `lane_changing` (what the simulation measures for the lane-change model), `path`, and the models, each replaced by editing it: `acceleration`, `lane_change`, `lateral`, `routing` and `signal` (**Planned**). `simulation` holds the state, the update pipeline and the public API.
 
 ## Network pipeline
 
 One road-level network description compiles into two products: a `SimNetwork` for the simulation and render geometry for the UI.
 
 - **Source of truth:** built by procedural generators (`scenarios`) or by hand. Real-world import is out of scope. The format will change as it grows.
-- **`SimNetwork` output:** lanes as polylines, their successors, neighbours with lane-change permissions, which side drivers keep to, how lanes that end are left, and junctions with their conflicts. **Planned:** barriers and signal controllers.
-- **Render output:** road and junction surfaces, lane markings, stop lines and turn arrows. **Planned:** keep-clear markings.
+- **`SimNetwork` output:** lanes as polylines, their successors, neighbours with lane-change permissions, which side drivers keep to, how lanes that end are left, and junctions with their conflicts. **Planned:** each junction lane's priority level, barriers and signal controllers.
+- **Render output:** road and junction surfaces, lane markings, stop lines and turn arrows. **Planned:** signal lamps and keep-clear markings.
 - **Precision:** every lane point and half-width is snapped to a 1 mm grid as the lane is built, so a network serializes exactly as short text. Two grid points under 2 mm apart are the same point: snapping leaves two copies of one at most √2 mm apart, and the next distance between grid points is 2 mm. That is how lane ends are matched and checked, with no other tolerance.
 
 The `network` crate describes networks at road level, as OpenDRIVE and SUMO's edge/lane/connection model do, and expands them to bare lanes during compilation. That is how people think about roads, and it keeps the sim free of road concepts.
@@ -63,6 +70,17 @@ The `network` crate describes networks at road level, as OpenDRIVE and SUMO's ed
 - **Stop lines:** each lane coming into an intersection gets one across its end, 300 mm wide as AS 1742.2 has it, set back half that so its far edge is where the intersection starts.
 - **Turn arrows:** each lane coming into an intersection gets an arrow 8 m back from its end for the ways its connections go, as SUMO classes a link's direction by its angle: straight on within 30° either way, otherwise left or right. It's one of seven glyphs, every mix of left, straight and right, drawn in `ui/assets/lane-glyphs.svg` and converted once to triangles in `ui/src/glyphs.rs` by `ui/assets/convert-glyphs.mjs`, so the UI needs no SVG support. None is painted on a road shorter than 16 m.
 
+**Intersection control** (**Planned**) turns how an intersection is controlled into barriers, priorities and signal plans, as SUMO's netconvert derives right of way and traffic-light logic from road priorities and turn directions, simplified.
+
+- **Turn classes:** compilation classes each connection as straight on, within 30° either way, as the arrows do, or a turn; and a turn as near-side, toward the side drivers keep to (left in Australia), or far-side, across oncoming traffic. Arrows, priorities and signal movements all use it.
+- **Control:** an intersection is controlled by priority, naming the roads that have it; as an all-way stop; or by signals, with a fixed-time plan. An approach without priority has a give-way or a stop sign.
+- **Priority levels:** each connector gets a level, the higher going first: straight on or near-side from a priority road, 3; far-side from one, 2; straight on or near-side from any other road, 1; far-side from any other, 0. All-way stops and signalised intersections treat every road as a priority road, so far-side turns still give way to oncoming traffic when both have a green.
+- **Barriers from control:** each connector from an approach without priority starts with a give-way or stop barrier; every connector of an all-way stop with an all-way stop barrier; and every connector of a signalised intersection with a signal barrier for its movement. A far-side turn that conflicts with a connector of a higher level that can be moving at the same time (at a priority intersection, always; at signals, if their movements share a phase) also gets a give-way barrier inside the junction at the start of its first such conflict. There it waits for a gap, clear of the traffic behind it, as drivers turning across do.
+- **Signal plans:** a plan is a list of phases, each the movements green in it and how long for. A movement is an approach and a turn class, whose connectors go and stop together. Two movements conflict if any of their connectors do, except a far-side turn and the traffic it gives way to, which may share a phase as a filter turn. A movement's amber time is ITE's, a second's reaction plus `v / (2 · 3 m/s²)` at its approach's limit, and its clearance the time to cross its longest connector and a car's length at that limit.
+- **Hook turns:** at signals, an approach may make its far-side turns hook turns, as in Melbourne. Each connector leaves from the near-side lane, runs straight on to a waiting point on the near side of the road turned into, clear of the road crossed, and turns from there. At the waiting point, a signal barrier for the movement of the road turned into holds it until that road's light turns green.
+- **Keep-clear zones:** a road may mark stretches keep clear. Each becomes a barrier at its start on every lane across it, with the zone's length.
+- **Exits and entries:** compilation reports each road end's lanes into and out of the network, so demand can place vehicles and name destinations by road.
+
 Generating junction geometry is the hardest part of this crate. SUMO's netconvert is largely heuristics for it; procedural networks keep it tractable.
 
 ## Lane model and geometry
@@ -73,6 +91,7 @@ The simulation has no roads, only lanes. Lanes may overlap, merge, diverge or cr
 - **Serialized geometry:** a lane's geometry serializes as a string of vertices in whole millimetres, each `x,y,left,right`; with three values the half-widths are equal, and with two they are the previous vertex's: `0,0,1750 90000,0 100000,2000,2000,1750`. Being on the grid, it reads back exactly.
 - **Module boundary:** a lane's geometry, `LaneGeometry`, is its own type in its own module; the `Lane` holds it with its speed limit, keep side, how it is left if it ends, and links, which only the network sets.
 - **Relationships:** successors and predecessors (end-to-start connections), kept in order from left to right; left and right neighbours, at most one each side, with permission per ordered pair, since a change may be allowed one way only; and overlaps, found when the simulation is built (see [Multi-lane car following](multilane-car-following.md)).
+- **Priority and barriers** (**Planned**): each junction lane has a priority level, and each lane its barriers, sorted by s.
 - **Lane sections:** adjacent lanes start and end together, like the lanes of a SUMO edge or an OpenDRIVE lane section, so the neighbour of a lane's successor is the successor of its neighbour, which lets a vehicle map its path to the lanes beside it. `SimNetwork::validate` checks this, with mutual neighbours and successors starting where their lane ends.
 
 **Off the beaten path:** SUMO, VISSIM and Aimsun treat lane position as the source of truth and derive world position from it. Here world pose is the truth and lane coordinates are derived, as in autonomous-vehicle planners using Frenet frames and in OpenDRIVE's s/t coordinates. The reason is realistic motion through lane changes, merges and junctions.
@@ -81,7 +100,7 @@ The simulation has no roads, only lanes. Lanes may overlap, merge, diverge or cr
 
 All vehicles live in one global `SlotMap`, an array of structs. Each lane keeps a list of occupant records sorted by s, and a vehicle appears in every lane it occupies. If profiling shows frame-rate work is memory-bound, the hot fields could split into a struct of arrays (**Suggestion**).
 
-The state is one struct, `SimState`, holding everything that can't be rebuilt from the rest: the network, the vehicles, the occupant lists, the junction queues, speed caps, the step count, time and config. It is exactly what a freeze frame saves. What can be rebuilt, the overlaps between lanes and the merges, is derived from it when a simulation is built or restored, and kept apart.
+The state is one struct, `SimState`, holding everything that can't be rebuilt from the rest: the network, the vehicles, the occupant lists, the junction queues, speed caps, the step count, time and config, and (**Planned**) the destinations registered and each signal controller's state. It is exactly what a freeze frame saves. What can be rebuilt is derived from it when a simulation is built or restored, and kept apart: the overlaps between lanes, the merges, how far beyond each lane the paths through it reach (see Searching back), and (**Planned**) each destination's route table.
 
 **Vehicle state**
 
@@ -89,11 +108,12 @@ The state is one struct, `SimState`, holding everything that can't be rebuilt fr
 - Acceleration, held between longitudinal updates
 - Path: the lane it follows and the lanes it will take next, as far as its leader search, path tracking and lane change look, and as far as it would go in 15 s at each lane's speed limit, however short the lanes. The time is at the limits, not its speed, so a slow vehicle in a queue still knows where it is going, and merges and junctions ahead know of it; its leader search stays within its horizon however far the path reaches. A path ending inside a junction is extended until it is out of it, so a vehicle in a junction's queue always knows its way through. It is a `Vec`.
 - Route: how it chooses its way at forks, with any state that needs (see Routing)
+- Commitment (**Planned**): how many of the barriers ahead of its front on its path it has committed to crossing, a `u8`, and the step at which it came to rest at a stop line, if it has (see Barriers and signals)
 - Indicator: the side it is indicating to and since when
 - Lane-change state, owned by the lane-change model, and the old side and lane change in progress
 - Old follower: the vehicle behind that it holds up most, as of the last longitudinal update, with that vehicle's acceleration from every other term, for the courtesy incentive
 - Acceleration noise and its own random generator's state
-- Static attributes (`VehicleSpec`): dimensions and driver parameters. **Planned:** barrier commitments and vehicle classes.
+- Static attributes (`VehicleSpec`): dimensions and driver parameters, with presets for each vehicle class (see Vehicle classes)
 
 **Per-lane occupancy**
 
@@ -110,8 +130,8 @@ The simulation steps by a fixed time, set when it is made (`Config`): 1/60 s by 
 
 | Rate                                 | Runs                                                                                     | Writes                            |
 | ------------------------------------ | ---------------------------------------------------------------------------------------- | --------------------------------- |
-| Every step                           | Path tracking (pure pursuit), bicycle-model integration, occupancy, junction queues      | Pose, speed, steering; records    |
-| Every `accel_every` steps (3: 20 Hz) | Lane-change desire and gap checks; longitudinal model (IDM+)                             | Desire, indicator, lane; acceleration |
+| Every step                           | Signal controllers; path tracking (pure pursuit), bicycle-model integration, occupancy, barriers passed, junction queues | Signal states; pose, speed, steering; records; commitment |
+| Every `accel_every` steps (3: 20 Hz) | Lane-change desire and gap checks; longitudinal model (IDM+), with barrier decisions    | Desire, indicator, lane; acceleration; commitment |
 
 Each update flows strictly from state to derived state to decisions, then applies the decisions: decisions are computed from a read-only view of the state, so they could parallelise per vehicle, and then written back.
 
@@ -130,7 +150,7 @@ Vehicles move by a kinematic bicycle model, steered by pure pursuit toward a tar
 
 IDM+ (Schakel, van Arem and Netten, 2010) computes each vehicle's acceleration every `accel_every` steps, behind a module boundary. IDM+ splits IDM into a free-road term and an interaction term and takes the minimum instead of the sum, which gives a more realistic capacity and extends naturally to several leaders: the acceleration is the running minimum over the free-road term and one term per constraint, computed as they are found, with no list built.
 
-- **What it reacts to:** the leaders along its path (below), the end of its known path, lower speed limits ahead, its old side while straddling, junction and merge terms (see those sections), synchronisation and the room it keeps while wanting to change lanes (see Lane changes), a ghost it makes room for, and a speed cap. **Planned:** the nearest barrier it has not committed to, as a stationary leader at the line, as in Treiber's work.
+- **What it reacts to:** the leaders along its path (below), the end of its known path, lower speed limits ahead, its old side while straddling, junction and merge terms (see those sections), synchronisation and the room it keeps while wanting to change lanes (see Lane changes), a ghost it makes room for, a speed cap, and (**Planned**) the first barrier on its path it hasn't committed to (see Barriers and signals).
 - **Which leaders:** a vehicle in the lane that this one can't pass, B, blocks the lane's whole width, so nothing behind it on a shared path can reach anything beyond it that B can't. So once the search finds B, it skips the in-lane vehicles beyond it, on B's lane and on the lanes after it, as far as B's path goes along this one's. This is one high-water mark, the first lane of the path that no in-lane leader covers. A vehicle converging onto the lane can't be passed and shields like any other. Ghosts only partly block a lane, and B may pass a vehicle diverging from the lane that this one can't, so neither is skipped, and neither shields anything. Each vehicle found is its own term, so a car whose leader turns off sees the queue beyond. Treiber's Human Driver Model reacts to several leaders too.
 - **Horizon:** it looks ahead as far as s*, the desired gap approaching a stopped leader, `s0 + v·T + v² / (2·√(a·b))`, where a stopped leader's term is zero, or 5 m if that is further, so a leader in a queue at rest doesn't flicker in and out of view. A leader followed at its own speed, `s0 + v·T` behind, is always in view. One coming into view can change the acceleration abruptly, much as a driver catching up with stopped traffic brakes firmly at first; SUMO instead looks as far as braking distance, and Treiber's simulator looks at every leader. A vehicle that wants to change lanes looks at least as far as the room it keeps (see Room to finish).
 - **End of the known path:** a stop line, a stationary virtual leader, unless the vehicle leaves the network there. Paths reach past the horizon, so it only binds where routing doesn't know the next lane.
@@ -159,7 +179,7 @@ How vehicles keep apart while they change lanes, merge and diverge, and when one
 **Lane changes: LMRS.** Drivers decide as in LMRS, the Lane-change Model with Relaxation and Synchronization (Schakel, Knoop and van Arem, 2012), with its published parameters. At each update every vehicle weighs up both sides cheaply, and only one whose desire has reached its threshold checks the gap, which takes searches.
 
 1. **Desire** to change to each side, from −1 to 1, is the sum of incentives, each in units of desire:
-   - **Route,** `d_r`: on a lane that ends by merging and is left early, it rises linearly from 0 to 1 toward the lane's end, by distance (295 m per change to make) or time at its speed (43 s), whichever is higher, toward the neighbour that goes on.
+   - **Route,** `d_r`: toward the neighbour from which its route needs fewer lane changes, by its route table (see Routing). For each change still needed, it rises linearly from 0 to 1 toward the point by which that change must be done, by distance (295 m per change to make) or time at its speed (43 s), whichever is higher, and the most urgent counts. A lane that ends by merging and is left early counts as ending there, so vehicles move out of it along the way. **Built so far:** only the lane left early, toward the neighbour that goes on.
    - **Speed,** `d_s`: how much faster traffic goes ahead in the lane beside it than in its own, over 69.6 km/h. Each lane's speed is the average of its vehicles over the next 8 s at its limit, no faster than the driver would like, and as fast as it would like where nobody is: an average, not the leader alone, so a driver moves over before its own lane has stopped. Each lane's speeds are summed in order once per update, so an average is two binary searches.
    - **Keeping to a side,** `d_b`: the free threshold toward the side the lane says to keep to.
    - **Courtesy:** letting by its old follower, by what that follower would gain, weighed by its politeness, in units of its comfortable deceleration.
@@ -179,16 +199,14 @@ How vehicles keep apart while they change lanes, merge and diverge, and when one
 
 **Module boundary:** the decision making lives in the lane-change model; the rest of the simulation sees only each vehicle's indicator and an opaque per-vehicle state. The simulation measures each driver's incentives and hands them to the model (`aim`), the model moves the desire and says whether it wants a gap checked (`step`), the simulation checks it by searching the network, and the model says what to do (`resolve`): nothing, indicate, cancel or change. Making room works the same way. This is SUMO's split between its lane changer and its lane-change models.
 
-**Suggestion:** drive mandatory changes from the routing model's required lanes, as LMRS's route desire toward the lanes a route needs.
-
 ## Conflicts, merging and junctions
 
-Lanes that cross or merge inside an intersection are grouped into a junction, and a junction keeps vehicles on its lanes apart. A lane belongs to at most one junction. Junctions are a dumb backstop: they keep vehicles that can no longer stop from running into each other, and nothing more. The order vehicles go in is for barriers, with gap acceptance, signals and arrival order (**Planned**).
+Lanes that cross or merge inside an intersection are grouped into a junction, and a junction keeps vehicles on its lanes apart. A lane belongs to at most one junction. Junctions are a dumb backstop: they keep vehicles that can no longer stop from running into each other, and nothing more. The order vehicles go in is for barriers (see Barriers and signals).
 
 - **Conflicts:** a junction stores, for each ordered pair of its lanes, where they conflict, if they do: the kind (merge or cross) and the overlapping s-range on each lane, in a dense `lanes²` table, so a lookup gives "my" range and "theirs" directly. Lanes leading into the same lane merge; branches of a fork, lanes one after the other and neighbours never conflict, since the multi-lane following model keeps vehicles on them apart; any other pair whose outlines overlap crosses.
 - **Finding overlaps:** each segment's piece of a lane's outline is a convex quadrilateral, and every pair of pieces from two lanes is clipped one against the other (Sutherland–Hodgman). Each lane's s-range runs from the first overlap to the last. An overlap thinner on average than rounding to the grid leaves doesn't count, so lanes touching along an edge don't conflict. A merge whose outlines don't overlap gets the lanes' ends.
 - **One queue per junction,** part of the state and of snapshots: the vehicles **committed** there, which can no longer stop short of their conflicts, in the order they committed, and the lanes vehicles not yet committed are **approaching** it along.
-- **Arriving:** a vehicle arrives at a junction once a lane of the junction is on its path and no other junction it hasn't entered lies before it, so when its path is extended or rebuilt, or it enters a junction. It adds the lanes of its path up to the first of the junction's lanes with a conflict to those the junction is approached along. The junction keeps no list of who is approaching, only where.
+- **Arriving:** a vehicle arrives at a junction once a lane of the junction is on its path and no other junction it hasn't entered lies before it, so when its path is extended or rebuilt, or it enters a junction. It adds the lanes of its path up to the first of the junction's lanes with a conflict to those the junction is approached along. The junction keeps no list of who is approaching, only where. **Planned:** a barrier before the junction on its path that it hasn't committed to holds it back too: it arrives once it commits, so vehicles waiting at a red light or a stop sign aren't approaching.
 - **Committing:** every step, the junction scans back from the start of the conflict on each of its lanes being approached, along that lane's occupants and the lanes leading in that it is approached along, passing over ghosts, committed vehicles and vehicles whose path has left the way. At the first other vehicle: one headed onto the lane commits once it can no longer stop at `SAFE_BRAKING` (4 m/s²) before the conflict, or its front is past its start, and the scan goes on behind it; one that can still stop, or is headed elsewhere in the junction, stops the scan. So nobody commits before a vehicle ahead of it on its lane that might still go in, which has to be enforced, since IDM only roughly keeps a follower able to stop. Lanes a scan finds no one on, nor beyond, stop being approached. `SAFE_BRAKING` rather than comfortable deceleration keeps the commit order close to the order vehicles reach their conflicts; it cut hard braking by about four fifths at the ramps.
 - **Releasing:** every step, a committed vehicle that could now stop at `SAFE_BRAKING` a car length short of its conflict is released, unless one committed after it is behind it on its way in. The car length is the hysteresis against committing.
 - **Leaving:** a vehicle leaves the queue once no lane of the junction is on its path and it has no record on any of them, or when it is removed.
@@ -199,17 +217,12 @@ Lanes that cross or merge inside an intersection are grouped into a junction, an
 
   Between committing at `SAFE_BRAKING` and IDM's limit, `MAX_BRAKING` (9 m/s²), lies the backstop's margin, so two vehicles committing at once still stop apart. A follower past the start of its conflict is held back all the same: at a merge, dropping back is the only way out.
 - **Vehicles at the front of each way in,** not yet committed, take terms from every committed vehicle too, so they slow gently for one in their way rather than braking hard once they commit.
+- **Barriers inside a junction** (**Planned**): a committed vehicle claims no conflict beyond the next barrier on its path that it hasn't committed to, since it will stop there, so a turner waiting inside the junction holds back nobody on the lanes it waits for. When it commits to such a barrier, it moves to the back of the queue, behind everyone committed before: it goes now, not when it first committed.
 - **Lane changes:** none start in a junction or run into one, so a vehicle is never partway across a junction's lanes. A committed vehicle that changes lanes on its way in keeps its place.
 - **Deadlock:** waiting vehicles in a cycle are all stopped, and a stopped vehicle more than a car length short of its conflict is released, breaking the cycle. One can survive only among vehicles within a car length of their conflicts, which needs a vehicle cutting in just ahead of a committed one close to a merge, with another committing between them; it is watched for, not prevented. A vehicle can still be blocked by traffic beyond the junction: **gridlock** is allowed.
 - **Cost:** per junction, O(c²) pairs at 20 Hz for c committed vehicles, tens at most, and each step a scan past them on each lane approached.
 
 **Off the beaten path:** SUMO resolves junctions per link, from foe matrices and each vehicle's announced arrival time, with no global order. One first-come, first-served queue per junction, of the vehicles that can no longer stop, is closer to Dresner and Stone's AIM reservations and A/B Street's intersection queues, with barriers deciding when each vehicle commits.
-
-**Suggestion:** give each yielding point one of two priority policies: fixed priority, the yielding vehicle using gap acceptance against priority traffic; or arrival order, first come, first served, as at four-way stops (SUMO's `allway_stop`).
-
-**Gap acceptance** (**Planned**): the yielding vehicle goes only if it can clear the conflict before any priority vehicle whose path crosses it could reach it, even accelerating at its maximum, plus 0.5 s. Covering d from speed v at acceleration a up to v_max takes `(√(v² + 2ad) − v) / a`, or, once at v_max, `t₁ + (d − d₁) / v_max` with `t₁ = (v_max − v) / a` and `d₁ = (v + v_max)·t₁ / 2`. Priority vehicles stopped at an uncommitted barrier are ignored, which prevents deadlocks. Movements have integer priority levels; at equal levels, the queue's order decides.
-
-**Hook turns:** a right turn made from the left lane: the vehicle pulls forward to the left side of the intersection, waits, and completes the turn when the cross street's signal turns green. This needs no new mechanism: a connector lane from the left lane, and a mid-junction barrier tied to the cross street's signal.
 
 ## Merges
 
@@ -223,40 +236,83 @@ Where lanes outside junctions that were apart start to overlap, as at a lane dro
 
 **Off the beaten path:** SUMO orders vehicles at its `zipper` junctions by estimated arrival, and Treiber's simulator treats an on-ramp as mandatory MOBIL lane changes. Ordering by distance and following a virtual leader is the usual pairing in cooperative merging (Uno et al., 1999); the shrinking slack is this simulator's own.
 
-## Barriers (Planned)
+## Barriers and signals (Planned)
 
-Stop lines, give-way lines, traffic lights and the start of keep-clear zones are all barriers. A vehicle brakes for a barrier with IDM, as for a stationary leader at the line, until it commits to crossing, then behaves as if the barrier is not there.
+Stop lines, give-way lines, signals and the starts of keep-clear zones are all barriers: a point on a lane, with a kind. A vehicle treats the first barrier on its path that it hasn't committed to as a stationary leader at the line, with no minimum gap, so it stops with its nose at the line, until it commits to crossing; from then on the barrier isn't there for it. This is how Treiber's simulator treats a red light, and how SUMO's link states hold vehicles at a junction.
 
-| Barrier                           | Commits when                                                                                                                        |
-| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| Traffic light                     | It can no longer brake comfortably to stop, and the light is not yet amber or red                                                   |
-| Stop line (**Suggestion**)        | It has come to a stop, and either the conflicting lanes have an acceptable gap or, at an all-way stop, it is first in arrival order |
-| Give-way line (**Suggestion**)    | The conflicting lanes have an acceptable gap                                                                                        |
-| Keep-clear start (**Suggestion**) | There is room beyond the far edge of the zone for the whole vehicle                                                                 |
+- **Commitment** is a count: how many of the barriers ahead of its front on its path it has committed to. Passing a barrier takes one off, and a lane change or a new path wipes it, since its barriers are then others. A count rather than a flag lets it commit to two at once where it couldn't stop between them, such as a stop line and a waiting point just beyond it.
+- **Only the head decides:** the leader search finds a barrier as it finds a leader, and an in-lane leader before it shields it, as it would a vehicle beyond. So only the first vehicle on its way to a barrier sees it and decides, and those behind follow it, with no queue stored.
+- **When it commits,** at each longitudinal update, decided from a read-only view of the state and applied after:
 
-- Amber and red are the same in the simulation.
-- Signals run fixed cycles to start, behind a module boundary so actuated control can come later.
-- **Movements:** a signal controls movements, each a group of lanes that go and stop together, with a bitmask of the movements it conflicts with, and its own amber time.
-- **All-red clearance:** a movement can't turn green until every conflicting movement has been red for at least its clearance time.
-- **Phases:** each phase is a mask of movements that should be green. Its duration counts from when all of its movements are green, so clearance doesn't eat into green time.
-- **Update:** each step computes every movement's next state from the current states, then applies them all.
+| Barrier          | Commits when                                                                                                                     |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Signal           | It can no longer stop at its comfortable deceleration before the line, and the light is green or amber. Until then a green light, with room beyond (below), exerts nothing, and an amber or red one is a stop line. |
+| Give-way line    | There is a gap (see Gap acceptance and priority)                                                                                 |
+| Stop line        | It has come to rest at the line, and there is a gap                                                                              |
+| All-way stop     | It has come to rest at the line, and no vehicle at a barrier of the junction whose connector conflicts with its own came to rest there earlier |
+| Keep-clear start | There is room beyond the zone's far end for its length and minimum gap behind the nearest vehicle there                          |
 
-A green light exerts no deceleration unless there is no room across the junction; then keep-clear rules apply. This is how the old prototype ran its signals.
+- **Amber:** a vehicle past the point where it can stop comfortably has committed already, and goes on; the rest stop. That stretch is the dilemma zone that ITE's amber time is set to cover. On red, a vehicle doesn't commit, though one that can't stop at all still crosses.
+- **Room beyond:** every barrier into a junction is also a keep-clear start, its zone the junction lane: a vehicle doesn't enter unless there is room for it on the lane after, as the road rules require. A queue can still back into a junction from beyond it, so **gridlock** stays possible.
+- **Coming to rest** at the line, as the head with the barrier first ahead, records the step it happens, for an all-way stop's arrival order. Vehicles that came to rest in the same step go in the barriers' order in the junction, so runs repeat.
+- **Passing:** each step, a vehicle whose front passes a barrier it committed to takes one off its count.
+
+**Signals** run fixed-time plans, behind a module boundary (`models::signal`) so actuated control can come later. A controller is part of the network, and its state, the phase it is in and how long each movement has been in its state, is part of the saved state.
+
+- **Movements:** each is red, amber or green, with its amber and clearance times and a bitmask of the movements it conflicts with.
+- **Phases:** each is a mask of movements to be green, with a duration counted from when all of them are green, so clearance doesn't eat into green time.
+- **Changes:** a movement not green in the current phase turns amber, then red after its amber time; one green in it turns green once every conflicting movement has been red for that movement's clearance time. When the phase's duration has passed, the next phase begins.
+- **Update:** each step computes every movement's next state from the current states, then applies them all. Times are counted in steps, so they never drift.
+
+This is how the old prototype ran its signals.
+
+## Gap acceptance and priority (Planned)
+
+At a give-way or stop barrier, the head goes only if no vehicle with priority over it could reach its conflicts in time. Priority comes from the connectors' levels (see Intersection control): on its lanes in the junction, up to the next barrier on its path, a vehicle gives way to every conflicting lane of a higher level, and to one of the same level whose vehicle has committed already, so that of two at the same level, the first to commit goes first.
+
+- **The gap:** it goes if it can clear each conflict before any priority vehicle could reach it, plus 0.5 s, both accelerating as hard as they can up to their desired speeds. Covering d from speed v at acceleration a up to v_max takes `(√(v² + 2ad) − v) / a`, or, once at v_max, `t₁ + (d − d₁) / v_max` with `t₁ = (v_max − v) / a` and `d₁ = (v + v_max)·t₁ / 2`. It clears a crossing once its rear is past it. At a merge it must also stay ahead of the priority vehicle by that vehicle's time headway, so the vehicle behind needn't brake. From rest, a car turning across a 50 km/h road waits for about 6 s, close to the 6–7 s critical gaps the Highway Capacity Manual gives for turns from a minor road. SUMO judges gaps the same way, from foes' arrival times.
+- **Finding priority vehicles:** from the start of each conflict, back along the priority lane's occupants and the lanes leading into it, as the follower search goes (see Searching back), and only into lanes some path through reaches the conflict. On each branch only the nearest vehicle headed onto the lane matters, since those behind it there arrive later; vehicles whose paths turn off are passed over. A vehicle stopped at a barrier it hasn't committed to holds back everyone behind it, so its branch is done. That keeps a red light's queue from blocking a filter turn, and give-way lines from deadlocking. A committed vehicle still in a conflict refuses the gap outright.
+- **Filter turns** are this with the barrier inside the junction: the turner waits at its first conflict with oncoming traffic, holding back nobody there (see Barriers inside a junction), and goes through a gap. Oncoming traffic held at its red light doesn't count, so a protected turn goes freely. A hook turner waits inside the junction too, but at a signal barrier, for the road it turns into.
+- **Cost:** only heads at give-way and stop barriers check, at 20 Hz, with one backward search for each conflict with a lane of higher priority.
+
+## Routing
+
+Each vehicle carries a `Route`, given at insertion, which chooses the next lane when its path is extended past a lane with several successors; the choice is then part of its path. Route models are separate, in `models::routing`, each replaced by editing it.
+
+- **Random:** a SplitMix64 generator seeded at insertion, drawn from only at forks, so the same seed takes the same way, and snapshots and replays reproduce it. It chooses only among its own lane's successors.
+- **Destination** (**Planned**): toward a destination, a set of lanes registered with the simulation. Each destination has a route table, derived when it is registered and rebuilt on restore, never in a step:
+  - **Time to the destination** from the start of every lane, at the speed limits, by Dijkstra's algorithm backward from the destination, a lane change to a permitted neighbour costing the time a change takes (4 s).
+  - **Choosing:** at a fork, the successor with the least time, ties going to the first, so runs repeat. A vehicle that misses its way, failing to change lanes in time, simply takes the best way from where it is, so rerouting needs nothing more. One with no way left drives on and leaves wherever its lanes take it.
+  - **Lane changes needed:** for each lane, how far along it a vehicle can go and still reach the destination with one, two, three or four lane changes, four or more counting as four: the old prototype's lane distances, as SUMO's "best lanes" does it. They are worked out backward from the destination over the lanes from which the time only falls: a lane that leads nowhere toward it must be left by its end, and a neighbour's distances count for one more change. The route desire reads them (see Lane changes).
+  - **Cost:** five numbers per lane per destination, 20 bytes.
+
+Every route's lane-change desire comes from a table: its destination's, or for random routes one derived for the network as a whole, where every lane leads somewhere and only lanes left early must be left by their end.
+
+## Demand (Planned)
+
+The `demand` crate places vehicles in the simulation and gives them routes, through the external API; the core knows nothing of it.
+
+- **Flows:** a flow per entry lane, in vehicles per hour, with exponential headways (Poisson arrivals) from a seeded generator, as SUMO's flows can have. A vehicle that finds no room waits, in order, at its entry, and is inserted with `try_insert` as soon as there is room, so demand above capacity queues outside the network rather than vanishing, as SUMO's insertion backlog does.
+- **Origin–destination demand:** flows from entries to destinations named by road ends, each vehicle drawing its destination from its entry's share. Without destinations, routes are random.
+- **Closed networks:** a target count, kept by inserting into the largest gap and removing at random, as the UI does now on the ring.
+- **Vehicle mix:** each vehicle's class drawn from a mix, then its driver from distributions: a speed factor normal with mean 1 and deviation 0.1, SUMO's default; assertiveness a uniform number cubed; courtesy and politeness uniform.
+- The UI's spawning moves here, and the UI uses the crate. Demand's generators aren't part of the simulation's state, so a freeze frame holds no demand, and a replay records the vehicles inserted, not how they were drawn.
+
+## Vehicle classes (Planned)
+
+`VehicleSpec` has presets for a passenger car, a truck and a bus, their dimensions and driver parameters from published defaults, OpenTrafficSim's and SUMO's for those vehicle types. A class is only its parameters: it restricts no lane, and changes no model.
 
 ## External API
 
-Demand and routing live outside the `sim` crate. The simulation exposes:
+Demand lives outside the `sim` crate. The simulation exposes:
 
 - **Making and stepping:** `Simulation::new` or `with_config`, `step`, `step_variable`, `alpha`, `time`.
 - **Inserting:** `insert` places a vehicle on a lane's centreline with no checks, for tests and scripted setups. `try_insert` refuses when there is no safe room: when the new vehicle would overlap another, or it or its new follower would have to brake harder than `SAFE_BRAKING` because of the other; its speed is capped at its new leader's. Its leader and follower come from the same two searches a lane change uses, split at its rear.
-- **Reading:** a vehicle by key, every vehicle, each lane's occupants, each junction's queue and the lanes it is approached along, and the network. `vehicle_at` picks the vehicle nearest a point, within a tolerance, by a linear scan.
+- **Destinations** (**Planned**): `add_destination` registers a set of lanes and returns its id, for a destination route.
+- **Reading:** a vehicle by key, every vehicle, each lane's occupants, each junction's queue and the lanes it is approached along, the network, and (**Planned**) each signal movement's state and each vehicle's commitment. `vehicle_at` picks the vehicle nearest a point, within a tolerance, by a linear scan.
 - **Changing:** `remove`; `change_lane`; `cap_speed`, under which a vehicle brakes at `SAFE_BRAKING` while above the cap and eases up to it from below, `hold` (a cap of 0) and `release`. Capped vehicles are kept in a short list, not as a field on every vehicle, and the cap is one more acceleration term.
 - **Snapshot and restore** the whole state, network included, for freeze frames: `state` lends the `SimState`, to clone or, with the `serde` feature, serialize, and `restore` builds a simulation from one. A restored simulation continues bit for bit until it inserts a vehicle into a slot freed before the snapshot: `SlotMap` rebuilds its free list in index order, so that vehicle's id, and the update order after it, can differ.
 - **Heterogeneity** comes from inserting vehicles with varied attributes. Distributions are the caller's concern, not the core's.
-
-**Routing:** each vehicle carries a `Route`, given at insertion, which chooses the next lane when its path is extended past a lane with several successors; the choice is then part of its path. For now the only route is random: a SplitMix64 generator seeded at insertion, drawn from only at forks, so the same seed takes the same way, and snapshots and replays reproduce it. A vehicle only chooses among its own lane's successors: reaching a branch from another lane needs mandatory lane changes.
-
-**Suggestion:** the routing interface needs lookahead, the lanes that reach the route several links ahead, not just the next lane, so mandatory lane changes can start well before a diverge; SUMO calls this "best lanes". Shortest path to a destination (Dijkstra or A*) is the next route model.
 
 ## Debug instrumentation
 
@@ -265,16 +321,16 @@ Algorithms report what they are doing through a debug sink that costs nothing wh
 The debug view shows what the simulation actually used, never a recomputation. Events are grouped by the update that produces them, and accumulate in the sink:
 
 - **Resets:** each update first records a reset for its group, "recompute accelerations" and "recompute motion" for everyone, and "recompute decision" per vehicle, which clears that group's earlier events; a removed vehicle's events go with a "vehicle removed" event. The UI never clears the sink itself, and reads only after a step returns, so it always sees the last complete set.
-- **Acceleration terms:** each term is its own event, the free-road term and each leader, junction, merge, synchronisation, cap and ghost term. Every input to the acceleration is recorded, so the binding term is the one equal to the vehicle's acceleration, and one whose terms don't reach it shows an event is missing.
-- **Also recorded:** lookahead points, passing checks, with the follower's predicted pose, the other vehicle's nearer rear corner and the gap between them, and lane-change evaluations, with each side's incentives, desire and any gap check.
+- **Acceleration terms:** each term is its own event, the free-road term and each leader, junction, merge, synchronisation, cap, ghost and (**Planned**) barrier term. Every input to the acceleration is recorded, so the binding term is the one equal to the vehicle's acceleration, and one whose terms don't reach it shows an event is missing.
+- **Also recorded:** lookahead points, passing checks, with the follower's predicted pose, the other vehicle's nearer rear corner and the gap between them, and lane-change evaluations, with each side's incentives, desire and any gap check. **Planned:** each barrier decision, with its rule and why the vehicle did or didn't commit; each gap check, with every priority vehicle found, its reach time and the yielding vehicle's time to clear; and each signal change.
 
 ## UI
 
 The `ui` crate renders the simulation with egui's painter and offers two views.
 
-- **Pretty view:** road and junction surfaces, lane markings, stop lines and turn arrows from the render geometry, vehicles as oriented shapes drawn between steps, and indicators.
-- **Debug view:** layers for lane outlines, centrelines, s ticks, neighbours, occupants, vehicles, lane-change paths, leaders and merge orders, passing checks and lookahead points. Clicking a vehicle opens an inspector with its state, its lane-change desires and its acceleration terms.
-- **Controls:** pause, single step, speed multiplier, camera pan and zoom, scenario choice, traffic (a target count on the ring, a flow per entry lane elsewhere), lane changes for the selected vehicle, and saving a replay or a freeze frame.
+- **Pretty view:** road and junction surfaces, lane markings, stop lines and turn arrows from the render geometry, vehicles as oriented shapes drawn between steps, and indicators. **Planned:** signal lamps coloured by their movements' states, and keep-clear markings.
+- **Debug view:** layers for lane outlines, centrelines, s ticks, neighbours, occupants, vehicles, lane-change paths, leaders and merge orders, passing checks and lookahead points, and (**Planned**) barriers with commitments and gap checks. Clicking a vehicle opens an inspector with its state, its lane-change desires and its acceleration terms, and (**Planned**) its commitment and the lane changes its route still needs.
+- **Controls:** pause, single step, speed multiplier, camera pan and zoom, scenario choice, traffic (a target count on the ring, a flow per entry lane elsewhere, and (**Planned**) origin–destination demand), lane changes for the selected vehicle, and saving a replay or a freeze frame. **Planned scenarios:** signalised and priority crossroads, an all-way stop, Melbourne hook turns, and a procedural grid.
 
 **Suggestion:** if tessellation becomes the bottleneck at high vehicle counts, draw vehicles and roads through a custom wgpu paint callback with instancing, keeping egui for overlays and panels.
 
@@ -293,8 +349,8 @@ The hardest problems are junction geometry and dense merging. Both have defeated
 **Open questions**
 
 - **Staying in lane:** how to guarantee that a vehicle's body stays within its lane outside lane changes. Pure pursuit tracks a constant curve exactly and cuts in only where curvature changes: about 5 cm at 50 km/h on a 100 m bend, but more on tight junction connectors that start abruptly.
-- **Head of the queue:** only the first vehicle approaching a barrier should negotiate it; the ones behind just follow. Can a vehicle's forward search decide this alone, by being the head when the first thing ahead of it is the barrier rather than a leader?
-- **Approaching priority traffic:** gap acceptance needs the priority vehicles that could reach a conflict in time. **Suggestion:** read them from the junction's queue, where they arrive as soon as their paths reach it; or search upstream from the conflict along the priority lanes, as a gap check searches for followers.
+- **Waiting points:** where a filter or hook turner should wait inside a junction, clear of both the traffic behind it and the traffic it gives way to, for any junction geometry. The first conflict with oncoming traffic serves the procedural scenarios.
+- **Shared lane edges:** neighbouring lanes each store their own vertices, so their ends match only to the grid. Lanes defined as borders offset from one reference line, as OpenDRIVE's lane sections are, would make them match exactly; nothing needs it yet.
 - **Merge capacity:** relaxed headways let a merged lane carry about 2,600 veh/h, above the 2,000–2,400 of real lanes.
 
 ## Milestones
@@ -304,10 +360,11 @@ Each milestone is a demo that can be finished on its own; anything after it is o
 1. Workspace skeleton: one straight lane, IDM, kinematics, the pretty and debug views. **Done.**
 2. A ring road showing emergent stop-and-go waves, as in the Sugiyama experiment. **Done.**
 3. A multi-lane freeway with continuous lane changes and multi-lane membership, first with MOBIL, now LMRS. `sim/tests/scenario.rs` runs a three-lane ring headless as a stress test. **Done.**
-4. An on-ramp merge and an off-ramp diverge. Merges, with zipper or early merging, and the diverge's car following are done; taking the off-ramp needs mandatory lane changes for a route.
-5. A single signalised intersection with barriers and a fixed signal cycle. The junction backstop is done.
+4. An on-ramp merge and an off-ramp diverge. Merges, with zipper or early merging, and the diverge's car following are done; taking the off-ramp needs destination routing and its route desire.
+5. A single signalised intersection with barriers, a fixed signal plan and filter turns. The junction backstop is done.
 6. Hook turns.
-7. A procedural grid with shortest-path and random-walk routing. Random routing is done.
+7. Unsignalised intersections: priority roads with give-way and stop signs, all-way stops and keep-clear zones.
+8. A procedural grid with destination and random routing, origin–destination demand from the `demand` crate, and vehicle classes. Random routing is done.
 
 ## References and prior art
 
@@ -321,4 +378,5 @@ These are the established approaches this design borrows from or deliberately de
 - [A/B Street](https://github.com/a-b-street/abstreet): an open-source Rust traffic simulator with detailed write-ups on junction geometry and gridlock.
 - [ASAM OpenDRIVE](https://www.asam.net/standards/detail/opendrive/): road description with s/t lane coordinates and explicit junction connections.
 - [Fix Your Timestep](https://gafferongames.com/post/fix_your_timestep/): fixed timesteps with interpolated rendering.
+- Dresner and Stone (2008), autonomous intersection management by reservation; the Highway Capacity Manual (TRB), critical gaps at unsignalised intersections; and ITE's change interval, for amber and all-red times.
 - Pure pursuit and Stanley path tracking: standard lateral controllers from autonomous-vehicle research.
