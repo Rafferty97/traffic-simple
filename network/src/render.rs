@@ -74,7 +74,8 @@ pub(crate) fn build(
     turns: &[Vec<Turn>],
 ) -> RenderGeometry {
     let mut out = RenderGeometry::default();
-    for (road, line) in net.roads.iter().zip(polylines) {
+    let ends = arms::road_ends(net);
+    for (r, (road, line)) in net.roads.iter().zip(polylines).enumerate() {
         let edge = |i: usize, lane: usize, side: f64| {
             let l = &road.lanes[lane];
             let s = line.s[i];
@@ -108,7 +109,18 @@ pub(crate) fn build(
                 continue;
             }
             let between = |i: usize| 0.5 * (edge(i, upper, -1.0) + edge(i, lower, 1.0));
-            out.markings.push(Marking { points: along(&between), style });
+            // Beside a lane coming into an intersection, it stops at the stop
+            // line, where it crosses it.
+            let n = line.points.len();
+            let [from, to] = [false, true].map(|at_end| {
+                let arm = ends[r][at_end as usize].map(|(_, arm)| arm);
+                let coming_in = [a, b].iter().any(|l| arms::arriving(l, at_end));
+                let back = |arm| arms::back(&arm, at_end, between(if at_end { n - 1 } else { 0 }));
+                let back = arm.filter(|_| coming_in).map_or(0.0, back);
+                if at_end { s1 - back } else { s0 + back }
+            });
+            let points = clip(&along(&between), &line.s, from, to);
+            out.markings.push(Marking { points, style });
         }
     }
 
@@ -120,6 +132,17 @@ pub(crate) fn build(
         approaches(net, polylines, intersection, turns, &mut out);
     }
     out
+}
+
+/// The stretch of `points`, at stations `s`, from `from` to `to`.
+fn clip(points: &[DVec2], s: &[f64], from: f64, to: f64) -> Vec<DVec2> {
+    let at = |x: f64| {
+        let i = s.partition_point(|&y| y <= x).clamp(1, s.len() - 1);
+        let u = (x - s[i - 1]) / (s[i] - s[i - 1]);
+        points[i - 1].lerp(points[i], u)
+    };
+    let inside = s.iter().zip(points).filter(|&(&x, _)| x > from && x < to).map(|(_, &p)| p);
+    std::iter::once(at(from)).chain(inside).chain(std::iter::once(at(to))).collect()
 }
 
 /// On each lane coming into an intersection: a stop line across its end, and
