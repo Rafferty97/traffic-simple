@@ -19,7 +19,9 @@ use crate::models::lane_change::{self, Decision};
 use crate::models::lateral;
 use crate::models::routing::Route;
 use crate::models::signal::{self, MovementLight, SignalState};
-use crate::network::{JunctionId, LaneId, MAX_SUCCESSORS, MovementId, Side, SimNetwork};
+use crate::network::{
+    BarrierKind, JunctionId, LaneId, MAX_SUCCESSORS, MovementId, Side, SimNetwork,
+};
 use crate::occupancy::{
     self, Ahead, Along, Found, Lateral, Occupant, find_follower, find_leaders, for_each_leader,
 };
@@ -167,6 +169,8 @@ enum AccelUpdate {
         binding: Option<Binding>,
         /// How many barriers ahead it is committed to now.
         committed: u8,
+        /// Whether it has just come to rest at the all-way stop line it heads for.
+        arrived: bool,
     },
     /// From its record on its old lane, while it straddles it: the most its old
     /// side allows.
@@ -392,6 +396,7 @@ impl<D: DebugSink> Simulation<D> {
             },
             committed: 0,
             line_gap: spec.line_gap,
+            stopped_at: None,
         };
         barrier::draw_line_gap(&mut vehicle);
         let needed = reach(&vehicle, at.s, None);
@@ -562,6 +567,7 @@ impl<D: DebugSink> Simulation<D> {
         vehicle.intent = None;
         // Its barriers ahead are now others.
         vehicle.committed = 0;
+        vehicle.stopped_at = None;
         barrier::draw_line_gap(vehicle);
         let needed = reach(vehicle, lane_pos.s, Some(change));
         extend_path(
@@ -855,7 +861,7 @@ impl<D: DebugSink> Simulation<D> {
         // What its old side and its speed cap allow first, then its own update,
         // so that whether a leader binds it is judged against all of them.
         for update in &self.decisions {
-            if let AccelUpdate::Own { id, yielding, committed, .. } = *update {
+            if let AccelUpdate::Own { id, yielding, committed, arrived, .. } = *update {
                 // Committing to a barrier inside a junction it is queued at, it
                 // goes now, so to the back of the queue, behind everyone committed
                 // before (see `docs/DESIGN.md`, Barriers inside a junction).
@@ -874,10 +880,17 @@ impl<D: DebugSink> Simulation<D> {
                     }
                 }
                 let vehicle = &mut self.state.vehicles[id];
-                // Heading for another barrier now, it draws how far short it stops.
+                // Heading for another barrier now, it draws how far short it stops;
+                // past one it arrived at, it has yet to arrive at the next.
                 if vehicle.committed != committed {
+                    if committed > vehicle.committed {
+                        vehicle.stopped_at = None;
+                    }
                     vehicle.committed = committed;
                     barrier::draw_line_gap(vehicle);
+                }
+                if arrived {
+                    vehicle.stopped_at = Some(self.state.steps);
                 }
                 // Committed past a barrier, it may now arrive at a junction beyond.
                 if commits > 0 {
@@ -1091,6 +1104,7 @@ impl<D: DebugSink> Simulation<D> {
                 vehicle.committed = vehicle.committed.saturating_sub(passed.min(255) as u8);
                 if passed > 0 {
                     barrier::draw_line_gap(vehicle);
+                    vehicle.stopped_at = None;
                 }
             }
 
@@ -1210,6 +1224,7 @@ fn longitudinal<D: DebugSink>(
     // found out of turn behind one shielded, the rest wait.
     let mut committed = vehicle.committed;
     let mut held = false;
+    let mut arrived = false;
     for_each_leader(state, vehicle, Along::Path(own), |found| {
         if let Found::Ahead(Ahead::Barrier { lane, index, rank }, gap, _) = found {
             let barrier = state.network.lane(lane).barriers()[usize::from(index)];
@@ -1225,6 +1240,14 @@ fn longitudinal<D: DebugSink>(
             }
             let k = vehicle.path.iter().position(|&l| l == lane).unwrap_or(0);
             let decision = barrier::decide(state, through, id, vehicle, k, barrier, gap);
+            // At rest as the head on its way to an all-way stop line: it has
+            // arrived there.
+            if barrier.kind == BarrierKind::AllWayStop
+                && vehicle.speed == 0.0
+                && vehicle.stopped_at.is_none()
+            {
+                arrived = true;
+            }
             sink.record(|| DebugEvent::Barrier { vehicle: id, lane, index, gap, decision });
             match decision {
                 barrier::Decision::Commit => committed = committed.saturating_add(1),
@@ -1318,7 +1341,7 @@ fn longitudinal<D: DebugSink>(
     }
     let binding = binding.map(|b| Binding { rest, ..b });
     let accel = binding.map_or(rest, |b| b.term.min(rest));
-    AccelUpdate::Own { id, accel, yielding, binding, committed }
+    AccelUpdate::Own { id, accel, yielding, binding, committed, arrived }
 }
 
 /// Whether `id` has a record, not a ghost, on `lane` near `s` (see

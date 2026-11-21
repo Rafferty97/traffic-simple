@@ -9,9 +9,7 @@
 use crate::lane_changing::comfortable_stop;
 use crate::models::acceleration::{self, reach_time};
 use crate::models::signal::Light;
-use crate::network::{
-    Barrier, BarrierKind, Conflict, ConflictKind, JunctionId, Lane, LaneId, SimNetwork,
-};
+use crate::network::{Barrier, BarrierKind, Conflict, JunctionId, Lane, LaneId, SimNetwork};
 use crate::simulation::SimState;
 use crate::vehicle::{Vehicle, VehicleId, VehicleSpec};
 
@@ -111,7 +109,7 @@ pub(crate) fn held_by_light(state: &SimState, vehicle: &Vehicle, k: usize, s: f6
                 BarrierKind::Signal { movement } => {
                     state.lights[movement.0 as usize].light != Light::Green
                 }
-                BarrierKind::GiveWay => false,
+                BarrierKind::GiveWay | BarrierKind::AllWayStop => false,
             };
             if rank >= vehicle.committed as usize && holds {
                 return true;
@@ -167,6 +165,12 @@ pub(crate) fn decide(
             Light::Amber | Light::Red => false,
         },
         BarrierKind::GiveWay => has_gap(state, through, id, vehicle, k, barrier.s) && room(),
+        BarrierKind::AllWayStop => {
+            vehicle.stopped_at.is_some()
+                && first_to_arrive(state, id, vehicle, k, barrier)
+                && has_gap(state, through, id, vehicle, k, barrier.s)
+                && room()
+        }
     };
     match commit {
         true => Decision::Commit,
@@ -229,7 +233,11 @@ fn has_gap(
                 let desired = spec.desired_speed(lane.speed_limit());
                 let to_clear = start + conflict.mine.end + spec.length;
                 let clears = reach_time(vehicle.speed, spec.max_accel, desired, to_clear);
-                let way = Way { junction, theirs, conflict, clears, equal: other == own };
+                let to_start = start + conflict.mine.start;
+                let arrives = reach_time(vehicle.speed, spec.max_accel, desired, to_start);
+                let headway = spec.time_headway;
+                let equal = other == own;
+                let way = Way { junction, theirs, conflict, clears, arrives, headway, equal };
                 let between = -network.lane(theirs).geometry().length();
                 let (from, ahead) = (conflict.theirs.end, conflict.theirs.start);
                 if !clear(state, through, id, &way, theirs, from, ahead, between) {
@@ -250,7 +258,7 @@ fn level(state: &SimState, lane: LaneId) -> u8 {
     let lane = state.network.lane(lane);
     let red = lane.barriers().iter().any(|b| match b.kind {
         BarrierKind::Signal { movement } => state.lights[movement.0 as usize].light == Light::Red,
-        BarrierKind::GiveWay => false,
+        BarrierKind::GiveWay | BarrierKind::AllWayStop => false,
     });
     if red { u8::MAX } else { lane.priority() }
 }
@@ -262,20 +270,34 @@ struct Way<'a> {
     conflict: &'a Conflict,
     /// When the yielding vehicle could clear it at the soonest, in seconds.
     clears: f64,
+    /// When the yielding vehicle could reach it at the soonest, in seconds.
+    arrives: f64,
+    /// The yielding vehicle's time headway, kept behind one it merges after.
+    headway: f64,
     /// Whether the lane has the same priority level, so only vehicles committed
     /// at the junction have priority there.
     equal: bool,
 }
 
-/// Whether no vehicle with priority on `way` could reach its conflict too soon,
-/// searching back from `s` on `lane` and then into the lanes leading into it,
-/// as the follower search does, where `lane`'s start is `ahead` back from the
-/// conflict's start on the priority lane, and its end `between` back from that
-/// lane's start: minus that lane's length on the priority lane itself. On each branch only the nearest vehicle headed for the conflict
-/// matters, since those behind it there arrive later. A vehicle a red or amber
-/// light holds short of the conflict holds back the rest of its branch (see
-/// [`held_by_light`]); one at a green light or a give-way line may yet go, and
-/// counts. One in the conflict already refuses the gap.
+/// Whether there is a gap for the yielding vehicle among the vehicles with
+/// priority on `way`, searching back from `s` on `lane` and then into the lanes
+/// leading into it, as the follower search does, where `lane`'s start is
+/// `ahead` back from the conflict's start on the priority lane, and its end
+/// `between` back from that lane's start: minus that lane's length on the
+/// priority lane itself.
+///
+/// On each branch, from the nearest vehicle headed for the conflict back: if it
+/// can go ahead of one, clearing the conflict before that one could reach it,
+/// there is a gap, since those behind arrive later; if it can go behind one,
+/// reaching the conflict no sooner than that one, at its speed now, has
+/// cleared it, the next one decides; otherwise there is none. Either way the
+/// margin is [`GAP_MARGIN`] plus the time headway of whichever then follows the
+/// other through the conflict, as the junction has it follow, so neither need
+/// brake. One at rest never clears, so nothing goes behind it.
+///
+/// A vehicle a red or amber light holds short of the conflict holds back the
+/// rest of its branch (see [`held_by_light`]); one at a green light or a
+/// give-way line may yet go, and counts.
 #[allow(clippy::too_many_arguments)]
 fn clear(
     state: &SimState,
@@ -307,12 +329,19 @@ fn clear(
             }
             continue;
         }
-        // Its front, back from the conflict's start: past it, it is in it.
+        // Its front, back from the conflict's start, negative once in it, and
+        // its rear, back from the conflict's end, negative once clear of it.
         let distance = ahead - (o.s() + other.spec.length);
-        if distance < 0.0 {
-            return false;
+        let rear = distance + (way.conflict.theirs.end - at) + other.spec.length;
+        if rear <= 0.0 {
+            continue;
         }
-        let committed = || state.queues[way.junction.0 as usize].committed.contains(&o.id);
+        // Committed: past every barrier before the conflict, or so committed
+        // that the junction holds others back for it.
+        let committed = || {
+            k.is_some_and(|k| !holds_before(network, other, k, at))
+                || state.queues[way.junction.0 as usize].committed.contains(&o.id)
+        };
         let held = k.is_some_and(|k| held_by_light(state, other, k, at));
         if held || (way.equal && !committed()) {
             return true;
@@ -320,11 +349,23 @@ fn clear(
         let limit = network.lane(way.theirs).speed_limit();
         let desired = other.spec.desired_speed(limit);
         let reaches = reach_time(other.speed, other.spec.max_accel, desired, distance);
-        let margin = match way.conflict.kind {
-            ConflictKind::Cross => GAP_MARGIN,
-            ConflictKind::Merge => GAP_MARGIN + other.spec.time_headway,
+        let clears = if other.speed > 0.0 {
+            rear / other.speed
+        } else {
+            f64::INFINITY
         };
-        return reaches > way.clears + margin;
+        // Whichever follows the other through the conflict keeps its time
+        // headway behind it there, as the junction makes it, so needn't brake.
+        let (ahead_margin, behind_margin) = (
+            GAP_MARGIN + other.spec.time_headway,
+            GAP_MARGIN + way.headway,
+        );
+        if distance >= 0.0 && reaches > way.clears + ahead_margin {
+            return true;
+        }
+        if way.arrives < clears + behind_margin {
+            return false;
+        }
     }
     // Nobody on this lane: on to those leading into it that a path through
     // reaches the priority lane from.
@@ -352,8 +393,63 @@ pub(crate) fn released(state: &SimState, vehicle: &Vehicle, barrier: Barrier, ga
                 state.lights[movement.0 as usize].light == Light::Red
                     && speed * speed / (2.0 * acceleration::SAFE_BRAKING) <= gap
             }
-            BarrierKind::GiveWay => speed == 0.0,
+            BarrierKind::GiveWay | BarrierKind::AllWayStop => speed == 0.0,
         }
+}
+
+/// Whether `vehicle`, at rest at the all-way stop `barrier` on its `k`th lane,
+/// came to rest there before the head at every other all-way stop line of its
+/// junction whose lane conflicts with its own: earlier, or in the same step and
+/// first in the lines' order, by lane and then along it, so runs repeat. The
+/// head at a line is the nearest vehicle short of it that is heading for it.
+fn first_to_arrive(
+    state: &SimState,
+    id: VehicleId,
+    vehicle: &Vehicle,
+    k: usize,
+    barrier: Barrier,
+) -> bool {
+    let network = &state.network;
+    let mine = vehicle.path[k];
+    let Some(junction) = network.lane(mine).junction() else {
+        return true;
+    };
+    let me = (vehicle.stopped_at.unwrap_or(u64::MAX), mine.0, barrier.s);
+    for &theirs in network.junction(junction).lanes() {
+        if theirs == mine || network.conflict_between(mine, theirs).is_none() {
+            continue;
+        }
+        for line in network.lane(theirs).barriers() {
+            if line.kind != BarrierKind::AllWayStop {
+                continue;
+            }
+            let arrived = head_at(state, id, theirs, *line).and_then(|v| v.stopped_at);
+            if arrived.is_some_and(|t| (t, theirs.0, line.s) < me) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// The head on its way to `line` on `lane`: the nearest vehicle short of it,
+/// on `lane` or a lane leading into it, whose next barrier it hasn't committed
+/// to is that line.
+fn head_at(state: &SimState, id: VehicleId, lane: LaneId, line: Barrier) -> Option<&Vehicle> {
+    let network = &state.network;
+    let heading = |o: &crate::occupancy::Occupant| {
+        let v = &state.vehicles[o.id];
+        let next = nth(network, v, v.committed as usize);
+        (o.id != id && !o.is_ghost() && next.is_some_and(|(l, b)| l == lane && b.s == line.s))
+            .then_some(v)
+    };
+    let on = state.occupants[lane.0 as usize].iter().rev().filter(|o| o.s() < line.s);
+    let before = network
+        .lane(lane)
+        .predecessors()
+        .iter()
+        .flat_map(|&p| state.occupants[p.0 as usize].iter().rev());
+    on.chain(before).find_map(heading)
 }
 
 /// Whether `vehicle`, with record `o` on a lane leading to a conflict, blocks

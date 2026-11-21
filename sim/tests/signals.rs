@@ -492,3 +492,27 @@ fn a_car_still_in_the_junction_on_red_outranks_the_cross_street_now_green() {
     let crossed = crossed.expect("it never cleared the junction");
     assert!(crossed < 36.0, "it cleared only at {crossed:.1} s");
 }
+
+#[test]
+fn a_give_way_line_never_lets_a_car_go_behind_one_at_rest_in_its_way() {
+    let mut sim = Simulation::new(give_way(), NoopSink);
+    let crossing = sim.network().conflict_between(LaneId(2), LaneId(3)).unwrap().mine.clone();
+    // A car with priority, stopped in the crossing, and held there: it never
+    // clears, so there's no going behind it.
+    let stopped = sim.insert(car(), at(2, crossing.start + 2.0, 0.0));
+    sim.hold(stopped);
+    let line = sim.network().lane(LaneId(3)).barriers()[0].s - 10.0;
+    let yielding = sim.insert(car(), at(3, 0.0, 0.0));
+    run_until(&mut sim, 20.0);
+    assert!(
+        front(&sim, yielding).y < line,
+        "it went into the car stopped in its way"
+    );
+    // Once that one goes, so does it.
+    sim.release(stopped);
+    run_until(&mut sim, 40.0);
+    assert!(
+        sim.get(yielding).is_none_or(|_| front(&sim, yielding).y > line),
+        "it never went"
+    );
+}

@@ -266,6 +266,10 @@ pub enum BarrierKind {
     /// A give-way line: crossed once there is a gap in the traffic with
     /// priority.
     GiveWay,
+    /// An all-way stop line: crossed once the vehicle has come to rest there,
+    /// no vehicle at a conflicting all-way stop line of its junction came to
+    /// rest earlier, and there is a gap in the traffic that has committed.
+    AllWayStop,
 }
 
 /// Identifies a signal movement: its index among every controller's movements,

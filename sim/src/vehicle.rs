@@ -174,6 +174,11 @@ pub struct Vehicle {
     /// drawn afresh for each (see [`VehicleSpec::line_gap`]).
     #[cfg_attr(feature = "serde", serde(default = "default_line_gap"))]
     pub(crate) line_gap: f64,
+    /// The step at which it came to rest at the all-way stop line it is heading
+    /// for, as the head on its way there: when it arrived, for the order the
+    /// junction's lines go in.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) stopped_at: Option<u64>,
 }
 
 /// A vehicle held up by the one ahead of it: that one is the term binding its
@@ -267,6 +272,12 @@ impl Vehicle {
     /// How far short of the barrier it is heading for it will stop, in meters.
     pub fn line_gap(&self) -> f64 {
         self.line_gap
+    }
+
+    /// The step at which it came to rest at the all-way stop line it is heading
+    /// for, if it has.
+    pub fn stopped_at(&self) -> Option<u64> {
+        self.stopped_at
     }
 
     pub fn intent(&self) -> Option<Intent> {
