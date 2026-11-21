@@ -453,23 +453,28 @@ fn at_signals_straight_traffic_never_stops_or_brakes_hard_for_right_turners_on_i
     );
 }
 
+/// A right turner at the head of its lane turns on the first green after it
+/// reaches its line: through a gap, or as the green ends and the oncoming
+/// traffic stops. It never waits out a second green.
 #[test]
-#[ignore = "passes once waiting lines are inside the junction"]
-fn at_signals_a_right_turner_at_its_line_turns_within_a_cycle() {
+fn at_signals_a_right_turner_at_its_line_turns_on_its_next_green() {
     use std::collections::HashMap;
     use traffic_network::Turn;
-    use traffic_sim::{LaneId, NoopSink, Placement, Route, Simulation, VehicleId, VehicleSpec};
+    use traffic_sim::{
+        BarrierKind, LaneId, Light, MovementId, NoopSink, Placement, Route, Simulation, VehicleId,
+        VehicleSpec,
+    };
     let compiled = compile(&scenarios::signalised_crossroads(2, 50.0 / 3.6)).unwrap();
-    let right: Vec<LaneId> = compiled.connectors[0]
+    // Each right turn's connector, with its movement.
+    let right: HashMap<LaneId, MovementId> = compiled.connectors[0]
         .iter()
         .zip(&compiled.turns[0])
         .filter(|(_, t)| **t == Turn::Right)
-        .map(|(&c, _)| c)
+        .map(|(&c, _)| match compiled.sim.lane(c).barriers()[0].kind {
+            BarrierKind::Signal { movement } => (c, movement),
+            kind => panic!("{c:?} starts with a {kind:?}"),
+        })
         .collect();
-    // Two 30 s phases, each with its amber and clearance.
-    let (plan, _) = compiled.sim.signals().next().unwrap();
-    let longest = plan.movements.iter().map(|m| m.amber + m.clearance).fold(0.0, f64::max);
-    let cycle = plan.phases.iter().map(|p| p.duration + longest).sum::<f64>();
     let mut sim = Simulation::new(compiled.sim, NoopSink);
     let entries: Vec<LaneId> = sim
         .network()
@@ -477,9 +482,12 @@ fn at_signals_a_right_turner_at_its_line_turns_within_a_cycle() {
         .filter(|(_, lane)| lane.predecessors().is_empty())
         .map(|(id, _)| id)
         .collect();
-    // When each right turner first reached its line, at the head of its lane.
-    let mut at_line: HashMap<VehicleId, f64> = HashMap::new();
-    let mut longest_wait: f64 = 0.0;
+    // Each right turner at the head of its lane, with its movement, and how
+    // many greens of it it has seen since it reached its line, counting one it
+    // reached it on.
+    let mut waiting: HashMap<VehicleId, (MovementId, u32)> = HashMap::new();
+    let mut lights: Vec<Light> = right.values().map(|&m| sim.light(m).light).collect();
+    let mut turned = 0;
     // Busy, with plenty coming the other way.
     for step in 0..(600.0 * 60.0) as u64 {
         if step % 45 == 0 {
@@ -489,38 +497,57 @@ fn at_signals_a_right_turner_at_its_line_turns_within_a_cycle() {
             let _ = sim.try_insert(VehicleSpec::passenger_car(), at);
         }
         sim.step();
+        for (i, &movement) in right.values().enumerate() {
+            let light = sim.light(movement).light;
+            if light == Light::Green && lights[i] != Light::Green {
+                for (m, greens) in waiting.values_mut() {
+                    if *m == movement {
+                        *greens += 1;
+                    }
+                }
+            }
+            lights[i] = light;
+        }
         let network = sim.network();
         for (id, v) in sim.vehicles() {
             let path = v.path();
             match path.get(1) {
                 // On its way in, its front within a few meters of the line.
-                Some(next) if right.contains(next) => {
+                Some(next) if right.contains_key(next) => {
                     let length = network.lane(v.lane()).geometry().length();
                     let front = v.lane_pos().s - v.spec().rear_axle + v.spec().length;
                     if length - front < 3.0 {
-                        at_line.entry(id).or_insert(sim.time());
+                        let movement = right[next];
+                        let green = sim.light(movement).light == Light::Green;
+                        waiting.entry(id).or_insert((movement, green as u32));
                     }
                 }
                 // Turning: its rear axle onto the connector, past its waiting line.
-                _ if right.contains(&path[0]) => {
-                    let waiting = network.lane(path[0]).barriers().last().map_or(0.0, |b| b.s);
-                    if v.lane_pos().s > waiting + v.spec().length
-                        && let Some(since) = at_line.remove(&id)
+                _ if right.contains_key(&path[0]) => {
+                    let line = network.lane(path[0]).barriers().last().map_or(0.0, |b| b.s);
+                    if v.lane_pos().s > line + v.spec().length
+                        && let Some((_, greens)) = waiting.remove(&id)
                     {
-                        longest_wait = longest_wait.max(sim.time() - since);
+                        turned += 1;
+                        assert!(
+                            greens <= 1,
+                            "{id:?} waited out {greens} greens at {:.0} s",
+                            sim.time()
+                        );
                     }
                 }
                 _ => {}
             }
         }
+        for (id, (_, greens)) in &waiting {
+            assert!(
+                *greens <= 1,
+                "{id:?} has waited out {greens} greens at {:.0} s",
+                sim.time()
+            );
+        }
     }
-    for &since in at_line.values() {
-        longest_wait = longest_wait.max(sim.time() - since);
-    }
-    assert!(
-        longest_wait < cycle,
-        "a right turner waited {longest_wait:.0} s, a cycle being {cycle:.0} s"
-    );
+    assert!(turned > 20, "only {turned} right turners turned");
 }
 
 #[test]
