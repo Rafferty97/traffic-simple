@@ -261,6 +261,8 @@ Stop lines, give-way lines, signals and the starts of keep-clear zones are all b
 - **Passing:** each step, a committed vehicle takes one off its count for each barrier its rear axle passes.
 - **Release:** a committed vehicle slowed short of a barrier, by traffic ahead or a junction, may no longer need to go. At a signal that is no longer green, one that can still stop comfortably before the line is released from it, and from those after it, and decides afresh, as a driver who could stop does when the light changes; at a give-way line, one that has come to rest short of the line is, since the gap it took is stale. One that committed as the light turned amber can't stop comfortably, and stays committed.
 
+**Turning on red** (**Planned**), as in North America and some of Europe: a movement may allow turning on red, so on red its signal barrier is a stop line followed by a give-way line, the vehicle coming to rest at it and then taking a gap (see Gap acceptance and priority), as SUMO's link state for a right turn on red has it. Traffic held at its own red counts for nothing in the gap, as everywhere. Compilation allows it on the near-side turns of a signalised intersection whose network says so, the default where traffic drives on the right, and on any movement a plan names, which covers turning left on red from one one-way street into another. It needs the stop line's coming to rest, so it comes with the other barrier kinds.
+
 **Signals** (**Built**) run fixed-time plans, behind a module boundary (`models::signal`) so actuated control can come later. A controller is part of the network, and its state, the phase it is in and how long each movement has been in its state, is part of the saved state. The movements' lights are one flat array in the state, every controller's together, each controller writing its own; a signal barrier holds its movement's index into it, so reading its light is one lookup and nothing is copied.
 
 - **Movements:** each is red, amber or green, with its amber and clearance times and a bitmask of the movements it conflicts with.
@@ -389,7 +391,7 @@ Each milestone is a demo that can be finished on its own; anything after it is o
 4. An on-ramp merge and an off-ramp diverge. Merges, with zipper or early merging, and the diverge's car following are done; taking the off-ramp needs destination routing and its route desire.
 5. A single signalised intersection with barriers, a fixed signal plan and unprotected turns. **Done.**
 6. Hook turns and trams: tram tracks in the middle of the road, tram stops, and vehicle classes restricting lane use.
-7. Unsignalised intersections: priority roads with give-way and stop signs, all-way stops and keep-clear zones.
+7. Unsignalised intersections: priority roads with give-way and stop signs, all-way stops and keep-clear zones; and turning on red at signals.
 8. A procedural grid with destination and random routing, origin–destination demand from the `demand` crate, and a mix of vehicle classes. Random routing is done.
 9. The validation harness, measuring capacities, waves, saturation flows and gaps against published values.
 
