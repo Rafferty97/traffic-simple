@@ -10,6 +10,7 @@ use slotmap::SlotMap;
 use crate::barrier;
 use crate::debug::{AccelSource, DebugEvent, DebugSink};
 use crate::models::acceleration;
+use crate::models::signal::MovementLight;
 use crate::network::{Conflict, JunctionId, LaneId, SimNetwork};
 use crate::occupancy::Occupant;
 use crate::simulation::SimState;
@@ -49,7 +50,7 @@ pub(crate) fn update(
     scan_empty: &mut Vec<LaneId>,
     scan_kept: &mut Vec<LaneId>,
 ) {
-    let SimState { network, vehicles, occupants, queues, .. } = state;
+    let SimState { network, vehicles, occupants, queues, lights, .. } = state;
     // Some may have left the network since.
     for &id in arrivals.iter() {
         if let Some(vehicle) = vehicles.get(id) {
@@ -86,6 +87,7 @@ pub(crate) fn update(
             network,
             vehicles,
             occupants,
+            lights,
             junction,
             approaching,
             empty: scan_empty,
@@ -179,6 +181,8 @@ struct Scan<'a> {
     network: &'a SimNetwork,
     vehicles: &'a SlotMap<VehicleId, Vehicle>,
     occupants: &'a [Vec<Occupant>],
+    /// The signals' lights, for the lanes' priority levels now.
+    lights: &'a [MovementLight],
     junction: JunctionId,
     /// The lanes vehicles approach the junction along, sorted.
     approaching: &'a [LaneId],
@@ -278,7 +282,10 @@ fn stops_on(
         let vehicle = &scan.vehicles[o.id];
         if vehicle.path.contains(&target) {
             if must_commit(scan.network, scan.junction, vehicle) {
-                committed.push(o.id);
+                let Scan { network, vehicles, occupants, lights, junction, .. } = *scan;
+                join(
+                    network, vehicles, occupants, lights, junction, committed, o.id,
+                );
                 continue;
             }
             if !scan.fronts.contains(&o.id) {
@@ -293,6 +300,81 @@ fn stops_on(
         }
     }
     false
+}
+
+/// Puts `id` in a junction's queue of committed vehicles: at the back, behind
+/// everyone committed before it, and then ahead of each there that would give
+/// way to it, which can't have moved on into the conflict, with those behind it
+/// on its way in, in their order (see [`gives_way`]). So a turner waiting
+/// inside the junction for a gap sinks behind each vehicle it gives way to that
+/// commits while it waits, and stays ahead of those it doesn't.
+pub(crate) fn join(
+    network: &SimNetwork,
+    vehicles: &SlotMap<VehicleId, Vehicle>,
+    occupants: &[Vec<Occupant>],
+    lights: &[MovementLight],
+    junction: JunctionId,
+    committed: &mut Vec<VehicleId>,
+    id: VehicleId,
+) {
+    committed.push(id);
+    // Where it is, and how many have gone behind it, just after it.
+    let (mut at, mut moved) = (committed.len() - 1, 0);
+    let mut i = 0;
+    while i < at {
+        let waiting = committed[i];
+        if !gives_way(network, vehicles, lights, junction, waiting, id) {
+            i += 1;
+            continue;
+        }
+        // It and those behind it on its way in go just behind those moved
+        // before, in their order, in place.
+        let mut k = i;
+        while k < at {
+            let other = committed[k];
+            if other == waiting || behind(network, vehicles, occupants, junction, waiting, other) {
+                committed[k..=at + moved].rotate_left(1);
+                at -= 1;
+                moved += 1;
+            } else {
+                k += 1;
+            }
+        }
+    }
+}
+
+/// Whether `waiting`, in a junction's queue, would give way to `other`: it is
+/// held at a give-way or stop barrier in the junction it hasn't committed to,
+/// so hasn't moved on into its conflicts, and a lane of its path in the
+/// junction from there conflicts with one of `other`'s at a higher priority
+/// level now (see [`barrier::level`]), as a turner gives way to oncoming
+/// traffic.
+fn gives_way(
+    network: &SimNetwork,
+    vehicles: &SlotMap<VehicleId, Vehicle>,
+    lights: &[MovementLight],
+    junction: JunctionId,
+    waiting: VehicleId,
+    other: VehicleId,
+) -> bool {
+    let w = &vehicles[waiting];
+    let Some((lane, at)) = barrier::nth(network, w, usize::from(w.committed)) else {
+        return false;
+    };
+    if network.lane(lane).junction() != Some(junction)
+        || matches!(at.kind, crate::network::BarrierKind::Signal { .. })
+    {
+        return false;
+    }
+    let inside = |l: &&LaneId| network.lane(**l).junction() == Some(junction);
+    let from = w.path.iter().position(|&l| l == lane).unwrap_or(0);
+    let theirs = || vehicles[other].path.iter().filter(inside);
+    w.path[from..].iter().take_while(inside).any(|&mine| {
+        theirs().any(|&lane| {
+            network.conflict_between(mine, lane).is_some()
+                && barrier::level(network, lights, mine) < barrier::level(network, lights, lane)
+        })
+    })
 }
 
 /// Whether a vehicle has physically entered a junction: it has a record, not a
@@ -448,6 +530,11 @@ pub(crate) fn junction_term<D: DebugSink>(
                     continue;
                 };
                 for &other in ahead {
+                    // One that would give way to it, waiting at its line, holds
+                    // nothing back: joining, it goes ahead of it (see [`join`]).
+                    if gives_way(network, &state.vehicles, &state.lights, junction, other, id) {
+                        continue;
+                    }
                     let Some((term, gap)) =
                         conflict_term(state, follower, mine, conflict, theirs, other, start)
                     else {
@@ -504,13 +591,6 @@ fn conflict_term(
 ) -> Option<(f64, f64)> {
     let network = &state.network;
     let leader = &state.vehicles[other];
-    // Held at a barrier before the conflict on its way, such as a turner waiting
-    // inside the junction, it will stop there, so it claims nothing beyond.
-    if let Some(k) = leader.path.iter().position(|&l| l == theirs)
-        && barrier::holds_before(network, leader, k, conflict.theirs.start)
-    {
-        return None;
-    }
     // The other one's rear along `theirs`, if its path takes it there.
     let rear = leader.path.iter().position(|&l| l == theirs).map(|i| {
         let before: f64 =

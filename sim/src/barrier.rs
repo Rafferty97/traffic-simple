@@ -8,7 +8,7 @@
 
 use crate::lane_changing::comfortable_stop;
 use crate::models::acceleration::{self, reach_time};
-use crate::models::signal::Light;
+use crate::models::signal::{Light, MovementLight};
 use crate::network::{Barrier, BarrierKind, Conflict, JunctionId, Lane, LaneId, SimNetwork};
 use crate::simulation::SimState;
 use crate::vehicle::{Vehicle, VehicleId, VehicleSpec};
@@ -222,7 +222,8 @@ fn has_gap(
                 let Some(conflict) = network.conflict_between(mine, theirs) else {
                     continue;
                 };
-                let (own, other) = (level(state, mine), level(state, theirs));
+                let now = |lane| level(network, &state.lights, lane);
+                let (own, other) = (now(mine), now(theirs));
                 let before_next =
                     next.is_none_or(|(nj, ns)| j < nj || (j == nj && conflict.mine.start < ns));
                 let after_this = j > k || conflict.mine.end > s;
@@ -254,10 +255,10 @@ fn has_gap(
 /// signal shows red, so a vehicle still in the junction from that phase,
 /// clearing it, outranks the traffic now green, and every vehicle behind its
 /// red line is held there anyway; otherwise the level its junction gives it.
-fn level(state: &SimState, lane: LaneId) -> u8 {
-    let lane = state.network.lane(lane);
+pub(crate) fn level(network: &SimNetwork, lights: &[MovementLight], lane: LaneId) -> u8 {
+    let lane = network.lane(lane);
     let red = lane.barriers().iter().any(|b| match b.kind {
-        BarrierKind::Signal { movement } => state.lights[movement.0 as usize].light == Light::Red,
+        BarrierKind::Signal { movement } => lights[movement.0 as usize].light == Light::Red,
         BarrierKind::GiveWay | BarrierKind::AllWayStop => false,
     });
     if red { u8::MAX } else { lane.priority() }
