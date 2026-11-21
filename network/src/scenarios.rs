@@ -13,12 +13,12 @@ const WIDTH: f64 = 3.5;
 
 /// How far right turns run straight on into a crossroads before turning, in
 /// meters, as drivers pull in to wait for a gap.
-const RIGHT_TURN_STRAIGHT: f64 = 2.7;
+const RIGHT_TURN_STRAIGHT: f64 = 3.0;
 
 /// Two two-way roads crossing at right angles, each with `lanes` lanes each
 /// way, 300 m long, driving on the left. Every lane coming in connects to the
 /// lane at the same place across the junction, straight on; only the leftmost
-/// turns left and only the rightmost turns right, running 2.7 m straight on
+/// turns left and only the rightmost turns right, running 3 m straight on
 /// before it turns.
 pub fn crossroads(lanes: usize, speed_limit: f64) -> RoadNetwork {
     let mut net = RoadNetwork::default();
