@@ -864,8 +864,10 @@ impl<D: DebugSink> Simulation<D> {
             if let AccelUpdate::Own { id, yielding, committed, arrived, .. } = *update {
                 // Committing to a barrier inside a junction it is queued at, it
                 // goes now, so to the back of the queue, behind everyone committed
-                // before (see `docs/DESIGN.md`, Barriers inside a junction).
-                let SimState { network, vehicles, queues, .. } = &mut self.state;
+                // before, and those behind it on its way in with it, so nobody is
+                // committed before a vehicle ahead of it on its way in (see
+                // `docs/DESIGN.md`, Barriers inside a junction).
+                let SimState { network, vehicles, queues, occupants, .. } = &mut self.state;
                 let vehicle = &vehicles[id];
                 let commits = committed.saturating_sub(vehicle.committed);
                 for rank in vehicle.committed..committed {
@@ -876,7 +878,19 @@ impl<D: DebugSink> Simulation<D> {
                     let committed = &mut queues[j.0 as usize].committed;
                     if let Some(at) = committed.iter().position(|&c| c == id) {
                         committed.remove(at);
-                        committed.push(id);
+                        // Those behind it to the back, in their order, in place.
+                        let behind =
+                            |c: VehicleId| junction::behind(network, vehicles, occupants, j, id, c);
+                        let (mut i, mut moved) = (0, 0);
+                        while i < committed.len() - moved {
+                            if behind(committed[i]) {
+                                committed[i..].rotate_left(1);
+                                moved += 1;
+                            } else {
+                                i += 1;
+                            }
+                        }
+                        committed.insert(committed.len() - moved, id);
                     }
                 }
                 let vehicle = &mut self.state.vehicles[id];

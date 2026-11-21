@@ -25,13 +25,16 @@ fn crossroads_of_one_and_three_lanes_each_way_compile() {
 #[test]
 fn lane_lines_stop_at_the_stop_line_coming_in_and_run_to_the_junction_going_out() {
     use traffic_network::MarkingStyle;
-    let net = scenarios::crossroads(2, 14.0);
-    let compiled = compile(&net).unwrap();
+    // Every arm's stop line set 2 m further back than the scenario has it.
+    let mut net = scenarios::crossroads(2, 14.0);
+    let x = &mut net.intersections[0];
+    let arms: Vec<_> = (0..4).map(|r| x.arm(traffic_network::RoadId(r))).collect();
+    x.arms = arms
+        .into_iter()
+        .map(|a| traffic_network::Arm { stop_line: a.stop_line + 2.0, ..a })
+        .collect();
     let back = net.intersections[0].arm(traffic_network::RoadId(0)).stop_line;
-    assert!(
-        back > 0.0,
-        "the stop lines aren't set back, so this shows nothing"
-    );
+    let compiled = compile(&net).unwrap();
     let half = 2.0 * 3.5 + 6.0;
     // How far each line between lanes gets toward the junction's centre, along
     // its arm, with which way its lanes beside it go there.
@@ -536,7 +539,11 @@ fn at_signals_a_right_turner_at_its_line_turns_on_its_next_green() {
     // many greens of it it has seen since it reached its line, counting one it
     // reached it on.
     let mut waiting: HashMap<VehicleId, (MovementId, u32)> = HashMap::new();
-    let mut lights: Vec<Light> = right.values().map(|&m| sim.light(m).light).collect();
+    // Each right-turn movement once, though several connectors share one.
+    let mut movements: Vec<MovementId> = right.values().copied().collect();
+    movements.sort_by_key(|m| m.0);
+    movements.dedup();
+    let mut lights: Vec<Light> = movements.iter().map(|&m| sim.light(m).light).collect();
     let mut turned = 0;
     // Busy, with plenty coming the other way.
     for step in 0..(600.0 * 60.0) as u64 {
@@ -547,7 +554,7 @@ fn at_signals_a_right_turner_at_its_line_turns_on_its_next_green() {
             let _ = sim.try_insert(VehicleSpec::passenger_car(), at);
         }
         sim.step();
-        for (i, &movement) in right.values().enumerate() {
+        for (i, &movement) in movements.iter().enumerate() {
             let light = sim.light(movement).light;
             if light == Light::Green && lights[i] != Light::Green {
                 for (m, greens) in waiting.values_mut() {
@@ -567,7 +574,12 @@ fn at_signals_a_right_turner_at_its_line_turns_on_its_next_green() {
                 Some(next) if right.contains_key(next) => {
                     let length = network.lane(v.lane()).geometry().length();
                     let front = v.lane_pos().s - v.spec().rear_axle + v.spec().length;
-                    let head = sim.vehicles().all(|(_, u)| u.lane() != *next);
+                    // Nobody on a right turn from its lane, into any lane.
+                    let from = network.lane(*next).predecessors()[0];
+                    let turning = |l: LaneId| {
+                        right.contains_key(&l) && network.lane(l).predecessors()[0] == from
+                    };
+                    let head = sim.vehicles().all(|(_, u)| !turning(u.lane()));
                     if length - front < 3.0 && head {
                         let movement = right[next];
                         let green = sim.light(movement).light == Light::Green;
@@ -739,4 +751,73 @@ fn ramps_traffic(flow: f64, seconds: f64) {
             left_before = left;
         }
     }
+}
+
+/// A car going straight on doesn't cross its stop line behind a right turner
+/// waiting in the junction in its way, though its light is green: it couldn't
+/// drive through. It goes once the turner has.
+#[test]
+fn at_signals_a_car_waits_behind_its_line_for_a_turner_in_its_way() {
+    use traffic_network::Turn;
+    use traffic_sim::{NoopSink, Placement, Route, Simulation, VehicleSpec};
+    // Two lanes each way: the inner one goes straight on or right.
+    let compiled = compile(&scenarios::signalised_crossroads(2, 50.0 / 3.6)).unwrap();
+    let from = compiled.road_lanes[0][0];
+    let of = |turn| {
+        let ways = compiled.connectors[0].iter().zip(&compiled.turns[0]);
+        let mut ways =
+            ways.filter(|&(&c, &t)| t == turn && compiled.sim.lane(c).predecessors()[0] == from);
+        *ways.next().unwrap().0
+    };
+    let (right, straight) = (of(Turn::Right), of(Turn::Straight));
+    let line = compiled.sim.lane(straight).barriers()[0].s;
+    // Where the turner waits for a gap.
+    let waits = compiled.sim.lane(right).barriers()[1].s;
+    let mut sim = Simulation::new(compiled.sim, NoopSink);
+    let car = VehicleSpec::passenger_car();
+    // A turner held at its waiting line inside, on the road's first green.
+    let s = waits - (car.length - car.rear_axle) - 1.0;
+    let turner = sim.insert(
+        car,
+        Placement { lane: right, s, speed: 0.0, route: Route::random(0) },
+    );
+    sim.hold(turner);
+    let length = sim.network().lane(from).geometry().length();
+    // Going straight on: the first route that takes it that way.
+    let follower = (0..)
+        .find_map(|seed| {
+            let route = Route::random(seed);
+            let at = Placement { lane: from, s: length - 60.0, speed: 10.0, route };
+            let id = sim.insert(car, at);
+            if sim.get(id).unwrap().path().get(1) == Some(&straight) {
+                return Some(id);
+            }
+            sim.remove(id);
+            None
+        })
+        .unwrap();
+    // Its front past the line, along the lane coming in or the one going on.
+    let past_line = |sim: &Simulation| {
+        let v = sim.get(follower).unwrap();
+        let front = v.lane_pos().s - car.rear_axle + car.length;
+        match v.lane() {
+            lane if lane == from => front - length > line,
+            lane if lane == straight => front > line,
+            _ => true,
+        }
+    };
+    while sim.time() < 15.0 {
+        sim.step();
+        let path = sim.get(follower).unwrap().path().to_vec();
+        assert!(
+            !past_line(&sim),
+            "it crossed its line at {:.1} s, on {path:?}",
+            sim.time()
+        );
+    }
+    sim.release(turner);
+    while sim.time() < 28.0 && !past_line(&sim) {
+        sim.step();
+    }
+    assert!(past_line(&sim), "it never went");
 }

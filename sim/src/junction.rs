@@ -393,6 +393,32 @@ fn may_release(
     !committed[index + 1..].iter().any(behind)
 }
 
+/// Whether `other` is behind `ahead` on its way into `junction`: on a lane
+/// where `ahead` has a record, behind that record, or headed onto one. Those
+/// lanes are the junction's and those on `ahead`'s path, so a vehicle behind
+/// another at a fork, on the branch it didn't take, is found through its
+/// record there.
+pub(crate) fn behind(
+    network: &SimNetwork,
+    vehicles: &SlotMap<VehicleId, Vehicle>,
+    occupants: &[Vec<Occupant>],
+    junction: JunctionId,
+    ahead: VehicleId,
+    other: VehicleId,
+) -> bool {
+    let lanes = network.junction(junction).lanes().iter().chain(&vehicles[ahead].path);
+    lanes.into_iter().any(|&lane| {
+        let records = &occupants[lane.0 as usize];
+        let Some(mine) = records.iter().find(|o| o.is_record_of(ahead) && !o.is_ghost()) else {
+            return false;
+        };
+        match records.iter().find(|o| o.is_record_of(other) && !o.is_ghost()) {
+            Some(theirs) => theirs.s() < mine.s(),
+            None => vehicles[other].path.contains(&lane),
+        }
+    })
+}
+
 /// Whether a vehicle's path takes it onto any of a junction's lanes.
 fn headed(network: &SimNetwork, vehicle: &Vehicle, junction: JunctionId) -> bool {
     vehicle.path.iter().any(|&lane| network.lane(lane).junction() == Some(junction))

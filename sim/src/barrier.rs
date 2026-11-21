@@ -512,7 +512,11 @@ pub(crate) fn hold(spec: &VehicleSpec, line_gap: f64, speed: f64, gap: f64) -> f
 /// itself and every vehicle ahead of it on its way through the junction to the
 /// same lane, each its length and minimum gap, behind the rearmost vehicle
 /// there, allowing for how far that one would go on if it stopped comfortably.
-/// Always, for a barrier that isn't into a junction.
+/// Nor would it find room behind a vehicle ahead of it on its way through,
+/// headed elsewhere, that is at rest or will wait inside the junction, as a
+/// turner waiting for a gap does: it couldn't drive through. Unless it will
+/// wait inside the junction itself, so may draw up behind one. Always, for a
+/// barrier that isn't into a junction.
 fn room_beyond(state: &SimState, id: VehicleId, vehicle: &Vehicle, k: usize, s: f64) -> bool {
     let network = &state.network;
     let path = &vehicle.path;
@@ -524,12 +528,27 @@ fn room_beyond(state: &SimState, id: VehicleId, vehicle: &Vehicle, k: usize, s: 
         return true;
     };
     let exit_lane = path[exit];
+    let junction = network.lane(path[k]).junction();
+    // Whether a vehicle will wait inside the junction: its next barrier it
+    // hasn't committed to, after this one for this vehicle, is in it.
+    let waits_inside = |v: &Vehicle, after: usize| {
+        nth(network, v, after).is_some_and(|(lane, _)| network.lane(lane).junction() == junction)
+    };
     let mut needed = vehicle.spec.length + vehicle.spec.min_gap;
+    let may_wait = waits_inside(vehicle, usize::from(vehicle.committed) + 1);
     for (j, &lane) in path.iter().enumerate().take(exit).skip(k) {
         let from = if j == k { s } else { f64::NEG_INFINITY };
         for o in &state.occupants[lane.0 as usize] {
             let other = &state.vehicles[o.id];
-            if o.is_ghost() || o.id == id || o.s() < from || !other.path.contains(&exit_lane) {
+            if o.is_ghost() || o.id == id || o.s() < from {
+                continue;
+            }
+            if !other.path.contains(&exit_lane) {
+                let blocks =
+                    other.speed == 0.0 || waits_inside(other, usize::from(other.committed));
+                if blocks && !may_wait {
+                    return false;
+                }
                 continue;
             }
             needed += other.spec.length + other.spec.min_gap;
