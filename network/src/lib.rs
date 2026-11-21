@@ -14,12 +14,14 @@ mod compile;
 mod reference;
 mod render;
 pub mod scenarios;
+mod turns;
 
 use glam::DVec2;
-use traffic_sim::{Keep, LaneId, Leaving, SimNetwork};
+use traffic_sim::{Keep, LaneId, Leaving, Side, SimNetwork};
 
 pub use compile::{CompileError, compile};
 pub use render::{Arrow, Marking, MarkingStyle, RenderGeometry, Strip};
+pub use turns::Turn;
 
 /// A position and a heading, in radians counterclockwise from +x.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -169,9 +171,29 @@ pub struct Intersection {
     pub connections: Vec<(LaneRef, LaneRef)>,
 }
 
+/// Which side of the road traffic drives on: the left, as in Australia, by
+/// default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DrivesOn {
+    #[default]
+    Left,
+    Right,
+}
+
+impl DrivesOn {
+    pub fn side(self) -> Side {
+        match self {
+            DrivesOn::Left => Side::Left,
+            DrivesOn::Right => Side::Right,
+        }
+    }
+}
+
 /// A road network at road level.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RoadNetwork {
+    /// Which side of the road traffic drives on.
+    pub drives_on: DrivesOn,
     /// Which side drivers keep to on roads with speed limits above
     /// `keep_above`: in Australia, the left, above 80 km/h.
     pub keep: Keep,
@@ -203,4 +225,6 @@ pub struct Compiled {
     pub road_lanes: Vec<Vec<LaneId>>,
     /// Each intersection's connectors in the simulation, in connection order.
     pub connectors: Vec<Vec<LaneId>>,
+    /// Which way each intersection's connections go, in connection order.
+    pub turns: Vec<Vec<Turn>>,
 }

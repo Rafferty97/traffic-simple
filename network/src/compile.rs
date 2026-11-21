@@ -7,7 +7,7 @@ use traffic_sim::{Keep, Lane, LaneError, LaneId, NetworkError, SAME_POINT, SimNe
 
 use crate::reference::{self, Polyline};
 use crate::render;
-use crate::{Compiled, Direction, LaneRef, Pose, RoadNetwork};
+use crate::{Compiled, Direction, LaneRef, Pose, RoadNetwork, Turn};
 
 /// The sideways acceleration a connector's speed limit allows on its tightest
 /// bend, in m/s².
@@ -113,15 +113,18 @@ pub fn compile(net: &RoadNetwork) -> Result<Compiled, CompileError> {
     }
 
     let mut connectors = Vec::new();
+    let mut turns = Vec::new();
     let mut links = Vec::new();
     for (k, intersection) in net.intersections.iter().enumerate() {
         let mut ids = Vec::new();
+        let mut ways = Vec::new();
         for (c, &(from, to)) in intersection.connections.iter().enumerate() {
             let lane_id = |l: LaneRef| road_lanes[l.road.0][l.lane];
             let (a, b) = (
                 &built[lane_id(from).0 as usize],
                 &built[lane_id(to).0 as usize],
             );
+            ways.push(Turn::between(a.end_dir(), b.start_dir()));
             let connector = connect(a, b);
             let limit = net.roads[from.road.0].speed_limit.min(net.roads[to.road.0].speed_limit);
             let what = || format!("intersection {k} connection {c}");
@@ -136,6 +139,7 @@ pub fn compile(net: &RoadNetwork) -> Result<Compiled, CompileError> {
             ids.push(id);
         }
         connectors.push(ids);
+        turns.push(ways);
     }
 
     let mut sim = SimNetwork::new(lanes);
@@ -193,8 +197,8 @@ pub fn compile(net: &RoadNetwork) -> Result<Compiled, CompileError> {
     }
     sim.validate().map_err(CompileError::Network)?;
 
-    let render = render::build(net, &polylines);
-    Ok(Compiled { sim, render, road_lanes, connectors })
+    let render = render::build(net, &polylines, &turns);
+    Ok(Compiled { sim, render, road_lanes, connectors, turns })
 }
 
 /// A simulation lane from a built one.

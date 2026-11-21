@@ -4,7 +4,7 @@
 use glam::DVec2;
 
 use crate::reference::Polyline;
-use crate::{Direction, Intersection, LaneRef, RoadNetwork};
+use crate::{Direction, Intersection, LaneRef, RoadNetwork, Turn};
 
 /// A road network's drawable geometry, in world meters.
 #[derive(Clone, Debug, Default)]
@@ -53,8 +53,6 @@ const ARROW_SETBACK: f64 = 8.0;
 /// How wide a stop line is, in meters: 300 mm, as Australian standards (AS
 /// 1742.2) have it.
 const STOP_LINE_WIDTH: f64 = 0.3;
-/// The most a connection turns, either way, and still goes straight on: 30°.
-const STRAIGHT_ON: f64 = std::f64::consts::PI / 6.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MarkingStyle {
@@ -69,7 +67,11 @@ pub enum MarkingStyle {
     Stop,
 }
 
-pub(crate) fn build(net: &RoadNetwork, polylines: &[Polyline]) -> RenderGeometry {
+pub(crate) fn build(
+    net: &RoadNetwork,
+    polylines: &[Polyline],
+    turns: &[Vec<Turn>],
+) -> RenderGeometry {
     let mut out = RenderGeometry::default();
     for (road, line) in net.roads.iter().zip(polylines) {
         let edge = |i: usize, lane: usize, side: f64| {
@@ -109,12 +111,12 @@ pub(crate) fn build(net: &RoadNetwork, polylines: &[Polyline]) -> RenderGeometry
         }
     }
 
-    for intersection in &net.intersections {
+    for (intersection, turns) in net.intersections.iter().zip(turns) {
         let (surface, curbs) = intersection_surface(net, polylines, &out.roads, intersection);
         out.intersections.push(surface);
         out.markings
             .extend(curbs.into_iter().map(|points| Marking { points, style: MarkingStyle::Edge }));
-        approaches(net, polylines, intersection, &mut out);
+        approaches(net, polylines, intersection, turns, &mut out);
     }
     out
 }
@@ -127,6 +129,7 @@ fn approaches(
     net: &RoadNetwork,
     polylines: &[Polyline],
     intersection: &Intersection,
+    turns: &[Turn],
     out: &mut RenderGeometry,
 ) {
     let lane = |l: LaneRef| &net.roads[l.road.0].lanes[l.lane];
@@ -173,11 +176,12 @@ fn approaches(
         });
 
         let (mut left, mut straight, mut right) = (false, false, false);
-        for &(_, to) in intersection.connections.iter().filter(|c| c.0 == from) {
-            match arriving.angle_to(end_dir(to, false)) {
-                t if t.abs() <= STRAIGHT_ON => straight = true,
-                t if t > 0.0 => left = true,
-                _ => right = true,
+        let ways = intersection.connections.iter().zip(turns).filter(|(c, _)| c.0 == from);
+        for (_, turn) in ways {
+            match turn {
+                Turn::Straight => straight = true,
+                Turn::Left => left = true,
+                Turn::Right => right = true,
             }
         }
         let length = *line.s.last().unwrap();
