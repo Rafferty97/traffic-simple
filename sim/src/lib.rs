@@ -14,6 +14,7 @@ mod merge;
 mod models;
 mod network;
 mod occupancy;
+mod path;
 mod simulation;
 mod vehicle;
 

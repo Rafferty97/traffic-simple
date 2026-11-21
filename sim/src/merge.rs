@@ -155,7 +155,7 @@ struct Way {
 /// first, by the distance from its rear: its order.
 ///
 /// From each of the merge's lanes it walks back through the lanes leading in,
-/// as far as a path reaches, [`PATH_TIME`](crate::simulation::PATH_TIME) at the
+/// as far as a path reaches, [`PATH_TIME`](crate::path::PATH_TIME) at the
 /// speed limits. Each lane's occupants are in order already, so it marches
 /// back along all of them at once, as the merge step of a merge sort does,
 /// taking the nearest each time, from those following the lane whose path
@@ -195,7 +195,7 @@ pub fn order(
             l.geometry().length(),
             time + l.geometry().length() / l.speed_limit(),
         );
-        if time > crate::simulation::PATH_TIME {
+        if time > crate::path::PATH_TIME {
             continue;
         }
         for &p in l.predecessors() {
