@@ -131,7 +131,7 @@ pub fn compile(net: &RoadNetwork) -> Result<Compiled, CompileError> {
                 &built[lane_id(to).0 as usize],
             );
             ways.push(Turn::between(a.end_dir(), b.start_dir()));
-            let connector = connect(a, b);
+            let connector = connect(a, b, intersection.connector_width);
             let limit = net.roads[from.road.0].speed_limit.min(net.roads[to.road.0].speed_limit);
             let what = || format!("intersection {k} connection {c}");
             lanes.push(build(
@@ -343,35 +343,84 @@ fn build(b: &Built, speed_limit: f64, what: impl Fn() -> String) -> Result<Lane,
 
 /// A connector from the end of `a` to the start of `b`: a cubic Bézier along
 /// their directions, its control points a third of the way across, sampled
-/// by the same tolerance as roads, its width blending from one to the other.
-fn connect(a: &Built, b: &Built) -> Built {
+/// by the same tolerance as roads, `width` wide, or by default as wide as the
+/// widest vehicle sweeps along it (see [`swept`]), plus the room one needs to
+/// pass another on each side.
+fn connect(a: &Built, b: &Built, width: Option<f64>) -> Built {
     let (p0, p3) = (a.end(), b.start());
     let reach = p0.distance(p3) / 3.0;
     let (c1, c2) = (p0 + reach * a.end_dir(), p3 - reach * b.start_dir());
     let start = Pose { pos: p0, heading: a.end_dir().to_angle() };
     let (s, points) = reference::sample_bezier(start, c1, c2, p3);
-    let total = *s.last().expect("a curve has its ends");
-    let (w0, w1) = (*a.half_widths.last().unwrap(), b.half_widths[0]);
-    let half_widths = s
-        .iter()
-        .map(|&s| {
-            let t = s / total;
-            [0, 1].map(|e| w0[e] + (w1[e] - w0[e]) * t)
-        })
-        .collect();
+    let half_widths = match width {
+        Some(width) => vec![[0.5 * width; 2]; s.len()],
+        // The widest vehicle: the only class so far.
+        None => swept(&points, &s, &traffic_sim::VehicleSpec::passenger_car())
+            .into_iter()
+            .map(|h| h.map(|h| h + traffic_sim::PASSING_CLEARANCE))
+            .collect(),
+    };
     Built { points, half_widths }
+}
+
+/// How far out to each side of `points`, at arc lengths `s`, a vehicle like
+/// `spec` sweeps along them, at each vertex, as road design's swept paths have
+/// it: with its rear axle at each vertex in turn, heading along the path, each
+/// corner is projected onto the nearest segment, the first and last running on
+/// as lines, widening both its ends to reach it. Never less than half its width. On a bend the outer front corner
+/// swings out, `√(f² + (R + w/2)²) − R` for a front `f` ahead of the rear axle
+/// and a radius `R`, and the inner rear corner cuts in a little; a turn's mouth,
+/// which bends little, stays narrow.
+fn swept(points: &[DVec2], s: &[f64], spec: &traffic_sim::VehicleSpec) -> Vec<[f64; 2]> {
+    let mut half = vec![[0.5 * spec.width; 2]; points.len()];
+    let (front, rear, side) = (
+        spec.length - spec.rear_axle,
+        spec.rear_axle,
+        0.5 * spec.width,
+    );
+    for (i, &axle) in points.iter().enumerate() {
+        let segment = i.min(points.len() - 2);
+        let dir = (points[segment + 1] - points[segment]).normalize();
+        let corners = [front, -rear]
+            .map(|along| [side, -side].map(|across| axle + along * dir + across * dir.perp()));
+        for corner in corners.into_iter().flatten() {
+            // The nearest segment, among those within the body's reach.
+            let reach = |j: &usize| (s[*j] - s[i]).abs() <= front + rear + side;
+            let nearest = (0..points.len() - 1).filter(reach).map(|j| {
+                let (a, b) = (points[j], points[j + 1]);
+                // The ends run on as lines, as the lanes before and after do.
+                let along = (corner - a).dot(b - a) / (b - a).length_squared();
+                let lo = if j == 0 { f64::MIN } else { 0.0 };
+                let hi = if j + 2 == points.len() { f64::MAX } else { 1.0 };
+                let foot = a + along.clamp(lo, hi) * (b - a);
+                (j, (corner - foot).length(), (b - a).perp_dot(corner - a))
+            });
+            let Some((j, distance, cross)) = nearest.min_by(|x, y| x.1.total_cmp(&y.1)) else {
+                continue;
+            };
+            let e = if cross >= 0.0 { 0 } else { 1 };
+            for k in [j, j + 1] {
+                half[k][e] = half[k][e].max(distance);
+            }
+        }
+    }
+    half
+}
+
+/// The tightest bend of `points` each way, as curvatures bending left and
+/// right.
+fn tightest(points: &[DVec2]) -> [f64; 2] {
+    points.windows(3).fold([0.0; 2], |[left, right], w| {
+        let (a, b) = (w[1] - w[0], w[2] - w[1]);
+        let k = a.angle_to(b) / (0.5 * (a.length() + b.length()));
+        [left.max(k), right.max(-k)]
+    })
 }
 
 /// `limit`, lowered so that a vehicle on the tightest bend of `points` turns
 /// with at most [`TURN_ACCEL`] sideways.
 fn turn_limit(points: &[DVec2], limit: f64) -> f64 {
-    let curvature = points
-        .windows(3)
-        .map(|w| {
-            let (a, b) = (w[1] - w[0], w[2] - w[1]);
-            a.angle_to(b).abs() / (0.5 * (a.length() + b.length()))
-        })
-        .fold(0.0, f64::max);
+    let curvature = tightest(points).into_iter().fold(0.0, f64::max);
     if curvature <= 0.0 {
         return limit;
     }

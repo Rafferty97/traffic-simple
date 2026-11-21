@@ -170,6 +170,12 @@ pub struct LaneRef {
 pub struct Intersection {
     pub connections: Vec<(LaneRef, LaneRef)>,
     pub control: Control,
+    /// How wide its connectors are, in meters. By default each is as wide as
+    /// the widest vehicle sweeps along it, with the room one needs to pass
+    /// another on each side: narrower than a road lane, so connectors side by
+    /// side at a mouth don't touch and conflict there, but wide enough that a
+    /// vehicle's body stays within its own.
+    pub connector_width: Option<f64>,
 }
 
 /// How an intersection is controlled (see `docs/DESIGN.md`, Intersection

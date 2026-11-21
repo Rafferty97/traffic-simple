@@ -34,7 +34,7 @@ pub(crate) fn same_record(length: f64, a: f64, b: f64) -> bool {
 }
 
 /// The least room, in meters, a vehicle needs beside another to pass it.
-const PASSING_CLEARANCE: f64 = 0.5;
+pub const PASSING_CLEARANCE: f64 = 0.5;
 
 /// A vehicle's record in one lane's occupant list.
 #[derive(Clone, Copy, Debug)]

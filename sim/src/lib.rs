@@ -34,6 +34,6 @@ pub use network::{
     Leaving, MAX_PREDECESSORS, MAX_SUCCESSORS, Movement, MovementId, Neighbor, NetworkError, Phase,
     Side, SignalPlan, SimNetwork,
 };
-pub use occupancy::{Lateral, Occupant};
+pub use occupancy::{Lateral, Occupant, PASSING_CLEARANCE};
 pub use simulation::{Config, InsertError, LaneChangeError, SimState, Simulation};
 pub use vehicle::{Intent, Placement, Vehicle, VehicleId, VehicleSpec};
