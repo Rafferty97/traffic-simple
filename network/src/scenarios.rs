@@ -5,7 +5,7 @@ use std::f64::consts::{FRAC_PI_2, PI, TAU};
 use traffic_sim::{Keep, Leaving};
 
 use crate::{
-    Control, Direction, Intersection, LaneRef, Piece, Pose, Profile, Road, RoadId, RoadLane,
+    Arm, Control, Direction, Intersection, LaneRef, Piece, Pose, Profile, Road, RoadId, RoadLane,
     RoadNetwork, SignalPhase, Turn,
 };
 
@@ -22,13 +22,27 @@ const RIGHT_TURN_STRAIGHT: f64 = 3.0;
 /// before it turns. Its stop lines are set back, and its run outs as long, as
 /// turning vehicles need (see [`crate::fit_arms`]).
 pub fn crossroads(lanes: usize, speed_limit: f64) -> RoadNetwork {
+    oblique_crossroads(lanes, speed_limit, FRAC_PI_2)
+}
+
+/// As [`crossroads`], the roads crossing at `angle`, between 0 and π: the
+/// second road runs at `angle` counterclockwise from the first. Each arm ends
+/// where its lanes are clear of the other road, and its stop line runs along
+/// the other road, skewed from square by as much as the roads are from
+/// crossing square.
+pub fn oblique_crossroads(lanes: usize, speed_limit: f64, angle: f64) -> RoadNetwork {
     let mut net = RoadNetwork::default();
-    // The junction's half-width, from its centre to where the arms end.
-    let half = lanes as f64 * WIDTH + 6.0;
+    // How far across each road's lanes reach from its centre line.
+    let across = lanes as f64 * WIDTH;
+    // The junction's half-width along each arm, from its centre to where the
+    // arm ends: where its outermost lane clears the other road, and 6 m more.
+    let half = across / angle.sin() + across / angle.tan().abs() + 6.0;
     let arm_length = 150.0 - half;
-    // Each arm runs in toward the centre, from east, north, west and south.
-    // Its forward lanes come in, on the left of its reference line, and its
-    // backward lanes go out, on the right; lane 0 of each is by the centre line.
+    // Each arm runs in toward the centre, from the first road's east end, the
+    // second's far end, the first's west end and the second's near end, so
+    // counterclockwise. Its forward lanes come in, on the left of its
+    // reference line, and its backward lanes go out, on the right; lane 0 of
+    // each is by the centre line.
     let arm_lanes: Vec<RoadLane> = (0..lanes)
         .map(|i| RoadLane::new(WIDTH * (i as f64 + 0.5), WIDTH, Direction::Forward))
         .chain(
@@ -36,13 +50,12 @@ pub fn crossroads(lanes: usize, speed_limit: f64) -> RoadNetwork {
                 .map(|i| RoadLane::new(-WIDTH * (i as f64 + 0.5), WIDTH, Direction::Backward)),
         )
         .collect();
-    let arms: Vec<RoadId> = (0..4)
-        .map(|k| {
-            let towards = PI + FRAC_PI_2 * k as f64;
-            let end = Pose {
-                pos: -half * Pose::new(0.0, 0.0, towards).dir(),
-                heading: towards,
-            };
+    let from = [0.0, angle, PI, PI + angle];
+    let arms: Vec<RoadId> = from
+        .iter()
+        .map(|&at| {
+            let towards = at + PI;
+            let end = Pose { pos: half * Pose::new(0.0, 0.0, at).dir(), heading: towards };
             let pieces = vec![Piece::Line { length: arm_length }];
             net.add_road(Road::ending_at(end, pieces, arm_lanes.clone(), speed_limit))
         })
@@ -54,14 +67,23 @@ pub fn crossroads(lanes: usize, speed_limit: f64) -> RoadNetwork {
         ..Intersection::default()
     };
     let outer = lanes - 1;
-    for from in 0..4 {
+    for (k, &road) in arms.iter().enumerate() {
         // Arms counterclockwise from this one: right, straight on, left.
-        let (right, straight, left) = ((from + 1) % 4, (from + 2) % 4, (from + 3) % 4);
+        let (right, straight, left) = ((k + 1) % 4, (k + 2) % 4, (k + 3) % 4);
         for i in 0..lanes {
-            intersection.connections.push((inbound(from, i), outbound(straight, i)));
+            intersection.connections.push((inbound(k, i), outbound(straight, i)));
         }
-        intersection.connections.push((inbound(from, outer), outbound(left, outer)));
-        intersection.connections.push((inbound(from, 0), outbound(right, 0)));
+        intersection.connections.push((inbound(k, outer), outbound(left, outer)));
+        intersection.connections.push((inbound(k, 0), outbound(right, 0)));
+        // Its stop line along the other road: as far from square as the other
+        // road is from crossing square, counterclockwise from the way in, and
+        // back far enough that none of it is past the arm's end.
+        // That is the angle between the roads on the first road's arms, and its
+        // supplement on the second's.
+        let crossing = if k % 2 == 0 { angle } else { PI - angle };
+        let skew = crossing - FRAC_PI_2;
+        let stop_line = (-across * skew.tan()).max(0.0);
+        intersection.arms.push(Arm { stop_line, skew, ..Arm::new(road) });
     }
     net.intersections.push(intersection);
     // Stop lines set back, and run outs, wherever turning vehicles sweep.
@@ -73,8 +95,17 @@ pub fn crossroads(lanes: usize, speed_limit: f64) -> RoadNetwork {
 /// and west green for 30 s, every way, then those from the north and south. A
 /// right turn shares its phase with the traffic coming the other way.
 pub fn signalised_crossroads(lanes: usize, speed_limit: f64) -> RoadNetwork {
-    let mut net = crossroads(lanes, speed_limit);
-    // The arms come in from the east, north, west and south, in that order.
+    signalised(crossroads(lanes, speed_limit))
+}
+
+/// As [`oblique_crossroads`], signalised as [`signalised_crossroads`] is.
+pub fn signalised_oblique_crossroads(lanes: usize, speed_limit: f64, angle: f64) -> RoadNetwork {
+    signalised(oblique_crossroads(lanes, speed_limit, angle))
+}
+
+/// `net`, a crossroads, with a fixed-time plan: its first road green for
+/// 30 s, every way, then its second.
+fn signalised(mut net: RoadNetwork) -> RoadNetwork {
     let roads: Vec<RoadId> = (0..4).map(RoadId).collect();
     let every_way = |arms: [usize; 2]| {
         arms.iter()

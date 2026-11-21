@@ -243,6 +243,20 @@ fn signalised_crossroads_flooded_with_traffic_have_no_collisions() {
 }
 
 #[test]
+#[ignore = "on the acute side, a left turn's body strays onto the lane beside the one it \
+            turns into by more than the sweep check's steering allowance"]
+fn an_oblique_crossroads_flooded_with_traffic_has_no_collisions() {
+    for angle in [60.0, 120.0] {
+        let angle = f64::to_radians(angle);
+        flood(&scenarios::oblique_crossroads(2, 50.0 / 3.6, angle), 150.0);
+        flood(
+            &scenarios::signalised_oblique_crossroads(2, 50.0 / 3.6, angle),
+            150.0,
+        );
+    }
+}
+
+#[test]
 fn a_signalised_crossroads_holds_each_connector_at_its_movements_light() {
     use traffic_network::Turn;
     use traffic_sim::BarrierKind;

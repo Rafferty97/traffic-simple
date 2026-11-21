@@ -66,19 +66,22 @@ enum Scenario {
     Crossroads(usize),
     /// As `Crossroads`, signalised.
     Signals(usize),
+    /// As `Signals`, with two lanes each way, the roads crossing at 60°.
+    ObliqueSignals,
     /// A freeway with an on-ramp and an off-ramp, the acceleration lane left as
     /// this says.
     Ramps(Leaving),
 }
 
 impl Scenario {
-    const ALL: [Scenario; 8] = [
+    const ALL: [Scenario; 9] = [
         Scenario::Ring,
         Scenario::Crossroads(1),
         Scenario::Crossroads(2),
         Scenario::Crossroads(3),
         Scenario::Signals(1),
         Scenario::Signals(2),
+        Scenario::ObliqueSignals,
         Scenario::Ramps(Leaving::Zipper),
         Scenario::Ramps(Leaving::Early),
     ];
@@ -91,6 +94,7 @@ impl Scenario {
             Scenario::Crossroads(_) => "Crossroads of 6-lane roads",
             Scenario::Signals(1) => "Signalised crossroads of 2-lane roads",
             Scenario::Signals(_) => "Signalised crossroads of 4-lane roads",
+            Scenario::ObliqueSignals => "Signalised 4-lane roads crossing at 60°",
             Scenario::Ramps(Leaving::Zipper) => "Freeway with ramps, zipper merge",
             Scenario::Ramps(Leaving::Early) => "Freeway with ramps, early merge",
         }
@@ -101,6 +105,9 @@ impl Scenario {
             Scenario::Ring => scenarios::ring(RING_CIRCUMFERENCE, RING_LANES, SPEED_LIMIT),
             Scenario::Crossroads(lanes) => scenarios::crossroads(lanes, SPEED_LIMIT),
             Scenario::Signals(lanes) => scenarios::signalised_crossroads(lanes, SPEED_LIMIT),
+            Scenario::ObliqueSignals => {
+                scenarios::signalised_oblique_crossroads(2, SPEED_LIMIT, 60f64.to_radians())
+            }
             Scenario::Ramps(leaving) => scenarios::ramps_leaving(100.0 / 3.6, 80.0 / 3.6, leaving),
         }
     }
