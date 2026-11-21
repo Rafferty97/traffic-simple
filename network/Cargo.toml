@@ -11,3 +11,10 @@ repository.workspace = true
 glam.workspace = true
 traffic-sim.workspace = true
 
+
+[dev-dependencies]
+criterion = "0.8.2"
+
+[[bench]]
+name = "junctions"
+harness = false

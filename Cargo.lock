@@ -3664,6 +3664,7 @@ dependencies = [
 name = "traffic-network"
 version = "0.0.0"
 dependencies = [
+ "criterion",
  "glam",
  "traffic-sim",
 ]
