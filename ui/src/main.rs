@@ -377,7 +377,7 @@ impl App {
         let path = dir.join(format!("frame-{stamp}.json"));
         let frame = serde_json::json!({
             "selected": self.selected,
-            "snapshot": self.sim.snapshot(),
+            "snapshot": self.sim.state(),
         });
         std::fs::write(&path, serde_json::to_string_pretty(&frame)?)?;
         Ok(path.canonicalize().unwrap_or(path))

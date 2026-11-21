@@ -72,7 +72,7 @@ fn rear(sim: &Simulation, id: VehicleId) -> f64 {
 }
 
 fn follower(sim: &Simulation, lane: u32, s: f64, skip: VehicleId) -> Option<(VehicleId, f64)> {
-    find_follower(&sim.state, LaneId(lane), s, skip)
+    find_follower(&sim.state, sim.derived.max_reach, LaneId(lane), s, skip)
 }
 
 /// `id`'s search along its path, from its own record, calling `f` with each
@@ -112,9 +112,9 @@ fn decision(
     LaneSpeeds::refresh(&mut speeds, &sim.state);
     let incentives = incentives(&sim.state, &speeds, vehicle);
     let mut lc = vehicle.lc;
-    let dt = sim.config.step * f64::from(sim.config.accel_every);
+    let dt = sim.state.config.step * f64::from(sim.state.config.accel_every);
     lane_change::aim(&mut lc, incentives);
-    let ask = lane_change::step(&mut lc, vehicle.intent, &vehicle.spec, sim.time, dt);
+    let ask = lane_change::step(&mut lc, vehicle.intent, &vehicle.spec, sim.state.time, dt);
     let mut evals = Vec::new();
     let mut decision = Decision::Nothing;
     for side in [Side::Left, Side::Right] {
@@ -123,7 +123,14 @@ fn decision(
         };
         let eval = match ask {
             lane_change::Ask::Check(asked) if asked == side => {
-                let prospect = check_gap(&sim.state, &sim.caps, id, vehicle, side, lc.desire(side));
+                let prospect = check_gap(
+                    &sim.state,
+                    sim.derived.max_reach,
+                    id,
+                    vehicle,
+                    side,
+                    lc.desire(side),
+                );
                 let spec = &vehicle.spec;
                 let (d, eval) =
                     lane_change::resolve(&mut lc, vehicle.intent, spec, side, incentive, prospect);
@@ -169,7 +176,7 @@ fn indicating_behind_a_stopped_car(sim: &mut Simulation) -> VehicleId {
     let id = sim.insert(car(), at(1, 300.0, 5.0));
     sim.indicate(id, Side::Left);
     sim.state.vehicles[id].lc.set_desire([WANTING, 0.0]);
-    sim.time = 2.0;
+    sim.state.time = 2.0;
     id
 }
 
@@ -397,8 +404,8 @@ fn a_taper() -> Simulation {
 /// The order of the only merge, by vehicle.
 fn merge_order(sim: &Simulation) -> Vec<VehicleId> {
     let mut order = Vec::new();
-    let SimState { network, merges, vehicles, occupants, .. } = &sim.state;
-    merge::order(network, merges, vehicles, occupants, 0, |m| {
+    let SimState { network, vehicles, occupants, .. } = &sim.state;
+    merge::order(network, &sim.derived.merges, vehicles, occupants, 0, |m| {
         order.push(m.id())
     });
     order
@@ -407,9 +414,9 @@ fn merge_order(sim: &Simulation) -> Vec<VehicleId> {
 #[test]
 fn lanes_that_start_to_overlap_are_a_merge_and_branches_of_a_fork_are_not() {
     let sim = a_taper();
-    let of = |lane: u32| sim.state.merges.of(LaneId(lane));
+    let of = |lane: u32| sim.derived.merges.of(LaneId(lane));
     // The taper and the lane coming in from the side, all one merge.
-    assert_eq!(sim.state.merges.len(), 1);
+    assert_eq!(sim.derived.merges.len(), 1);
     assert!(of(0).is_some() && of(0) == of(1) && of(1) == of(5));
     // The lanes leading in, apart, and the lane they lead into.
     assert_eq!((of(2), of(3), of(4)), (None, None, None));
@@ -426,8 +433,8 @@ fn lanes_that_start_to_overlap_are_a_merge_and_branches_of_a_fork_are_not() {
     network.connect(LaneId(0), LaneId(1));
     network.connect(LaneId(0), LaneId(2));
     let sim = Simulation::new(network, NoopSink);
-    assert!(!sim.state.overlaps[1].is_empty(), "the branches overlap");
-    assert_eq!(sim.state.merges.len(), 0);
+    assert!(!sim.derived.overlaps[1].is_empty(), "the branches overlap");
+    assert_eq!(sim.derived.merges.len(), 0);
 }
 
 #[test]
@@ -595,7 +602,7 @@ fn a_record_ages_carries_its_age_on_and_starts_afresh_on_a_change_or_a_merge() {
 fn lanes_leading_into_the_same_lane_overlap_and_never_diverge() {
     let sim = a_taper();
     let partners = |lane: u32| {
-        let mut found: Vec<_> = sim.state.overlaps[lane as usize]
+        let mut found: Vec<_> = sim.derived.overlaps[lane as usize]
             .iter()
             .map(|p| (p.lane.0, p.diverge))
             .collect();
@@ -680,7 +687,7 @@ fn indicating_behind_a_stopped_car_at(sim: &mut Simulation, s: f64, speed: f64) 
     let id = sim.insert(car(), at(1, s, speed));
     sim.indicate(id, Side::Left);
     sim.state.vehicles[id].lc.set_desire([WANTING, 0.0]);
-    sim.time = 2.0;
+    sim.state.time = 2.0;
     id
 }
 
@@ -694,7 +701,7 @@ fn it_wont_start_a_change_it_couldnt_get_halfway_through_before_stopping() {
     let id = sim.insert(car(), at(1, 289.4, 1.0));
     sim.indicate(id, Side::Left);
     sim.state.vehicles[id].lc.set_desire([WANTING, 0.0]);
-    sim.time = 2.0;
+    sim.state.time = 2.0;
     let (decision, evals) = decide_now(&sim, id);
     assert_eq!(decision, Decision::Nothing, "{evals:?}");
     assert!(evals[0].safe && !evals[0].room, "{evals:?}");
@@ -705,7 +712,7 @@ fn it_wont_start_a_change_it_couldnt_get_halfway_through_before_stopping() {
     let id = sim.insert(car(), at(1, 280.0, 1.0));
     sim.indicate(id, Side::Left);
     sim.state.vehicles[id].lc.set_desire([WANTING, 0.0]);
-    sim.time = 2.0;
+    sim.state.time = 2.0;
     assert_eq!(decide_now(&sim, id).0, Decision::Change(Side::Left));
 }
 
@@ -758,7 +765,7 @@ fn it_changes_into_a_lane_leading_to_a_junction_beyond_the_changes_reach() {
 fn it_waits_until_it_has_indicated_long_enough() {
     let mut sim = two_lanes();
     let id = indicating_behind_a_stopped_car(&mut sim);
-    sim.time = 0.5 * lane_change::MIN_INDICATING;
+    sim.state.time = 0.5 * lane_change::MIN_INDICATING;
     let (decision, evals) = decide_now(&sim, id);
     assert_eq!(decision, Decision::Nothing);
     assert_eq!(evals[0].outcome, Outcome::Wait);
@@ -881,7 +888,7 @@ fn it_cancels_once_changing_no_longer_helps_it() {
     sim.indicate(id, Side::Left);
     let stopped = sim.insert(car(), at(0, 215.0, 0.0));
     sim.hold(stopped);
-    sim.time = 2.0;
+    sim.state.time = 2.0;
     let (decision, evals) = decide_now(&sim, id);
     assert_eq!(decision, Decision::Cancel, "{evals:?}");
 }
@@ -1126,7 +1133,8 @@ fn traffic_stopped_ahead_makes_it_want_the_free_lane_once_its_desire_builds_up()
     let wanted = car().desired_speed(LIMIT) / lane_change::V_GAIN;
     assert!((left.incentives.speed - wanted).abs() < 1e-9, "{left:?}");
     // Smoothed: one step goes a step's share of the way.
-    let step = sim.config.step * f64::from(sim.config.accel_every) / lane_change::DESIRE_TIME;
+    let step =
+        sim.state.config.step * f64::from(sim.state.config.accel_every) / lane_change::DESIRE_TIME;
     assert!(
         (left.desire - wanted.min(1.0) * step).abs() < 1e-9,
         "{left:?}"
@@ -1159,7 +1167,7 @@ fn it_wont_indicate_into_an_unsafe_gap_short_of_synchronising() {
 fn a_change_starts_its_desire_afresh() {
     let mut sim = two_lanes();
     let id = indicating_behind_a_stopped_car(&mut sim);
-    sim.update_lane_changes(sim.config.step * f64::from(sim.config.accel_every));
+    sim.update_lane_changes(sim.state.config.step * f64::from(sim.state.config.accel_every));
     assert_eq!(
         sim.state.vehicles[id].path[0],
         LaneId(0),

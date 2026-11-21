@@ -81,6 +81,8 @@ The simulation has no roads, only lanes. Lanes may overlap, merge, diverge or cr
 
 All vehicles live in one global `SlotMap`, an array of structs. Each lane keeps a list of occupant records sorted by s, and a vehicle appears in every lane it occupies. If profiling shows frame-rate work is memory-bound, the hot fields could split into a struct of arrays (**Suggestion**).
 
+The state is one struct, `SimState`, holding everything that can't be rebuilt from the rest: the network, the vehicles, the occupant lists, the junction queues, speed caps, the step count, time and config. It is exactly what a freeze frame saves. What can be rebuilt, the overlaps between lanes and the merges, is derived from it when a simulation is built or restored, and kept apart.
+
 **Vehicle state**
 
 - World pose (x, y, heading), speed, and the curvature of the rear axle's path (its steering state)
@@ -249,7 +251,7 @@ Demand and routing live outside the `sim` crate. The simulation exposes:
 - **Inserting:** `insert` places a vehicle on a lane's centreline with no checks, for tests and scripted setups. `try_insert` refuses when there is no safe room: when the new vehicle would overlap another, or it or its new follower would have to brake harder than `SAFE_BRAKING` because of the other; its speed is capped at its new leader's. Its leader and follower come from the same two searches a lane change uses, split at its rear.
 - **Reading:** a vehicle by key, every vehicle, each lane's occupants, each junction's queue and the lanes it is approached along, and the network. `vehicle_at` picks the vehicle nearest a point, within a tolerance, by a linear scan.
 - **Changing:** `remove`; `change_lane`; `cap_speed`, under which a vehicle brakes at `SAFE_BRAKING` while above the cap and eases up to it from below, `hold` (a cap of 0) and `release`. Capped vehicles are kept in a short list, not as a field on every vehicle, and the cap is one more acceleration term.
-- **Snapshot and restore** the whole state, network included, for freeze frames; with the `serde` feature a snapshot serializes. A restored simulation continues bit for bit until it inserts a vehicle into a slot freed before the snapshot: `SlotMap` rebuilds its free list in index order, so that vehicle's id, and the update order after it, can differ.
+- **Snapshot and restore** the whole state, network included, for freeze frames: `state` lends the `SimState`, to clone or, with the `serde` feature, serialize, and `restore` builds a simulation from one. A restored simulation continues bit for bit until it inserts a vehicle into a slot freed before the snapshot: `SlotMap` rebuilds its free list in index order, so that vehicle's id, and the update order after it, can differ.
 - **Heterogeneity** comes from inserting vehicles with varied attributes. Distributions are the caller's concern, not the core's.
 
 **Routing:** each vehicle carries a `Route`, given at insertion, which chooses the next lane when its path is extended past a lane with several successors; the choice is then part of its path. For now the only route is random: a SplitMix64 generator seeded at insertion, drawn from only at forks, so the same seed takes the same way, and snapshots and replays reproduce it. A vehicle only chooses among its own lane's successors: reaching a branch from another lane needs mandatory lane changes.

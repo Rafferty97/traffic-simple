@@ -4,7 +4,7 @@
 use rand::rngs::Xoshiro256PlusPlus;
 use rand::{RngExt, SeedableRng};
 use traffic_sim::{
-    DebugSink, Lateral, NoopSink, Placement, Route, Side, Simulation, Snapshot, VehicleId,
+    DebugSink, Lateral, NoopSink, Placement, Route, Side, SimState, Simulation, VehicleId,
     VehicleSpec,
 };
 
@@ -105,8 +105,8 @@ fn continue_for_30_s<D: DebugSink>(sim: &mut Simulation<D>) -> Vec<u64> {
 #[test]
 fn a_restored_snapshot_continues_exactly_like_the_original() {
     let mut original = busy();
-    let json = serde_json::to_string(&original.snapshot()).unwrap();
-    let snapshot: Snapshot = serde_json::from_str(&json).unwrap();
+    let json = serde_json::to_string(original.state()).unwrap();
+    let snapshot: SimState = serde_json::from_str(&json).unwrap();
     let mut restored = Simulation::restore(snapshot, NoopSink);
     assert!(original.vehicles().count() > 20, "the run should be busy");
     assert!(state(&original) == state(&restored), "restored differently");
@@ -124,7 +124,7 @@ fn a_freeze_frame_loads_with_its_selection() {
     // As the UI writes it.
     let sim = busy();
     let selected = sim.vehicles().nth(3).map(|(id, _)| id);
-    let json = serde_json::json!({ "selected": selected, "snapshot": sim.snapshot() });
+    let json = serde_json::json!({ "selected": selected, "snapshot": sim.state() });
     let (loaded, loaded_selected) =
         frame::load(&serde_json::to_string_pretty(&json).unwrap(), NoopSink);
     assert_eq!(loaded_selected, selected);

@@ -31,5 +31,5 @@ pub use network::{
     MAX_PREDECESSORS, MAX_SUCCESSORS, Neighbor, NetworkError, Side, SimNetwork,
 };
 pub use occupancy::{Lateral, Occupant};
-pub use simulation::{Config, InsertError, LaneChangeError, Simulation, Snapshot};
+pub use simulation::{Config, InsertError, LaneChangeError, SimState, Simulation};
 pub use vehicle::{Intent, Placement, Vehicle, VehicleId, VehicleSpec};

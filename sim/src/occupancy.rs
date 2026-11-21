@@ -736,7 +736,7 @@ pub fn record_index(state: &SimState, lane: LaneId, id: VehicleId) -> usize {
 /// counts if `lane` is on its path. Its leader search ends where its path does,
 /// so one that doesn't know it will reach `lane` never sees what is there. That
 /// bounds how far back the search goes: no vehicle's path reaches more than
-/// the state's `max_reach` beyond its front, so one further back can't have `lane` on it.
+/// `max_reach` beyond its front, so one further back can't have `lane` on it.
 /// Ghosts and `skip` are passed over.
 ///
 /// The first vehicle found is the follower if `s` is within its [`acceleration::horizon`]:
@@ -752,24 +752,26 @@ pub fn record_index(state: &SimState, lane: LaneId, id: VehicleId) -> usize {
 /// forward.
 pub fn find_follower(
     state: &SimState,
+    max_reach: f64,
     lane: LaneId,
     s: f64,
     skip: VehicleId,
 ) -> Option<(VehicleId, f64)> {
-    behind(state, lane, lane, s, 0.0, skip)
+    behind(state, max_reach, lane, lane, s, 0.0, skip)
 }
 
 /// [`find_follower`]'s search of `lane`, from `s` back, where `s` is `travelled`
 /// back from the point searched from, on `target`.
 fn behind(
     state: &SimState,
+    max_reach: f64,
     target: LaneId,
     lane: LaneId,
     s: f64,
     travelled: f64,
     skip: VehicleId,
 ) -> Option<(VehicleId, f64)> {
-    let SimState { network, vehicles, occupants, max_reach, .. } = state;
+    let SimState { network, vehicles, occupants, .. } = state;
     let list = &occupants[lane.0 as usize];
     let end = list.partition_point(|o| o.s() < s);
     let counts = |o: &Occupant| {
@@ -786,7 +788,7 @@ fn behind(
     // as a vehicle could still have `target` on its path. On a loop a lane leads
     // into itself, which that ends too.
     let travelled = travelled + s;
-    if travelled > *max_reach {
+    if travelled > max_reach {
         return None;
     }
     network
@@ -795,7 +797,7 @@ fn behind(
         .iter()
         .filter_map(|&p| {
             let length = network.lane(p).geometry().length();
-            behind(state, target, p, length, travelled, skip)
+            behind(state, max_reach, target, p, length, travelled, skip)
         })
         .min_by(|a, b| a.1.total_cmp(&b.1))
 }

@@ -51,40 +51,77 @@ impl Default for Config {
     }
 }
 
-/// The state the searches read: the network, the vehicles and where they are.
-/// Kept apart from the rest of the simulation, so that an update can lend it to
-/// the searches while writing elsewhere, such as to the debug sink.
-pub(crate) struct SimState {
-    pub network: SimNetwork,
-    pub vehicles: SlotMap<VehicleId, Vehicle>,
+/// A simulation's whole state at one instant, network included, without its
+/// debug sink or anything derived from the rest: a freeze frame.
+/// [`Simulation::state`] lends it, and [`Simulation::restore`] turns it back
+/// into a simulation, exactly as it was. With the `serde` feature, it
+/// serializes, for saving to a file.
+///
+/// The searches read it, kept apart from the rest of the simulation, so that
+/// an update can lend it to them while writing elsewhere, such as to the debug
+/// sink.
+///
+/// A restored simulation continues bit for bit like the original, through steps,
+/// holds, lane changes and removals, until it inserts a vehicle into a slot freed
+/// before the snapshot. The vehicle store's free slots come back in a different
+/// order, so that vehicle can get a different id from the one it would have had,
+/// and the update order can differ from then on.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct SimState {
+    pub(crate) network: SimNetwork,
+    pub(crate) vehicles: SlotMap<VehicleId, Vehicle>,
     /// Each lane's occupants sorted by `s`, indexed by lane.
-    pub occupants: Vec<Vec<Occupant>>,
+    pub(crate) occupants: Vec<Vec<Occupant>>,
+    /// Each junction's queue, by junction.
+    pub(crate) queues: Vec<Queue>,
+    /// Vehicles with a speed imposed on them, and the most each may go, in m/s: 0
+    /// holds one to a stop. Few, so a list beats a field on every vehicle.
+    pub(crate) caps: Vec<(VehicleId, f64)>,
+    /// How it steps.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) config: Config,
+    /// Steps taken: every [`Config::accel_every`]th updates the longitudinal model.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) steps: u64,
+    /// Time [`Simulation::step_variable`] was given but hasn't stepped yet, in
+    /// seconds: less than a step.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) residual: f64,
+    /// Simulated time, in seconds.
+    pub(crate) time: f64,
+}
+
+/// What the simulation derives from its state, rebuilt rather than saved.
+pub(crate) struct Derived {
+    /// Each lane's overlapping lanes outside junctions, from the network.
+    pub overlaps: Overlaps,
+    /// Which merge each lane belongs to, from the network and the overlaps.
+    pub merges: Merges,
     /// At least as far as any vehicle's path has reached beyond its front, in
     /// meters: a running maximum, raised wherever a path is extended. It bounds
     /// how far back a follower search goes.
     pub max_reach: f64,
-    /// Each junction's queue, by junction.
-    pub queues: Vec<Queue>,
-    /// Each lane's overlapping lanes outside junctions: derived from the network,
-    /// so not part of a snapshot.
-    pub overlaps: Overlaps,
-    /// Which merge each lane belongs to: derived, like the overlaps.
-    pub merges: Merges,
+}
+
+impl Derived {
+    fn new(state: &SimState) -> Self {
+        let network = &state.network;
+        let overlaps = following::overlaps(network);
+        let merges = merge::merges(network, &overlaps);
+        let max_reach = state
+            .vehicles
+            .values()
+            .map(|v| reach_beyond_front(network, v))
+            .fold(0.0, f64::max);
+        Self { overlaps, merges, max_reach }
+    }
 }
 
 /// The traffic simulation.
 pub struct Simulation<D: DebugSink = NoopSink> {
     state: SimState,
-    /// Vehicles with a speed imposed on them, and the most each may go, in m/s: 0
-    /// holds one to a stop. Few, so a list beats a field on every vehicle.
-    caps: Vec<(VehicleId, f64)>,
-    /// How it steps.
-    config: Config,
-    /// Steps taken: every [`Config::accel_every`]th updates the longitudinal model.
-    steps: u64,
-    /// Time [`Simulation::step_variable`] was given but hasn't stepped yet, in
-    /// seconds: less than a step.
-    residual: f64,
+    derived: Derived,
     /// Scratch space for the longitudinal update's decisions, reused between
     /// updates.
     decisions: Vec<AccelUpdate>,
@@ -102,8 +139,6 @@ pub struct Simulation<D: DebugSink = NoopSink> {
     scan_kept: Vec<LaneId>,
     /// Scratch space for vehicles that lost a record on a lane they had left.
     departed: Vec<VehicleId>,
-    /// Simulated time, in seconds.
-    time: f64,
     /// Scratch space for lane-change decisions, reused between steps: each
     /// vehicle's lane-change state afterwards, and what it decided.
     lane_decisions: Vec<(VehicleId, lane_change::State, Decision)>,
@@ -168,83 +203,23 @@ pub enum LaneChangeError {
     NotPermitted,
 }
 
-/// A simulation's whole state at one instant, without its debug sink: a freeze
-/// frame. [`Simulation::restore`] turns it back into a simulation, exactly as it
-/// was. With the `serde` feature, it serializes, for saving to a file.
-///
-/// A restored simulation continues bit for bit like the original, through steps,
-/// holds, lane changes and removals, until it inserts a vehicle into a slot freed
-/// before the snapshot. The vehicle store's free slots come back in a different
-/// order, so that vehicle can get a different id from the one it would have had,
-/// and the update order can differ from then on.
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Snapshot {
-    network: SimNetwork,
-    vehicles: SlotMap<VehicleId, Vehicle>,
-    occupants: Vec<Vec<Occupant>>,
-    queues: Vec<Queue>,
-    caps: Vec<(VehicleId, f64)>,
-    #[cfg_attr(feature = "serde", serde(default))]
-    config: Config,
-    #[cfg_attr(feature = "serde", serde(default))]
-    steps: u64,
-    #[cfg_attr(feature = "serde", serde(default))]
-    residual: f64,
-    time: f64,
-}
-
 impl<D: DebugSink> Simulation<D> {
-    /// A freeze frame of the whole state, network included.
-    pub fn snapshot(&self) -> Snapshot {
-        Snapshot {
-            network: self.state.network.clone(),
-            vehicles: self.state.vehicles.clone(),
-            occupants: self.state.occupants.clone(),
-            queues: self.state.queues.clone(),
-            caps: self.caps.clone(),
-            config: self.config,
-            steps: self.steps,
-            residual: self.residual,
-            time: self.time,
-        }
+    /// The whole state, network included: a freeze frame, to clone or serialize.
+    pub fn state(&self) -> &SimState {
+        &self.state
     }
 
-    /// A simulation exactly as it was when `snapshot` was taken, with `sink` for
-    /// its debug events. The sink starts empty, so its events refill as each
-    /// update runs.
-    pub fn restore(snapshot: Snapshot, sink: D) -> Self {
-        let Snapshot {
-            network,
-            vehicles,
-            occupants,
-            queues,
-            caps,
-            config,
-            steps,
-            residual,
-            time,
-        } = snapshot;
-        // Derived from the paths, so not part of the snapshot.
-        let max_reach =
-            vehicles.values().map(|v| reach_beyond_front(&network, v)).fold(0.0, f64::max);
-        let overlaps = following::overlaps(&network);
-        let merges = merge::merges(&network, &overlaps);
+    /// A simulation exactly as it was in `state`, with `sink` for its debug
+    /// events. The sink starts empty, so its events refill as each update runs.
+    pub fn restore(state: SimState, sink: D) -> Self {
+        assert!(
+            state.config.step > 0.0 && state.config.accel_every > 0,
+            "{:?}",
+            state.config
+        );
         Self {
-            state: SimState {
-                overlaps,
-                merges,
-                network,
-                vehicles,
-                occupants,
-                max_reach,
-                queues,
-            },
-            caps,
-            config,
-            steps,
-            residual,
-            time,
+            derived: Derived::new(&state),
+            state,
             // Scratch space, cleared before every use.
             decisions: Vec::new(),
             held: Vec::new(),
@@ -267,38 +242,20 @@ impl<D: DebugSink> Simulation<D> {
 
     /// A simulation of `network`, stepping as `config` says.
     pub fn with_config(network: SimNetwork, sink: D, config: Config) -> Self {
-        assert!(config.step > 0.0 && config.accel_every > 0, "{config:?}");
         let lane_count = network.lanes().count();
         let junction_count = network.junctions().count();
-        let overlaps = following::overlaps(&network);
-        let merges = merge::merges(&network, &overlaps);
-        Self {
-            state: SimState {
-                overlaps,
-                merges,
-                network,
-                vehicles: SlotMap::with_key(),
-                occupants: vec![Vec::new(); lane_count],
-                max_reach: 0.0,
-                queues: vec![Queue::default(); junction_count],
-            },
+        let state = SimState {
+            network,
+            vehicles: SlotMap::with_key(),
+            occupants: vec![Vec::new(); lane_count],
+            queues: vec![Queue::default(); junction_count],
             caps: Vec::new(),
             config,
             steps: 0,
             residual: 0.0,
-            decisions: Vec::new(),
-            held: Vec::new(),
-            leavers: Vec::new(),
-            arrivals: Vec::new(),
-            scan_empty: Vec::new(),
-            scan_kept: Vec::new(),
-            departed: Vec::new(),
             time: 0.0,
-            lane_decisions: Vec::new(),
-            asks: Vec::new(),
-            lane_speeds: Vec::new(),
-            sink,
-        }
+        };
+        Self::restore(state, sink)
     }
 
     pub fn network(&self) -> &SimNetwork {
@@ -307,7 +264,7 @@ impl<D: DebugSink> Simulation<D> {
 
     /// Simulated time since the simulation was created, in seconds.
     pub fn time(&self) -> f64 {
-        self.time
+        self.state.time
     }
 
     pub fn sink(&self) -> &D {
@@ -369,7 +326,13 @@ impl<D: DebugSink> Simulation<D> {
         vehicle.speed = speed;
 
         // A key that matches no vehicle, since this one isn't inserted yet.
-        let follower = find_follower(&self.state, at.lane, rear, VehicleId::null());
+        let follower = find_follower(
+            &self.state,
+            self.derived.max_reach,
+            at.lane,
+            rear,
+            VehicleId::null(),
+        );
         if let Some((follower, gap)) = follower {
             let f = &self.state.vehicles[follower];
             let accel = acceleration::interaction(&f.spec, f.speed, gap, vehicle.speed);
@@ -422,8 +385,8 @@ impl<D: DebugSink> Simulation<D> {
 
     /// Adds a built vehicle to the simulation and to its lane's occupants.
     fn register(&mut self, vehicle: Vehicle) -> VehicleId {
-        self.state.max_reach =
-            self.state.max_reach.max(reach_beyond_front(&self.state.network, &vehicle));
+        self.derived.max_reach =
+            self.derived.max_reach.max(reach_beyond_front(&self.state.network, &vehicle));
         let lane_id = vehicle.path[0];
         let lane_pos = vehicle.lane_pos;
         let id = self.state.vehicles.insert(vehicle);
@@ -440,7 +403,8 @@ impl<D: DebugSink> Simulation<D> {
         let list = &mut self.state.occupants[lane_id.0 as usize];
         let index = list.partition_point(|o| o.s() <= occupant.s());
         list.insert(index, occupant);
-        let SimState { network, vehicles, occupants, queues, overlaps, .. } = &mut self.state;
+        let SimState { network, vehicles, occupants, queues, .. } = &mut self.state;
+        let overlaps = &self.derived.overlaps;
         join_overlaps(network, overlaps, occupants, id, &vehicles[id], lane_id);
         arrive(network, occupants, queues, id, &vehicles[id]);
         id
@@ -455,7 +419,7 @@ impl<D: DebugSink> Simulation<D> {
             queue.committed.retain(|&q| q != id);
             queue.fronts.retain(|&q| q != id);
         }
-        self.caps.retain(|&(c, _)| c != id);
+        self.state.caps.retain(|&(c, _)| c != id);
         self.sink.record(|| DebugEvent::VehicleRemoved { vehicle: id });
         self.state.vehicles.remove(id)
     }
@@ -505,15 +469,15 @@ impl<D: DebugSink> Simulation<D> {
         if !self.state.vehicles.contains_key(id) {
             return;
         }
-        match self.caps.iter_mut().find(|(c, _)| *c == id) {
+        match self.state.caps.iter_mut().find(|(c, _)| *c == id) {
             Some(cap) => cap.1 = max_speed.max(0.0),
-            None => self.caps.push((id, max_speed.max(0.0))),
+            None => self.state.caps.push((id, max_speed.max(0.0))),
         }
     }
 
     /// The maximum speed imposed on a vehicle, if any.
     pub fn speed_cap(&self, id: VehicleId) -> Option<f64> {
-        self.caps.iter().find(|(c, _)| *c == id).map(|&(_, max)| max)
+        self.state.caps.iter().find(|(c, _)| *c == id).map(|&(_, max)| max)
     }
 
     /// Makes a vehicle brake to a stop and wait, until [`Simulation::release`]: a
@@ -524,7 +488,7 @@ impl<D: DebugSink> Simulation<D> {
 
     /// Lifts any speed cap on a vehicle, held or not.
     pub fn release(&mut self, id: VehicleId) {
-        self.caps.retain(|&(c, _)| c != id);
+        self.state.caps.retain(|&(c, _)| c != id);
     }
 
     /// Whether a vehicle is held to a stop: capped at 0.
@@ -580,7 +544,7 @@ impl<D: DebugSink> Simulation<D> {
             needed,
         );
         let beyond_front = reach_beyond_front(&self.state.network, vehicle);
-        self.state.max_reach = self.state.max_reach.max(beyond_front);
+        self.derived.max_reach = self.derived.max_reach.max(beyond_front);
 
         let list = &mut self.state.occupants[neighbor.lane.0 as usize];
         if let Some(ghost) = list.iter_mut().find(|o| o.id == id && o.is_ghost()) {
@@ -598,7 +562,8 @@ impl<D: DebugSink> Simulation<D> {
             let index = list.partition_point(|o| o.s() <= occupant.s());
             list.insert(index, occupant);
         }
-        let SimState { network, vehicles, occupants, queues, overlaps, .. } = &mut self.state;
+        let SimState { network, vehicles, occupants, queues, .. } = &mut self.state;
+        let overlaps = &self.derived.overlaps;
         let vehicle = &vehicles[id];
         // Its course has changed, so every other record it has is classified
         // afresh, set here rather than left to the next occupancy update, so
@@ -626,7 +591,7 @@ impl<D: DebugSink> Simulation<D> {
         let list = &mut self.state.occupants[neighbor.lane.0 as usize];
         let index = list.partition_point(|o| o.s() <= ghost.s());
         list.insert(index, ghost);
-        self.state.vehicles[id].intent = Some(Intent { side, since: self.time });
+        self.state.vehicles[id].intent = Some(Intent { side, since: self.state.time });
     }
 
     /// Stops a vehicle indicating, removing its ghost.
@@ -644,24 +609,24 @@ impl<D: DebugSink> Simulation<D> {
 
     /// How the simulation steps.
     pub fn config(&self) -> Config {
-        self.config
+        self.state.config
     }
 
     /// Advances the simulation by `dt` seconds of wall time, a frame's: as many
     /// whole steps as fit, with what is left over carried to the next call.
     /// Returns how many steps it took.
     pub fn step_variable(&mut self, dt: f64) -> u32 {
-        self.residual += dt;
-        let step = self.config.step;
+        self.state.residual += dt;
+        let step = self.state.config.step;
         let mut taken = 0;
         // A step's worth, give or take rounding, so frames of exactly a step
         // take exactly one.
-        while self.residual >= step - 1e-9 * step {
-            self.residual -= step;
+        while self.state.residual >= step - 1e-9 * step {
+            self.state.residual -= step;
             self.step();
             taken += 1;
         }
-        self.residual = self.residual.max(0.0);
+        self.state.residual = self.state.residual.max(0.0);
         taken
     }
 
@@ -669,20 +634,20 @@ impl<D: DebugSink> Simulation<D> {
     /// has reached, from 0 to 1: for drawing vehicles between where they were
     /// before the last step and where they are now.
     pub fn alpha(&self) -> f64 {
-        (self.residual / self.config.step).clamp(0.0, 1.0)
+        (self.state.residual / self.state.config.step).clamp(0.0, 1.0)
     }
 
     /// Advances the simulation by one step, [`Config::step`] seconds.
     pub fn step(&mut self) {
-        let dt = self.config.step;
-        self.time += dt;
+        let dt = self.state.config.step;
+        self.state.time += dt;
         // As often as the longitudinal model, which they share lane speeds with.
-        let every = self.config.accel_every;
-        if self.steps.is_multiple_of(u64::from(every)) {
+        let every = self.state.config.accel_every;
+        if self.state.steps.is_multiple_of(u64::from(every)) {
             self.update_lane_changes(dt * f64::from(every));
         }
-        self.steps += 1;
-        if self.steps.is_multiple_of(u64::from(self.config.accel_every)) {
+        self.state.steps += 1;
+        if self.state.steps.is_multiple_of(u64::from(self.state.config.accel_every)) {
             self.update_accels();
         }
         self.update_motion(dt);
@@ -697,10 +662,8 @@ impl<D: DebugSink> Simulation<D> {
     /// time. Decisions are computed from a read-only view of the state, then
     /// applied in order.
     fn update_lane_changes(&mut self, dt: f64) {
-        let Self {
-            state, lane_decisions, asks, lane_speeds, caps, sink, config, ..
-        } = self;
-        let time = self.time;
+        let Self { state, derived, lane_decisions, asks, lane_speeds, sink, .. } = self;
+        let time = state.time;
         LaneSpeeds::refresh(lane_speeds, state);
         lane_decisions.clear();
         asks.clear();
@@ -747,7 +710,7 @@ impl<D: DebugSink> Simulation<D> {
         }
         // The gaps, up to the limit: drivers' own cooldowns spread them out, so
         // this is only a backstop.
-        let checks = asks.len().min(config.max_gap_checks);
+        let checks = asks.len().min(state.config.max_gap_checks);
         for &(slot, side) in &asks[..checks] {
             let (id, mut lc, _) = lane_decisions[slot];
             let vehicle = &state.vehicles[id];
@@ -755,7 +718,7 @@ impl<D: DebugSink> Simulation<D> {
             let incentive = incentives(state, lane_speeds, vehicle)[lane_change::index(side)]
                 .unwrap_or_default();
             let desire = lc.desire(side);
-            let prospect = check_gap(state, caps, id, vehicle, side, desire);
+            let prospect = check_gap(state, derived.max_reach, id, vehicle, side, desire);
             let (decision, eval) = lane_change::resolve(
                 &mut lc,
                 vehicle.intent,
@@ -802,7 +765,7 @@ impl<D: DebugSink> Simulation<D> {
     /// its own record rather than looking for it. SUMO plans each lane's vehicles
     /// from the front back in the same way.
     fn update_accels(&mut self) {
-        let Self { state, decisions, sink, lane_speeds, .. } = self;
+        let Self { state, derived, decisions, sink, lane_speeds, .. } = self;
         let SimState { network, vehicles, occupants, .. } = &*state;
         sink.record(|| DebugEvent::RecomputeAccels);
         decisions.clear();
@@ -837,12 +800,13 @@ impl<D: DebugSink> Simulation<D> {
         for (j, queue) in state.queues.iter().enumerate() {
             junction_terms(state, sink, JunctionId(j as u32), queue, decisions);
         }
-        for m in 0..state.merges.len() {
-            merge_terms(state, sink, m, decisions);
+        for m in 0..derived.merges.len() {
+            merge_terms(state, &derived.merges, sink, m, decisions);
         }
 
-        let noise_step =
-            acceleration::NoiseStep::new(self.config.step * f64::from(self.config.accel_every));
+        let noise_step = acceleration::NoiseStep::new(
+            self.state.config.step * f64::from(self.state.config.accel_every),
+        );
         // What its old side and its speed cap allow first, then its own update,
         // so that whether a leader binds it is judged against all of them.
         for update in &self.decisions {
@@ -865,7 +829,7 @@ impl<D: DebugSink> Simulation<D> {
                 vehicle.accel = vehicle.accel.min(accel);
             }
         }
-        for &(id, max_speed) in &self.caps {
+        for &(id, max_speed) in &self.state.caps {
             let vehicle = &mut self.state.vehicles[id];
             let term = acceleration::capped(vehicle.speed, max_speed);
             let source = AccelSource::Cap { max_speed };
@@ -909,10 +873,8 @@ impl<D: DebugSink> Simulation<D> {
     /// the change's cubic, and the change ends where the cubic does.
     fn update_motion(&mut self, dt: f64) {
         let Self {
-            state:
-                SimState {
-                    network, vehicles, occupants, max_reach, overlaps, merges, ..
-                },
+            state: SimState { network, vehicles, occupants, .. },
+            derived: Derived { overlaps, merges, max_reach },
             leavers,
             arrivals,
             sink,
@@ -1330,11 +1292,12 @@ fn junction_terms<D: DebugSink>(
 /// [`merge::term`]), each recorded to the debug sink.
 fn merge_terms<D: DebugSink>(
     state: &SimState,
+    merges: &Merges,
     sink: &mut D,
     merge: usize,
     decisions: &mut Vec<AccelUpdate>,
 ) {
-    let SimState { network, merges, vehicles, occupants, .. } = state;
+    let SimState { network, vehicles, occupants, .. } = state;
     let mut before: Option<merge::Member> = None;
     merge::order(network, merges, vehicles, occupants, merge, |follower| {
         let leader = before.replace(follower);

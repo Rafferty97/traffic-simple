@@ -196,7 +196,7 @@ pub(crate) fn incentives(
 /// in any lane, so it does after changing too.
 pub(crate) fn check_gap(
     state: &SimState,
-    caps: &[(VehicleId, f64)],
+    max_reach: f64,
     id: VehicleId,
     vehicle: &Vehicle,
     side: Side,
@@ -204,7 +204,7 @@ pub(crate) fn check_gap(
 ) -> lane_change::Prospect {
     let SimState { network, vehicles, .. } = state;
     let headway = lane_change::headway(desire);
-    let cap = caps.iter().find(|&&(capped, _)| capped == id);
+    let cap = state.caps.iter().find(|&&(capped, _)| capped == id);
     let cap = cap.map_or(f64::INFINITY, |&(_, max_speed)| {
         acceleration::capped(vehicle.speed, max_speed)
     });
@@ -222,10 +222,11 @@ pub(crate) fn check_gap(
     // rear there, as its search there splits it.
     let target = network.lane(vehicle.path[0]).adj(side).expect("asked only where permitted");
     let rear = occupancy::axle_beside(network, vehicle, target.lane) - vehicle.spec.rear_axle;
-    let new_follower = find_follower(state, target.lane, rear, id).map(|(follower, gap)| {
-        let f = &vehicles[follower];
-        acceleration::relaxed(&f.spec, f.speed, gap, vehicle.speed, headway)
-    });
+    let new_follower =
+        find_follower(state, max_reach, target.lane, rear, id).map(|(follower, gap)| {
+            let f = &vehicles[follower];
+            acceleration::relaxed(&f.spec, f.speed, gap, vehicle.speed, headway)
+        });
     // Halfway through before it would have to stop behind its leader.
     let own = occupancy::record_index(state, vehicle.path[0], id);
     let mut stop = f64::INFINITY;
