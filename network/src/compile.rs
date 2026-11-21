@@ -382,7 +382,9 @@ fn connect(a: &Built, b: &Built, straight: f64, width: Option<f64>) -> Built {
 /// as lines, widening both its ends to reach it. Never less than half its width. On a bend the outer front corner
 /// swings out, `√(f² + (R + w/2)²) − R` for a front `f` ahead of the rear axle
 /// and a radius `R`, and the inner rear corner cuts in a little; a turn's mouth,
-/// which bends little, stays narrow.
+/// which bends little, stays narrow. Then tapered, so it never widens faster
+/// than [`TAPER`] along it: a cubic bends from its very start, so the envelope
+/// would step out there.
 fn swept(points: &[DVec2], s: &[f64], spec: &traffic_sim::VehicleSpec) -> Vec<[f64; 2]> {
     let mut half = vec![[0.5 * spec.width; 2]; points.len()];
     let (front, rear, side) = (
@@ -417,8 +419,21 @@ fn swept(points: &[DVec2], s: &[f64], spec: &traffic_sim::VehicleSpec) -> Vec<[f
             }
         }
     }
+    // Tapered, never narrowing faster than TAPER along it either way, so its
+    // edges don't step out where a bend begins abruptly.
+    for i in 1..points.len() {
+        let taper = TAPER * (s[i] - s[i - 1]);
+        half[i] = [0, 1].map(|e| half[i][e].max(half[i - 1][e] - taper));
+    }
+    for i in (0..points.len() - 1).rev() {
+        let taper = TAPER * (s[i + 1] - s[i]);
+        half[i] = [0, 1].map(|e| half[i][e].max(half[i + 1][e] - taper));
+    }
     half
 }
+
+/// How fast a connector's swept width may change along it: 1 m sideways in 4 m.
+const TAPER: f64 = 0.25;
 
 /// The tightest bend of `points` each way, as curvatures bending left and
 /// right.
