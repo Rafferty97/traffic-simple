@@ -3,6 +3,7 @@
 
 use glam::DVec2;
 
+use crate::arms::{self, StopLine};
 use crate::reference::Polyline;
 use crate::{Direction, Intersection, LaneRef, RoadNetwork, Turn};
 
@@ -133,22 +134,6 @@ fn approaches(
     out: &mut RenderGeometry,
 ) {
     let lane = |l: LaneRef| &net.roads[l.road.0].lanes[l.lane];
-    // Each lane's direction of travel where it meets the intersection: along
-    // its road's end segment, which lies on the tangent there.
-    let end_dir = |l: LaneRef, arriving: bool| {
-        let points = &polylines[l.road.0].points;
-        let n = points.len();
-        let at_end = (lane(l).direction == Direction::Forward) == arriving;
-        let dir = match at_end {
-            true => points[n - 1] - points[n - 2],
-            false => points[1] - points[0],
-        };
-        if lane(l).direction == Direction::Forward {
-            dir
-        } else {
-            -dir
-        }
-    };
     let mut froms: Vec<LaneRef> = Vec::new();
     for &(from, _) in &intersection.connections {
         if !froms.contains(&from) {
@@ -159,16 +144,17 @@ fn approaches(
         let road_lane = lane(from);
         let line = &polylines[from.road.0];
         let forward = road_lane.direction == Direction::Forward;
-        let arriving = end_dir(from, true);
 
-        // Across the lane where it ends, set back by half its width so that
-        // it's painted on the road.
-        let k = if forward { line.points.len() - 1 } else { 0 };
-        let back = -0.5 * STOP_LINE_WIDTH * arriving.normalize();
+        // Along its road end's stop line across the lane, set back by half its
+        // width so that it's painted behind the line.
+        let arm = intersection.arm(from.road);
+        let stop = StopLine::new(line, &arm, forward);
+        let total = *line.s.last().unwrap();
+        let s_end = if forward { total } else { 0.0 };
+        let offset = road_lane.offset.at(s_end);
         let across = |side: f64| {
-            let s = line.s[k];
-            let t = road_lane.offset.at(s) + side * 0.5 * road_lane.width.at(s);
-            line.points[k] + t * line.miters[k] + back
+            let t = offset + side * 0.5 * road_lane.width.at(s_end);
+            stop.at(t) + 0.5 * STOP_LINE_WIDTH * stop.normal
         };
         out.markings.push(Marking {
             points: vec![across(1.0), across(-1.0)],
@@ -184,15 +170,12 @@ fn approaches(
                 Turn::Right => right = true,
             }
         }
-        let length = *line.s.last().unwrap();
-        if length < 2.0 * ARROW_SETBACK {
+        // Back from where its centre crosses the stop line.
+        let back = arms::back(&arm, forward, offset) + ARROW_SETBACK;
+        if total < back + ARROW_SETBACK {
             continue;
         }
-        let s = if forward {
-            length - ARROW_SETBACK
-        } else {
-            ARROW_SETBACK
-        };
+        let s = if forward { total - back } else { back };
         // The segment it falls on, and how far along it.
         let i = line.s.partition_point(|&x| x <= s).clamp(1, line.s.len() - 1);
         let t = (s - line.s[i - 1]) / (line.s[i] - line.s[i - 1]);

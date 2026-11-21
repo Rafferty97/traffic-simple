@@ -311,7 +311,7 @@ impl LaneGeometry {
     /// leave a sliver no thicker than rounding and don't count: an overlap
     /// counts only if it is, on average, at least [`SAME_POINT`] thick. It compares every
     /// pair of segments, so it is for building networks, not for hot paths.
-    pub(crate) fn overlap(&self, other: &LaneGeometry) -> Option<[Range<f64>; 2]> {
+    pub fn overlap(&self, other: &LaneGeometry) -> Option<[Range<f64>; 2]> {
         let mut ranges: Option<[Range<f64>; 2]> = None;
         for i in 0..self.segs.len() {
             let mine = self.quad(i);

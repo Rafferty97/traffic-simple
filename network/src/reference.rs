@@ -205,8 +205,9 @@ pub(crate) struct Polyline {
 
 impl Polyline {
     /// Samples a road's reference line, with extra vertices where `profiles`
-    /// ease, so lanes offset from it follow them.
-    pub fn new(start: Pose, pieces: &[Piece], profiles: &[Profile]) -> Self {
+    /// ease, so lanes offset from it follow them, and at `cuts`, distances back
+    /// from its start and from its end, where lanes are cut short.
+    pub fn new(start: Pose, pieces: &[Piece], profiles: &[Profile], cuts: [&[f64]; 2]) -> Self {
         let mut placed = Vec::new();
         let mut pose = start;
         let mut s0 = 0.0;
@@ -220,6 +221,8 @@ impl Polyline {
         }
         let total = s0;
         let mut stations = vec![0.0, total];
+        stations.extend(cuts[0].iter().copied());
+        stations.extend(cuts[1].iter().map(|d| total - d));
         for (s0, p) in &placed {
             stations.push(*s0);
             stations.extend(p.stations().into_iter().map(|s| s0 + s));
@@ -280,6 +283,19 @@ impl Polyline {
             })
             .collect();
         Self { s: stations, points, miters }
+    }
+
+    /// The index of the vertex at `s`, which must be one.
+    pub fn vertex(&self, s: f64) -> usize {
+        self.s.iter().position(|&x| (x - s).abs() < 1e-6).expect("a vertex there")
+    }
+
+    /// The point on the reference line at `s`, and its direction there.
+    pub fn at(&self, s: f64) -> (DVec2, DVec2) {
+        let i = self.s.partition_point(|&x| x <= s).clamp(1, self.s.len() - 1);
+        let (a, b) = (self.points[i - 1], self.points[i]);
+        let u = (s - self.s[i - 1]) / (self.s[i] - self.s[i - 1]);
+        (a.lerp(b, u), (b - a).normalize())
     }
 
     /// The polyline offset by `offset` at each vertex.

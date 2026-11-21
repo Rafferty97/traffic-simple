@@ -59,8 +59,12 @@ fn crossroads_lanes_have_arrows_for_the_ways_they_turn() {
 fn crossroads_lanes_have_stop_lines_where_they_come_in() {
     use traffic_network::MarkingStyle;
     for lanes in 1..=3 {
-        let compiled = compile(&scenarios::crossroads(lanes, 14.0)).unwrap();
-        let half = lanes as f64 * 3.5 + 6.0;
+        let net = scenarios::crossroads(lanes, 14.0);
+        let compiled = compile(&net).unwrap();
+        // Where the arms' lanes coming in end: their stop lines, set back as
+        // the crossroads fitted them, the same on every arm.
+        let back = net.intersections[0].arm(traffic_network::RoadId(0)).stop_line;
+        let half = lanes as f64 * 3.5 + 6.0 + back;
         let stops: Vec<_> = compiled
             .render
             .markings
@@ -73,7 +77,7 @@ fn crossroads_lanes_have_stop_lines_where_they_come_in() {
                 panic!("a stop line is one segment")
             };
             assert!((a.distance(b) - 3.5).abs() < 1e-6);
-            // Set back half its width from the junction's edge, across its arm.
+            // Set back half its width from where its lane ends, across its arm.
             let mid = 0.5 * (a + b);
             assert!((mid.x.abs().max(mid.y.abs()) - (half + 0.15)).abs() < 1e-6);
             let along = match mid.x.abs() > mid.y.abs() {

@@ -19,7 +19,8 @@ const RIGHT_TURN_STRAIGHT: f64 = 3.0;
 /// way, 300 m long, driving on the left. Every lane coming in connects to the
 /// lane at the same place across the junction, straight on; only the leftmost
 /// turns left and only the rightmost turns right, running 3 m straight on
-/// before it turns.
+/// before it turns. Its stop lines are set back, and its run outs as long, as
+/// turning vehicles need (see [`crate::fit_arms`]).
 pub fn crossroads(lanes: usize, speed_limit: f64) -> RoadNetwork {
     let mut net = RoadNetwork::default();
     // The junction's half-width, from its centre to where the arms end.
@@ -63,6 +64,8 @@ pub fn crossroads(lanes: usize, speed_limit: f64) -> RoadNetwork {
         intersection.connections.push((inbound(from, 0), outbound(right, 0)));
     }
     net.intersections.push(intersection);
+    // Stop lines set back, and run outs, wherever turning vehicles sweep.
+    crate::fit_arms(&mut net).expect("the crossroads compile once fitted");
     net
 }
 

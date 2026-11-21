@@ -4,10 +4,11 @@ use std::fmt;
 
 use glam::DVec2;
 use traffic_sim::{
-    AMBER_DECEL, Barrier, BarrierKind, Keep, Lane, LaneError, LaneId, Movement, MovementId,
+    AMBER_DECEL, Barrier, BarrierKind, Keep, Lane, LaneError, LaneId, Line, Movement, MovementId,
     NetworkError, Phase, SAME_POINT, SignalPlan, SimNetwork, VehicleSpec,
 };
 
+use crate::arms::{self, StopLine};
 use crate::reference::{self, Polyline};
 use crate::render;
 use crate::{
@@ -28,6 +29,21 @@ pub enum CompileError {
     Lane { what: String, error: LaneError },
     /// The lanes don't make a valid simulation network.
     Network(NetworkError),
+    /// A road's arm at an intersection doesn't fit it.
+    Arm { road: RoadId, reason: &'static str },
+    /// A vehicle's body turning along a connector would sweep onto a road
+    /// lane other than its own: its stop line should be further back, or its
+    /// run out longer.
+    Sweeps {
+        intersection: usize,
+        connection: usize,
+        lane: LaneRef,
+        reach: [f64; 2],
+    },
+    /// A vehicle's nose, still turning past a connector's end, would overhang
+    /// another connector: the run out of the road it goes into should be
+    /// longer.
+    Overhangs { intersection: usize, connection: usize, beyond: f64 },
 }
 
 impl fmt::Display for CompileError {
@@ -35,6 +51,16 @@ impl fmt::Display for CompileError {
         match self {
             CompileError::Lane { what, error } => write!(f, "{what}: {error}"),
             CompileError::Network(error) => write!(f, "{error}"),
+            CompileError::Arm { road, reason } => write!(f, "road {}: {reason}", road.0),
+            CompileError::Sweeps { intersection, connection, lane, .. } => write!(
+                f,
+                "intersection {intersection} connection {connection} sweeps onto road {} lane {}",
+                lane.road.0, lane.lane
+            ),
+            CompileError::Overhangs { intersection, connection, .. } => write!(
+                f,
+                "intersection {intersection} connection {connection} overhangs another past its end"
+            ),
         }
     }
 }
@@ -85,23 +111,79 @@ impl Built {
 /// - Each intersection's connectors are one junction. Road lanes merging into
 ///   the same lane are not: vehicles on them keep apart by following.
 pub fn compile(net: &RoadNetwork) -> Result<Compiled, CompileError> {
+    let (compiled, mut swept) = compile_swept(net)?;
+    match swept.is_empty() {
+        true => Ok(compiled),
+        false => Err(swept.swap_remove(0)),
+    }
+}
+
+/// As [`compile`], with every sweep that fails it, which only fails it once
+/// it has compiled otherwise.
+fn compile_swept(net: &RoadNetwork) -> Result<(Compiled, Vec<CompileError>), CompileError> {
     let mut lanes: Vec<Lane> = Vec::new();
     let mut built: Vec<Built> = Vec::new();
     let mut road_lanes = Vec::new();
     let mut polylines = Vec::new();
+    // Each road lane's stretches that belong to an intersection: the one before
+    // it, from the intersection to its start, and the one after it, from its
+    // end into the intersection, in its direction of travel.
+    let mut stretches: Vec<[Option<Vec<DVec2>>; 2]> = Vec::new();
+    let ends = arms::road_ends(net);
 
     for (r, road) in net.roads.iter().enumerate() {
         let profiles: Vec<_> = road.lanes.iter().flat_map(|l| [l.offset, l.width]).collect();
-        let line = Polyline::new(road.start, &road.pieces, &profiles);
+        let total =
+            *Polyline::new(road.start, &road.pieces, &profiles, [&[], &[]]).s.last().unwrap();
+        // How far back from each end its lanes coming in and going out are cut.
+        let cut = ends[r].map(|end| end.map(|(_, arm)| arm));
+        let cuts = [false, true].map(|at_end| {
+            cut[at_end as usize].map_or([0.0; 2], |arm| arms::cuts(road, total, &arm, at_end))
+        });
+        let kept = |c: [f64; 2]| c.into_iter().filter(|&d| d > 0.0).collect::<Vec<_>>();
+        let line = Polyline::new(
+            road.start,
+            &road.pieces,
+            &profiles,
+            [&kept(cuts[0]), &kept(cuts[1])],
+        );
         let mut ids = Vec::new();
         for (i, lane) in road.lanes.iter().enumerate() {
             let mut points = line.offset(&lane.offset);
             let mut half_widths: Vec<[f64; 2]> =
                 line.s.iter().map(|&s| [0.5 * lane.width.at(s); 2]).collect();
+            // Where it is cut at each end, coming in or going out.
+            let at = |at_end: bool| cuts[at_end as usize][!arms::arriving(lane, at_end) as usize];
+            let n = points.len();
+            let lo = if at(false) > 0.0 {
+                line.vertex(at(false))
+            } else {
+                0
+            };
+            let hi = if at(true) > 0.0 {
+                line.vertex(total - at(true))
+            } else {
+                n - 1
+            };
+            if lo >= hi {
+                return Err(CompileError::Arm {
+                    road: RoadId(r),
+                    reason: "its lanes are cut away",
+                });
+            }
+            let mut before = (lo > 0).then(|| points[..=lo].to_vec());
+            let mut after = (hi < n - 1).then(|| points[hi..].to_vec());
+            points = points[lo..=hi].to_vec();
+            half_widths = half_widths[lo..=hi].to_vec();
             if lane.direction == Direction::Backward {
                 points.reverse();
                 half_widths.reverse();
+                for stretch in [&mut before, &mut after].into_iter().flatten() {
+                    stretch.reverse();
+                }
+                std::mem::swap(&mut before, &mut after);
             }
+            stretches.push([before, after]);
             let what = || format!("road {r} lane {i}");
             let b = Built { points, half_widths };
             let keep = if road.speed_limit > net.keep_above {
@@ -120,10 +202,13 @@ pub fn compile(net: &RoadNetwork) -> Result<Compiled, CompileError> {
 
     let mut connectors = Vec::new();
     let mut turns = Vec::new();
+    let mut stops = Vec::new();
+    let mut bodies = Vec::new();
     let mut links = Vec::new();
     for (k, intersection) in net.intersections.iter().enumerate() {
         let mut ids = Vec::new();
         let mut ways = Vec::new();
+        let mut lines = Vec::new();
         for (c, &(from, to)) in intersection.connections.iter().enumerate() {
             let lane_id = |l: LaneRef| road_lanes[l.road.0][l.lane];
             let (a, b) = (
@@ -136,7 +221,36 @@ pub fn compile(net: &RoadNetwork) -> Result<Compiled, CompileError> {
                 true => intersection.far_side_straight,
                 false => 0.0,
             };
-            let connector = connect(a, b, straight, intersection.connector_width);
+            // From its lane's end, along the stretch to the intersection.
+            let start =
+                stretches[lane_id(from).0 as usize][1].clone().unwrap_or_else(|| vec![a.end()]);
+            let dir = match start.len() {
+                1 => a.end_dir(),
+                n => (start[n - 1] - start[n - 2]).normalize(),
+            };
+            // To the road it goes into, and along the stretch to its lane's
+            // start, or, turning into a lane other than the nearest on its side,
+            // drifting across to it over that stretch.
+            let behind = &stretches[lane_id(to).0 as usize][0];
+            let (end, end_dir, tail) = match behind {
+                Some(stretch) if turn == Turn::Straight || nearest(net, to, turn) => (
+                    stretch[0],
+                    (stretch[1] - stretch[0]).normalize(),
+                    &stretch[1..],
+                ),
+                _ => (b.start(), b.start_dir(), &[][..]),
+            };
+            let (connector, body) = connect(
+                &start,
+                dir,
+                straight,
+                end,
+                end_dir,
+                tail,
+                intersection.connector_width,
+            );
+            lines.push(stop(net, &polylines, &ends, from));
+            bodies.push(body);
             let limit = net.roads[from.road.0].speed_limit.min(net.roads[to.road.0].speed_limit);
             let what = || format!("intersection {k} connection {c}");
             lanes.push(build(
@@ -151,6 +265,7 @@ pub fn compile(net: &RoadNetwork) -> Result<Compiled, CompileError> {
         }
         connectors.push(ids);
         turns.push(ways);
+        stops.push(lines);
     }
 
     let mut sim = SimNetwork::new(lanes);
@@ -214,14 +329,90 @@ pub fn compile(net: &RoadNetwork) -> Result<Compiled, CompileError> {
                 intersection,
                 &connectors[k],
                 &turns[k],
+                &stops[k],
                 phases,
             );
         }
     }
     sim.validate().map_err(CompileError::Network)?;
+    let swept = check_sweeps(&sim, &road_lanes, &connectors, &bodies);
 
     let render = render::build(net, &polylines, &turns);
-    Ok(Compiled { sim, render, road_lanes, connectors, turns })
+    Ok((
+        Compiled { sim, render, road_lanes, connectors, turns },
+        swept,
+    ))
+}
+
+/// What [`fit_arms`] rounds how far it moves a stop line or lengthens a run
+/// out up to, in meters.
+const FIT_STEP: f64 = 0.25;
+
+/// Compiles `net`, first moving stop lines back and lengthening run outs
+/// wherever a vehicle's body turning along a connector would sweep onto a road
+/// lane: onto one coming in, its stop line goes back as far as the sweep
+/// reaches along it; onto one going out, or past the connector's end onto
+/// another, its run out grows as far, each rounded up to [`FIT_STEP`]. So road design sets stop lines back
+/// to clear turning vehicles' swept paths. The arms it fits are left in `net`.
+pub fn fit_arms(net: &mut RoadNetwork) -> Result<Compiled, CompileError> {
+    loop {
+        let (compiled, swept) = compile_swept(net)?;
+        if swept.is_empty() {
+            return Ok(compiled);
+        }
+        let ends = arms::road_ends(net);
+        let mut fitted: Vec<(usize, crate::Arm)> = Vec::new();
+        for error in swept {
+            // Overhanging past its end, the road it goes into runs out further.
+            let (intersection, lane, reach) = match error {
+                CompileError::Overhangs { intersection, connection, beyond } => (
+                    intersection,
+                    net.intersections[intersection].connections[connection].1,
+                    [None, Some(beyond)],
+                ),
+                CompileError::Sweeps { intersection, lane, reach, .. } => {
+                    (intersection, lane, reach.map(Some))
+                }
+                _ => unreachable!(),
+            };
+            let Some(at_end) = [false, true]
+                .into_iter()
+                .find(|&e| ends[lane.road.0][e as usize].is_some_and(|(k, _)| k == intersection))
+            else {
+                // A road lane at another intersection, or none: nothing here moves it.
+                return Err(error);
+            };
+            // How far back from its end a lane coming in is swept, or from its
+            // start a lane going out: so far its arm must cut it back, in steps.
+            let road_lane = &net.roads[lane.road.0].lanes[lane.lane];
+            let coming_in = reach[0].is_some() && arms::arriving(road_lane, at_end);
+            let by = reach[!coming_in as usize].expect("how far it reaches");
+            let by = (by / FIT_STEP).ceil().max(1.0) * FIT_STEP;
+            // The furthest any sweep needs, from the arm as it was.
+            let i = match fitted.iter().position(|(k, a)| *k == intersection && a.road == lane.road)
+            {
+                Some(i) => i,
+                None => {
+                    fitted.push((intersection, net.intersections[intersection].arm(lane.road)));
+                    fitted.len() - 1
+                }
+            };
+            let was = net.intersections[intersection].arm(lane.road);
+            let arm = &mut fitted[i].1;
+            match coming_in {
+                true => arm.stop_line = arm.stop_line.max(was.stop_line + by),
+                false => arm.run_out = arm.run_out.max(was.run_out + by),
+            }
+            if arm.stop_line.max(arm.run_out) > 0.5 * net.roads[lane.road.0].length() {
+                return Err(error);
+            }
+        }
+        for (k, arm) in fitted {
+            let x = &mut net.intersections[k];
+            x.arms.retain(|a| a.road != arm.road);
+            x.arms.push(arm);
+        }
+    }
 }
 
 /// An intersection's signal plan, and a signal barrier at the start of each of
@@ -239,6 +430,7 @@ fn add_signals(
     intersection: &Intersection,
     connectors: &[LaneId],
     turns: &[Turn],
+    stops: &[(f64, Option<Line>)],
     phases: &[SignalPhase],
 ) {
     let mut movements: Vec<(RoadId, Turn)> = Vec::new();
@@ -297,12 +489,10 @@ fn add_signals(
         phases,
     };
     let first = sim.add_signal(plan);
-    for (&connector, &m) in connectors.iter().zip(&of) {
+    for ((&connector, &m), &(s, line)) in connectors.iter().zip(&of).zip(stops) {
         let movement = MovementId(first.0 + m as u32);
-        sim.add_barrier(
-            connector,
-            Barrier::new(0.0, BarrierKind::Signal { movement }),
-        );
+        let kind = BarrierKind::Signal { movement };
+        sim.add_barrier(connector, Barrier { line, ..Barrier::new(s, kind) });
     }
     // Every road has priority at signals: a far-side turn gives way to the
     // traffic it crosses, waiting inside the junction at its first conflict with
@@ -346,33 +536,241 @@ fn build(b: &Built, speed_limit: f64, what: impl Fn() -> String) -> Result<Lane,
         .map_err(|error| CompileError::Lane { what: what(), error })
 }
 
-/// A connector from the end of `a` to the start of `b`: `straight` on along
-/// `a`'s direction, then a cubic Bézier along their directions, its control
-/// points a third of the way across, sampled by the same tolerance as roads,
-/// `width` wide, or by default as wide as the
-/// widest vehicle sweeps along it (see [`swept`]), plus the room one needs to
-/// pass another on each side.
-fn connect(a: &Built, b: &Built, straight: f64, width: Option<f64>) -> Built {
-    let (p0, p3) = (a.end() + straight * a.end_dir(), b.start());
-    let reach = p0.distance(p3) / 3.0;
-    let (c1, c2) = (p0 + reach * a.end_dir(), p3 - reach * b.start_dir());
-    let start = Pose { pos: p0, heading: a.end_dir().to_angle() };
-    let (mut s, mut points) = reference::sample_bezier(start, c1, c2, p3);
-    // The straight run on, one segment.
+/// A connector along `start`, from its lane's end into the intersection,
+/// heading `dir` there; then `straight` on; then a cubic Bézier to `end`,
+/// heading `end_dir` there, its control points a third of the way across,
+/// sampled by the same tolerance as roads; then along `tail`. It is `width`
+/// wide, or by default as wide as the widest vehicle sweeps along it (see
+/// [`swept`]), plus the room one needs to pass another on each side. With it,
+/// the widest vehicle's body's sweep, run on past its ends as far as the
+/// vehicle overhangs them.
+fn connect(
+    start: &[DVec2],
+    dir: DVec2,
+    straight: f64,
+    end: DVec2,
+    end_dir: DVec2,
+    tail: &[DVec2],
+    width: Option<f64>,
+) -> (Built, Sweep) {
+    let mouth = *start.last().expect("a connector starts somewhere");
+    let p0 = mouth + straight * dir;
+    let reach = p0.distance(end) / 3.0;
+    let (c1, c2) = (p0 + reach * dir, end - reach * end_dir);
+    let pose = Pose { pos: p0, heading: dir.to_angle() };
+    let (_, curve) = reference::sample_bezier(pose, c1, c2, end);
+    let mut points = start.to_vec();
     if straight > 0.0 {
-        s.iter_mut().for_each(|s| *s += straight);
-        s.insert(0, 0.0);
-        points.insert(0, a.end());
+        points.push(p0);
     }
+    points.extend(&curve[1..]);
+    points.extend(tail);
+    // Its straight stretches in short segments, so its width can narrow
+    // along them as a vehicle straightens.
+    let points = densify(&points, SEGMENT);
+    let s = arc_lengths(&points);
+    // The widest vehicle: the only class so far. Swept along the connector
+    // run on past each end as far as it overhangs its rear axle there, so the
+    // sweep beyond its ends, while its nose is in the road it turns into, is
+    // known too.
+    let spec = VehicleSpec::passenger_car();
+    let n = points.len();
+    let (first, last) = (points[0], points[n - 1]);
+    let (back, on) = (
+        (points[1] - first).normalize(),
+        (last - points[n - 2]).normalize(),
+    );
+    let steps = |length: f64| {
+        (1..=(length / OVERHANG_STEP).ceil() as usize).map(|i| i as f64 * OVERHANG_STEP)
+    };
+    let behind: Vec<DVec2> = steps(spec.rear_axle).rev().map(|d| first - d * back).collect();
+    let ahead: Vec<DVec2> = steps(spec.length - spec.rear_axle).map(|d| last + d * on).collect();
+    let extended: Vec<DVec2> = behind.iter().chain(&points).chain(&ahead).copied().collect();
+    let s_extended: Vec<f64> = arc_lengths(&extended);
+    let body = swept(&extended, &s_extended, &spec);
+    let own = &body[behind.len()..behind.len() + n];
     let half_widths = match width {
         Some(width) => vec![[0.5 * width; 2]; s.len()],
-        // The widest vehicle: the only class so far.
-        None => swept(&points, &s, &traffic_sim::VehicleSpec::passenger_car())
-            .into_iter()
-            .map(|h| h.map(|h| h + traffic_sim::PASSING_CLEARANCE))
-            .collect(),
+        None => own.iter().map(|h| h.map(|h| h + traffic_sim::PASSING_CLEARANCE)).collect(),
     };
-    Built { points, half_widths }
+    // Allowing for steering: pure pursuit keeps a vehicle within TRACKING
+    // of the path its rear axle is swept along.
+    let tracked = body.iter().map(|h| h.map(|h| h + TRACKING)).collect();
+    let overhang = ahead.len();
+    let sweep = Sweep {
+        body: Built { points: extended, half_widths: tracked },
+        overhang,
+    };
+    (Built { points, half_widths }, sweep)
+}
+
+/// A vehicle's body's sweep along a connector, run on past its ends, the last
+/// `overhang` points of it past its end.
+struct Sweep {
+    body: Built,
+    overhang: usize,
+}
+
+/// How far a vehicle's body strays from its ideal sweep, its rear axle on the
+/// path, as pure pursuit steers it, in meters: at most 6 cm on the crossroads
+/// scenarios' connectors, at their limits and at 2 m/s, where a turn finishing
+/// just into the road it goes into is still straightening.
+const TRACKING: f64 = 0.1;
+
+/// The longest segment of a connector, in meters: its width is linear along
+/// each, so a vehicle's sweep narrowing as it straightens needs them short.
+const SEGMENT: f64 = 1.0;
+
+/// `points` with segments longer than `longest` split evenly.
+fn densify(points: &[DVec2], longest: f64) -> Vec<DVec2> {
+    let mut out = vec![points[0]];
+    for w in points.windows(2) {
+        let n = (w[0].distance(w[1]) / longest).ceil().max(1.0) as usize;
+        out.extend((1..=n).map(|i| w[0].lerp(w[1], i as f64 / n as f64)));
+    }
+    out
+}
+
+/// How finely a connector is run on past its ends to sweep a vehicle's
+/// overhang there, in meters.
+const OVERHANG_STEP: f64 = 0.25;
+
+/// Each point's distance along `points`.
+fn arc_lengths(points: &[DVec2]) -> Vec<f64> {
+    std::iter::once(0.0)
+        .chain(points.windows(2).scan(0.0, |s, w| {
+            *s += w[0].distance(w[1]);
+            Some(*s)
+        }))
+        .collect()
+}
+
+/// Whether `lane` is the lane of its road nearest the side a vehicle turning
+/// `turn` into it turns toward, of those going its way: the leftmost, turning
+/// left.
+fn nearest(net: &RoadNetwork, lane: LaneRef, turn: Turn) -> bool {
+    let road = &net.roads[lane.road.0];
+    let me = &road.lanes[lane.lane];
+    let forward = me.direction == Direction::Forward;
+    // Going out, forward lanes start at the road's start, backward ones at its end.
+    let s = if forward { 0.0 } else { f64::MAX };
+    // How far left of its direction of travel each is.
+    let left = |l: &crate::RoadLane| {
+        if forward {
+            l.offset.at(s)
+        } else {
+            -l.offset.at(s)
+        }
+    };
+    let same = road.lanes.iter().filter(|l| l.direction == me.direction);
+    match turn {
+        Turn::Left => same.map(left).all(|x| x <= left(me)),
+        Turn::Right => same.map(left).all(|x| x >= left(me)),
+        Turn::Straight => true,
+    }
+}
+
+/// Where the stop line of `from`'s road end crosses a connector from it,
+/// along the connector: where no vehicle crossing it along the lane could reach
+/// it sooner, the crossing of its centreline set back by the lane's half-width
+/// times the tangent of the line's skew; with the line itself, if it is skewed.
+fn stop(
+    net: &RoadNetwork,
+    polylines: &[Polyline],
+    ends: &[[Option<(usize, crate::Arm)>; 2]],
+    from: LaneRef,
+) -> (f64, Option<Line>) {
+    let road = &net.roads[from.road.0];
+    let lane = &road.lanes[from.lane];
+    let at_end = lane.direction == Direction::Forward;
+    let Some((_, arm)) = ends[from.road.0][at_end as usize] else {
+        return (0.0, None);
+    };
+    let line = &polylines[from.road.0];
+    let total = *line.s.last().unwrap();
+    let s_end = if at_end { total } else { 0.0 };
+    let (offset, half) = (lane.offset.at(s_end), 0.5 * lane.width.at(s_end));
+    let cut = arms::cuts(road, total, &arm, at_end)[0];
+    let along = cut - arms::back(&arm, at_end, offset) - half * arm.skew.tan().abs();
+    let stop = StopLine::new(line, &arm, at_end);
+    let skewed = arm.skew != 0.0;
+    (
+        along.max(0.0),
+        skewed.then_some(Line { point: stop.point, normal: stop.normal }),
+    )
+}
+
+/// Everywhere a vehicle's body, sweeping along a connector or overhanging its
+/// ends, would reach a road lane other than the ones the connector joins,
+/// where vehicles on that lane can't see it, or overhang another connector
+/// past its end.
+fn check_sweeps(
+    sim: &SimNetwork,
+    road_lanes: &[Vec<LaneId>],
+    connectors: &[Vec<LaneId>],
+    bodies: &[Sweep],
+) -> Vec<CompileError> {
+    let mut failures = Vec::new();
+    let bounds = |points: &mut dyn Iterator<Item = DVec2>| {
+        points.fold((DVec2::MAX, DVec2::MIN), |(lo, hi), p| {
+            (lo.min(p), hi.max(p))
+        })
+    };
+    let road_bounds: Vec<Vec<_>> = road_lanes
+        .iter()
+        .map(|ids| ids.iter().map(|&id| bounds(&mut sim.lane(id).geometry().outline())).collect())
+        .collect();
+    let mut body = bodies.iter();
+    for (k, ids) in connectors.iter().enumerate() {
+        for (c, &id) in ids.iter().enumerate() {
+            let sweep = body.next().expect("a body for each connector");
+            let b = &sweep.body;
+            let swept = Lane::with_half_widths(&b.points, &b.half_widths, 1.0)
+                .expect("a connector's sweep is a valid lane");
+            let geometry = swept.geometry();
+            let (lo, hi) = bounds(&mut geometry.outline());
+            let own = sim.lane(id);
+            // Past its end, its nose overhangs the road it goes into, while
+            // still turning: onto no lane there but its own, junction lane or
+            // road lane.
+            let end = b.points.len() - sweep.overhang;
+            let ahead =
+                Lane::with_half_widths(&b.points[end - 1..], &b.half_widths[end - 1..], 1.0)
+                    .expect("an overhang is a valid lane");
+            // Those going into the same lane overhang it too, and end there.
+            let others = ids
+                .iter()
+                .filter(|&&other| other != id && sim.lane(other).successors() != own.successors());
+            let overhung =
+                others.filter_map(|&other| ahead.geometry().overlap(sim.lane(other).geometry()));
+            if let Some(beyond) = overhung.map(|r| r[0].end).reduce(f64::max) {
+                failures.push(CompileError::Overhangs { intersection: k, connection: c, beyond });
+            }
+            for (r, lanes) in road_lanes.iter().enumerate() {
+                for (i, &lane) in lanes.iter().enumerate() {
+                    let (llo, lhi) = road_bounds[r][i];
+                    let apart = (hi.cmplt(llo) | lhi.cmplt(lo)).any();
+                    let joined =
+                        own.predecessors().contains(&lane) || own.successors().contains(&lane);
+                    if apart || joined {
+                        continue;
+                    }
+                    if let Some([_, theirs]) = geometry.overlap(sim.lane(lane).geometry()) {
+                        let length = sim.lane(lane).geometry().length();
+                        let lane = LaneRef { road: RoadId(r), lane: i };
+                        let reach = [length - theirs.start, theirs.end];
+                        failures.push(CompileError::Sweeps {
+                            intersection: k,
+                            connection: c,
+                            lane,
+                            reach,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    failures
 }
 
 /// How far out to each side of `points`, at arc lengths `s`, a vehicle like
@@ -400,8 +798,9 @@ fn swept(points: &[DVec2], s: &[f64], spec: &traffic_sim::VehicleSpec) -> Vec<[f
         for corner in corners.into_iter().flatten() {
             // The nearest segment, among those within the body's reach.
             let r = front + rear + side;
-            let reach = |j: &usize| s[*j] <= s[i] + r && s[*j + 1] >= s[i] - r;
-            let nearest = (0..points.len() - 1).filter(reach).map(|j| {
+            let first = s.partition_point(|&x| x < s[i] - r).saturating_sub(1);
+            let last = s.partition_point(|&x| x <= s[i] + r).min(points.len() - 1);
+            let nearest = (first..last).map(|j| {
                 let (a, b) = (points[j], points[j + 1]);
                 // The ends run on as lines, as the lanes before and after do.
                 let along = (corner - a).dot(b - a) / (b - a).length_squared();

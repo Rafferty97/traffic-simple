@@ -10,6 +10,7 @@
 //! diverges. Intersections list which lanes connect to which, and get a cubic
 //! Bézier connector for each.
 
+mod arms;
 mod compile;
 mod reference;
 mod render;
@@ -19,7 +20,7 @@ mod turns;
 use glam::DVec2;
 use traffic_sim::{Keep, LaneId, Leaving, Side, SimNetwork};
 
-pub use compile::{CompileError, compile};
+pub use compile::{CompileError, compile, fit_arms};
 pub use render::{Arrow, Marking, MarkingStyle, RenderGeometry, Strip};
 pub use turns::Turn;
 
@@ -131,6 +132,12 @@ pub struct Road {
 }
 
 impl Road {
+    /// How long its reference line is, in meters.
+    pub fn length(&self) -> f64 {
+        let line = reference::Polyline::new(self.start, &self.pieces, &[], [&[], &[]]);
+        *line.s.last().expect("a line has its ends")
+    }
+
     /// Where the reference line ends, and its heading there.
     pub fn end(&self) -> Pose {
         reference::end_pose(self.start, &self.pieces)
@@ -180,6 +187,43 @@ pub struct Intersection {
     /// its curve begins, in meters: as drivers turning across oncoming traffic
     /// pull into the intersection to wait, rather than turning from the line.
     pub far_side_straight: f64,
+    /// How each road meets it, where that isn't simply at its end with a stop
+    /// line square across it there (see [`Arm`]).
+    pub arms: Vec<Arm>,
+}
+
+/// How a road meets an intersection: where its stop line is, and how far its
+/// lanes are part of the intersection. Its lanes coming in end where their stop
+/// line is furthest back, and its lanes going out start `run_out` from its end:
+/// those stretches belong to the intersection's connectors, so a vehicle's body
+/// sweeping across them as it turns is in the junction, not on a road lane.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Arm {
+    pub road: RoadId,
+    /// How far back from the road's end its stop line crosses its reference
+    /// line, in meters.
+    pub stop_line: f64,
+    /// The stop line's angle from square across the road, in radians,
+    /// counterclockwise: as it lies along a road crossing at an angle.
+    pub skew: f64,
+    /// How far into the road, from its end, turns into it may finish, in
+    /// meters: a turn into one of its lanes other than the nearest on its side
+    /// drifts across to it over that stretch, as drivers do.
+    pub run_out: f64,
+}
+
+impl Arm {
+    /// A road meeting an intersection at its end, its stop line square there.
+    pub fn new(road: RoadId) -> Self {
+        Arm { road, stop_line: 0.0, skew: 0.0, run_out: 0.0 }
+    }
+}
+
+impl Intersection {
+    /// How `road` meets it.
+    pub fn arm(&self, road: RoadId) -> Arm {
+        self.arms.iter().find(|a| a.road == road).copied().unwrap_or(Arm::new(road))
+    }
 }
 
 /// How an intersection is controlled (see `docs/DESIGN.md`, Intersection

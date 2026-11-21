@@ -120,32 +120,32 @@ fn a_network_may_set_its_connectors_width() {
 
 #[test]
 fn far_side_turns_run_straight_on_before_turning_and_nothing_else_does() {
-    let build = |straight| {
-        let mut net = scenarios::crossroads(2, 50.0 / 3.6);
-        net.intersections[0].far_side_straight = straight;
-        compile(&net).unwrap()
-    };
-    let (none, some) = (build(0.0), build(5.0));
+    // Arms fitted for the longer run, and kept for both.
+    let mut fitted = scenarios::crossroads(2, 50.0 / 3.6);
+    fitted.intersections[0].far_side_straight = 5.0;
+    let some = traffic_network::fit_arms(&mut fitted).unwrap();
+    fitted.intersections[0].far_side_straight = 0.0;
+    let none = compile(&fitted).unwrap();
     for (i, &turn) in some.turns[0].iter().enumerate() {
         let geometry =
             |c: &traffic_network::Compiled| c.sim.lane(c.connectors[0][i]).geometry().clone();
         let (plain, run) = (geometry(&none), geometry(&some));
         let points: Vec<DVec2> = run.centerline().collect();
         if turn == Turn::Right {
-            // Driving on the left, right turns cross oncoming traffic: the first
-            // segment runs on along the approach for the length given.
-            let approach = some.sim.lane(some.sim.lane(some.connectors[0][i]).predecessors()[0]);
-            let ahead: Vec<DVec2> = approach.geometry().centerline().collect();
+            // Driving on the left, right turns cross oncoming traffic: from its
+            // lane's end, along the stretch to the intersection and then the
+            // length given, it runs straight on along its approach.
+            let from = some.sim.lane(some.connectors[0][i]).predecessors()[0];
+            let ahead: Vec<DVec2> = some.sim.lane(from).geometry().centerline().collect();
             let along = (ahead[ahead.len() - 1] - ahead[ahead.len() - 2]).normalize();
-            let first = points[1] - points[0];
+            let road = some.road_lanes.iter().position(|ids| ids.contains(&from)).unwrap();
+            let stretch = fitted.intersections[0].arm(traffic_network::RoadId(road)).stop_line;
+            let on_line = |p: DVec2| (p - points[0]).perp_dot(along).abs() < 1e-3;
+            let straight = points.iter().take_while(|&&p| on_line(p)).last().unwrap();
+            let length = straight.distance(points[0]);
             assert!(
-                (first.length() - 5.0).abs() < 2e-3,
-                "it runs on {:.3} m",
-                first.length()
-            );
-            assert!(
-                first.normalize().perp_dot(along).abs() < 1e-3,
-                "it runs on askew"
+                (length - (stretch + 5.0)).abs() < 2e-3,
+                "it runs on {length:.3} m"
             );
             assert!(run.length() > plain.length(), "it isn't any longer");
         } else {
