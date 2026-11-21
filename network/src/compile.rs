@@ -3,11 +3,17 @@
 use std::fmt;
 
 use glam::DVec2;
-use traffic_sim::{Keep, Lane, LaneError, LaneId, NetworkError, SAME_POINT, SimNetwork};
+use traffic_sim::{
+    Barrier, BarrierKind, Keep, Lane, LaneError, LaneId, Movement, MovementId, NetworkError, Phase,
+    SAME_POINT, SignalPlan, SimNetwork, VehicleSpec,
+};
 
 use crate::reference::{self, Polyline};
 use crate::render;
-use crate::{Compiled, Direction, LaneRef, Pose, RoadNetwork, Turn};
+use crate::{
+    Compiled, Control, Direction, Intersection, LaneRef, Pose, RoadId, RoadNetwork, SignalPhase,
+    Turn,
+};
 
 /// The sideways acceleration a connector's speed limit allows on its tightest
 /// bend, in m/s².
@@ -195,10 +201,106 @@ pub fn compile(net: &RoadNetwork) -> Result<Compiled, CompileError> {
             sim.add_junction(ids);
         }
     }
+    for (k, intersection) in net.intersections.iter().enumerate() {
+        if let Control::Signals(phases) = &intersection.control {
+            add_signals(
+                net,
+                &mut sim,
+                intersection,
+                &connectors[k],
+                &turns[k],
+                phases,
+            );
+        }
+    }
     sim.validate().map_err(CompileError::Network)?;
 
     let render = render::build(net, &polylines, &turns);
     Ok(Compiled { sim, render, road_lanes, connectors, turns })
+}
+
+/// The deceleration ITE's amber time assumes a driver stopping for it, in m/s².
+const AMBER_DECEL: f64 = 3.0;
+
+/// An intersection's signal plan, and a signal barrier at the start of each of
+/// its connectors for its movement.
+///
+/// A movement is the connections from one road that go one way. Two conflict
+/// if any of their connectors do, unless they are green in the same phase,
+/// where one gives way to the other. Each one's amber time is ITE's, a second
+/// to react plus the time to stop from its approach's limit at
+/// [`AMBER_DECEL`]; its clearance, the time to cross its longest connector
+/// and a car's length at that limit.
+fn add_signals(
+    net: &RoadNetwork,
+    sim: &mut SimNetwork,
+    intersection: &Intersection,
+    connectors: &[LaneId],
+    turns: &[Turn],
+    phases: &[SignalPhase],
+) {
+    let mut movements: Vec<(RoadId, Turn)> = Vec::new();
+    let of: Vec<usize> = intersection
+        .connections
+        .iter()
+        .zip(turns)
+        .map(|(&(from, _), &turn)| {
+            let key = (from.road, turn);
+            movements.iter().position(|&m| m == key).unwrap_or_else(|| {
+                movements.push(key);
+                movements.len() - 1
+            })
+        })
+        .collect();
+    let mask = |green: &[(RoadId, Turn)]| {
+        green
+            .iter()
+            .filter_map(|key| movements.iter().position(|m| m == key))
+            .fold(0u64, |mask, i| mask | (1 << i))
+    };
+    let phases: Vec<Phase> = phases
+        .iter()
+        .map(|p| Phase { green: mask(&p.green), duration: p.duration })
+        .collect();
+    let both = |i: usize, j: usize| (1u64 << i) | (1u64 << j);
+    let together = |i: usize, j: usize| phases.iter().any(|p| p.green & both(i, j) == both(i, j));
+    let car = VehicleSpec::passenger_car().length;
+    let plan = SignalPlan {
+        movements: (0..movements.len())
+            .map(|i| {
+                let mine =
+                    || connectors.iter().zip(&of).filter(move |&(_, &m)| m == i).map(|(&c, _)| c);
+                let conflicts = (0..movements.len())
+                    .filter(|&j| j != i && !together(i, j))
+                    .filter(|&j| {
+                        let theirs: Vec<LaneId> = connectors
+                            .iter()
+                            .zip(&of)
+                            .filter(|&(_, &m)| m == j)
+                            .map(|(&c, _)| c)
+                            .collect();
+                        mine().any(|a| theirs.iter().any(|&b| sim.conflict_between(a, b).is_some()))
+                    })
+                    .fold(0u64, |mask, j| mask | (1 << j));
+                let speed = net.roads[movements[i].0.0].speed_limit;
+                let longest = mine().map(|c| sim.lane(c).geometry().length()).fold(0.0, f64::max);
+                Movement {
+                    conflicts,
+                    amber: 1.0 + speed / (2.0 * AMBER_DECEL),
+                    clearance: (longest + car) / speed,
+                }
+            })
+            .collect(),
+        phases,
+    };
+    let first = sim.add_signal(plan);
+    for (&connector, &m) in connectors.iter().zip(&of) {
+        let movement = MovementId(first.0 + m as u32);
+        sim.add_barrier(
+            connector,
+            Barrier { s: 0.0, kind: BarrierKind::Signal { movement } },
+        );
+    }
 }
 
 /// A simulation lane from a built one.

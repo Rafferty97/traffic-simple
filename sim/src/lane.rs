@@ -271,7 +271,7 @@ impl LaneGeometry {
     /// The centerline vertices, from start to end.
     /// Each vertex's `s`, from the start: where the lane's geometry, piecewise
     /// linear, may change direction or width.
-    pub(crate) fn vertex_s(&self) -> impl Iterator<Item = f64> + '_ {
+    pub fn vertex_s(&self) -> impl Iterator<Item = f64> + '_ {
         self.segs.iter().map(|s| s.cum_s).chain(std::iter::once(self.length))
     }
 

@@ -232,6 +232,46 @@ fn crossroads_flooded_with_traffic_have_no_collisions() {
 }
 
 #[test]
+fn signalised_crossroads_flooded_with_traffic_have_no_collisions() {
+    for lanes in 1..=2 {
+        flood(&scenarios::signalised_crossroads(lanes, 50.0 / 3.6), 150.0);
+    }
+}
+
+#[test]
+fn a_signalised_crossroads_holds_each_connector_at_its_movements_light() {
+    use traffic_sim::BarrierKind;
+    let compiled = compile(&scenarios::signalised_crossroads(2, 14.0)).unwrap();
+    let sim = &compiled.sim;
+    let (plan, first) = sim.signals().next().expect("a signal plan");
+    // Every movement of every arm: straight on, left and right, from four arms.
+    assert_eq!(plan.movements.len(), 12);
+    for &connector in &compiled.connectors[0] {
+        let barriers = sim.lane(connector).barriers();
+        assert_eq!(barriers.len(), 1, "{connector:?} has {barriers:?}");
+        assert_eq!(barriers[0].s, 0.0);
+        let BarrierKind::Signal { movement } = barriers[0].kind else {
+            panic!("{connector:?} has a {:?}", barriers[0].kind);
+        };
+        assert!((first.0..first.0 + 12).contains(&movement.0));
+    }
+    // Movements green together are never in conflict, so each phase can go green.
+    for phase in &plan.phases {
+        for (i, m) in plan.movements.iter().enumerate() {
+            if phase.green & (1 << i) != 0 {
+                assert_eq!(
+                    m.conflicts & phase.green,
+                    0,
+                    "movement {i} conflicts within its phase"
+                );
+            }
+        }
+    }
+    // A crossing movement from the other pair of roads conflicts with something.
+    assert!(plan.movements.iter().all(|m| m.conflicts != 0));
+}
+
+#[test]
 fn a_freeway_with_ramps_flooded_with_traffic_has_no_collisions() {
     flood(&scenarios::ramps(100.0 / 3.6, 80.0 / 3.6), 200.0);
 }

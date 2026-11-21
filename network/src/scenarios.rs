@@ -5,7 +5,8 @@ use std::f64::consts::{FRAC_PI_2, PI, TAU};
 use traffic_sim::{Keep, Leaving};
 
 use crate::{
-    Direction, Intersection, LaneRef, Piece, Pose, Profile, Road, RoadId, RoadLane, RoadNetwork,
+    Control, Direction, Intersection, LaneRef, Piece, Pose, Profile, Road, RoadId, RoadLane,
+    RoadNetwork, SignalPhase, Turn,
 };
 
 const WIDTH: f64 = 3.5;
@@ -54,6 +55,25 @@ pub fn crossroads(lanes: usize, speed_limit: f64) -> RoadNetwork {
         intersection.connections.push((inbound(from, 0), outbound(right, 0)));
     }
     net.intersections.push(intersection);
+    net
+}
+
+/// As [`crossroads`], signalised: a fixed-time plan, the roads from the east
+/// and west green for 30 s, every way, then those from the north and south. A
+/// right turn shares its phase with the traffic coming the other way.
+pub fn signalised_crossroads(lanes: usize, speed_limit: f64) -> RoadNetwork {
+    let mut net = crossroads(lanes, speed_limit);
+    // The arms come in from the east, north, west and south, in that order.
+    let roads: Vec<RoadId> = (0..4).map(RoadId).collect();
+    let every_way = |arms: [usize; 2]| {
+        arms.iter()
+            .flat_map(|&a| [Turn::Straight, Turn::Left, Turn::Right].map(|t| (roads[a], t)))
+            .collect()
+    };
+    net.intersections[0].control = Control::Signals(vec![
+        SignalPhase { green: every_way([0, 2]), duration: 30.0 },
+        SignalPhase { green: every_way([1, 3]), duration: 30.0 },
+    ]);
     net
 }
 

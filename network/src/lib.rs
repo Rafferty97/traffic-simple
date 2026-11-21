@@ -169,6 +169,28 @@ pub struct LaneRef {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Intersection {
     pub connections: Vec<(LaneRef, LaneRef)>,
+    pub control: Control,
+}
+
+/// How an intersection is controlled (see `docs/DESIGN.md`, Intersection
+/// control).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum Control {
+    /// Nothing but the junction backstop: whoever can no longer stop goes first.
+    #[default]
+    Uncontrolled,
+    /// A fixed-time signal plan, its phases run in turn.
+    Signals(Vec<SignalPhase>),
+}
+
+/// One phase of an intersection's signal plan.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SignalPhase {
+    /// The movements green in it, each the road its connections come in from
+    /// and which way they go.
+    pub green: Vec<(RoadId, Turn)>,
+    /// How long it lasts once they are all green, in seconds.
+    pub duration: f64,
 }
 
 /// Which side of the road traffic drives on: the left, as in Australia, by

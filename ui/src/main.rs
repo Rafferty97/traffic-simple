@@ -30,9 +30,9 @@ use traffic_network::{
     Arrow, MarkingStyle, RenderGeometry, RoadNetwork, Strip, compile, scenarios,
 };
 use traffic_sim::{
-    AccelSource, BarrierDecision, ConflictKind, DebugEvent, DebugSink, LaneChangeError,
-    LaneChangeEval, LaneId, Leaving, PassCheck, Placement, Route, Side, Simulation, Vehicle,
-    VehicleId, VehicleSpec,
+    AccelSource, BarrierDecision, BarrierKind, ConflictKind, DebugEvent, DebugSink,
+    LaneChangeError, LaneChangeEval, LaneId, Leaving, Light, PassCheck, Placement, Route, Side,
+    Simulation, Vehicle, VehicleId, VehicleSpec,
 };
 
 /// The inner lane's circumference: about 160 m across, roomy enough for
@@ -64,17 +64,21 @@ enum Scenario {
     Ring,
     /// Two two-way roads crossing, with this many lanes each way.
     Crossroads(usize),
+    /// As `Crossroads`, signalised.
+    Signals(usize),
     /// A freeway with an on-ramp and an off-ramp, the acceleration lane left as
     /// this says.
     Ramps(Leaving),
 }
 
 impl Scenario {
-    const ALL: [Scenario; 6] = [
+    const ALL: [Scenario; 8] = [
         Scenario::Ring,
         Scenario::Crossroads(1),
         Scenario::Crossroads(2),
         Scenario::Crossroads(3),
+        Scenario::Signals(1),
+        Scenario::Signals(2),
         Scenario::Ramps(Leaving::Zipper),
         Scenario::Ramps(Leaving::Early),
     ];
@@ -85,6 +89,8 @@ impl Scenario {
             Scenario::Crossroads(1) => "Crossroads of 2-lane roads",
             Scenario::Crossroads(2) => "Crossroads of 4-lane roads",
             Scenario::Crossroads(_) => "Crossroads of 6-lane roads",
+            Scenario::Signals(1) => "Signalised crossroads of 2-lane roads",
+            Scenario::Signals(_) => "Signalised crossroads of 4-lane roads",
             Scenario::Ramps(Leaving::Zipper) => "Freeway with ramps, zipper merge",
             Scenario::Ramps(Leaving::Early) => "Freeway with ramps, early merge",
         }
@@ -94,6 +100,7 @@ impl Scenario {
         match self {
             Scenario::Ring => scenarios::ring(RING_CIRCUMFERENCE, RING_LANES, SPEED_LIMIT),
             Scenario::Crossroads(lanes) => scenarios::crossroads(lanes, SPEED_LIMIT),
+            Scenario::Signals(lanes) => scenarios::signalised_crossroads(lanes, SPEED_LIMIT),
             Scenario::Ramps(leaving) => scenarios::ramps_leaving(100.0 / 3.6, 80.0 / 3.6, leaving),
         }
     }
@@ -549,6 +556,21 @@ impl App {
         }
 
         ui.separator();
+        ui.label(format!("Committed to {} barriers ahead", v.committed()));
+        let decisions = self.sim.sink().barriers.iter().filter(|b| b.0 == id);
+        for &(_, lane, index, gap, decision) in decisions {
+            let what = match decision {
+                BarrierDecision::Commit => "commits".to_string(),
+                BarrierDecision::Pass => "passes for now".to_string(),
+                BarrierDecision::Hold(accel) => format!("held, {accel:+.2} m/s²"),
+            };
+            ui.small(format!(
+                "Barrier {index} on lane {}, gap {gap:.1} m: {what}",
+                lane.0
+            ));
+        }
+
+        ui.separator();
         ui.label("Acceleration terms (minimum binds)");
         let terms: Vec<_> = self.sim.sink().terms(id).collect();
         egui::Grid::new("terms").num_columns(2).show(ui, |ui| {
@@ -757,6 +779,7 @@ fn draw_pretty(
         }
     }
     painter.add(arrows_mesh(&render.arrows, Color32::from_gray(230)));
+    draw_lights(painter, sim);
     for (id, v) in sim.vehicles() {
         // Where it is drawn, between steps: the indicators go with the body.
         let drawn = poses.corners(id, v, sim.alpha());
@@ -837,6 +860,26 @@ fn draw_debug(
                 painter.circle_filled(p, 0.1, VERTEX);
             }
             painter.add(Shape::line(centerline, Stroke::new(0.04, CENTERLINE)));
+        }
+
+        if layers.on(Layer::Barriers) {
+            let geometry = lane.geometry();
+            for barrier in lane.barriers() {
+                let colour = match barrier.kind {
+                    BarrierKind::Signal { movement } => match sim.light(movement).light {
+                        Light::Green => LIGHT_GREEN,
+                        Light::Amber => LIGHT_AMBER,
+                        Light::Red => LIGHT_RED,
+                    },
+                    BarrierKind::GiveWay => GIVE_WAY,
+                };
+                let pos = geometry.lane_pos(barrier.s, 0.0);
+                let left = geometry.half_width(pos, Side::Left);
+                let right = -geometry.half_width(pos, Side::Right);
+                let ends = [left, right]
+                    .map(|t| to_scene(geometry.lane_to_world(geometry.lane_pos(barrier.s, t))));
+                painter.line_segment(ends, Stroke::new(0.3, colour));
+            }
         }
 
         if layers.on(Layer::Ticks) {
@@ -1029,6 +1072,10 @@ const LANE_CHANGE: Color32 = Color32::from_rgb(250, 160, 60);
 const LEADER_BINDING: Color32 = Color32::from_rgb(120, 230, 120);
 const LEADER_OTHER: Color32 = Color32::from_rgb(60, 110, 60);
 const LOOKAHEAD: Color32 = Color32::from_rgb(90, 200, 240);
+const LIGHT_GREEN: Color32 = Color32::from_rgb(60, 220, 90);
+const LIGHT_AMBER: Color32 = Color32::from_rgb(250, 190, 40);
+const LIGHT_RED: Color32 = Color32::from_rgb(230, 60, 50);
+const GIVE_WAY: Color32 = Color32::from_rgb(240, 240, 240);
 const PASS_CORNER: Color32 = Color32::from_rgb(255, 120, 200);
 const PASS_BODY: Color32 = Color32::from_rgb(120, 170, 255);
 const PASS_OK: Color32 = Color32::from_rgb(80, 220, 80);
@@ -1047,10 +1094,11 @@ enum Layer {
     Leaders,
     PassChecks,
     Lookahead,
+    Barriers,
 }
 
 impl Layer {
-    const ALL: [Layer; 10] = [
+    const ALL: [Layer; 11] = [
         Layer::LaneOutlines,
         Layer::Centerlines,
         Layer::Ticks,
@@ -1061,6 +1109,7 @@ impl Layer {
         Layer::Leaders,
         Layer::PassChecks,
         Layer::Lookahead,
+        Layer::Barriers,
     ];
 
     /// Its name, its colors, and what they mean, for the legend.
@@ -1103,6 +1152,11 @@ impl Layer {
                 &[PASS_CORNER, PASS_BODY, PASS_OK, PASS_BLOCKED],
                 "Where a follower checked whether it can pass a vehicle ahead: its predicted body as its front reaches that vehicle's rear, that vehicle's nearer rear corner, and the gap from the corner across to the follower's edge, green if wide enough to pass and red if not. Only pairs where the follower could pass are checked: a vehicle moving out of the lane, or one the follower is moving away from. A fine line runs from the follower to its predicted body",
             ),
+            Layer::Barriers => (
+                "Barriers",
+                &[LIGHT_GREEN, LIGHT_AMBER, LIGHT_RED, GIVE_WAY],
+                "Each barrier across its lane: a signal in its light's colour, a give-way line in white",
+            ),
             Layer::Lookahead => (
                 "Lookahead",
                 &[LOOKAHEAD],
@@ -1124,6 +1178,7 @@ impl Default for Layers {
             Layer::LaneChanges,
             Layer::PassChecks,
             Layer::Leaders,
+            Layer::Barriers,
         ] {
             layers[layer as usize] = true;
         }
@@ -1239,6 +1294,29 @@ fn fan_mesh(points: &[DVec2], color: Color32) -> Shape {
         mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
     }
     Shape::mesh(mesh)
+}
+
+/// Each signal barrier's lane, from the barrier on, in its movement's light's
+/// colour while green or amber, and nothing while red, as the old visualiser
+/// drew them: the ways through the junction open now.
+fn draw_lights(painter: &egui::Painter, sim: &Simulation<DebugState>) {
+    for (_, lane) in sim.network().lanes() {
+        for barrier in lane.barriers() {
+            let BarrierKind::Signal { movement } = barrier.kind else {
+                continue;
+            };
+            let colour = match sim.light(movement).light {
+                Light::Green => Color32::from_rgba_unmultiplied(60, 220, 90, 150),
+                Light::Amber => Color32::from_rgba_unmultiplied(250, 190, 40, 170),
+                Light::Red => continue,
+            };
+            let geometry = lane.geometry();
+            let ahead = geometry.vertex_s().zip(geometry.centerline());
+            let points: Vec<Pos2> =
+                ahead.filter(|&(s, _)| s >= barrier.s).map(|(_, p)| to_scene(p)).collect();
+            painter.add(Shape::line(points, Stroke::new(0.6, colour)));
+        }
+    }
 }
 
 /// Turn arrows, each its glyph turned to its heading and placed at its anchor.

@@ -39,6 +39,7 @@ fn junctions(c: &mut Criterion) {
     let cases = [
         // More than it can take, so queues build up on every way in.
         ("crossroads_2", scenarios::crossroads(2, 50.0 / 3.6), 20),
+        ("signals_2", scenarios::signalised_crossroads(2, 50.0 / 3.6), 20),
         ("ramps", scenarios::ramps(100.0 / 3.6, 60.0 / 3.6), 30),
     ];
     for (name, net, every) in cases {
