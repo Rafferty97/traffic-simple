@@ -372,7 +372,17 @@ fn clear(
             GAP_MARGIN + other.spec.time_headway,
             GAP_MARGIN + way.headway,
         );
-        if distance >= 0.0 && reaches > way.clears + ahead_margin {
+        // One in the junction's queue before it can't be gone ahead of: going,
+        // it joins the queue behind it, so would stop for it in the conflict.
+        // Committing late, only once it can't stop safely, a vehicle that is
+        // still approaching can stop, if this one couldn't clear as it meant to.
+        let queued = || {
+            let queue = &state.queues[way.junction.0 as usize].committed;
+            let theirs = queue.iter().position(|&v| v == o.id);
+            let mine = queue.iter().position(|&v| v == id);
+            theirs.is_some_and(|theirs| mine.is_none_or(|mine| theirs < mine))
+        };
+        if distance >= 0.0 && reaches > way.clears + ahead_margin && !queued() {
             return true;
         }
         if way.arrives < clears + behind_margin {
