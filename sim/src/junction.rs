@@ -7,6 +7,7 @@ use arrayvec::ArrayVec;
 use glam::DVec2;
 use slotmap::SlotMap;
 
+use crate::barrier;
 use crate::debug::{AccelSource, DebugEvent, DebugSink};
 use crate::models::acceleration;
 use crate::network::{Conflict, JunctionId, LaneId, SimNetwork};
@@ -106,8 +107,9 @@ pub(crate) fn update(
 
 /// Makes a vehicle arrive at each junction on its path that nothing holds it
 /// back from: up to and including the first junction it hasn't physically
-/// entered (see [`entered`]). Once barriers exist, one it hasn't committed to
-/// will hold it back too. At each, the lanes of its path up to the first of the
+/// entered (see [`entered`]), and short of any junction a barrier it hasn't
+/// committed to holds it back from, at or before the junction's first conflict
+/// on its path: it arrives there once it commits. At each, the lanes of its path up to the first of the
 /// junction's lanes with a conflict, that lane included, join those it is
 /// approached along, so the junction's scans find it.
 pub(crate) fn arrive(
@@ -129,6 +131,16 @@ pub(crate) fn arrive(
             && !entered(network, occupants, previous, id)
         {
             return;
+        }
+        let into = |k: usize| {
+            let lane = vehicle.path[k];
+            network.lane(lane).junction() == Some(j) && conflict_start(network, lane).is_some()
+        };
+        if let Some(k) = (0..vehicle.path.len()).find(|&k| into(k)) {
+            let start = conflict_start(network, vehicle.path[k]).unwrap_or(0.0);
+            if barrier::holds_before(network, vehicle, k, start) {
+                return;
+            }
         }
         mark_way(
             network,

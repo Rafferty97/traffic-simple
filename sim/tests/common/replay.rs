@@ -78,6 +78,7 @@ pub fn replay<D: DebugSink>(log: &str, sink: D) -> Replay<D> {
                     // Absent from replays made before drivers had it.
                     assertiveness: f.get_or("assertiveness", 0.0),
                     accel_noise: f.get_or("accel_noise", 0.0),
+                    line_gap: f.get_or("line_gap", 1.0),
                 };
                 let lane = LaneId(f.get("lane") as u32);
                 let at_ = Placement {

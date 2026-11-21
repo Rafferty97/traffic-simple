@@ -27,6 +27,7 @@ pub fn car() -> VehicleSpec {
         politeness: 0.2,
         assertiveness: 0.0,
         accel_noise: 0.0,
+        line_gap: 1.0,
     }
 }
 
@@ -105,7 +106,8 @@ impl traffic_sim::DebugSink for Terms {
             DebugEvent::LaneChangeEval { vehicle, eval } => self.1.push((vehicle, eval)),
             DebugEvent::RecomputeMotion
             | DebugEvent::Lookahead { .. }
-            | DebugEvent::PassCheck { .. } => {}
+            | DebugEvent::PassCheck { .. }
+            | DebugEvent::Barrier { .. } => {}
         }
     }
 }

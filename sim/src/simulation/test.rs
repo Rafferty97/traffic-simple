@@ -27,6 +27,7 @@ fn car() -> VehicleSpec {
         politeness: 0.2,
         assertiveness: 0.0,
         accel_noise: 0.0,
+        line_gap: 1.0,
     }
 }
 

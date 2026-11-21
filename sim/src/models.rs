@@ -4,3 +4,4 @@ pub mod acceleration;
 pub mod lane_change;
 pub mod lateral;
 pub mod routing;
+pub mod signal;

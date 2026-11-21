@@ -30,8 +30,9 @@ use traffic_network::{
     Arrow, MarkingStyle, RenderGeometry, RoadNetwork, Strip, compile, scenarios,
 };
 use traffic_sim::{
-    AccelSource, ConflictKind, DebugEvent, DebugSink, LaneChangeError, LaneChangeEval, LaneId,
-    Leaving, PassCheck, Placement, Route, Side, Simulation, Vehicle, VehicleId, VehicleSpec,
+    AccelSource, BarrierDecision, ConflictKind, DebugEvent, DebugSink, LaneChangeError,
+    LaneChangeEval, LaneId, Leaving, PassCheck, Placement, Route, Side, Simulation, Vehicle,
+    VehicleId, VehicleSpec,
 };
 
 /// The inner lane's circumference: about 160 m across, roomy enough for
@@ -568,6 +569,9 @@ impl App {
                         format!("making room for {id:?}, gap {gap:.2} m")
                     }
                     AccelSource::PathEnd { gap } => format!("end of known path, gap {gap:.2} m"),
+                    AccelSource::Barrier { lane, gap, .. } => {
+                        format!("held at a barrier on lane {}, gap {gap:.2} m", lane.0)
+                    }
                     AccelSource::Junction { id, kind: ConflictKind::Cross, gap } => {
                         format!("crossing after {id:?}, gap {gap:.2} m")
                     }
@@ -1161,6 +1165,9 @@ struct DebugState {
     decisions: HashMap<VehicleId, Vec<LaneChangeEval>>,
     /// The last longitudinal update's checks for passing a diverging vehicle.
     pass_checks: Vec<(VehicleId, PassCheck)>,
+    /// The last longitudinal update's barrier decisions, by vehicle: the lane,
+    /// the barrier's index there, the gap to it, and what it did.
+    barriers: Vec<(VehicleId, LaneId, u16, f64, BarrierDecision)>,
 }
 
 impl DebugSink for DebugState {
@@ -1169,6 +1176,7 @@ impl DebugSink for DebugState {
             DebugEvent::RecomputeAccels => {
                 self.accel_terms.clear();
                 self.pass_checks.clear();
+                self.barriers.clear();
             }
             DebugEvent::AccelTerm { vehicle, source, accel } => {
                 self.accel_terms.push((vehicle, source, accel))
@@ -1185,6 +1193,9 @@ impl DebugSink for DebugState {
                 self.decisions.remove(&vehicle);
             }
             DebugEvent::PassCheck { vehicle, check } => self.pass_checks.push((vehicle, check)),
+            DebugEvent::Barrier { vehicle, lane, index, gap, decision } => {
+                self.barriers.push((vehicle, lane, index, gap, decision))
+            }
         }
     }
 }

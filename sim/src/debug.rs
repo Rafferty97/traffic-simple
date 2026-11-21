@@ -1,7 +1,8 @@
 use glam::DVec2;
 
+use crate::barrier::Decision as BarrierDecision;
 use crate::models::lane_change::LaneChangeEval;
-use crate::network::{ConflictKind, Side};
+use crate::network::{ConflictKind, LaneId, Side};
 use crate::vehicle::VehicleId;
 
 /// Receives debug events from the simulation.
@@ -42,6 +43,16 @@ pub enum DebugEvent {
     /// another vehicle on a lane. Stale after the next
     /// [`DebugEvent::RecomputeAccels`].
     PassCheck { vehicle: VehicleId, check: PassCheck },
+    /// What a vehicle, the head on its way to a barrier, the `index`th of
+    /// `lane`'s, did about it in the longitudinal update. Stale after the next
+    /// [`DebugEvent::RecomputeAccels`].
+    Barrier {
+        vehicle: VehicleId,
+        lane: LaneId,
+        index: u16,
+        gap: f64,
+        decision: BarrierDecision,
+    },
 }
 
 /// Whether a vehicle can pass another ahead of it on a lane, checked in world
@@ -94,6 +105,9 @@ pub enum AccelSource {
     /// The vehicle before it in a merge's order, with the gap between them as
     /// each is from the merge point: negative while it is the nearer.
     Merge { id: VehicleId, gap: f64 },
+    /// A barrier holding the vehicle back, the `index`th of `lane`'s, with the
+    /// gap from its front to the line.
+    Barrier { lane: LaneId, index: u16, gap: f64 },
 }
 
 /// A sink that discards everything.

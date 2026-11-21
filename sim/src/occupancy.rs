@@ -13,6 +13,7 @@
 
 use std::ops::ControlFlow;
 
+use arrayvec::ArrayVec;
 use glam::DVec2;
 use slotmap::SlotMap;
 
@@ -455,6 +456,12 @@ pub enum Ahead {
     /// The end of the lanes it knows it will take, a stop line: a stationary
     /// virtual leader, unless it leaves the network there.
     PathEnd,
+    /// A barrier on its own path that it hasn't committed to, the `index`th of
+    /// `lane`'s, and the `rank`th ahead of its rear axle on its path. Searching
+    /// its own path, every one beyond its commitment that no leader shields is
+    /// found, so it is the head on its way to it; what it does there is the
+    /// caller's choice (see [`crate::barrier::decide`]).
+    Barrier { lane: LaneId, index: u16, rank: u16 },
 }
 
 /// What a leader search finds, in the order it meets them.
@@ -601,13 +608,67 @@ pub fn find_leaders<B>(
     // The first lane no leader in the lane shields: on the lanes before it, only
     // ghosts and vehicles diverging from them still count.
     let mut covered = 0;
+    // Barriers count only along its own path: how many it has passed ahead of
+    // its rear axle, and how many of those it has committed to.
+    let barriers_count = matches!(along, Along::Path(_) | Along::Inserting);
+    let committed = match along {
+        Along::Path(_) => vehicle.committed as usize,
+        _ => 0,
+    };
+    let mut rank = 0;
+    // The leaders in the lane that shield, and the first lane each doesn't: a
+    // barrier one shields is hidden unless it has committed to it. Should there
+    // be more than fit, every barrier beyond them is hidden.
+    let mut shielders = ArrayVec::<(VehicleId, usize), 8>::new();
+    let mut overflowed = false;
     let mut k = 0;
     while let Some(lane) = lane_at(k) {
         if offset - front > horizon {
             return ControlFlow::Continue(());
         }
         let records = &list(lane)[if k == 0 { start } else { 0 }..];
+        let barriers = match barriers_count {
+            true => network.lane(lane).barriers(),
+            false => &[],
+        };
+        // On the first lane, those behind its rear axle are behind it.
+        let mut b = if k == 0 {
+            barriers.partition_point(|x| x.s <= axle_s)
+        } else {
+            0
+        };
+        let next_s = |b: usize| barriers.get(b).map_or(f64::INFINITY, |x| x.s);
+        // Where the next is: past every record where there is none.
+        let mut next = next_s(b);
+        // A barrier, in order along the lane: a barrier first where it is level
+        // with a record.
+        macro_rules! barrier {
+            () => {{
+                let (index, barrier) = (b, barriers[b]);
+                b += 1;
+                next = next_s(b);
+                let gap = offset + barrier.s - front;
+                if gap > horizon {
+                    return ControlFlow::Continue(());
+                }
+                let this = rank;
+                rank += 1;
+                let shielded = this < committed
+                    || overflowed
+                    || shielders.iter().any(|&(leader, cover)| {
+                        let leader = &state.vehicles[leader];
+                        cover > k && !crate::barrier::committed_to(network, leader, lane, barrier.s)
+                    });
+                if !shielded {
+                    let ahead = Ahead::Barrier { lane, index: index as u16, rank: this as u16 };
+                    f(Found::Ahead(ahead, gap, 1.0))?;
+                }
+            }};
+        }
         for o in records {
+            while next <= o.s() {
+                barrier!();
+            }
             let gap = offset + o.s() - front;
             if gap > horizon {
                 return ControlFlow::Continue(());
@@ -667,8 +728,15 @@ pub fn find_leaders<B>(
             };
             f(Found::Ahead(Ahead::Vehicle(o.id), gap, headway))?;
             if in_lane {
-                covered = covered.max(shields(lane_at, k, &state.vehicles[o.id].path));
+                let cover = shields(lane_at, k, &state.vehicles[o.id].path);
+                if cover > covered && barriers_count && shielders.try_push((o.id, cover)).is_err() {
+                    overflowed = true;
+                }
+                covered = covered.max(cover);
             }
+        }
+        while b < barriers.len() {
+            barrier!();
         }
         offset += network.lane(lane).geometry().length();
         k += 1;
@@ -871,6 +939,7 @@ mod test {
             politeness: 0.2,
             assertiveness: 0.0,
             accel_noise: 0.0,
+            line_gap: 1.0,
         };
         let mut sim = Simulation::new(network.clone(), NoopSink);
         let id = sim.insert(

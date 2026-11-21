@@ -53,6 +53,15 @@ pub struct VehicleSpec {
     /// IDM with acceleration noise (2017). 0 for none. Following stays exact.
     #[cfg_attr(feature = "serde", serde(default))]
     pub accel_noise: f64,
+    /// How far short of a line the driver stops, nose to line, in meters: about
+    /// 1 m, varied from driver to driver.
+    #[cfg_attr(feature = "serde", serde(default = "default_line_gap"))]
+    pub line_gap: f64,
+}
+
+#[cfg(feature = "serde")]
+fn default_line_gap() -> f64 {
+    VehicleSpec::passenger_car().line_gap
 }
 
 impl VehicleSpec {
@@ -77,6 +86,7 @@ impl VehicleSpec {
             politeness: 0.2,
             assertiveness: 0.0,
             accel_noise: 0.2,
+            line_gap: 1.0,
         }
     }
 
@@ -149,6 +159,10 @@ pub struct Vehicle {
     /// The state of its own generator for that noise.
     #[cfg_attr(feature = "serde", serde(default))]
     pub(crate) noise_rng: u64,
+    /// How many of the barriers ahead of its rear axle on its path it has
+    /// committed to crossing (see `docs/DESIGN.md`, Barriers and signals).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) committed: u8,
 }
 
 /// A vehicle held up by the one ahead of it: that one is the term binding its
@@ -233,6 +247,12 @@ impl Vehicle {
     }
 
     /// The lane change the vehicle is indicating, if any.
+    /// How many of the barriers ahead of its rear axle on its path it has
+    /// committed to crossing.
+    pub fn committed(&self) -> u8 {
+        self.committed
+    }
+
     pub fn intent(&self) -> Option<Intent> {
         self.intent
     }

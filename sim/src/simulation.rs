@@ -3,6 +3,7 @@ use std::ops::ControlFlow;
 use glam::DVec2;
 use slotmap::{Key, SlotMap};
 
+use crate::barrier;
 use crate::debug::{AccelSource, DebugEvent, DebugSink, NoopSink};
 use crate::following::{self, Overlaps};
 use crate::junction::{self, Queue, arrive, junction_term};
@@ -17,7 +18,8 @@ use crate::models::acceleration;
 use crate::models::lane_change::{self, Decision};
 use crate::models::lateral;
 use crate::models::routing::Route;
-use crate::network::{JunctionId, LaneId, MAX_SUCCESSORS, Side, SimNetwork};
+use crate::models::signal::{self, MovementLight, SignalState};
+use crate::network::{JunctionId, LaneId, MAX_SUCCESSORS, MovementId, Side, SimNetwork};
 use crate::occupancy::{
     self, Ahead, Along, Found, Lateral, Occupant, find_follower, find_leaders, for_each_leader,
 };
@@ -90,6 +92,12 @@ pub struct SimState {
     pub(crate) residual: f64,
     /// Simulated time, in seconds.
     pub(crate) time: f64,
+    /// Each signal controller's place in its plan, by controller.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) signals: Vec<SignalState>,
+    /// Every signal movement's light, by [`MovementId`].
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) lights: Vec<MovementLight>,
 }
 
 /// What the simulation derives from its state, rebuilt rather than saved.
@@ -157,6 +165,8 @@ enum AccelUpdate {
         accel: f64,
         yielding: Option<VehicleId>,
         binding: Option<Binding>,
+        /// How many more barriers it commits to.
+        commits: u8,
     },
     /// From its record on its old lane, while it straddles it: the most its old
     /// side allows.
@@ -208,12 +218,17 @@ impl<D: DebugSink> Simulation<D> {
 
     /// A simulation exactly as it was in `state`, with `sink` for its debug
     /// events. The sink starts empty, so its events refill as each update runs.
-    pub fn restore(state: SimState, sink: D) -> Self {
+    pub fn restore(mut state: SimState, sink: D) -> Self {
         assert!(
             state.config.step > 0.0 && state.config.accel_every > 0,
             "{:?}",
             state.config
         );
+        // A freeze frame from before its network had signals starts them afresh.
+        let signals = state.network.signals().count();
+        if state.signals.len() != signals || state.lights.len() != state.network.movement_count() {
+            (state.signals, state.lights) = signal::initial(&state.network);
+        }
         Self {
             derived: Derived::new(&state),
             state,
@@ -251,8 +266,15 @@ impl<D: DebugSink> Simulation<D> {
             steps: 0,
             residual: 0.0,
             time: 0.0,
+            signals: Vec::new(),
+            lights: Vec::new(),
         };
         Self::restore(state, sink)
+    }
+
+    /// A signal movement's light now, and for how many steps it has shown it.
+    pub fn light(&self, movement: MovementId) -> MovementLight {
+        self.state.lights[movement.0 as usize]
     }
 
     pub fn network(&self) -> &SimNetwork {
@@ -309,7 +331,7 @@ impl<D: DebugSink> Simulation<D> {
                 return ControlFlow::Continue(());
             };
             let leader_speed = speed_of(&self.state.vehicles, ahead);
-            if nearest && ahead != Ahead::PathEnd {
+            if nearest && !matches!(ahead, Ahead::PathEnd | Ahead::Barrier { .. }) {
                 speed = speed.min(leader_speed);
             }
             nearest = false;
@@ -368,6 +390,7 @@ impl<D: DebugSink> Simulation<D> {
                     state ^ (at.s.to_bits()).rotate_left(17) ^ u64::from(at.lane.0)
                 }
             },
+            committed: 0,
         };
         let needed = reach(&vehicle, at.s, None);
         extend_path(
@@ -535,6 +558,8 @@ impl<D: DebugSink> Simulation<D> {
         vehicle.old_side = Some(side.opposite());
         vehicle.lane_change = Some(change);
         vehicle.intent = None;
+        // Its barriers ahead are now others.
+        vehicle.committed = 0;
         let needed = reach(vehicle, lane_pos.s, Some(change));
         extend_path(
             &self.state.network,
@@ -644,6 +669,8 @@ impl<D: DebugSink> Simulation<D> {
     pub fn step(&mut self) {
         let dt = self.state.config.step;
         self.state.time += dt;
+        let SimState { network, signals, lights, .. } = &mut self.state;
+        signal::step(network, signals, lights, dt);
         // As often as the longitudinal model, which they share lane speeds with.
         let every = self.state.config.accel_every;
         if self.state.steps.is_multiple_of(u64::from(every)) {
@@ -817,8 +844,13 @@ impl<D: DebugSink> Simulation<D> {
         // What its old side and its speed cap allow first, then its own update,
         // so that whether a leader binds it is judged against all of them.
         for update in &self.decisions {
-            if let AccelUpdate::Own { id, yielding, .. } = *update {
+            if let AccelUpdate::Own { id, yielding, commits, .. } = *update {
                 let vehicle = &mut self.state.vehicles[id];
+                vehicle.committed = vehicle.committed.saturating_add(commits);
+                // Committed past a barrier, it may now arrive at a junction beyond.
+                if commits > 0 {
+                    self.arrivals.push(id);
+                }
                 let spread = vehicle.spec.accel_noise;
                 vehicle.noise =
                     acceleration::noise(vehicle.noise, spread, noise_step, &mut vehicle.noise_rng);
@@ -907,6 +939,10 @@ impl<D: DebugSink> Simulation<D> {
                 kinematics::advance(vehicle.pos, vehicle.heading, vehicle.curvature, dist);
 
             let lane = network.lane(vehicle.path[0]);
+            // The barriers its rear axle passes, from where it was along the
+            // lane it follows.
+            let mut from = vehicle.lane_pos.s;
+            let mut passed = 0;
             vehicle.lane_pos = lane.geometry().world_to_lane_near(vehicle.pos, vehicle.lane_pos);
             // Its path growing, or its entering a junction, may make it arrive at one.
             let mut arrives = false;
@@ -916,6 +952,10 @@ impl<D: DebugSink> Simulation<D> {
                     break;
                 }
                 let previous = vehicle.path.remove(0);
+                if vehicle.committed > 0 {
+                    passed += barrier::between(network.lane(previous), from, f64::INFINITY);
+                    from = f64::NEG_INFINITY;
+                }
                 let next = network.lane(vehicle.path[0]);
                 arrives |= next.junction().is_some();
                 let hint = next.geometry().lane_pos(vehicle.lane_pos.s - length, 0.0);
@@ -1012,6 +1052,11 @@ impl<D: DebugSink> Simulation<D> {
                         None => vehicle.intent = None,
                     }
                 }
+            }
+
+            if vehicle.committed > 0 {
+                passed += barrier::between(network.lane(vehicle.path[0]), from, vehicle.lane_pos.s);
+                vehicle.committed = vehicle.committed.saturating_sub(passed.min(255) as u8);
             }
 
             // Far enough ahead to know where it is going, at its new speed.
@@ -1124,7 +1169,34 @@ fn longitudinal<D: DebugSink>(
     // Wanting to change lanes, it keeps room to get halfway through a change
     // from rest.
     let halfway = wants_change(vehicle).then(|| halfway_from_rest(&state.network, vehicle));
+    // The barriers it commits to now, in order: once one holds it, or one
+    // beyond is found out of turn behind one shielded, the rest wait.
+    let mut commits = 0u8;
+    let mut held = false;
     for_each_leader(state, vehicle, Along::Path(own), |found| {
+        if let Found::Ahead(Ahead::Barrier { lane, index, rank }, gap, _) = found {
+            let in_turn =
+                usize::from(rank) == usize::from(vehicle.committed) + usize::from(commits);
+            if held || !in_turn {
+                held = true;
+                return;
+            }
+            let k = vehicle.path.iter().position(|&l| l == lane).unwrap_or(0);
+            let barrier = state.network.lane(lane).barriers()[usize::from(index)];
+            let decision = barrier::decide(state, id, vehicle, k, barrier, gap);
+            sink.record(|| DebugEvent::Barrier { vehicle: id, lane, index, gap, decision });
+            match decision {
+                barrier::Decision::Commit => commits = commits.saturating_add(1),
+                barrier::Decision::Pass => held = true,
+                barrier::Decision::Hold(term) => {
+                    held = true;
+                    let source = AccelSource::Barrier { lane, index, gap };
+                    sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
+                    rest = rest.min(term);
+                }
+            }
+            return;
+        }
         if let Found::Ahead(ahead, gap, _) = found {
             if let (true, Ahead::Ghost(owner)) = (first, ahead) {
                 ghost = Some((owner, gap));
@@ -1205,7 +1277,7 @@ fn longitudinal<D: DebugSink>(
     }
     let binding = binding.map(|b| Binding { rest, ..b });
     let accel = binding.map_or(rest, |b| b.term.min(rest));
-    AccelUpdate::Own { id, accel, yielding, binding }
+    AccelUpdate::Own { id, accel, yielding, binding, commits }
 }
 
 /// Whether `id` has a record, not a ghost, on `lane` near `s` (see
@@ -1379,7 +1451,7 @@ fn react<D: DebugSink>(
     let source = match ahead {
         Ahead::Vehicle(leader) => AccelSource::Leader { id: leader, gap, headway },
         Ahead::PathEnd => AccelSource::PathEnd { gap },
-        Ahead::Ghost(_) => return None,
+        Ahead::Ghost(_) | Ahead::Barrier { .. } => return None,
     };
     let speed = speed_of(vehicles, ahead);
     // Wanting to change lanes, it keeps room behind a leader to get halfway
@@ -1406,7 +1478,7 @@ fn react<D: DebugSink>(
 pub(crate) fn speed_of(vehicles: &SlotMap<VehicleId, Vehicle>, ahead: Ahead) -> f64 {
     match ahead {
         Ahead::Vehicle(id) | Ahead::Ghost(id) => vehicles[id].speed,
-        Ahead::PathEnd => 0.0,
+        Ahead::PathEnd | Ahead::Barrier { .. } => 0.0,
     }
 }
 

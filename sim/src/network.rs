@@ -126,6 +126,13 @@ pub struct Lane {
     /// if it doesn't.
     #[cfg_attr(feature = "serde", serde(default))]
     leaving: Option<Leaving>,
+    /// Its barriers, sorted by `s`.
+    #[cfg_attr(feature = "serde", serde(default))]
+    barriers: Vec<Barrier>,
+    /// Its priority level in its junction, the higher going first (see
+    /// `docs/DESIGN.md`, Gap acceptance and priority).
+    #[cfg_attr(feature = "serde", serde(default))]
+    priority: u8,
 }
 
 impl Lane {
@@ -160,6 +167,8 @@ impl Lane {
             junction: None,
             keep: Keep::NoPreference,
             leaving: None,
+            barriers: Vec::new(),
+            priority: 0,
         })
     }
 
@@ -213,6 +222,16 @@ impl Lane {
         self.adj_right
     }
 
+    /// Its barriers, sorted by `s`.
+    pub fn barriers(&self) -> &[Barrier] {
+        &self.barriers
+    }
+
+    /// Its priority level in its junction, the higher going first.
+    pub fn priority(&self) -> u8 {
+        self.priority
+    }
+
     /// The junction this lane belongs to, if any.
     pub fn junction(&self) -> Option<JunctionId> {
         self.junction.map(|(id, _)| id)
@@ -225,6 +244,67 @@ impl Lane {
             Side::Right => self.adj_right,
         }
     }
+}
+
+/// A point on a lane that vehicles stop at until they commit to crossing it (see
+/// `docs/DESIGN.md`, Barriers and signals).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Barrier {
+    /// Where it is along its lane, in meters.
+    pub s: f64,
+    pub kind: BarrierKind,
+}
+
+/// What a barrier is, and so when a vehicle commits to crossing it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum BarrierKind {
+    /// A signal for a movement: crossed once a vehicle can no longer stop
+    /// comfortably before it, while the light isn't red.
+    Signal { movement: MovementId },
+    /// A give-way line: crossed once there is a gap in the traffic with
+    /// priority.
+    GiveWay,
+}
+
+/// Identifies a signal movement: its index among every controller's movements,
+/// in the order they were added, which is also its light's index in the state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct MovementId(pub u32);
+
+/// A fixed-time signal plan (see `docs/DESIGN.md`, Barriers and signals).
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct SignalPlan {
+    /// At most 64, so that a mask of them fits a `u64`.
+    pub movements: Vec<Movement>,
+    /// Run in turn, round and round.
+    pub phases: Vec<Phase>,
+}
+
+/// A group of lanes whose signals go and stop together.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Movement {
+    /// The movements of its plan it conflicts with, by bit.
+    pub conflicts: u64,
+    /// How long it shows amber, in seconds.
+    pub amber: f64,
+    /// How long it must have been red before a movement it conflicts with turns
+    /// green, in seconds: time for its traffic to clear.
+    pub clearance: f64,
+}
+
+/// One phase of a signal plan.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Phase {
+    /// The movements green in it, by bit.
+    pub green: u64,
+    /// How long it lasts once they are all green, in seconds.
+    pub duration: f64,
 }
 
 /// Identifies a junction: its index in [`SimNetwork`]'s junctions.
@@ -291,12 +371,51 @@ pub enum End {
 pub struct SimNetwork {
     lanes: Vec<Lane>,
     junctions: Vec<Junction>,
+    /// The signal plans, and where each one's movements start among all of them.
+    #[cfg_attr(feature = "serde", serde(default))]
+    signals: Vec<(SignalPlan, u32)>,
 }
 
 impl SimNetwork {
     /// Builds a network from its lanes, with no links. Lane `i` gets id `LaneId(i)`.
     pub fn new(lanes: Vec<Lane>) -> Self {
-        Self { lanes, junctions: Vec::new() }
+        Self { lanes, junctions: Vec::new(), signals: Vec::new() }
+    }
+
+    /// Adds a barrier to `lane`, keeping its barriers sorted.
+    pub fn add_barrier(&mut self, lane: LaneId, barrier: Barrier) {
+        let barriers = &mut self.lanes[lane.0 as usize].barriers;
+        let at = barriers.partition_point(|b| b.s <= barrier.s);
+        barriers.insert(at, barrier);
+    }
+
+    /// Sets `lane`'s priority level in its junction.
+    pub fn set_priority(&mut self, lane: LaneId, priority: u8) {
+        self.lanes[lane.0 as usize].priority = priority;
+    }
+
+    /// Adds a signal plan, returning the id of its first movement: the rest
+    /// follow in order.
+    ///
+    /// Panics if it has more than 64 movements.
+    pub fn add_signal(&mut self, plan: SignalPlan) -> MovementId {
+        assert!(
+            plan.movements.len() <= 64,
+            "a signal plan has at most 64 movements"
+        );
+        let first = self.movement_count() as u32;
+        self.signals.push((plan, first));
+        MovementId(first)
+    }
+
+    /// The signal plans, each with the id of its first movement.
+    pub fn signals(&self) -> impl Iterator<Item = (&SignalPlan, MovementId)> {
+        self.signals.iter().map(|(plan, first)| (plan, MovementId(*first)))
+    }
+
+    /// How many signal movements there are, over every plan.
+    pub fn movement_count(&self) -> usize {
+        self.signals.iter().map(|(plan, _)| plan.movements.len()).sum()
     }
 
     /// The side of `lane` toward which `toward`, a lane starting level with it, lies
