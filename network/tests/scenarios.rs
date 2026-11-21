@@ -512,11 +512,13 @@ fn at_signals_a_right_turner_at_its_line_turns_on_its_next_green() {
         for (id, v) in sim.vehicles() {
             let path = v.path();
             match path.get(1) {
-                // On its way in, its front within a few meters of the line.
+                // On its way in, its front within a few meters of the line, and
+                // nobody turning ahead of it.
                 Some(next) if right.contains_key(next) => {
                     let length = network.lane(v.lane()).geometry().length();
                     let front = v.lane_pos().s - v.spec().rear_axle + v.spec().length;
-                    if length - front < 3.0 {
+                    let head = sim.vehicles().all(|(_, u)| u.lane() != *next);
+                    if length - front < 3.0 && head {
                         let movement = right[next];
                         let green = sim.light(movement).light == Light::Green;
                         waiting.entry(id).or_insert((movement, green as u32));

@@ -11,10 +11,15 @@ use crate::{
 
 const WIDTH: f64 = 3.5;
 
+/// How far right turns run straight on into a crossroads before turning, in
+/// meters, as drivers pull in to wait for a gap.
+const RIGHT_TURN_STRAIGHT: f64 = 2.7;
+
 /// Two two-way roads crossing at right angles, each with `lanes` lanes each
 /// way, 300 m long, driving on the left. Every lane coming in connects to the
 /// lane at the same place across the junction, straight on; only the leftmost
-/// turns left and only the rightmost turns right.
+/// turns left and only the rightmost turns right, running 2.7 m straight on
+/// before it turns.
 pub fn crossroads(lanes: usize, speed_limit: f64) -> RoadNetwork {
     let mut net = RoadNetwork::default();
     // The junction's half-width, from its centre to where the arms end.
@@ -43,7 +48,10 @@ pub fn crossroads(lanes: usize, speed_limit: f64) -> RoadNetwork {
         .collect();
     let inbound = |arm: usize, i: usize| LaneRef { road: arms[arm], lane: i };
     let outbound = |arm: usize, i: usize| LaneRef { road: arms[arm], lane: lanes + i };
-    let mut intersection = Intersection::default();
+    let mut intersection = Intersection {
+        far_side_straight: RIGHT_TURN_STRAIGHT,
+        ..Intersection::default()
+    };
     let outer = lanes - 1;
     for from in 0..4 {
         // Arms counterclockwise from this one: right, straight on, left.

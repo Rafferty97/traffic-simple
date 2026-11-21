@@ -176,6 +176,10 @@ pub struct Intersection {
     /// side at a mouth don't touch and conflict there, but wide enough that a
     /// vehicle's body stays within its own.
     pub connector_width: Option<f64>,
+    /// How far each far-side turn runs straight on from its lane's end before
+    /// its curve begins, in meters: as drivers turning across oncoming traffic
+    /// pull into the intersection to wait, rather than turning from the line.
+    pub far_side_straight: f64,
 }
 
 /// How an intersection is controlled (see `docs/DESIGN.md`, Intersection

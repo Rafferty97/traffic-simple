@@ -130,8 +130,13 @@ pub fn compile(net: &RoadNetwork) -> Result<Compiled, CompileError> {
                 &built[lane_id(from).0 as usize],
                 &built[lane_id(to).0 as usize],
             );
-            ways.push(Turn::between(a.end_dir(), b.start_dir()));
-            let connector = connect(a, b, intersection.connector_width);
+            let turn = Turn::between(a.end_dir(), b.start_dir());
+            ways.push(turn);
+            let straight = match turn.far_side(net.drives_on.side()) {
+                true => intersection.far_side_straight,
+                false => 0.0,
+            };
+            let connector = connect(a, b, straight, intersection.connector_width);
             let limit = net.roads[from.road.0].speed_limit.min(net.roads[to.road.0].speed_limit);
             let what = || format!("intersection {k} connection {c}");
             lanes.push(build(
@@ -341,17 +346,24 @@ fn build(b: &Built, speed_limit: f64, what: impl Fn() -> String) -> Result<Lane,
         .map_err(|error| CompileError::Lane { what: what(), error })
 }
 
-/// A connector from the end of `a` to the start of `b`: a cubic Bézier along
-/// their directions, its control points a third of the way across, sampled
-/// by the same tolerance as roads, `width` wide, or by default as wide as the
+/// A connector from the end of `a` to the start of `b`: `straight` on along
+/// `a`'s direction, then a cubic Bézier along their directions, its control
+/// points a third of the way across, sampled by the same tolerance as roads,
+/// `width` wide, or by default as wide as the
 /// widest vehicle sweeps along it (see [`swept`]), plus the room one needs to
 /// pass another on each side.
-fn connect(a: &Built, b: &Built, width: Option<f64>) -> Built {
-    let (p0, p3) = (a.end(), b.start());
+fn connect(a: &Built, b: &Built, straight: f64, width: Option<f64>) -> Built {
+    let (p0, p3) = (a.end() + straight * a.end_dir(), b.start());
     let reach = p0.distance(p3) / 3.0;
     let (c1, c2) = (p0 + reach * a.end_dir(), p3 - reach * b.start_dir());
     let start = Pose { pos: p0, heading: a.end_dir().to_angle() };
-    let (s, points) = reference::sample_bezier(start, c1, c2, p3);
+    let (mut s, mut points) = reference::sample_bezier(start, c1, c2, p3);
+    // The straight run on, one segment.
+    if straight > 0.0 {
+        s.iter_mut().for_each(|s| *s += straight);
+        s.insert(0, 0.0);
+        points.insert(0, a.end());
+    }
     let half_widths = match width {
         Some(width) => vec![[0.5 * width; 2]; s.len()],
         // The widest vehicle: the only class so far.
@@ -385,7 +397,8 @@ fn swept(points: &[DVec2], s: &[f64], spec: &traffic_sim::VehicleSpec) -> Vec<[f
             .map(|along| [side, -side].map(|across| axle + along * dir + across * dir.perp()));
         for corner in corners.into_iter().flatten() {
             // The nearest segment, among those within the body's reach.
-            let reach = |j: &usize| (s[*j] - s[i]).abs() <= front + rear + side;
+            let r = front + rear + side;
+            let reach = |j: &usize| s[*j] <= s[i] + r && s[*j + 1] >= s[i] - r;
             let nearest = (0..points.len() - 1).filter(reach).map(|j| {
                 let (a, b) = (points[j], points[j + 1]);
                 // The ends run on as lines, as the lanes before and after do.

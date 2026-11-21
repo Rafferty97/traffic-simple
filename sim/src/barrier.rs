@@ -338,9 +338,20 @@ fn clear(
         }
         // Committed: past every barrier before the conflict, or so committed
         // that the junction holds others back for it.
+        // Of the same level, it counts only if it committed first: before this
+        // one in the junction's queue, or, with this one not in it yet, past
+        // every barrier before the conflict. So of two that wait for each
+        // other, the first to commit goes, and they can't deadlock.
         let committed = || {
-            k.is_some_and(|k| !holds_before(network, other, k, at))
-                || state.queues[way.junction.0 as usize].committed.contains(&o.id)
+            let queue = &state.queues[way.junction.0 as usize].committed;
+            let mine = queue.iter().position(|&v| v == id);
+            match (queue.iter().position(|&v| v == o.id), mine) {
+                (Some(theirs), Some(mine)) => theirs < mine,
+                (Some(_), None) => true,
+                (None, mine) => {
+                    mine.is_none() && k.is_some_and(|k| !holds_before(network, other, k, at))
+                }
+            }
         };
         let held = k.is_some_and(|k| held_by_light(state, other, k, at));
         if held || (way.equal && !committed()) {
