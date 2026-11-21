@@ -301,7 +301,7 @@ fn add_signals(
         let movement = MovementId(first.0 + m as u32);
         sim.add_barrier(
             connector,
-            Barrier { s: 0.0, kind: BarrierKind::Signal { movement } },
+            Barrier::new(0.0, BarrierKind::Signal { movement }),
         );
     }
     // Every road has priority at signals: a far-side turn gives way to the
@@ -328,7 +328,7 @@ fn add_signals(
             .map(|conflict| conflict.mine.start)
             .fold(f64::INFINITY, f64::min);
         if waits.is_finite() {
-            sim.add_barrier(connector, Barrier { s: waits, kind: BarrierKind::GiveWay });
+            sim.add_barrier(connector, Barrier::new(waits, BarrierKind::GiveWay));
         }
     }
 }

@@ -930,9 +930,24 @@ fn draw_debug(
                 let pos = geometry.lane_pos(barrier.s, 0.0);
                 let left = geometry.half_width(pos, Side::Left);
                 let right = -geometry.half_width(pos, Side::Right);
-                let ends = [left, right]
-                    .map(|t| to_scene(geometry.lane_to_world(geometry.lane_pos(barrier.s, t))));
-                painter.line_segment(ends, Stroke::new(0.3, colour));
+                let edges =
+                    [left, right].map(|t| geometry.lane_to_world(geometry.lane_pos(barrier.s, t)));
+                // Along its line, if it has one, from edge to edge, the edges
+                // taken as running straight on from `s`; and faintly square
+                // across at `s`, where it is safe to stop.
+                let ends = match barrier.line {
+                    Some(line) => {
+                        let tangent = geometry.tangent_at(pos);
+                        let along = tangent.dot(line.normal);
+                        edges.map(|e| e - line.short_of(e) / along * tangent)
+                    }
+                    None => edges,
+                };
+                if barrier.line.is_some() {
+                    let faint = Stroke::new(0.08, colour.gamma_multiply(0.5));
+                    painter.line_segment(edges.map(to_scene), faint);
+                }
+                painter.line_segment(ends.map(to_scene), Stroke::new(0.3, colour));
             }
         }
     }

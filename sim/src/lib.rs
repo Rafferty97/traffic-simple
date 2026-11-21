@@ -31,8 +31,8 @@ pub use models::routing::Route;
 pub use models::signal::{Light, MovementLight};
 pub use network::{
     Barrier, BarrierKind, Conflict, ConflictKind, End, Junction, JunctionId, Keep, Lane, LaneId,
-    Leaving, MAX_PREDECESSORS, MAX_SUCCESSORS, Movement, MovementId, Neighbor, NetworkError, Phase,
-    Side, SignalPlan, SimNetwork,
+    Leaving, Line, MAX_PREDECESSORS, MAX_SUCCESSORS, Movement, MovementId, Neighbor, NetworkError,
+    Phase, Side, SignalPlan, SimNetwork,
 };
 pub use occupancy::{Lateral, Occupant, PASSING_CLEARANCE};
 pub use simulation::{Config, InsertError, LaneChangeError, SimState, Simulation};

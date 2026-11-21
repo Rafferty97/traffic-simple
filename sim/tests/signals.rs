@@ -53,7 +53,7 @@ fn crossroads_with(plan: SignalPlan) -> (SimNetwork, [MovementId; 2]) {
     let movements = [first, MovementId(first.0 + 1)];
     for (lane, movement) in [(2, movements[0]), (3, movements[1])] {
         let kind = BarrierKind::Signal { movement };
-        net.add_barrier(LaneId(lane), Barrier { s: 0.0, kind });
+        net.add_barrier(LaneId(lane), Barrier::new(0.0, kind));
     }
     (net, movements)
 }
@@ -260,7 +260,7 @@ fn give_way() -> SimNetwork {
     net.set_priority(LaneId(2), 3);
     net.set_priority(LaneId(3), 2);
     let start = net.conflict_between(LaneId(3), LaneId(2)).unwrap().mine.start;
-    net.add_barrier(LaneId(3), Barrier { s: start, kind: BarrierKind::GiveWay });
+    net.add_barrier(LaneId(3), Barrier::new(start, BarrierKind::GiveWay));
     net
 }
 
@@ -314,7 +314,7 @@ fn a_give_way_line_waits_for_traffic_with_priority_at_rest_at_a_green_light() {
         phases: vec![Phase { green: 0b1, duration: 1e9 }],
     });
     let kind = BarrierKind::Signal { movement: first };
-    net.add_barrier(LaneId(2), Barrier { s: 0.0, kind });
+    net.add_barrier(LaneId(2), Barrier::new(0.0, kind));
     let mut sim = Simulation::new(net, NoopSink);
     sim.step();
     assert_eq!(sim.light(first).light, Light::Green);
@@ -452,7 +452,7 @@ fn a_car_still_in_the_junction_on_red_outranks_the_cross_street_now_green() {
     net.set_priority(LaneId(2), 2);
     net.set_priority(LaneId(3), 3);
     let start = net.conflict_between(LaneId(2), LaneId(3)).unwrap().mine.start;
-    net.add_barrier(LaneId(2), Barrier { s: start, kind: BarrierKind::GiveWay });
+    net.add_barrier(LaneId(2), Barrier::new(start, BarrierKind::GiveWay));
     let mut sim = Simulation::new(net, NoopSink);
     // Past its signal, short of its waiting line, held there through its green
     // (to 22 s), as if no gap had come.

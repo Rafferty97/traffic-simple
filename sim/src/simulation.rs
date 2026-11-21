@@ -1228,6 +1228,7 @@ fn longitudinal<D: DebugSink>(
     for_each_leader(state, vehicle, Along::Path(own), |found| {
         if let Found::Ahead(Ahead::Barrier { lane, index, rank }, gap, _) = found {
             let barrier = state.network.lane(lane).barriers()[usize::from(index)];
+            let gap = barrier::gap_to(vehicle, &barrier, gap);
             if rank < u16::from(committed) {
                 if !barrier::released(state, vehicle, barrier, gap) {
                     return;

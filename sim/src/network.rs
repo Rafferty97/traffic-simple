@@ -251,9 +251,40 @@ impl Lane {
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Barrier {
-    /// Where it is along its lane, in meters.
+    /// Where it is along its lane, in meters: the order barriers are met in,
+    /// and where one is passed. With a line, no vehicle crossing the line
+    /// along the lane reaches it before here, so stopping short of it is safe.
     pub s: f64,
     pub kind: BarrierKind,
+    /// The line itself, in world space, if it isn't square across the lane at
+    /// `s`: vehicles stop by how far their nearest corner is from it.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub line: Option<Line>,
+}
+
+impl Barrier {
+    /// A barrier square across its lane at `s`.
+    pub fn new(s: f64, kind: BarrierKind) -> Self {
+        Barrier { s, kind, line: None }
+    }
+}
+
+/// A line in world space, as a half plane: the side `normal` points to is
+/// short of it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Line {
+    /// A point on it.
+    pub point: DVec2,
+    /// Its unit normal, pointing back toward the vehicles coming up to it.
+    pub normal: DVec2,
+}
+
+impl Line {
+    /// How far `point` is short of the line, negative once over it.
+    pub fn short_of(&self, point: DVec2) -> f64 {
+        (point - self.point).dot(self.normal)
+    }
 }
 
 /// What a barrier is, and so when a vehicle commits to crossing it.

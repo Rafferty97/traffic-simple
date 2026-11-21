@@ -29,7 +29,7 @@ const SOUTH: u32 = 2;
 fn all_way_stop() -> SimNetwork {
     let mut net = four_ways();
     for c in (4..8).map(LaneId) {
-        net.add_barrier(c, Barrier { s: 0.0, kind: BarrierKind::AllWayStop });
+        net.add_barrier(c, Barrier::new(0.0, BarrierKind::AllWayStop));
     }
     net
 }
@@ -245,7 +245,7 @@ fn of_two_waiting_for_each_other_at_the_same_level_the_first_to_commit_goes() {
     for (lane, start) in starts {
         net.add_barrier(
             LaneId(lane),
-            Barrier { s: start + 1.0, kind: BarrierKind::GiveWay },
+            Barrier::new(start + 1.0, BarrierKind::GiveWay),
         );
     }
     let mut sim = Simulation::new(net, NoopSink);

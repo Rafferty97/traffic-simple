@@ -388,6 +388,24 @@ fn clear(
     })
 }
 
+/// How far `vehicle` is short of `barrier`, given its front is `along` short of
+/// its `s` along the lanes: with a line, the greater of that and how far its
+/// nearest corner is short of the line. `s` is safe to stop at, the line
+/// exact, so whichever lets it go further.
+pub(crate) fn gap_to(vehicle: &Vehicle, barrier: &Barrier, along: f64) -> f64 {
+    match barrier.line {
+        Some(line) => {
+            let nearest = vehicle
+                .corners()
+                .map(|c| line.short_of(c))
+                .into_iter()
+                .fold(f64::INFINITY, f64::min);
+            along.max(nearest)
+        }
+        None => along,
+    }
+}
+
 /// Whether `vehicle`, committed to `barrier`, `gap` ahead of its front, is
 /// released from it, to decide afresh: at a red light, it can still stop before
 /// the line without braking harder than [`acceleration::SAFE_BRAKING`], having
