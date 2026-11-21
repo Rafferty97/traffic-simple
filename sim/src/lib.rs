@@ -5,6 +5,7 @@
 
 mod debug;
 mod following;
+mod junction;
 mod kinematics;
 mod lane;
 mod math;
