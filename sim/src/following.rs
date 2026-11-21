@@ -4,10 +4,11 @@
 
 use glam::DVec2;
 
-use crate::lane::LanePos;
+use crate::lane::{LanePos, SAME_POINT};
+use crate::models::lateral;
 use crate::network::{LaneId, Side, SimNetwork};
 use crate::occupancy::{Along, Lateral, Occupant, body};
-use crate::vehicle::Vehicle;
+use crate::vehicle::{Vehicle, VehicleSpec};
 
 /// Another lane, outside junctions, whose outline overlaps a lane's, with the
 /// lane's diverge point: the `s` along it after which the two never converge
@@ -21,24 +22,20 @@ pub struct Overlap {
 /// Each lane's overlaps, by lane: derived from the network.
 pub type Overlaps = Vec<Vec<Overlap>>;
 
-/// How far apart, in meters, the diverge point search samples a lane.
-const SEPARATION_STEP: f64 = 1.0;
-
-/// How far apart, in meters, classification samples a vehicle's course.
-const TRACE_STEP: f64 = 1.0;
-
 /// The most samples classification takes. A course that needs more stays
 /// converging until the vehicle next advances.
 const TRACE_SAMPLES: usize = 512;
 
-/// How much, in meters, a sideways measure may shrink between samples and still
-/// count as not shrinking: rounding, not motion.
-const TOLERANCE: f64 = 1e-3;
-
-/// How far, in meters, a body may come back toward a lane it is leaving and
-/// still count as moving away from it: the swing of its tail as it turns.
-/// Well within the passing check's clearance.
-const SWING: f64 = 0.1;
+/// How far, in meters, a body with `spec` may come back toward a lane it is
+/// leaving and still count as moving away from it: the swing of its tail as
+/// it turns, at most. Turning about a point `R` from its rear axle, its outer
+/// rear corner, `o` behind the axle and `w/2` out, is `√((R + w/2)² + o²)` from
+/// it, further than the side of its body: at full lock, about 10 cm for a car.
+fn swing(spec: &VehicleSpec) -> f64 {
+    let radius = 1.0 / lateral::max_curvature(spec.wheelbase());
+    let side = radius + 0.5 * spec.width;
+    side.hypot(spec.rear_axle) - side
+}
 
 /// Finds every pair of lanes whose outlines overlap, other than lanes one after
 /// the other and neighbours, which touch only along an end or an edge, and
@@ -102,17 +99,27 @@ fn diverge(network: &SimNetwork, a: LaneId, b: LaneId) -> f64 {
     }
     let (ga, gb) = (la.geometry(), lb.geometry());
     let point = |s: f64| ga.lane_to_world(ga.lane_pos(s, 0.0));
+    // Both centerlines are piecewise straight, so the separation runs straight
+    // between their vertices: at `a`'s own, and where `b`'s are beside it.
+    let mut hint = ga.world_to_lane(gb.centerline().next().expect("a lane has vertices"));
+    let beside = gb.centerline().map(|p| {
+        hint = ga.world_to_lane_near(p, hint);
+        hint.s
+    });
+    let mut stations: Vec<f64> = ga.vertex_s().chain(beside).collect();
+    stations.retain(|s| (0.0..=ga.length()).contains(s));
+    stations.sort_by(f64::total_cmp);
+    stations.dedup();
     let mut hint = gb.world_to_lane(point(0.0));
-    let steps = (ga.length() / SEPARATION_STEP).ceil() as usize;
     let (mut previous, mut last) = (None, 0.0);
-    for i in 0..=steps {
-        let s = (i as f64 * SEPARATION_STEP).min(ga.length());
+    for (i, &s) in stations.iter().enumerate() {
         let q = gb.world_to_lane_near(point(s), hint);
         hint = q;
         // Beside `b`, where it is along it; elsewhere `b` has ended or not begun.
-        let separation = (q.s > 0.0 && q.s < gb.length()).then_some(q.t.abs());
+        let separation = (0.0..=gb.length()).contains(&q.s).then_some(q.t.abs());
         match (previous, separation) {
-            (Some(p), Some(q)) if q < p - TOLERANCE => last = s,
+            // Rounding to the grid alone can't close it in.
+            (Some(p), Some(q)) if q < p - SAME_POINT => last = s,
             (None, Some(_)) if i > 0 => last = s,
             _ => {}
         }
@@ -209,35 +216,31 @@ fn lateral(
         s
     };
 
+    if window > known {
+        // Its course runs beyond what it knows: until it advances.
+        return Lateral::CONVERGING;
+    }
+    let Some(stations) = trace(network, vehicle, lane, window) else {
+        return Lateral::CONVERGING;
+    };
     let mut samples = arrayvec::ArrayVec::<Sample, TRACE_SAMPLES>::new();
-    let mut i = 0;
-    loop {
-        let ahead = i as f64 * TRACE_STEP;
-        if ahead > known || samples.is_full() {
-            // Its course runs beyond what it knows: until it advances.
-            return Lateral::CONVERGING;
-        }
-        let corners = if i == 0 {
+    for &ahead in &stations {
+        let corners = if ahead == 0.0 {
             vehicle.corners()
         } else {
             pose(ahead)
         };
         samples.push(sample(corners));
-        if ahead >= window {
-            break;
-        }
-        i += 1;
     }
 
-    // Which side of the lane it ends up on, a little beyond where it settles.
-    let probe = (window + 10.0).min(known);
+    // Which side of the lane it ends up on: as far along as it knows its way.
     let centre = {
-        let c = pose(probe);
+        let c = pose(known);
         geometry.world_to_lane_near(0.5 * (c[0] + c[2]), hint)
     };
     let side = match centre.t {
-        t if t > TOLERANCE => Side::Left,
-        t if t < -TOLERANCE => Side::Right,
+        t if t >= SAME_POINT => Side::Left,
+        t if t <= -SAME_POINT => Side::Right,
         // Level with the centerline: away from where its change started.
         _ => match vehicle.lane_change.map(|c| c.offset) {
             Some(o) if o > 0.0 => Side::Right,
@@ -253,11 +256,12 @@ fn lateral(
     // body swings its tail toward the lane it leaves as it turns, a few
     // centimetres, so closing in counts only beyond `SWING` from the furthest
     // it has been: well inside the passing clearance.
+    let swing = swing(&vehicle.spec);
     let mut furthest = f64::NEG_INFINITY;
     let mut turn = 0;
     for j in 0..samples.len() {
         let b = &samples[j];
-        let back = j > 0 && b.overlaps && (!samples[j - 1].overlaps || away(b) < furthest - SWING);
+        let back = j > 0 && b.overlaps && (!samples[j - 1].overlaps || away(b) < furthest - swing);
         if back {
             turn = j + 1;
             furthest = away(b);
@@ -270,6 +274,72 @@ fn lateral(
     } else {
         Lateral::Converging { turn: samples[turn.min(samples.len() - 1)].rear, side }
     }
+}
+
+/// Where, ahead of its rear axle along its path, classification samples a
+/// vehicle's course against `lane`, from 0 to `window`, in order: where the
+/// course or the lane bends or changes width, at their vertices, and along
+/// its lane change's cubic as closely as keeps the straight lines between
+/// samples within [`SAME_POINT`] of it. `None` if that needs more than
+/// [`TRACE_SAMPLES`].
+fn trace(
+    network: &SimNetwork,
+    vehicle: &Vehicle,
+    lane: LaneId,
+    window: f64,
+) -> Option<arrayvec::ArrayVec<f64, TRACE_SAMPLES>> {
+    let mut stations = arrayvec::ArrayVec::<f64, TRACE_SAMPLES>::new();
+    let mut push = |ahead: f64| {
+        if (0.0..=window).contains(&ahead) {
+            stations.try_push(ahead).ok()
+        } else {
+            Some(())
+        }
+    };
+    push(0.0)?;
+    push(window)?;
+    let axle = vehicle.lane_pos.s;
+    // Its path's vertices, and the lane's beside them.
+    let other = network.lane(lane).geometry();
+    let mut before = -axle;
+    for &l in &vehicle.path {
+        let geometry = network.lane(l).geometry();
+        for s in geometry.vertex_s() {
+            push(before + s)?;
+        }
+        let mut hint = geometry.lane_pos(0.0, 0.0);
+        for p in other.centerline() {
+            hint = geometry.world_to_lane_near(p, hint);
+            if (0.0..=geometry.length()).contains(&hint.s) {
+                push(before + hint.s)?;
+            }
+        }
+        before += geometry.length();
+        if before > window {
+            break;
+        }
+    }
+    // Its lane change: the cubic's second derivative is linear, so at its
+    // largest at an end, and straight lines `h` apart stray at most
+    // `h²·|t''| / 8` from it.
+    if let Some(c) = vehicle.lane_change {
+        let ends = [
+            6.0 * c.offset + 4.0 * c.length * c.slope,
+            6.0 * c.offset + 2.0 * c.length * c.slope,
+        ];
+        let bend = ends.iter().fold(0.0f64, |m, e| m.max(e.abs())) / (c.length * c.length);
+        if bend > 0.0 {
+            let step = (8.0 * SAME_POINT / bend).sqrt();
+            let n = (c.length / step).ceil() as usize;
+            for i in 0..=n {
+                push(c.s0 + c.length * i as f64 / n as f64 - axle)?;
+            }
+        }
+    }
+    stations.sort_unstable_by(f64::total_cmp);
+    let mut last = f64::NAN;
+    stations.retain(|s| std::mem::replace(&mut last, *s) != *s);
+    Some(stations)
 }
 
 /// The most lanes [`around`] gives.

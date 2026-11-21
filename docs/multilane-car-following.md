@@ -107,17 +107,21 @@ dropped for being beside Z. The whole body, not just the rear corners: where Z b
 back across Z, and its front can still be in Z after its rear has left.
 
 A vehicle on a loop shorter than its course can hold two records on one lane. A record a vehicle joins is only a
-duplicate if the vehicle already has one within 2 m of it on that lane.
+duplicate if the vehicle already has one within half the lane's length of it: two records of one vehicle are either at much the same s or a whole loop apart.
 
 ### Classifying occupancy records geometrically
 
-Step through V's future course, a sample every metre, the first at its actual pose, its lane change and then its lane, until both conditions above hold, and find the point
+Step through V's future course, the first sample at its actual pose, its lane change and then its lane, until both conditions above hold, and find the point
 after which these two always hold:
 
 - While it intersects Z, it is moving monotonically away from Z in the specified direction. As a body turns into a lane
-  change its tail swings back toward the lane it leaves by a few centimetres, so coming back by up to 0.1 m, from the
-  furthest it has been, still counts as moving away: well inside the passing check's clearance.
+  change its tail swings back toward the lane it leaves by a few centimetres, so coming back by up to the most its tail
+  can swing, from the furthest it has been, still counts as moving away: at full lock, about 10 cm for a car, from its
+  rear overhang, width and steering lock, and well inside the passing check's clearance.
 - Once its body has stopped intersecting Z, it never intersects it again.
+
+The samples fall where the course can bend: at the vertices of V's path and of Z, and along the lane change's cubic as
+closely as keeps straight lines between them within rounding to the grid. Between them the body moves straight.
 
 Until that point, the record is converging, and after that point, it is diverging. That point is memoised on the
 converging record, as V's rear's position along Z, with the side it diverges toward, so the trace only runs once.
@@ -129,7 +133,8 @@ when V advances onto the next lane, and when it joins the lanes that Z leads to.
 
 When the network is built, every pair of lanes whose outlines overlap, outside junctions, is recorded, with each lane's
 diverge point: the position along it after which the two lanes never converge again. It may be 0, as where a lane forks,
-and is never reached where they merge.
+and is never reached where they merge. Both centerlines are piecewise straight, so their separation is checked exactly,
+at every vertex of either lane.
 
 Pairs that don't overlap have no diverge point. Once V's lane change has ended it is confined to X, which never meets Z, so
 the trace only has to run to the end of the lane change.

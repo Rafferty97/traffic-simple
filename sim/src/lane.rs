@@ -226,7 +226,7 @@ impl LaneGeometry {
     ///
     /// Everything is on the millimeter grid, so it reads back exactly.
     pub fn to_mm_string(&self) -> String {
-        let mm = |v: f64| (v * 1000.0).round() as i64;
+        let mm = |v: f64| (v * PER_METER).round() as i64;
         let mut out = String::new();
         let mut last = None;
         for (point, &[left, right]) in self.centerline().zip(&self.half_widths) {
@@ -247,7 +247,7 @@ impl LaneGeometry {
 
     /// Reads a string from [`LaneGeometry::to_mm_string`] back into a lane's geometry.
     pub fn from_mm_string(text: &str) -> Result<Self, ParseLaneError> {
-        let meters = |v: &str| v.parse::<i64>().map(|mm| mm as f64 / 1000.0);
+        let meters = |v: &str| v.parse::<i64>().map(|mm| mm as f64 / PER_METER);
         let mut points = Vec::new();
         let mut half_widths: Vec<[f64; 2]> = Vec::new();
         for vertex in text.split_whitespace() {
@@ -269,6 +269,13 @@ impl LaneGeometry {
     }
 
     /// The centerline vertices, from start to end.
+    /// Each vertex's `s`, from the start: where the lane's geometry, piecewise
+    /// linear, may change direction or width.
+    pub(crate) fn vertex_s(&self) -> impl Iterator<Item = f64> + '_ {
+        self.segs.iter().map(|s| s.cum_s).chain(std::iter::once(self.length))
+    }
+
+    /// The centerline's vertices, as in [`LaneGeometry::vertex_s`].
     pub fn centerline(&self) -> impl Iterator<Item = DVec2> + '_ {
         let seg = (self.segs.len() - 1) as u32;
         let end = self.lane_to_world(LanePos { seg, s: self.length, t: 0.0 });
@@ -301,7 +308,8 @@ impl LaneGeometry {
     /// Each segment's piece of the outline, between its ribs, is a convex
     /// quadrilateral, so every pair of pieces is clipped one against the other.
     /// Pieces that only touch, as neighboring lanes' do along their shared edge,
-    /// overlap by less than [`MIN_OVERLAP`] and don't count. It compares every
+    /// leave a sliver no thicker than rounding and don't count: an overlap
+    /// counts only if it is, on average, at least [`SAME_POINT`] thick. It compares every
     /// pair of segments, so it is for building networks, not for hot paths.
     pub(crate) fn overlap(&self, other: &LaneGeometry) -> Option<[Range<f64>; 2]> {
         let mut ranges: Option<[Range<f64>; 2]> = None;
@@ -315,7 +323,8 @@ impl LaneGeometry {
                     continue;
                 }
                 let clipped = clip(&mine, &theirs);
-                if area(&clipped) < MIN_OVERLAP {
+                // An empty clip has neither area nor perimeter: it doesn't count.
+                if area(&clipped) <= SAME_POINT * 0.5 * perimeter(&clipped) {
                     continue;
                 }
                 for &p in &clipped {
@@ -386,8 +395,22 @@ impl LaneGeometry {
 }
 
 /// The nearest millimeter to a length in meters.
+/// Grid steps per meter.
+const PER_METER: f64 = 1000.0;
+
+/// The grid every lane point and half-width is snapped to, in meters: 1 mm.
+pub const GRID: f64 = 1.0 / PER_METER;
+
+/// How far apart, in meters, two points on the [`GRID`] can be and still have
+/// come from the same point, or from points apart only by rounding: under two
+/// steps. Snapping moves a point at most half a step along each axis, so two
+/// such points are at most a step apart along each, √2 steps, and the next
+/// distance between grid points is two steps. Comparing against this needs no
+/// allowance for rounding.
+pub const SAME_POINT: f64 = 2.0 * GRID;
+
 fn snap(v: f64) -> f64 {
-    (v * 1000.0).round() / 1000.0
+    (v * PER_METER).round() / PER_METER
 }
 
 /// Why a string isn't a lane's geometry.
@@ -416,9 +439,12 @@ impl<'de> serde::Deserialize<'de> for LaneGeometry {
     }
 }
 
-/// The least area two lanes' outlines must share to overlap, in m²: more than
-/// rounding leaves where neighboring lanes touch along an edge.
-const MIN_OVERLAP: f64 = 1e-3;
+/// The length of a polygon's boundary. A sliver's half of it is about its
+/// length, so area over that is about its thickness.
+fn perimeter(points: &[DVec2]) -> f64 {
+    let n = points.len();
+    (0..n).map(|i| points[i].distance(points[(i + 1) % n])).sum()
+}
 
 /// The corners of the box around a polygon.
 fn bounds(points: &[DVec2]) -> (DVec2, DVec2) {

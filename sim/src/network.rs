@@ -3,7 +3,7 @@ use std::ops::Range;
 use arrayvec::ArrayVec;
 use glam::DVec2;
 
-use crate::lane::{LaneError, LaneGeometry, LanePos};
+use crate::lane::{LaneError, LaneGeometry, LanePos, SAME_POINT};
 
 /// The most successors a lane can have.
 pub const MAX_SUCCESSORS: usize = 4;
@@ -42,10 +42,6 @@ pub struct Neighbor {
     /// Whether vehicles may change from the lane this is stored on into `lane`.
     pub can_change: bool,
 }
-
-/// How far apart two points may be and still count as the same, in meters: a
-/// lane's end and its successor's start, or the ends of neighboring lanes.
-const COINCIDENT: f64 = 0.01;
 
 /// Why a network breaks an assumption the simulation makes about it.
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
@@ -304,11 +300,11 @@ impl SimNetwork {
     }
 
     /// The side of `lane` toward which `toward`, a lane starting level with it, lies
-    /// or departs. A neighbor's side is known; otherwise `toward`'s centerline is
-    /// walked, a meter at a time, until it is clearly beside `lane`, more than a
-    /// quarter of its half-width from its centerline, and failing that, the side
-    /// it last was before `lane` ends. Lanes that never part are one lane in all
-    /// but name, and left is as good a side as any for them.
+    /// or departs. A neighbor's side is known; otherwise it is the side of the
+    /// first of `toward`'s vertices off `lane`'s centerline by more than rounding
+    /// to the grid, before `lane` ends, or failing that, the side the last was.
+    /// Lanes that never part are one lane in all but name, and left is as good a
+    /// side as any for them.
     fn side_toward(&self, lane: LaneId, toward: LaneId) -> Side {
         let beside = self.lane(lane);
         let sides = [Side::Left, Side::Right];
@@ -320,16 +316,14 @@ impl SimNetwork {
         let side_of = |t: f64| if t < 0.0 { Side::Right } else { Side::Left };
         let mut at = from.lane_pos(0.0, 0.0);
         let mut last = 0.0;
-        for i in 0..=to.length().ceil() as usize {
-            let point = to.lane_to_world(to.lane_pos((i as f64).min(to.length()), 0.0));
+        for point in to.centerline() {
             at = from.world_to_lane_near(point, at);
             if at.s > from.length() {
                 break;
             }
             last = at.t;
-            let side = side_of(at.t);
-            if at.t.abs() > 0.25 * from.half_width(at, side) {
-                return side;
+            if at.t.abs() >= SAME_POINT {
+                return side_of(at.t);
             }
         }
         side_of(last)
@@ -424,7 +418,7 @@ impl SimNetwork {
                     };
                     let along =
                         lane.geometry().world_to_lane_near(at, lane.geometry().lane_pos(s, 0.0)).s;
-                    if (along - s).abs() > COINCIDENT {
+                    if (along - s).abs() >= SAME_POINT {
                         let offset = along - s;
                         return Err(NetworkError::NotAligned {
                             lane: id,
@@ -452,7 +446,7 @@ impl SimNetwork {
             for &successor in lane.successors() {
                 let gap = point(lane, lane.geometry().length())
                     .distance(point(self.lane(successor), 0.0));
-                if gap > COINCIDENT {
+                if gap >= SAME_POINT {
                     return Err(NetworkError::Disconnected { lane: id, successor, gap });
                 }
             }

@@ -70,6 +70,12 @@ impl LaneChange {
     }
 }
 
+/// The sharpest curvature a vehicle with `wheelbase` can steer, its rear axle's
+/// path's at full lock, in 1/m.
+pub fn max_curvature(wheelbase: f64) -> f64 {
+    TAN_MAX_STEER / wheelbase
+}
+
 /// How far a lane change across `offset`, started at `speed` by a vehicle with
 /// `wheelbase`, runs, in meters: [`LANE_CHANGE_TIME`] at its speed, or, slower,
 /// the shortest it can steer (see [`min_change_length`]).
@@ -82,7 +88,7 @@ pub fn change_length(speed: f64, offset: f64, wheelbase: f64) -> f64 {
 /// its ends, at the steering lock. About 9 m across a 3.5 m lane for a car.
 /// The slope a change starts with, usually small, is left out.
 pub fn min_change_length(offset: f64, wheelbase: f64) -> f64 {
-    let lock = TAN_MAX_STEER / wheelbase;
+    let lock = max_curvature(wheelbase);
     (6.0 * offset.abs() / lock).sqrt()
 }
 
@@ -99,7 +105,7 @@ pub fn lookahead_distance(speed: f64) -> f64 {
 /// the target, so this needs no trigonometry beyond the heading's direction.
 pub fn curvature_toward(pos: DVec2, heading: f64, wheelbase: f64, target: DVec2) -> f64 {
     let d = target - pos;
-    let max = TAN_MAX_STEER / wheelbase;
+    let max = max_curvature(wheelbase);
     (2.0 * DVec2::from_angle(heading).perp_dot(d) / d.length_squared()).clamp(-max, max)
 }
 

@@ -3,14 +3,12 @@
 use std::fmt;
 
 use glam::DVec2;
-use traffic_sim::{Keep, Lane, LaneError, LaneId, NetworkError, SimNetwork};
+use traffic_sim::{Keep, Lane, LaneError, LaneId, NetworkError, SAME_POINT, SimNetwork};
 
-use crate::reference::Polyline;
+use crate::reference::{self, Polyline};
 use crate::render;
-use crate::{Compiled, Direction, LaneRef, RoadNetwork};
+use crate::{Compiled, Direction, LaneRef, Pose, RoadNetwork};
 
-/// How close two lane ends must be to connect, in meters.
-const COINCIDENT: f64 = 0.01;
 /// The sideways acceleration a connector's speed limit allows on its tightest
 /// bend, in m/s².
 const TURN_ACCEL: f64 = 2.0;
@@ -151,7 +149,7 @@ pub fn compile(net: &RoadNetwork) -> Result<Compiled, CompileError> {
                     (Direction::Backward, Direction::Backward) => (y, x),
                     _ => continue,
                 };
-                if built[from.0 as usize].end().distance(built[to.0 as usize].start()) < COINCIDENT
+                if built[from.0 as usize].end().distance(built[to.0 as usize].start()) < SAME_POINT
                 {
                     links.push((from, to));
                 }
@@ -172,7 +170,7 @@ pub fn compile(net: &RoadNetwork) -> Result<Compiled, CompileError> {
             let (upper, lower) = (&road.lanes[pair[0]], &road.lanes[pair[1]]);
             let gap = |s: f64| upper.offset.at(s) - lower.offset.at(s);
             let present = |s: f64| upper.width.at(s) > 0.0 && lower.width.at(s) > 0.0;
-            let parallel = (gap(s0) - gap(s1)).abs() < COINCIDENT && present(s0) && present(s1);
+            let parallel = (gap(s0) - gap(s1)).abs() < SAME_POINT && present(s0) && present(s1);
             if upper.direction != lower.direction || !parallel {
                 continue;
             }
@@ -207,26 +205,19 @@ fn build(b: &Built, speed_limit: f64, what: impl Fn() -> String) -> Result<Lane,
 
 /// A connector from the end of `a` to the start of `b`: a cubic Bézier along
 /// their directions, its control points a third of the way across, sampled
-/// finely enough to turn at most 3° per vertex.
+/// by the same tolerance as roads, its width blending from one to the other.
 fn connect(a: &Built, b: &Built) -> Built {
     let (p0, p3) = (a.end(), b.start());
     let reach = p0.distance(p3) / 3.0;
-    let p = [p0, p0 + reach * a.end_dir(), p3 - reach * b.start_dir(), p3];
-    let turn = a.end_dir().angle_to(b.start_dir()).abs();
-    let n = ((turn / 3f64.to_radians()).ceil() as usize)
-        .max((3.0 * reach).ceil() as usize)
-        .max(2);
-    let points = (0..=n)
-        .map(|i| {
-            let t = i as f64 / n as f64;
-            let u = 1.0 - t;
-            u * u * u * p[0] + 3.0 * u * u * t * p[1] + 3.0 * u * t * t * p[2] + t * t * t * p[3]
-        })
-        .collect();
+    let (c1, c2) = (p0 + reach * a.end_dir(), p3 - reach * b.start_dir());
+    let start = Pose { pos: p0, heading: a.end_dir().to_angle() };
+    let (s, points) = reference::sample_bezier(start, c1, c2, p3);
+    let total = *s.last().expect("a curve has its ends");
     let (w0, w1) = (*a.half_widths.last().unwrap(), b.half_widths[0]);
-    let half_widths = (0..=n)
-        .map(|i| {
-            let t = i as f64 / n as f64;
+    let half_widths = s
+        .iter()
+        .map(|&s| {
+            let t = s / total;
             [0, 1].map(|e| w0[e] + (w1[e] - w0[e]) * t)
         })
         .collect();

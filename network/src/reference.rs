@@ -165,6 +165,26 @@ fn bezier_tangent(p: &[DVec2; 4], t: f64) -> DVec2 {
     }
 }
 
+/// A cubic Bézier from `start`, sampled as evenly as the tolerance and the turn
+/// per vertex allow, with no extra vertices at its ends: each vertex's distance
+/// along it, and the vertex. For curves no lane runs beside, such as a
+/// junction's connectors, which needn't end square.
+pub(crate) fn sample_bezier(
+    start: Pose,
+    c1: DVec2,
+    c2: DVec2,
+    end: DVec2,
+) -> (Vec<f64>, Vec<DVec2>) {
+    let placed = Placed::new(start, &Piece::Bezier { c1, c2, end });
+    let length = placed.length();
+    let s: Vec<f64> = std::iter::once(0.0)
+        .chain(placed.stations())
+        .chain(std::iter::once(length))
+        .collect();
+    let points = s.iter().map(|&s| placed.pose(s).pos).collect();
+    (s, points)
+}
+
 /// Where a reference line ends, and its heading there.
 pub(crate) fn end_pose(start: Pose, pieces: &[Piece]) -> Pose {
     pieces.iter().fold(start, |pose, piece| {
