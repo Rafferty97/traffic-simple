@@ -3,7 +3,7 @@ use std::ops::Range;
 use arrayvec::ArrayVec;
 use glam::DVec2;
 
-use crate::lane::{LaneError, LaneGeometry};
+use crate::lane::{LaneError, LaneGeometry, LanePos};
 
 /// The most successors a lane can have.
 pub const MAX_SUCCESSORS: usize = 4;
@@ -554,16 +554,46 @@ impl SimNetwork {
     pub(crate) fn point_along(
         &self,
         path: impl IntoIterator<Item = LaneId>,
-        mut s: f64,
+        s: f64,
         t: f64,
     ) -> DVec2 {
+        let (lane, pos) = self.lane_pos_along(path, s, t);
+        self.lane(lane).geometry().lane_to_world(pos)
+    }
+
+    /// The point `s` along `path` and `t` across it, as [`SimNetwork::point_along`]
+    /// gives it, with the unit direction there of a curve whose offset changes by
+    /// `slope` (see [`LaneGeometry::direction_at`]).
+    pub(crate) fn pose_along(
+        &self,
+        path: impl IntoIterator<Item = LaneId>,
+        s: f64,
+        t: f64,
+        slope: f64,
+    ) -> (DVec2, DVec2) {
+        let (lane, pos) = self.lane_pos_along(path, s, t);
+        let geometry = self.lane(lane).geometry();
+        (
+            geometry.lane_to_world(pos),
+            geometry.direction_at(pos, slope),
+        )
+    }
+
+    /// The lane `s` along `path` falls on, and the position there, `t` across
+    /// it. Past the end of the last lane, it is on that lane, beyond its end.
+    fn lane_pos_along(
+        &self,
+        path: impl IntoIterator<Item = LaneId>,
+        mut s: f64,
+        t: f64,
+    ) -> (LaneId, LanePos) {
         let mut path = path.into_iter().peekable();
         while let Some(id) = path.next() {
-            let lane = self.lane(id);
-            if s < lane.geometry().length() || path.peek().is_none() {
-                return lane.geometry().lane_to_world(lane.geometry().lane_pos(s, t));
+            let geometry = self.lane(id).geometry();
+            if s < geometry.length() || path.peek().is_none() {
+                return (id, geometry.lane_pos(s, t));
             }
-            s -= lane.geometry().length();
+            s -= geometry.length();
         }
         unreachable!("a vehicle's path always holds its current lane")
     }

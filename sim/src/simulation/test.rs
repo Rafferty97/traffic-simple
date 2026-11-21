@@ -110,7 +110,7 @@ fn decision(
     }
     let mut speeds = Vec::new();
     LaneSpeeds::refresh(&mut speeds, &sim.state);
-    let incentives = incentives(&sim.state, &speeds, vehicle);
+    let incentives = incentives(&sim.state, &speeds, id, vehicle);
     let mut lc = vehicle.lc;
     let dt = sim.state.config.step * f64::from(sim.state.config.accel_every);
     lane_change::aim(&mut lc, incentives);

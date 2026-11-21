@@ -127,6 +127,7 @@ impl LaneSpeeds {
 pub(crate) fn incentives(
     state: &SimState,
     speeds: &[LaneSpeeds],
+    id: VehicleId,
     vehicle: &Vehicle,
 ) -> [Option<lane_change::Incentives>; 2] {
     let SimState { network, vehicles, .. } = state;
@@ -144,7 +145,10 @@ pub(crate) fn incentives(
         let ahead = speeds[lane.0 as usize].average(s, s + ANTICIPATION * limit);
         ahead.map_or(desired, |v| v.min(desired))
     };
-    let own = anticipated(lane_id, rear + 0.01);
+    // From just past its own record, which the average leaves out.
+    let own_s =
+        state.occupants[lane_id.0 as usize][occupancy::record_index(state, lane_id, id)].s();
+    let own = anticipated(lane_id, own_s);
     // Leaving a lane that ends: toward the neighbour that goes on.
     let route = match lane.leaving() {
         Some(Leaving::Early) => {
@@ -278,11 +282,6 @@ pub(crate) fn halfway(network: &SimNetwork, vehicle: &Vehicle) -> f64 {
         + 0.5 * lateral::change_length(vehicle.speed, width, vehicle.spec.wheelbase())
 }
 
-/// How much more room, in meters, a vehicle that wants to change lanes keeps
-/// behind its leader than it needs to get halfway through a change: IDM settles
-/// on its minimum gap from above, so without it the room would only just do.
-pub(crate) const SPARE_ROOM: f64 = 1.0;
-
 /// Whether a vehicle wants to change lanes: it is indicating, or has built up
 /// enough advantage for a side to keep indicating to it.
 pub(crate) fn wants_change(vehicle: &Vehicle) -> bool {
@@ -383,11 +382,9 @@ pub(crate) fn plan_change(
     );
     let lane_pos = lane.geometry().world_to_lane_near(vehicle.pos, hint);
     let ahead = vehicle.lane_pos.s + lateral::lookahead_distance(vehicle.speed);
-    let aim = network.point_along(vehicle.path.iter().copied(), ahead, 0.0);
-    let beyond = network.point_along(vehicle.path.iter().copied(), ahead + 1.0, 0.0);
+    let (aim, heading) = network.pose_along(vehicle.path.iter().copied(), ahead, 0.0, 0.0);
     let start = lane.geometry().world_to_lane_near(aim, lane_pos);
-    let next = lane.geometry().world_to_lane_near(beyond, start);
-    let slope = (next.t - start.t) / (next.s - start.s);
+    let slope = lane.geometry().slope_toward(start, heading);
     (
         lane_pos,
         LaneChange::new(

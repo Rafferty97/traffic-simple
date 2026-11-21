@@ -9,13 +9,6 @@ use crate::{Piece, Pose, Profile};
 const TOLERANCE: f64 = 0.01;
 /// The most a sampled polyline turns at one vertex, in radians: 3°.
 const MAX_TURN: f64 = 3.0 * std::f64::consts::PI / 180.0;
-/// How far from each end of a road the next vertex is, in meters. It is put on
-/// the tangent at the end, so the polyline's end segments run along it: then
-/// lanes offset from it end square across the road, side by side, as the
-/// simulation needs of neighbors, and meet the next road's exactly.
-const END_STEP: f64 = 1.0;
-/// The longest stretch over which an offset or width eases without a vertex.
-const EASE_STEP: f64 = 2.0;
 /// Samples per Bézier for measuring its length.
 const BEZIER_TABLE: usize = 256;
 
@@ -96,6 +89,22 @@ impl Placed {
         }
     }
 
+    /// Its curvature at its start, or at its end if `at_end`, in 1/m.
+    fn end_curvature(&self, at_end: bool) -> f64 {
+        match *self {
+            Placed::Line { .. } => 0.0,
+            Placed::Arc { curvature, .. } => curvature.abs(),
+            Placed::Bezier { ref p, .. } => {
+                let t = if at_end { 1.0 } else { 0.0 };
+                let d1 = bezier_tangent(p, t);
+                let u = 1.0 - t;
+                let d2 =
+                    6.0 * u * (p[2] - 2.0 * p[1] + p[0]) + 6.0 * t * (p[3] - 2.0 * p[2] + p[1]);
+                d1.perp_dot(d2).abs() / d1.length().powi(3)
+            }
+        }
+    }
+
     /// Distances along it at which to sample it, so the polyline strays at most
     /// [`TOLERANCE`] and turns at most [`MAX_TURN`] per vertex. Excludes 0 and
     /// its length.
@@ -103,26 +112,41 @@ impl Placed {
         let length = self.length();
         let n = match *self {
             Placed::Line { .. } => 1,
-            Placed::Arc { curvature, .. } => {
-                let k = curvature.abs();
-                let sagitta = 2.0 * (1.0 - (TOLERANCE * k).min(1.0)).acos();
-                (k * length / MAX_TURN.min(sagitta)).ceil() as usize
-            }
-            Placed::Bezier { ref p, .. } => {
-                // Its total turning, measured along the table.
-                let mut turn = 0.0;
+            Placed::Arc { curvature, .. } => (density(curvature.abs()) * length).ceil() as usize,
+            Placed::Bezier { ref p, ref lengths } => {
+                // Evenly spaced, as densely as its most demanding stretch of the
+                // table needs.
+                let mut most: f64 = 0.0;
                 let mut last = bezier_tangent(p, 0.0);
                 for i in 1..=BEZIER_TABLE {
                     let tangent = bezier_tangent(p, i as f64 / BEZIER_TABLE as f64);
-                    turn += last.angle_to(tangent).abs();
+                    let step = lengths[i] - lengths[i - 1];
+                    if step > 0.0 {
+                        most = most.max(density(last.angle_to(tangent).abs() / step));
+                    }
                     last = tangent;
                 }
-                ((turn / MAX_TURN).ceil() as usize).max((length / 2.0).ceil() as usize)
+                (most * length).ceil() as usize
             }
         };
         let n = n.max(1);
         (1..n).map(|i| length * i as f64 / n as f64).collect()
     }
+}
+
+/// How many vertices per meter a curve of curvature `k` needs, so the polyline
+/// strays at most [`TOLERANCE`] from it, a chord's sagitta, and turns at most
+/// [`MAX_TURN`] per vertex.
+fn density(k: f64) -> f64 {
+    let sagitta = 2.0 * (1.0 - (TOLERANCE * k).min(1.0)).acos();
+    k / MAX_TURN.min(sagitta)
+}
+
+/// How far from an end of curvature `k` the vertex next to it can go on the
+/// tangent there and stray at most [`TOLERANCE`] from the curve: on the
+/// tangent, a point `d` along is about `d²·k / 2` off it.
+fn end_step(k: f64) -> f64 {
+    (2.0 * TOLERANCE / k).sqrt()
 }
 
 fn bezier(p: &[DVec2; 4], t: f64) -> DVec2 {
@@ -175,23 +199,32 @@ impl Polyline {
             s0 += length;
         }
         let total = s0;
-        let end_step = END_STEP.min(total / 4.0);
-
         let mut stations = vec![0.0, total];
         for (s0, p) in &placed {
             stations.push(*s0);
             stations.extend(p.stations().into_iter().map(|s| s0 + s));
         }
         for profile in profiles {
-            if let Profile::Ease { start, end, .. } = *profile {
-                let n = ((end - start) / EASE_STEP).ceil().max(1.0) as usize;
+            if let Profile::Ease { from, to, start, end } = *profile {
+                // Smoothstep's second derivative is at most 6·Δ/L², so linear
+                // between n even vertices it strays at most 3·Δ / (4·n²).
+                let n = (0.75 * (to - from).abs() / TOLERANCE).sqrt().ceil().max(1.0) as usize;
                 stations.extend((0..=n).map(|i| start + (end - start) * i as f64 / n as f64));
             }
         }
-        // The vertices next to the ends go on the end tangents, and nothing between.
-        stations.retain(|&s| s <= 0.0 || s >= total || (s >= end_step && s <= total - end_step));
-        stations.extend([end_step, total - end_step]);
         stations.retain(|&s| (0.0..=total).contains(&s));
+        // The vertices next to the ends go on the end tangents, so the
+        // polyline's end segments run along them: then lanes offset from it end
+        // square across the road, side by side, as the simulation needs of
+        // neighbors, and meet the next road's exactly. Each as far out as the
+        // tolerance allows, and no further than the next vertex in.
+        let inner = || stations.iter().copied().filter(|&s| s > 0.0 && s < total);
+        let first_inner = inner().fold(total, f64::min);
+        let last_inner = inner().fold(0.0, f64::max);
+        let (first_piece, last_piece) = (&placed[0].1, &placed[placed.len() - 1].1);
+        let start_step = end_step(first_piece.end_curvature(false)).min(first_inner);
+        let end_step = end_step(last_piece.end_curvature(true)).min(total - last_inner);
+        stations.extend([start_step, total - end_step]);
         stations.sort_by(f64::total_cmp);
         stations.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
 
@@ -204,8 +237,8 @@ impl Polyline {
         let points: Vec<DVec2> = stations
             .iter()
             .map(|&s| {
-                if s == end_step {
-                    first.pos + end_step * first.dir()
+                if s == start_step {
+                    first.pos + start_step * first.dir()
                 } else if s == total - end_step {
                     last.pos - end_step * last.dir()
                 } else {

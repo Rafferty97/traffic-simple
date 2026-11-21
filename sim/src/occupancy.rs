@@ -24,12 +24,16 @@ use crate::network::{LaneId, Side, SimNetwork};
 use crate::simulation::SimState;
 use crate::vehicle::{Vehicle, VehicleId};
 
+/// Whether `a` and `b`, the `s` of two of one vehicle's records on a lane
+/// `length` long, are the same record. Projections of the same rear corners
+/// are either at much the same `s` or a whole loop apart, so half the lane's
+/// length tells them apart.
+pub(crate) fn same_record(length: f64, a: f64, b: f64) -> bool {
+    (a - b).abs() <= 0.5 * length
+}
+
 /// The least room, in meters, a vehicle needs beside another to pass it.
 const PASSING_CLEARANCE: f64 = 0.5;
-
-/// How far behind the other vehicle's rear, in meters, a passing check puts the
-/// searching vehicle's nose, so a check that fails is drawn short of overlapping.
-const NOSE_GAP: f64 = 0.1;
 
 /// A vehicle's record in one lane's occupant list.
 #[derive(Clone, Copy, Debug)]
@@ -374,17 +378,13 @@ impl Along {
             Along::Into(_) => self.lane(network, vehicle, k),
             _ => vehicle.path.get(k).copied(),
         });
-        let point = |at: f64| {
-            let offset = change.map_or(0.0, |c| c.offset_at(at));
-            network.point_along(lanes.clone(), at, offset)
-        };
         let at = axle_s + ahead.max(0.0);
-        let pos = point(at);
-        (pos, (point(at + 1.0) - pos).normalize())
+        let (offset, slope) = change.map_or((0.0, 0.0), |c| (c.offset_at(at), c.slope_at(at)));
+        network.pose_along(lanes, at, offset, slope)
     }
 
     /// Where it will be, as its rear axle's position and heading, when its nose
-    /// is [`NOSE_GAP`] short of `point`, another vehicle's rearmost corner, at `s`
+    /// reaches `point`, another vehicle's rearmost corner, at `s`
     /// on `lane`, the `k`th lane searched, with its rear axle at `axle_s` along the
     /// lanes it follows (see [`Along::pose`]).
     ///
@@ -424,9 +424,9 @@ impl Along {
             }
             _ => gap,
         };
-        match ahead - NOSE_GAP {
-            ahead if ahead > 0.0 => self.pose(network, vehicle, axle_s, ahead),
-            _ => now,
+        match ahead > 0.0 {
+            true => self.pose(network, vehicle, axle_s, ahead),
+            false => now,
         }
     }
 }
@@ -561,11 +561,8 @@ pub fn find_leaders<B>(
     // Wanting to change lanes, along its own lanes it looks as far as it keeps
     // room to get halfway through a change (see `lane_changing::halfway`).
     let horizon = match along {
-        Along::Path(_) if crate::lane_changing::wants_change(vehicle) => horizon.max(
-            vehicle.spec.min_gap
-                + crate::lane_changing::halfway_from_rest(network, vehicle)
-                + crate::lane_changing::SPARE_ROOM,
-        ),
+        Along::Path(_) if crate::lane_changing::wants_change(vehicle) => horizon
+            .max(vehicle.spec.min_gap + crate::lane_changing::halfway_from_rest(network, vehicle)),
         _ => horizon,
     };
     let horizon = match (along, vehicle.lane_change) {
@@ -978,7 +975,7 @@ mod test {
             NOWHERE,
         );
         let nose = nose_along(&network, LaneId(1), pos, tangent, NOSE, 60.0);
-        assert!((nose - (60.0 - NOSE_GAP)).abs() < 0.02, "nose at {nose}");
+        assert!((nose - 60.0).abs() < 0.02, "nose at {nose}");
     }
 
     #[test]
@@ -1006,7 +1003,7 @@ mod test {
             own.geometry().world_to_lane_near(corner, own.geometry().lane_pos(58.0, 0.0)).s;
         let nose = nose_along(&network, LaneId(1), pos, tangent, NOSE, target);
         assert!(
-            (nose - (target - NOSE_GAP)).abs() < 0.02,
+            (nose - target).abs() < 0.02,
             "nose at {nose}, corner at {target}"
         );
     }
@@ -1033,10 +1030,7 @@ mod test {
             NOWHERE,
         );
         let nose = nose_along(&network, LaneId(1), pos, tangent, NOSE, 25.0);
-        assert!(
-            nose < 25.0 && nose > 25.0 - NOSE_GAP - 0.3,
-            "nose at {nose}"
-        );
+        assert!(nose <= 25.0 + 1e-9 && nose > 25.0 - 0.3, "nose at {nose}");
     }
 
     #[test]
@@ -1045,8 +1039,8 @@ mod test {
         let vehicle = car_at(&network, 1, 10.0);
         let lane = network.lane(LaneId(1));
         let now = (DVec2::new(1.0, 2.0), DVec2::Y);
-        // The other rear is behind its nose already, and just short of it.
-        for s in [11.0, 13.0, 10.0 + NOSE + 0.5 * NOSE_GAP] {
+        // The other rear is behind its nose already, or level with it.
+        for s in [11.0, 13.0, 10.0 + NOSE] {
             let corner = lane.geometry().lane_to_world(lane.geometry().lane_pos(s, 0.0));
             let gap = s - (10.0 + NOSE);
             let reached =

@@ -14,8 +14,8 @@ use crate::vehicle::Vehicle;
 pub(crate) fn reach(vehicle: &Vehicle, axle_s: f64, change: Option<LaneChange>) -> f64 {
     let nose = vehicle.spec.length - vehicle.spec.rear_axle;
     let search = acceleration::horizon(&vehicle.spec, vehicle.speed) + nose;
-    // Path tracking, and planning a lane change, aim a metre past the lookahead.
-    let tracking = lateral::lookahead_distance(vehicle.speed) + 1.0;
+    // Path tracking, and planning a lane change, aim at the lookahead.
+    let tracking = lateral::lookahead_distance(vehicle.speed);
     let change = change.map_or(0.0, |c| c.end() - axle_s);
     search.max(tracking).max(change)
 }

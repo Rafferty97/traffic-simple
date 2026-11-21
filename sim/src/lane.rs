@@ -175,6 +175,21 @@ impl LaneGeometry {
         self.segs[pos.seg as usize].dir
     }
 
+    /// Unit direction, in world space, of the curve through `pos` whose offset
+    /// changes by `slope` (dt/ds) along the lane. With no slope it follows the
+    /// line of constant `t` through `pos`, which is the centerline's direction
+    /// only on the centerline. Exact: within a segment, lane coordinates map to
+    /// world space by a fixed bilinear map.
+    pub fn direction_at(&self, pos: LanePos, slope: f64) -> DVec2 {
+        self.segs[pos.seg as usize].direction(pos.s, pos.t, slope)
+    }
+
+    /// The slope, dt/ds, at `pos` of a curve heading along `dir` in world space:
+    /// the inverse of [`LaneGeometry::direction_at`].
+    pub fn slope_toward(&self, pos: LanePos, dir: DVec2) -> f64 {
+        self.segs[pos.seg as usize].slope(pos.s, pos.t, dir)
+    }
+
     /// Converts a world position to lane coordinates, searching the whole lane.
     ///
     /// Use this for the first query; afterwards prefer
@@ -467,6 +482,23 @@ impl Segment {
         let x = (s - cum_s) * (1.0 + y * adj.1) - y * adj.0;
         start + x * dir + y * dir.perp()
     }
+
+    /// The derivative of [`Segment::lane_to_world`] along `s`, with `t`
+    /// changing by `slope`, normalized.
+    fn direction(&self, s: f64, t: f64, slope: f64) -> DVec2 {
+        let Self { dir, cum_s, adj, .. } = *self;
+        let dx = (1.0 + t * adj.1) + ((s - cum_s) * adj.1 - adj.0) * slope;
+        (dx * dir + slope * dir.perp()).normalize()
+    }
+
+    /// The `slope` for which [`Segment::direction`] is `heading`.
+    fn slope(&self, s: f64, t: f64, heading: DVec2) -> f64 {
+        let Self { dir, cum_s, adj, .. } = *self;
+        let (dx, dy) = (dir.dot(heading), dir.perp_dot(heading));
+        // dx = ds·(1 + t·k) + dt·((s − c)·k − a₀), and dy = dt.
+        let ds = (dx - dy * ((s - cum_s) * adj.1 - adj.0)) / (1.0 + t * adj.1);
+        dy / ds
+    }
 }
 
 #[cfg(test)]
@@ -508,6 +540,21 @@ mod test {
     }
 
     proptest! {
+        #[test]
+        fn direction_is_the_derivative_of_position(
+            lane in arb_lane(), seg in any::<Index>(), u in 0.01f64..0.99, v in -1.0f64..1.0,
+            slope in -0.2f64..0.2,
+        ) {
+            let i = seg.index(lane.segs.len());
+            let at = pos_in(&lane, i, u, v);
+            let h = 1e-6;
+            let ahead = LanePos { s: at.s + h, t: at.t + slope * h, seg: at.seg };
+            let diff = (lane.lane_to_world(ahead) - lane.lane_to_world(at)) / h;
+            let dir = lane.direction_at(at, slope);
+            prop_assert!((dir - diff.normalize()).length() < 1e-6, "{dir} vs {diff}");
+            prop_assert!((lane.slope_toward(at, dir) - slope).abs() < 1e-9);
+        }
+
         #[test]
         fn round_trip(lane in arb_lane(), seg in any::<Index>(), u in 0.0f64..1.0, v in -1.0f64..1.0) {
             let i = seg.index(lane.segs.len());

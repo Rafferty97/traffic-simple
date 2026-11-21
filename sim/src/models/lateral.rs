@@ -53,6 +53,17 @@ impl LaneChange {
         self.offset * (2.0 * x3 - 3.0 * x2 + 1.0) + self.length * self.slope * (x3 - 2.0 * x2 + x)
     }
 
+    /// The target offset's rate of change, dt/ds, at `s`: the derivative of
+    /// [`LaneChange::offset_at`], zero outside the change.
+    pub fn slope_at(&self, s: f64) -> f64 {
+        let x = (s - self.s0) / self.length;
+        if !(0.0..1.0).contains(&x) {
+            return 0.0;
+        }
+        let x2 = x * x;
+        self.offset * (6.0 * x2 - 6.0 * x) / self.length + self.slope * (3.0 * x2 - 4.0 * x + 1.0)
+    }
+
     /// Where the change is complete, as `s` along the vehicle's current lane.
     pub fn end(&self) -> f64 {
         self.s0 + self.length
@@ -95,6 +106,21 @@ pub fn curvature_toward(pos: DVec2, heading: f64, wheelbase: f64, target: DVec2)
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn slope_is_the_derivative_of_the_offset() {
+        let change = LaneChange::new(10.0, 3.5, 0.05, 14.0, 2.7);
+        let h = 1e-6;
+        for k in 0..=20 {
+            let s = 5.0 + 3.0 * k as f64;
+            let diff = (change.offset_at(s + h) - change.offset_at(s - h)) / (2.0 * h);
+            assert!(
+                (change.slope_at(s) - diff).abs() < 1e-6,
+                "at {s}: {} vs {diff}",
+                change.slope_at(s)
+            );
+        }
+    }
 
     #[test]
     fn lane_change_offset_meets_its_ends() {

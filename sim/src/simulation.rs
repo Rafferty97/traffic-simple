@@ -8,8 +8,8 @@ use crate::following::{self, Overlaps};
 use crate::junction::{self, Queue, arrive, junction_term};
 use crate::kinematics;
 use crate::lane_changing::{
-    LaneSpeeds, SPARE_ROOM, check_gap, comfortable_stop, friction, halfway_from_rest, incentives,
-    plan_change, wants_change,
+    LaneSpeeds, check_gap, comfortable_stop, friction, halfway_from_rest, incentives, plan_change,
+    wants_change,
 };
 use crate::math::wrap_angle;
 use crate::merge::{self, Merges};
@@ -673,7 +673,7 @@ impl<D: DebugSink> Simulation<D> {
                 continue;
             }
             let mut lc = vehicle.lc;
-            let incentives = incentives(state, lane_speeds, vehicle);
+            let incentives = incentives(state, lane_speeds, id, vehicle);
             lane_change::aim(&mut lc, incentives);
             // Nothing to weigh up: nowhere to change to, and nothing to fade.
             if lc.idle() && vehicle.intent.is_none() {
@@ -715,7 +715,7 @@ impl<D: DebugSink> Simulation<D> {
             let (id, mut lc, _) = lane_decisions[slot];
             let vehicle = &state.vehicles[id];
             // Measured again, for the debug view: checks are few.
-            let incentive = incentives(state, lane_speeds, vehicle)[lane_change::index(side)]
+            let incentive = incentives(state, lane_speeds, id, vehicle)[lane_change::index(side)]
                 .unwrap_or_default();
             let desire = lc.desire(side);
             let prospect = check_gap(state, derived.max_reach, id, vehicle, side, desire);
@@ -735,8 +735,9 @@ impl<D: DebugSink> Simulation<D> {
             let (id, lc, _) = lane_decisions[slot];
             sink.record(|| {
                 let vehicle = &state.vehicles[id];
-                let incentive = incentives(state, lane_speeds, vehicle)[lane_change::index(side)]
-                    .unwrap_or_default();
+                let incentive = incentives(state, lane_speeds, id, vehicle)
+                    [lane_change::index(side)]
+                .unwrap_or_default();
                 let waiting = lane_change::Outcome::Waiting;
                 let eval = lane_change::unchecked(side, incentive, lc.desire(side), waiting);
                 DebugEvent::LaneChangeEval { vehicle: id, eval }
@@ -771,7 +772,7 @@ impl<D: DebugSink> Simulation<D> {
         decisions.clear();
         for (index, list) in occupants.iter().enumerate() {
             let lane = LaneId(index as u32);
-            let half_length = 0.5 * network.lane(lane).geometry().length();
+            let length = network.lane(lane).geometry().length();
             for (i, o) in list.iter().enumerate().rev() {
                 if o.is_ghost() {
                     continue;
@@ -782,7 +783,7 @@ impl<D: DebugSink> Simulation<D> {
                     // lane it follows, lingering at its end, about a lane's length
                     // from its rear.
                     let rear = vehicle.lane_pos.s - vehicle.spec.rear_axle;
-                    if (o.s() - rear).abs() > half_length {
+                    if !occupancy::same_record(length, o.s(), rear) {
                         continue;
                     }
                     decisions.push(longitudinal(state, lane_speeds, sink, o.id, vehicle, i));
@@ -952,8 +953,9 @@ impl<D: DebugSink> Simulation<D> {
                     // to overlaps the one it follows: once is enough. If that is
                     // the lane it follows, the record there is its own now.
                     let list = &mut occupants[lane.0 as usize];
+                    let length = geometry.length();
                     let near = |o: &Occupant| {
-                        o.is_record_of(id) && (o.s() - occupant.s()).abs() < SAME_RECORD
+                        o.is_record_of(id) && occupancy::same_record(length, o.s(), occupant.s())
                     };
                     if let Some(existing) = list.iter_mut().find(|o| near(o)) {
                         if lane == followed {
@@ -1199,18 +1201,20 @@ fn longitudinal<D: DebugSink>(
     AccelUpdate::Own { id, accel, yielding, binding }
 }
 
-/// How far apart, in meters, two records of one vehicle on a lane must be to be
-/// two. Two projections of the same rear corners are either at the same `s` or
-/// a whole loop apart, so this only has to allow for projections landing a
-/// little differently.
-const SAME_RECORD: f64 = 2.0;
-
-/// Whether `id` has a record, not a ghost, on `lane` near `s`. On a loop, a
-/// vehicle can have a second one, lingering past the end, at the other end.
-fn has_record_at(occupants: &[Vec<Occupant>], lane: LaneId, id: VehicleId, s: f64) -> bool {
+/// Whether `id` has a record, not a ghost, on `lane` near `s` (see
+/// [`occupancy::same_record`]). On a loop, a vehicle can have a second one,
+/// lingering past the end, at the other end.
+fn has_record_at(
+    network: &SimNetwork,
+    occupants: &[Vec<Occupant>],
+    lane: LaneId,
+    id: VehicleId,
+    s: f64,
+) -> bool {
+    let length = network.lane(lane).geometry().length();
     occupants[lane.0 as usize]
         .iter()
-        .any(|o| o.is_record_of(id) && (o.s() - s).abs() < SAME_RECORD)
+        .any(|o| o.is_record_of(id) && occupancy::same_record(length, o.s(), s))
 }
 
 /// Joins `vehicle`, which has just joined `lane`, to every lane overlapping it
@@ -1225,7 +1229,7 @@ fn join_overlaps(
 ) {
     for p in &overlaps[lane.0 as usize] {
         let occupant = following::record(network, overlaps, p.lane, id, vehicle);
-        if has_record_at(occupants, p.lane, id, occupant.s()) {
+        if has_record_at(network, occupants, p.lane, id, occupant.s()) {
             continue;
         }
         let list = &mut occupants[p.lane.0 as usize];
@@ -1372,10 +1376,12 @@ fn react<D: DebugSink>(
     };
     let speed = speed_of(vehicles, ahead);
     // Wanting to change lanes, it keeps room behind a leader to get halfway
-    // through a change before it would have to stop, so it isn't boxed in.
+    // through a change before it would have to stop, so it isn't boxed in: that
+    // room is the minimum gap of a second term, which IDM settles on from above,
+    // so the room it keeps is never short.
     let mut term = acceleration::relaxed(&vehicle.spec, vehicle.speed, gap, speed, headway);
     if let (Some(halfway), Ahead::Vehicle(leader)) = (halfway, ahead) {
-        let short = halfway + SPARE_ROOM - comfortable_stop(&vehicles[leader]);
+        let short = halfway - comfortable_stop(&vehicles[leader]);
         if short > 0.0 {
             // A preference, not safety: never braking harder than comfortably.
             let min_gap = vehicle.spec.min_gap + short;
