@@ -442,3 +442,53 @@ fn drivers_stop_short_of_a_line_by_a_gap_drawn_for_it() {
         - gaps.iter().cloned().fold(f64::INFINITY, f64::min);
     assert!(spread > 0.2, "gaps hardly vary: {gaps:?}");
 }
+
+#[test]
+fn a_car_still_in_the_junction_on_red_outranks_the_cross_street_now_green() {
+    // The signalised crossroads, with connector 2, from the west, as a turner:
+    // it gives way to connector 3, from the south, at a line inside the
+    // junction, where they start to conflict.
+    let (mut net, movements) = crossroads();
+    net.set_priority(LaneId(2), 2);
+    net.set_priority(LaneId(3), 3);
+    let start = net.conflict_between(LaneId(2), LaneId(3)).unwrap().mine.start;
+    net.add_barrier(LaneId(2), Barrier { s: start, kind: BarrierKind::GiveWay });
+    let mut sim = Simulation::new(net, NoopSink);
+    // Past its signal, short of its waiting line, held there through its green
+    // (to 22 s), as if no gap had come.
+    run_until(&mut sim, 10.0);
+    let lingering = sim.insert(car(), at(2, 2.0, 0.0));
+    sim.hold(lingering);
+    // A steady stream across, every 2 s, from 20 s: held at red, then let go at
+    // its green, from 28 s.
+    let mut crossed = None;
+    let mut step = 0u64;
+    while sim.time() < 70.0 {
+        if sim.time() > 20.0 && sim.time() < 60.0 && step.is_multiple_of(120) {
+            let _ = sim.try_insert(car(), at(1, 5.0, LIMIT));
+        }
+        if (sim.time() - 28.5).abs() < DT / 2.0 {
+            assert_eq!(sim.light(movements[0]).light, Light::Red);
+            assert_eq!(sim.light(movements[1]).light, Light::Green);
+            sim.release(lingering);
+        }
+        sim.step();
+        step += 1;
+        if crossed.is_none() && sim.get(lingering).is_none_or(|_| front(&sim, lingering).x > 10.0) {
+            crossed = Some(sim.time());
+        }
+        let bodies: Vec<_> = sim.vehicles().map(|(id, v)| (id, v.corners())).collect();
+        for (i, &(a, x)) in bodies.iter().enumerate() {
+            for &(b, y) in &bodies[i + 1..] {
+                assert!(
+                    !common::overlap(x, y),
+                    "{a:?} and {b:?} overlap at {:.2} s",
+                    sim.time()
+                );
+            }
+        }
+    }
+    // It clears soon after it can, rather than waiting out the stream.
+    let crossed = crossed.expect("it never cleared the junction");
+    assert!(crossed < 36.0, "it cleared only at {crossed:.1} s");
+}

@@ -8,7 +8,7 @@ use traffic_sim::{
 };
 
 mod common;
-use common::car;
+use common::{car, overlap};
 
 const DT: f64 = 1.0 / 60.0;
 const WIDTH: f64 = 3.5;
@@ -62,24 +62,6 @@ fn merge() -> (SimNetwork, JunctionId) {
 
 fn at(lane: u32, s: f64, speed: f64) -> Placement {
     Placement { lane: LaneId(lane), s, speed, route: Route::default() }
-}
-
-/// Whether two convex bodies, given by their corners, overlap: by the separating
-/// axis theorem, along the edges of each.
-fn overlap(a: [DVec2; 4], b: [DVec2; 4]) -> bool {
-    let separated = |axis: DVec2| {
-        let span = |c: [DVec2; 4]| {
-            c.iter()
-                .map(|&q| axis.dot(q))
-                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), d| {
-                    (lo.min(d), hi.max(d))
-                })
-        };
-        let ((a0, a1), (b0, b1)) = (span(a), span(b));
-        a1 < b0 || b1 < a0
-    };
-    let axes = [a[1] - a[0], a[2] - a[1], b[1] - b[0], b[2] - b[1]];
-    !axes.iter().any(|&axis| separated(axis.perp()))
 }
 
 /// Steps until every vehicle has left, checking after each step that no two

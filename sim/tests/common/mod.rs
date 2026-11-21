@@ -124,3 +124,21 @@ impl Terms {
         })
     }
 }
+
+/// Whether two convex bodies, given by their corners, overlap: by the separating
+/// axis theorem, along the edges of each.
+pub fn overlap(a: [glam::DVec2; 4], b: [glam::DVec2; 4]) -> bool {
+    let separated = |axis: glam::DVec2| {
+        let span = |c: [glam::DVec2; 4]| {
+            c.iter()
+                .map(|&q| axis.dot(q))
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), d| {
+                    (lo.min(d), hi.max(d))
+                })
+        };
+        let ((a0, a1), (b0, b1)) = (span(a), span(b));
+        a1 < b0 || b1 < a0
+    };
+    let axes = [a[1] - a[0], a[2] - a[1], b[1] - b[0], b[2] - b[1]];
+    !axes.iter().any(|&axis| separated(axis.perp()))
+}
