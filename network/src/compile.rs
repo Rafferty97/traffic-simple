@@ -263,7 +263,8 @@ fn add_signals(
         .map(|p| Phase { green: mask(&p.green), duration: p.duration })
         .collect();
     let both = |i: usize, j: usize| (1u64 << i) | (1u64 << j);
-    let together = |i: usize, j: usize| phases.iter().any(|p| p.green & both(i, j) == both(i, j));
+    let masks: Vec<u64> = phases.iter().map(|p| p.green).collect();
+    let together = |i: usize, j: usize| masks.iter().any(|&m| m & both(i, j) == both(i, j));
     let car = VehicleSpec::passenger_car().length;
     let plan = SignalPlan {
         movements: (0..movements.len())
@@ -301,7 +302,41 @@ fn add_signals(
             Barrier { s: 0.0, kind: BarrierKind::Signal { movement } },
         );
     }
+    // Every road has priority at signals: a far-side turn gives way to the
+    // traffic it crosses, waiting inside the junction at its first conflict with
+    // a connector of a higher level green with it.
+    let drives_on = net.drives_on.side();
+    let level = |turn: Turn| match turn.far_side(drives_on) {
+        true => PRIORITY_ROAD + FAR_SIDE,
+        false => PRIORITY_ROAD + STRAIGHT_OR_NEAR,
+    };
+    for (&connector, &turn) in connectors.iter().zip(turns) {
+        sim.set_priority(connector, level(turn));
+    }
+    for (c, (&connector, &turn)) in connectors.iter().zip(turns).enumerate() {
+        if !turn.far_side(drives_on) {
+            continue;
+        }
+        let waits = connectors
+            .iter()
+            .zip(turns)
+            .enumerate()
+            .filter(|&(o, (_, &other))| level(other) > level(turn) && together(of[c], of[o]))
+            .filter_map(|(_, (&other, _))| sim.conflict_between(connector, other))
+            .map(|conflict| conflict.mine.start)
+            .fold(f64::INFINITY, f64::min);
+        if waits.is_finite() {
+            sim.add_barrier(connector, Barrier { s: waits, kind: BarrierKind::GiveWay });
+        }
+    }
 }
+
+/// The priority levels of a junction's connectors (see `docs/DESIGN.md`,
+/// Intersection control): straight on or near-side from a priority road, 3;
+/// far-side from one, 2; from any other road, one less each.
+const PRIORITY_ROAD: u8 = 2;
+const STRAIGHT_OR_NEAR: u8 = 1;
+const FAR_SIDE: u8 = 0;
 
 /// A simulation lane from a built one.
 fn build(b: &Built, speed_limit: f64, what: impl Fn() -> String) -> Result<Lane, CompileError> {

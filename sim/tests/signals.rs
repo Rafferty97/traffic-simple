@@ -191,3 +191,67 @@ fn a_green_light_with_no_room_beyond_holds_it_until_there_is() {
         "it didn't go once there was room"
     );
 }
+
+/// The crossroads without signals: connector 3, from the south, gives way to
+/// connector 2, from the west, at a line where they start to conflict.
+fn give_way() -> SimNetwork {
+    let lane = |points: &[DVec2]| Lane::new(points, 3.5, LIMIT).unwrap();
+    let mut net = SimNetwork::new(vec![
+        lane(&[p(-100.0, 0.0), p(-10.0, 0.0)]),
+        lane(&[p(0.0, -100.0), p(0.0, -10.0)]),
+        lane(&[p(-10.0, 0.0), p(10.0, 0.0)]),
+        lane(&[p(0.0, -10.0), p(0.0, 10.0)]),
+        lane(&[p(10.0, 0.0), p(100.0, 0.0)]),
+        lane(&[p(0.0, 10.0), p(0.0, 100.0)]),
+    ]);
+    for (from, to) in [(0, 2), (1, 3), (2, 4), (3, 5)] {
+        net.connect(LaneId(from), LaneId(to));
+    }
+    net.add_junction(&[LaneId(2), LaneId(3)]);
+    net.set_priority(LaneId(2), 3);
+    net.set_priority(LaneId(3), 2);
+    let start = net.conflict_between(LaneId(3), LaneId(2)).unwrap().mine.start;
+    net.add_barrier(LaneId(3), Barrier { s: start, kind: BarrierKind::GiveWay });
+    net
+}
+
+#[test]
+fn a_give_way_line_waits_for_traffic_with_priority_then_goes() {
+    let mut sim = Simulation::new(give_way(), NoopSink);
+    // The line, along the connector from the south, which starts 10 m south.
+    let line = sim.network().lane(LaneId(3)).barriers()[0].s - 10.0;
+    // At rest short of its line, with a car with priority coming 4 s away.
+    let yielding = sim.insert(car(), at(3, 0.0, 0.0));
+    let priority = sim.insert(car(), at(0, 40.0, LIMIT));
+    let mut waited_for_it = true;
+    let mut slowest = f64::INFINITY;
+    for _ in 0..(20.0 / DT) as usize {
+        sim.step();
+        if let Some(v) = sim.get(priority) {
+            slowest = slowest.min(v.speed());
+        }
+        // Until the car with priority is across, the yielding one hasn't gone.
+        let across = sim.get(priority).is_none_or(|_| front(&sim, priority).x > 3.0);
+        if !across && front(&sim, yielding).y > line {
+            waited_for_it = false;
+        }
+    }
+    assert!(waited_for_it, "it went ahead of the car with priority");
+    // Waiting short of the conflict, it holds back nobody with priority.
+    assert!(
+        slowest > LIMIT - 0.5,
+        "the car with priority slowed to {slowest:.2} m/s"
+    );
+    let gone = sim.get(yielding).is_none_or(|_| front(&sim, yielding).y > 10.0);
+    assert!(gone, "it never went once the way was clear");
+}
+
+#[test]
+fn a_give_way_line_goes_through_a_wide_gap() {
+    let mut sim = Simulation::new(give_way(), NoopSink);
+    let yielding = sim.insert(car(), at(3, 0.0, 0.0));
+    // Far off: about 85 m away at 14 m/s, 6 s.
+    let _far = sim.insert(car(), at(0, 5.0, LIMIT));
+    run_until(&mut sim, 4.0);
+    assert!(front(&sim, yielding).y > 5.0, "it waited for a car far off");
+}

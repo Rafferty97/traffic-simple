@@ -478,6 +478,13 @@ fn conflict_term(
 ) -> Option<(f64, f64)> {
     let network = &state.network;
     let leader = &state.vehicles[other];
+    // Held at a barrier before the conflict on its way, such as a turner waiting
+    // inside the junction, it will stop there, so it claims nothing beyond.
+    if let Some(k) = leader.path.iter().position(|&l| l == theirs)
+        && barrier::holds_before(network, leader, k, conflict.theirs.start)
+    {
+        return None;
+    }
     // The other one's rear along `theirs`, if its path takes it there.
     let rear = leader.path.iter().position(|&l| l == theirs).map(|i| {
         let before: f64 =

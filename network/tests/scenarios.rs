@@ -240,15 +240,31 @@ fn signalised_crossroads_flooded_with_traffic_have_no_collisions() {
 
 #[test]
 fn a_signalised_crossroads_holds_each_connector_at_its_movements_light() {
+    use traffic_network::Turn;
     use traffic_sim::BarrierKind;
     let compiled = compile(&scenarios::signalised_crossroads(2, 14.0)).unwrap();
     let sim = &compiled.sim;
     let (plan, first) = sim.signals().next().expect("a signal plan");
     // Every movement of every arm: straight on, left and right, from four arms.
     assert_eq!(plan.movements.len(), 12);
-    for &connector in &compiled.connectors[0] {
+    for (&connector, &turn) in compiled.connectors[0].iter().zip(&compiled.turns[0]) {
         let barriers = sim.lane(connector).barriers();
-        assert_eq!(barriers.len(), 1, "{connector:?} has {barriers:?}");
+        // Right turns, across oncoming traffic green with them, also wait for
+        // a gap inside the junction, at a lower priority than the rest.
+        let (count, priority) = match turn {
+            Turn::Right => (2, 2),
+            _ => (1, 3),
+        };
+        assert_eq!(
+            barriers.len(),
+            count,
+            "{connector:?} turning {turn:?} has {barriers:?}"
+        );
+        assert_eq!(sim.lane(connector).priority(), priority);
+        if count == 2 {
+            assert_eq!(barriers[1].kind, BarrierKind::GiveWay);
+            assert!(barriers[1].s > 0.0);
+        }
         assert_eq!(barriers[0].s, 0.0);
         let BarrierKind::Signal { movement } = barriers[0].kind else {
             panic!("{connector:?} has a {:?}", barriers[0].kind);
@@ -269,6 +285,50 @@ fn a_signalised_crossroads_holds_each_connector_at_its_movements_light() {
     }
     // A crossing movement from the other pair of roads conflicts with something.
     assert!(plan.movements.iter().all(|m| m.conflicts != 0));
+}
+
+#[test]
+fn at_signals_every_way_is_taken_right_turns_included() {
+    use traffic_sim::{LaneId, NoopSink, Placement, Route, Simulation, VehicleSpec};
+    let compiled = compile(&scenarios::signalised_crossroads(1, 50.0 / 3.6)).unwrap();
+    let connectors = compiled.connectors[0].clone();
+    let mut sim = Simulation::new(compiled.sim, NoopSink);
+    let entries: Vec<LaneId> = sim
+        .network()
+        .lanes()
+        .filter(|(_, lane)| lane.predecessors().is_empty())
+        .map(|(id, _)| id)
+        .collect();
+    let mut used = vec![false; connectors.len()];
+    let (mut spawned, mut left_before) = (0, 0);
+    // A car every 3 s at the entries in turn, within what the junction takes even
+    // with right turners waiting in each single lane for gaps.
+    for step in 0..(300.0 * 60.0) as u64 {
+        if step % 180 == 0 {
+            let lane = entries[(step / 180) as usize % entries.len()];
+            let speed = sim.network().lane(lane).speed_limit();
+            let at = Placement { lane, s: 5.0, speed, route: Route::random(step) };
+            if sim.try_insert(VehicleSpec::passenger_car(), at).is_ok() {
+                spawned += 1;
+            }
+        }
+        sim.step();
+        for (c, &lane) in connectors.iter().enumerate() {
+            used[c] |= !sim.occupants(lane).is_empty();
+        }
+        // Vehicles keep leaving, every minute after the first.
+        if step % 3600 == 0 && step > 3600 {
+            let left = spawned - sim.vehicles().count();
+            assert!(
+                left > left_before + 5,
+                "few left in the minute to {:.0} s",
+                sim.time()
+            );
+            left_before = left;
+        }
+    }
+    let unused: Vec<_> = connectors.iter().zip(&used).filter(|(_, u)| !**u).collect();
+    assert!(unused.is_empty(), "never used: {unused:?}");
 }
 
 #[test]

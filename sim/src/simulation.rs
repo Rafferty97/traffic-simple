@@ -819,7 +819,15 @@ impl<D: DebugSink> Simulation<D> {
                     if !occupancy::same_record(length, o.s(), rear) {
                         continue;
                     }
-                    decisions.push(longitudinal(state, lane_speeds, sink, o.id, vehicle, i));
+                    decisions.push(longitudinal(
+                        state,
+                        &derived.through,
+                        lane_speeds,
+                        sink,
+                        o.id,
+                        vehicle,
+                        i,
+                    ));
                 } else if let Some(side) = straddling(network, vehicle, lane) {
                     let accel = old_side(state, sink, o.id, vehicle, side, i);
                     decisions.push(AccelUpdate::OldSide { id: o.id, accel });
@@ -845,6 +853,22 @@ impl<D: DebugSink> Simulation<D> {
         // so that whether a leader binds it is judged against all of them.
         for update in &self.decisions {
             if let AccelUpdate::Own { id, yielding, commits, .. } = *update {
+                // Committing to a barrier inside a junction it is queued at, it
+                // goes now, so to the back of the queue, behind everyone committed
+                // before (see `docs/DESIGN.md`, Barriers inside a junction).
+                let SimState { network, vehicles, queues, .. } = &mut self.state;
+                let vehicle = &vehicles[id];
+                for rank in vehicle.committed..vehicle.committed.saturating_add(commits) {
+                    let lane = barrier::nth(network, vehicle, usize::from(rank));
+                    let Some(j) = lane.and_then(|l| network.lane(l).junction()) else {
+                        continue;
+                    };
+                    let committed = &mut queues[j.0 as usize].committed;
+                    if let Some(at) = committed.iter().position(|&c| c == id) {
+                        committed.remove(at);
+                        committed.push(id);
+                    }
+                }
                 let vehicle = &mut self.state.vehicles[id];
                 vehicle.committed = vehicle.committed.saturating_add(commits);
                 // Committed past a barrier, it may now arrive at a junction beyond.
@@ -1146,6 +1170,7 @@ impl<D: DebugSink> Simulation<D> {
 /// term is recorded to the debug sink as it is computed.
 fn longitudinal<D: DebugSink>(
     state: &SimState,
+    through: &[f64],
     speeds: &[LaneSpeeds],
     sink: &mut D,
     id: VehicleId,
@@ -1183,7 +1208,7 @@ fn longitudinal<D: DebugSink>(
             }
             let k = vehicle.path.iter().position(|&l| l == lane).unwrap_or(0);
             let barrier = state.network.lane(lane).barriers()[usize::from(index)];
-            let decision = barrier::decide(state, id, vehicle, k, barrier, gap);
+            let decision = barrier::decide(state, through, id, vehicle, k, barrier, gap);
             sink.record(|| DebugEvent::Barrier { vehicle: id, lane, index, gap, decision });
             match decision {
                 barrier::Decision::Commit => commits = commits.saturating_add(1),

@@ -148,6 +148,25 @@ pub fn horizon(spec: &VehicleSpec, speed: f64) -> f64 {
 /// seconds: the time constant of its approach.
 const CAP_EASE: f64 = 0.5;
 
+/// The soonest a vehicle at `speed` can cover `distance`, in seconds,
+/// accelerating at `accel` up to `max_speed` and holding it: `(√(v² + 2ad) − v) / a`,
+/// or, once at its top speed, `t₁ + (d − d₁) / v_max`, with `t₁` and `d₁` the
+/// time and distance to reach it. Zero for no distance; one already above its
+/// top speed is held to its speed.
+pub fn reach_time(speed: f64, accel: f64, max_speed: f64, distance: f64) -> f64 {
+    if distance <= 0.0 {
+        return 0.0;
+    }
+    let max_speed = max_speed.max(speed);
+    let to_top = (max_speed - speed) / accel;
+    let over = 0.5 * (speed + max_speed) * to_top;
+    if distance <= over {
+        ((speed * speed + 2.0 * accel * distance).sqrt() - speed) / accel
+    } else {
+        to_top + (distance - over) / max_speed
+    }
+}
+
 /// The acceleration a speed cap allows: braking at [`SAFE_BRAKING`] while above
 /// it, so a held vehicle stops promptly, easing up to it from below, and with a
 /// cap of 0 braking until it stops. Like any term, it only binds when it is the
@@ -163,6 +182,17 @@ pub fn capped(speed: f64, max_speed: f64) -> f64 {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn reach_time_accelerates_then_holds_its_top_speed() {
+        // As the old prototype's tests have it.
+        assert!((reach_time(0.0, 2.0, 50.0, 25.0) - 5.0).abs() < 1e-9);
+        assert!((reach_time(0.0, 2.0, 10.0, 25.0) - 5.0).abs() < 1e-9);
+        assert!((reach_time(0.0, 2.0, 9.0, 25.0) - 5.027777777777).abs() < 1e-9);
+        assert!((reach_time(5.0, 2.0, 15.0, 50.0) - 5.0).abs() < 1e-9);
+        assert!((reach_time(5.0, 2.0, 14.0, 50.0) - 5.01785714285).abs() < 1e-9);
+        assert_eq!(reach_time(5.0, 2.0, 14.0, -1.0), 0.0);
+    }
 
     fn spec() -> VehicleSpec {
         VehicleSpec {
