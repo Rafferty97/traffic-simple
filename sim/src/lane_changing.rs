@@ -200,7 +200,7 @@ pub(crate) fn incentives(
 /// in any lane, so it does after changing too.
 pub(crate) fn check_gap(
     state: &SimState,
-    max_reach: f64,
+    through: &[f64],
     id: VehicleId,
     vehicle: &Vehicle,
     side: Side,
@@ -227,7 +227,7 @@ pub(crate) fn check_gap(
     let target = network.lane(vehicle.path[0]).adj(side).expect("asked only where permitted");
     let rear = occupancy::axle_beside(network, vehicle, target.lane) - vehicle.spec.rear_axle;
     let new_follower =
-        find_follower(state, max_reach, target.lane, rear, id).map(|(follower, gap)| {
+        find_follower(state, through, target.lane, rear, id).map(|(follower, gap)| {
             let f = &vehicles[follower];
             acceleration::relaxed(&f.spec, f.speed, gap, vehicle.speed, headway)
         });

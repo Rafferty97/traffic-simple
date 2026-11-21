@@ -72,7 +72,7 @@ fn rear(sim: &Simulation, id: VehicleId) -> f64 {
 }
 
 fn follower(sim: &Simulation, lane: u32, s: f64, skip: VehicleId) -> Option<(VehicleId, f64)> {
-    find_follower(&sim.state, sim.derived.max_reach, LaneId(lane), s, skip)
+    find_follower(&sim.state, &sim.derived.through, LaneId(lane), s, skip)
 }
 
 /// `id`'s search along its path, from its own record, calling `f` with each
@@ -125,7 +125,7 @@ fn decision(
             lane_change::Ask::Check(asked) if asked == side => {
                 let prospect = check_gap(
                     &sim.state,
-                    sim.derived.max_reach,
+                    &sim.derived.through,
                     id,
                     vehicle,
                     side,
@@ -1499,7 +1499,8 @@ fn short_sections(length: f64, count: usize) -> SimNetwork {
 /// Whether a vehicle's path reaches as far as its leader search looks.
 fn covers_horizon(sim: &Simulation<impl DebugSink>, id: VehicleId) -> bool {
     let v = &sim.state.vehicles[id];
-    reach_beyond_front(&sim.state.network, v) >= acceleration::horizon(&v.spec, v.speed)
+    crate::path::reach_beyond_front(&sim.state.network, v)
+        >= acceleration::horizon(&v.spec, v.speed)
 }
 
 #[test]

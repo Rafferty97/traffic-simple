@@ -21,7 +21,7 @@ use crate::network::{JunctionId, LaneId, MAX_SUCCESSORS, Side, SimNetwork};
 use crate::occupancy::{
     self, Ahead, Along, Found, Lateral, Occupant, find_follower, find_leaders, for_each_leader,
 };
-use crate::path::{extend_path, reach, reach_beyond_front};
+use crate::path::{Through, extend_path, raise_through, reach, recompute_through};
 use crate::vehicle::{Intent, OldFollower, Placement, Vehicle, VehicleId, VehicleSpec};
 
 /// How a simulation steps, fixed when it is made.
@@ -98,10 +98,9 @@ pub(crate) struct Derived {
     pub overlaps: Overlaps,
     /// Which merge each lane belongs to, from the network and the overlaps.
     pub merges: Merges,
-    /// At least as far as any vehicle's path has reached beyond its front, in
-    /// meters: a running maximum, raised wherever a path is extended. It bounds
-    /// how far back a follower search goes.
-    pub max_reach: f64,
+    /// How far beyond each lane's end the paths through it reach (see
+    /// [`Through`]).
+    pub through: Through,
 }
 
 impl Derived {
@@ -109,12 +108,10 @@ impl Derived {
         let network = &state.network;
         let overlaps = following::overlaps(network);
         let merges = merge::merges(network, &overlaps);
-        let max_reach = state
-            .vehicles
-            .values()
-            .map(|v| reach_beyond_front(network, v))
-            .fold(0.0, f64::max);
-        Self { overlaps, merges, max_reach }
+        let mut through = Through::new();
+        let paths = state.vehicles.values().map(|v| v.path.as_slice());
+        recompute_through(network, &mut through, paths);
+        Self { overlaps, merges, through }
     }
 }
 
@@ -328,7 +325,7 @@ impl<D: DebugSink> Simulation<D> {
         // A key that matches no vehicle, since this one isn't inserted yet.
         let follower = find_follower(
             &self.state,
-            self.derived.max_reach,
+            &self.derived.through,
             at.lane,
             rear,
             VehicleId::null(),
@@ -385,8 +382,11 @@ impl<D: DebugSink> Simulation<D> {
 
     /// Adds a built vehicle to the simulation and to its lane's occupants.
     fn register(&mut self, vehicle: Vehicle) -> VehicleId {
-        self.derived.max_reach =
-            self.derived.max_reach.max(reach_beyond_front(&self.state.network, &vehicle));
+        raise_through(
+            &self.state.network,
+            &mut self.derived.through,
+            &vehicle.path,
+        );
         let lane_id = vehicle.path[0];
         let lane_pos = vehicle.lane_pos;
         let id = self.state.vehicles.insert(vehicle);
@@ -543,8 +543,11 @@ impl<D: DebugSink> Simulation<D> {
             lane_pos.s,
             needed,
         );
-        let beyond_front = reach_beyond_front(&self.state.network, vehicle);
-        self.derived.max_reach = self.derived.max_reach.max(beyond_front);
+        raise_through(
+            &self.state.network,
+            &mut self.derived.through,
+            &vehicle.path,
+        );
 
         let list = &mut self.state.occupants[neighbor.lane.0 as usize];
         if let Some(ghost) = list.iter_mut().find(|o| o.id == id && o.is_ghost()) {
@@ -664,6 +667,9 @@ impl<D: DebugSink> Simulation<D> {
     fn update_lane_changes(&mut self, dt: f64) {
         let Self { state, derived, lane_decisions, asks, lane_speeds, sink, .. } = self;
         let time = state.time;
+        // Exact again for the follower searches the gap checks make.
+        let paths = state.vehicles.values().map(|v| v.path.as_slice());
+        recompute_through(&state.network, &mut derived.through, paths);
         LaneSpeeds::refresh(lane_speeds, state);
         lane_decisions.clear();
         asks.clear();
@@ -718,7 +724,7 @@ impl<D: DebugSink> Simulation<D> {
             let incentive = incentives(state, lane_speeds, id, vehicle)[lane_change::index(side)]
                 .unwrap_or_default();
             let desire = lc.desire(side);
-            let prospect = check_gap(state, derived.max_reach, id, vehicle, side, desire);
+            let prospect = check_gap(state, &derived.through, id, vehicle, side, desire);
             let (decision, eval) = lane_change::resolve(
                 &mut lc,
                 vehicle.intent,
@@ -875,7 +881,7 @@ impl<D: DebugSink> Simulation<D> {
     fn update_motion(&mut self, dt: f64) {
         let Self {
             state: SimState { network, vehicles, occupants, .. },
-            derived: Derived { overlaps, merges, max_reach },
+            derived: Derived { overlaps, merges, through },
             leavers,
             arrivals,
             sink,
@@ -1012,13 +1018,14 @@ impl<D: DebugSink> Simulation<D> {
             let s = vehicle.lane_pos.s;
             let needed = reach(vehicle, s, vehicle.lane_change);
             let lanes = vehicle.path.len();
-            let covered = extend_path(network, &mut vehicle.path, &mut vehicle.route, s, needed);
+            extend_path(network, &mut vehicle.path, &mut vehicle.route, s, needed);
             arrives |= vehicle.path.len() > lanes;
+            if arrives {
+                raise_through(network, through, &vehicle.path);
+            }
             if arrives {
                 arrivals.push(id);
             }
-            let nose = vehicle.spec.length - vehicle.spec.rear_axle;
-            *max_reach = max_reach.max(covered - nose);
 
             // Past the end with nowhere to advance to: it has left the network.
             let lane = network.lane(vehicle.path[0]);

@@ -75,7 +75,44 @@ pub(crate) fn extend_path(
     covered
 }
 
+/// How far beyond each lane's end, in meters, the paths through it reach, by
+/// lane: an upper bound, so a lane no path reaches some way beyond can't lead
+/// anyone there. It bounds the follower search (see
+/// [`crate::occupancy::find_follower`]).
+///
+/// Paths only grow by [`extend_path`], after which [`raise_through`] raises it;
+/// a path shrinking or its vehicle leaving leaves it too high, which is safe,
+/// until [`recompute_through`] makes it exact again.
+pub(crate) type Through = Vec<f64>;
+
+/// Raises `through` for `path`: each lane but the last reaches at least as far
+/// beyond its end as the lanes after it on `path`.
+pub(crate) fn raise_through(network: &SimNetwork, through: &mut [f64], path: &[LaneId]) {
+    let mut beyond = 0.0;
+    for (i, &lane) in path.iter().enumerate().rev() {
+        if i + 1 < path.len() {
+            let r = &mut through[lane.0 as usize];
+            *r = r.max(beyond);
+        }
+        beyond += network.lane(lane).geometry().length();
+    }
+}
+
+/// Makes `through` exact for the vehicles' paths now.
+pub(crate) fn recompute_through<'a>(
+    network: &SimNetwork,
+    through: &mut Through,
+    paths: impl Iterator<Item = &'a [LaneId]>,
+) {
+    through.clear();
+    through.resize(network.lanes().count(), 0.0);
+    for path in paths {
+        raise_through(network, through, path);
+    }
+}
+
 /// How far a vehicle's path reaches beyond its front, in meters.
+#[cfg(test)]
 pub(crate) fn reach_beyond_front(network: &SimNetwork, vehicle: &Vehicle) -> f64 {
     let length: f64 = vehicle.path.iter().map(|&lane| network.lane(lane).geometry().length()).sum();
     length - vehicle.lane_pos.s - (vehicle.spec.length - vehicle.spec.rear_axle)

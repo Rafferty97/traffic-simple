@@ -732,8 +732,9 @@ pub fn record_index(state: &SimState, lane: LaneId, id: VehicleId) -> usize {
 /// out, since any of them can be in the way; on the lanes leading into it, one
 /// counts if `lane` is on its path. Its leader search ends where its path does,
 /// so one that doesn't know it will reach `lane` never sees what is there. That
-/// bounds how far back the search goes: no vehicle's path reaches more than
-/// `max_reach` beyond its front, so one further back can't have `lane` on it.
+/// bounds how far back the search goes: it goes back into a lane only if some
+/// path through it reaches beyond its end as far as `lane` (see
+/// [`crate::path::Through`]), which also ends it on a loop.
 /// Ghosts and `skip` are passed over.
 ///
 /// The first vehicle found is the follower if `s` is within its [`acceleration::horizon`]:
@@ -749,23 +750,29 @@ pub fn record_index(state: &SimState, lane: LaneId, id: VehicleId) -> usize {
 /// forward.
 pub fn find_follower(
     state: &SimState,
-    max_reach: f64,
+    through: &[f64],
     lane: LaneId,
     s: f64,
     skip: VehicleId,
 ) -> Option<(VehicleId, f64)> {
-    behind(state, max_reach, lane, lane, s, 0.0, skip)
+    // Its end is its length short of its start.
+    let between = -state.network.lane(lane).geometry().length();
+    behind(state, through, lane, lane, s, 0.0, between, skip)
 }
 
 /// [`find_follower`]'s search of `lane`, from `s` back, where `s` is `travelled`
-/// back from the point searched from, on `target`.
+/// back from the point searched from, on `target`, and the end of `lane` is
+/// `between` back from the start of `target`: minus its length on `target`
+/// itself. Going back round a loop, it only grows.
+#[allow(clippy::too_many_arguments)]
 fn behind(
     state: &SimState,
-    max_reach: f64,
+    through: &[f64],
     target: LaneId,
     lane: LaneId,
     s: f64,
     travelled: f64,
+    between: f64,
     skip: VehicleId,
 ) -> Option<(VehicleId, f64)> {
     let SimState { network, vehicles, occupants, .. } = state;
@@ -781,20 +788,21 @@ fn behind(
         let reach = acceleration::horizon(&follower.spec, follower.speed);
         return (gap <= reach).then_some((o.id, gap));
     }
-    // None on this lane: on to the ends of the lanes leading into it, as far back
-    // as a vehicle could still have `target` on its path. On a loop a lane leads
-    // into itself, which that ends too.
+    // None on this lane: on to the ends of the lanes leading into it, those
+    // some path through reaches `target` from. A path holding `target` reaches
+    // beyond the end of a lane before it at least to `target`'s start, and
+    // past it, so further than `between`.
     let travelled = travelled + s;
-    if travelled > max_reach {
-        return None;
-    }
+    // The lanes leading into it end where it starts.
+    let between = between + network.lane(lane).geometry().length();
     network
         .lane(lane)
         .predecessors()
         .iter()
+        .filter(|&&p| through[p.0 as usize] > between)
         .filter_map(|&p| {
             let length = network.lane(p).geometry().length();
-            behind(state, max_reach, target, p, length, travelled, skip)
+            behind(state, through, target, p, length, travelled, between, skip)
         })
         .min_by(|a, b| a.1.total_cmp(&b.1))
 }
