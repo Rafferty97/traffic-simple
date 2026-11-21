@@ -24,6 +24,18 @@ fn p(x: f64, y: f64) -> DVec2 {
 /// of amber, enough for a car that commits as it turns amber, at its
 /// comfortable stopping distance, to reach its line, and 2 s of clearance.
 fn crossroads() -> (SimNetwork, [MovementId; 2]) {
+    let movement = |conflicts| Movement { conflicts, amber: 4.0, clearance: 2.0 };
+    crossroads_with(SignalPlan {
+        movements: vec![movement(0b10), movement(0b01)],
+        phases: vec![
+            Phase { green: 0b01, duration: 20.0 },
+            Phase { green: 0b10, duration: 20.0 },
+        ],
+    })
+}
+
+/// As [`crossroads`], with `plan` for its signals.
+fn crossroads_with(plan: SignalPlan) -> (SimNetwork, [MovementId; 2]) {
     let lane = |points: &[DVec2]| Lane::new(points, 3.5, LIMIT).unwrap();
     let mut net = SimNetwork::new(vec![
         lane(&[p(-100.0, 0.0), p(-10.0, 0.0)]),
@@ -37,14 +49,7 @@ fn crossroads() -> (SimNetwork, [MovementId; 2]) {
         net.connect(LaneId(from), LaneId(to));
     }
     net.add_junction(&[LaneId(2), LaneId(3)]);
-    let movement = |conflicts| Movement { conflicts, amber: 4.0, clearance: 2.0 };
-    let first = net.add_signal(SignalPlan {
-        movements: vec![movement(0b10), movement(0b01)],
-        phases: vec![
-            Phase { green: 0b01, duration: 20.0 },
-            Phase { green: 0b10, duration: 20.0 },
-        ],
-    });
+    let first = net.add_signal(plan);
     let movements = [first, MovementId(first.0 + 1)];
     for (lane, movement) in [(2, movements[0]), (3, movements[1])] {
         let kind = BarrierKind::Signal { movement };
@@ -125,15 +130,59 @@ fn vehicles_cross_only_on_green_or_amber() {
 }
 
 #[test]
-fn on_amber_it_goes_if_it_cant_stop_safely_and_stops_if_it_can() {
+fn drivers_of_every_speed_cross_only_on_green_or_amber_with_ites_amber() {
+    use traffic_sim::VehicleSpec;
+    // As the network crate times amber: a second plus the time to stop from the
+    // limit at 3 m/s².
+    let (mut net, movements) = crossroads();
+    let mut plan = net.signals().next().unwrap().0.clone();
+    for m in &mut plan.movements {
+        m.amber = 1.0 + LIMIT / 6.0;
+    }
+    net = {
+        let (mut fresh, _) = crossroads_with(plan);
+        std::mem::swap(&mut fresh, &mut net);
+        net
+    };
+    let mut sim = Simulation::new(net, NoopSink);
+    let mut fronts = std::collections::HashMap::new();
+    let mut on_red = Vec::new();
+    for step in 0..(300.0 / DT) as u64 {
+        if step % 100 == 0 {
+            for lane in [0, 1] {
+                let factor = [0.9, 1.0, 1.1, 1.2, 1.3][(step / 100) as usize % 5];
+                let spec = VehicleSpec { speed_factor: factor, ..VehicleSpec::passenger_car() };
+                let _ = sim.try_insert(spec, at(lane, 5.0, LIMIT * factor));
+            }
+        }
+        sim.step();
+        let lights = [sim.light(movements[0]).light, sim.light(movements[1]).light];
+        let vehicles: Vec<_> = sim.vehicles().map(|(id, _)| id).collect();
+        for id in vehicles {
+            let f = front(&sim, id);
+            let (along, light) = match sim.get(id).unwrap().heading().cos() > 0.5 {
+                true => (f.x, lights[0]),
+                false => (f.y, lights[1]),
+            };
+            let before = fronts.insert(id, along);
+            if before.is_some_and(|b: f64| b < -10.0) && along >= -10.0 && light == Light::Red {
+                on_red.push((id, sim.time(), sim.get(id).unwrap().speed()));
+            }
+        }
+    }
+    assert!(on_red.is_empty(), "crossed on red: {on_red:?}");
+}
+
+#[test]
+fn on_amber_it_goes_if_it_committed_on_green_and_stops_if_it_can() {
     let (net, movements) = crossroads();
     let mut sim = Simulation::new(net, NoopSink);
     // Movement 0, from the west, turns amber 22 s in.
     run_until(&mut sim, 20.5);
     assert_eq!(sim.light(movements[0]).light, Light::Green);
     // Near: about 16 m short of its line as it turns amber, too close to stop
-    // safely at 14 m/s, and committed while it was green. Far: about 60 m short,
-    // room to stop comfortably.
+    // comfortably at 14 m/s, so committed while it was green. Far: about 60 m
+    // short, room to stop comfortably.
     let near = sim.insert(car(), at(0, 49.0, LIMIT));
     let far = sim.insert(car(), at(0, 5.0, LIMIT));
     run_until(&mut sim, 22.2);

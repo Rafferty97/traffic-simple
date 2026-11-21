@@ -4,8 +4,8 @@ use std::fmt;
 
 use glam::DVec2;
 use traffic_sim::{
-    Barrier, BarrierKind, Keep, Lane, LaneError, LaneId, Movement, MovementId, NetworkError, Phase,
-    SAME_POINT, SignalPlan, SimNetwork, VehicleSpec,
+    AMBER_DECEL, Barrier, BarrierKind, Keep, Lane, LaneError, LaneId, Movement, MovementId,
+    NetworkError, Phase, SAME_POINT, SignalPlan, SimNetwork, VehicleSpec,
 };
 
 use crate::reference::{self, Polyline};
@@ -218,9 +218,6 @@ pub fn compile(net: &RoadNetwork) -> Result<Compiled, CompileError> {
     let render = render::build(net, &polylines, &turns);
     Ok(Compiled { sim, render, road_lanes, connectors, turns })
 }
-
-/// The deceleration ITE's amber time assumes a driver stopping for it, in m/s².
-const AMBER_DECEL: f64 = 3.0;
 
 /// An intersection's signal plan, and a signal barrier at the start of each of
 /// its connectors for its movement.

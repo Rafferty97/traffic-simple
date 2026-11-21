@@ -19,7 +19,7 @@ mod path;
 mod simulation;
 mod vehicle;
 
-pub use barrier::Decision as BarrierDecision;
+pub use barrier::{AMBER_DECEL, Decision as BarrierDecision};
 pub use debug::{AccelSource, DebugEvent, DebugSink, NoopSink, PassCheck};
 pub use lane::{GRID, LaneError, LaneGeometry, LanePos, ParseLaneError, SAME_POINT};
 pub use models::acceleration::SAFE_BRAKING;

@@ -456,10 +456,10 @@ pub enum Ahead {
     /// The end of the lanes it knows it will take, a stop line: a stationary
     /// virtual leader, unless it leaves the network there.
     PathEnd,
-    /// A barrier on its own path that it hasn't committed to, the `index`th of
-    /// `lane`'s, and the `rank`th ahead of its rear axle on its path. Searching
-    /// its own path, every one beyond its commitment that no leader shields is
-    /// found, so it is the head on its way to it; what it does there is the
+    /// A barrier on its own path, the `index`th of `lane`'s, and the `rank`th
+    /// ahead of its rear axle on its path. Searching its own path, every one it
+    /// has committed to is found, and every one beyond them that no leader
+    /// shields, so it is the head on its way to it; what it does there is the
     /// caller's choice (see [`crate::barrier::decide`]).
     Barrier { lane: LaneId, index: u16, rank: u16 },
 }
@@ -653,12 +653,15 @@ pub fn find_leaders<B>(
                 }
                 let this = rank;
                 rank += 1;
-                let shielded = this < committed
-                    || overflowed
-                    || shielders.iter().any(|&(leader, cover)| {
-                        let leader = &state.vehicles[leader];
-                        cover > k && !crate::barrier::committed_to(network, leader, lane, barrier.s)
-                    });
+                // Its own commitment hides nothing from itself: it may yet be
+                // released.
+                let shielded = this >= committed
+                    && (overflowed
+                        || shielders.iter().any(|&(leader, cover)| {
+                            let leader = &state.vehicles[leader];
+                            cover > k
+                                && !crate::barrier::committed_to(network, leader, lane, barrier.s)
+                        }));
                 if !shielded {
                     let ahead = Ahead::Barrier { lane, index: index as u16, rank: this as u16 };
                     f(Found::Ahead(ahead, gap, 1.0))?;

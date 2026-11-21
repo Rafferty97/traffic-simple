@@ -7,7 +7,7 @@
 //! needs beyond.
 
 use crate::lane_changing::comfortable_stop;
-use crate::models::acceleration::{self, MAX_BRAKING, reach_time};
+use crate::models::acceleration::{self, reach_time};
 use crate::models::signal::Light;
 use crate::network::{
     Barrier, BarrierKind, Conflict, ConflictKind, JunctionId, Lane, LaneId, SimNetwork,
@@ -86,6 +86,10 @@ pub(crate) fn holds_before(network: &SimNetwork, vehicle: &Vehicle, k: usize, s:
     rank(network, vehicle, k, s, true) > vehicle.committed as usize
 }
 
+/// The deceleration that amber times are set for a driver to stop at, in m/s²,
+/// as ITE's change interval has it.
+pub const AMBER_DECEL: f64 = 3.0;
+
 /// What the head on its way to a barrier does about it at a longitudinal update.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Decision {
@@ -110,27 +114,21 @@ pub(crate) fn decide(
     gap: f64,
 ) -> Decision {
     let spec = &vehicle.spec;
-    let short = gap - spec.line_gap;
-    // Past the line, or unable to stop even as hard as it can: it crosses
-    // whatever the barrier says.
     let speed = vehicle.speed;
-    if gap <= 0.0 || speed * speed / (2.0 * MAX_BRAKING) > short {
-        return Decision::Commit;
-    }
-    let can_stop = |decel: f64| speed * speed / (2.0 * decel) <= short;
+    // Whether it can stop where it would like, a line gap short, at `decel`.
+    let can_stop = |decel: f64| speed * speed / (2.0 * decel) <= gap - spec.line_gap;
     let room = || room_beyond(state, id, vehicle, k, barrier.s);
     let commit = match barrier.kind {
-        // On green, it commits once it can no longer stop comfortably; on amber,
-        // once it can't stop safely either, so one braking for amber keeps on
-        // stopping, though IDM's braking toward a line starts gently.
+        // Only on green, once it can no longer stop comfortably: never on amber
+        // or red, so one that hasn't committed by then brakes, and one that
+        // couldn't have stopped comfortably committed while it was green.
         BarrierKind::Signal { movement } => match state.lights[movement.0 as usize].light {
-            Light::Red => false,
             Light::Green if can_stop(spec.comfy_decel) => match room() {
                 true => return Decision::Pass,
                 false => false,
             },
-            Light::Amber if can_stop(acceleration::SAFE_BRAKING) => false,
-            Light::Green | Light::Amber => room(),
+            Light::Green => room(),
+            Light::Amber | Light::Red => false,
         },
         BarrierKind::GiveWay => has_gap(state, through, id, vehicle, k, barrier.s) && room(),
     };
@@ -277,6 +275,25 @@ fn clear(
         let length = network.lane(p).geometry().length();
         clear(state, through, id, way, p, length, ahead + length, between)
     })
+}
+
+/// Whether `vehicle`, committed to `barrier`, `gap` ahead of its front, is
+/// released from it, to decide afresh: at a signal that is no longer green, it
+/// can still stop comfortably before the line, having been slowed short of it
+/// by traffic ahead or a junction, as a driver who could stop does when the
+/// light changes; at a give-way line, it has come to rest short of the line, so
+/// the gap it took is stale. A vehicle that committed to a green light as it
+/// turned amber, unable to stop comfortably, stays committed.
+pub(crate) fn released(state: &SimState, vehicle: &Vehicle, barrier: Barrier, gap: f64) -> bool {
+    let speed = vehicle.speed;
+    gap > 0.0
+        && match barrier.kind {
+            BarrierKind::Signal { movement } => {
+                state.lights[movement.0 as usize].light != Light::Green
+                    && speed * speed / (2.0 * vehicle.spec.comfy_decel) <= gap
+            }
+            BarrierKind::GiveWay => speed == 0.0,
+        }
 }
 
 /// The term holding a vehicle `gap` short of a line: a stationary leader there,

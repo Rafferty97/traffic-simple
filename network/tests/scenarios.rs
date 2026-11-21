@@ -288,6 +288,77 @@ fn a_signalised_crossroads_holds_each_connector_at_its_movements_light() {
 }
 
 #[test]
+fn at_signals_nobody_crosses_a_line_on_red() {
+    use std::collections::HashMap;
+    use traffic_sim::{
+        BarrierKind, LaneId, Light, NoopSink, Placement, Route, Simulation, VehicleSpec,
+    };
+    // Drivers varied as the UI varies them, on two lanes each way, so they
+    // change lanes and turn on the way in.
+    let mut state = 7u64;
+    let mut uniform = || {
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let compiled = compile(&scenarios::signalised_crossroads(2, 50.0 / 3.6)).unwrap();
+    let mut sim = Simulation::new(compiled.sim, NoopSink);
+    let entries: Vec<LaneId> = sim
+        .network()
+        .lanes()
+        .filter(|(_, lane)| lane.predecessors().is_empty())
+        .map(|(id, _)| id)
+        .collect();
+    let mut was_past = HashMap::new();
+    let mut on_red = Vec::new();
+    for step in 0..(300.0 * 60.0) as u64 {
+        if step % 30 == 0 {
+            let lane = entries[(step / 30) as usize % entries.len()];
+            let car = VehicleSpec {
+                speed_factor: 0.85 + 0.4 * uniform(),
+                assertiveness: uniform().powi(3),
+                courtesy: 2.0 * uniform(),
+                politeness: uniform(),
+                line_gap: 0.5 + uniform(),
+                ..VehicleSpec::passenger_car()
+            };
+            let speed = sim.network().lane(lane).speed_limit() * car.speed_factor;
+            let at = Placement { lane, s: 5.0, speed, route: Route::random(step) };
+            let _ = sim.try_insert(car, at);
+        }
+        sim.step();
+        // Each vehicle's front against the signal line ahead on its path, at the
+        // start of the lane after the one it follows.
+        let network = sim.network();
+        for (id, v) in sim.vehicles() {
+            let Some(&next) = v.path().get(1) else {
+                continue;
+            };
+            let Some(barrier) = network.lane(next).barriers().first() else {
+                continue;
+            };
+            let BarrierKind::Signal { movement } = barrier.kind else {
+                continue;
+            };
+            let length = network.lane(v.lane()).geometry().length();
+            let front = v.lane_pos().s - v.spec().rear_axle + v.spec().length;
+            let past = front >= length + barrier.s;
+            let before = was_past.insert((id, next), past);
+            if before == Some(false) && past && sim.light(movement).light == Light::Red {
+                on_red.push((id, sim.time(), v.speed()));
+            }
+        }
+    }
+    assert!(
+        on_red.is_empty(),
+        "{} crossed on red: {on_red:?}",
+        on_red.len()
+    );
+}
+
+#[test]
 fn at_signals_every_way_is_taken_right_turns_included() {
     use traffic_sim::{LaneId, NoopSink, Placement, Route, Simulation, VehicleSpec};
     let compiled = compile(&scenarios::signalised_crossroads(1, 50.0 / 3.6)).unwrap();

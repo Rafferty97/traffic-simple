@@ -165,8 +165,8 @@ enum AccelUpdate {
         accel: f64,
         yielding: Option<VehicleId>,
         binding: Option<Binding>,
-        /// How many more barriers it commits to.
-        commits: u8,
+        /// How many barriers ahead it is committed to now.
+        committed: u8,
     },
     /// From its record on its old lane, while it straddles it: the most its old
     /// side allows.
@@ -852,13 +852,14 @@ impl<D: DebugSink> Simulation<D> {
         // What its old side and its speed cap allow first, then its own update,
         // so that whether a leader binds it is judged against all of them.
         for update in &self.decisions {
-            if let AccelUpdate::Own { id, yielding, commits, .. } = *update {
+            if let AccelUpdate::Own { id, yielding, committed, .. } = *update {
                 // Committing to a barrier inside a junction it is queued at, it
                 // goes now, so to the back of the queue, behind everyone committed
                 // before (see `docs/DESIGN.md`, Barriers inside a junction).
                 let SimState { network, vehicles, queues, .. } = &mut self.state;
                 let vehicle = &vehicles[id];
-                for rank in vehicle.committed..vehicle.committed.saturating_add(commits) {
+                let commits = committed.saturating_sub(vehicle.committed);
+                for rank in vehicle.committed..committed {
                     let lane = barrier::nth(network, vehicle, usize::from(rank));
                     let Some(j) = lane.and_then(|l| network.lane(l).junction()) else {
                         continue;
@@ -870,7 +871,7 @@ impl<D: DebugSink> Simulation<D> {
                     }
                 }
                 let vehicle = &mut self.state.vehicles[id];
-                vehicle.committed = vehicle.committed.saturating_add(commits);
+                vehicle.committed = committed;
                 // Committed past a barrier, it may now arrive at a junction beyond.
                 if commits > 0 {
                     self.arrivals.push(id);
@@ -1194,24 +1195,29 @@ fn longitudinal<D: DebugSink>(
     // Wanting to change lanes, it keeps room to get halfway through a change
     // from rest.
     let halfway = wants_change(vehicle).then(|| halfway_from_rest(&state.network, vehicle));
-    // The barriers it commits to now, in order: once one holds it, or one
-    // beyond is found out of turn behind one shielded, the rest wait.
-    let mut commits = 0u8;
+    // How many barriers ahead it is committed to, in order: those it is released
+    // from drop out, with all after them, and once one holds it, or one beyond is
+    // found out of turn behind one shielded, the rest wait.
+    let mut committed = vehicle.committed;
     let mut held = false;
     for_each_leader(state, vehicle, Along::Path(own), |found| {
         if let Found::Ahead(Ahead::Barrier { lane, index, rank }, gap, _) = found {
-            let in_turn =
-                usize::from(rank) == usize::from(vehicle.committed) + usize::from(commits);
-            if held || !in_turn {
+            let barrier = state.network.lane(lane).barriers()[usize::from(index)];
+            if rank < u16::from(committed) {
+                if !barrier::released(state, vehicle, barrier, gap) {
+                    return;
+                }
+                committed = rank as u8;
+            }
+            if held || rank != u16::from(committed) {
                 held = true;
                 return;
             }
             let k = vehicle.path.iter().position(|&l| l == lane).unwrap_or(0);
-            let barrier = state.network.lane(lane).barriers()[usize::from(index)];
             let decision = barrier::decide(state, through, id, vehicle, k, barrier, gap);
             sink.record(|| DebugEvent::Barrier { vehicle: id, lane, index, gap, decision });
             match decision {
-                barrier::Decision::Commit => commits = commits.saturating_add(1),
+                barrier::Decision::Commit => committed = committed.saturating_add(1),
                 barrier::Decision::Pass => held = true,
                 barrier::Decision::Hold(term) => {
                     held = true;
@@ -1302,7 +1308,7 @@ fn longitudinal<D: DebugSink>(
     }
     let binding = binding.map(|b| Binding { rest, ..b });
     let accel = binding.map_or(rest, |b| b.term.min(rest));
-    AccelUpdate::Own { id, accel, yielding, binding, commits }
+    AccelUpdate::Own { id, accel, yielding, binding, committed }
 }
 
 /// Whether `id` has a record, not a ghost, on `lane` near `s` (see
