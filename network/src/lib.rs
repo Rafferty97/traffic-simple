@@ -19,7 +19,7 @@ use glam::DVec2;
 use traffic_sim::{Keep, LaneId, Leaving, SimNetwork};
 
 pub use compile::{CompileError, compile};
-pub use render::{Marking, MarkingStyle, RenderGeometry, Strip};
+pub use render::{Arrow, Marking, MarkingStyle, RenderGeometry, Strip};
 
 /// A position and a heading, in radians counterclockwise from +x.
 #[derive(Clone, Copy, Debug, PartialEq)]

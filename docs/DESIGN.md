@@ -46,7 +46,7 @@ One road-level network description compiles into two products: a `SimNetwork` fo
 
 - **Source of truth:** built by procedural generators (`scenarios`) or by hand. Real-world import is out of scope. The format will change as it grows.
 - **`SimNetwork` output:** lanes as polylines, their successors, neighbours with lane-change permissions, which side drivers keep to, how lanes that end are left, and junctions with their conflicts. **Planned:** barriers and signal controllers.
-- **Render output:** road and junction surfaces and lane markings. **Planned:** stop lines and keep-clear markings.
+- **Render output:** road and junction surfaces, lane markings, stop lines and turn arrows. **Planned:** keep-clear markings.
 - **Precision:** every lane point and half-width is snapped to a 1 mm grid as the lane is built, so a network serializes exactly as short text.
 
 The `network` crate describes networks at road level, as OpenDRIVE and SUMO's edge/lane/connection model do, and expands them to bare lanes during compilation. That is how people think about roads, and it keeps the sim free of road concepts.
@@ -60,6 +60,8 @@ The `network` crate describes networks at road level, as OpenDRIVE and SUMO's ed
 - **Joins:** a road's end joins the next road's start, and lanes connect wherever one ends where the other starts: two meeting one merge, one meeting two diverge, with nothing declared. Merging road lanes are not a junction: they are a merge (see Merges).
 - **Intersections:** each lists which lanes connect to which, and each connection becomes a cubic Bézier from one lane's end to the other's start along their directions, its control points a third of the way across, its width blending from one to the other, and its speed limit lowered for its tightest bend (2 m/s² sideways, at least 3 m/s). An intersection's connectors are one junction.
 - **Render output:** each road's surface between its outermost edges; lane markings, dashed between lanes going the same way, a centre line between opposite ones, and edge lines; and each intersection's surface, the mouths of its roads joined by cubic Bézier curbs.
+- **Stop lines:** each lane coming into an intersection gets one across its end, 300 mm wide as AS 1742.2 has it, set back half that so its far edge is where the intersection starts.
+- **Turn arrows:** each lane coming into an intersection gets an arrow 8 m back from its end for the ways its connections go, as SUMO classes a link's direction by its angle: straight on within 30° either way, otherwise left or right. It's one of seven glyphs, every mix of left, straight and right, drawn in `ui/assets/lane-glyphs.svg` and converted once to triangles in `ui/src/glyphs.rs` by `ui/assets/convert-glyphs.mjs`, so the UI needs no SVG support. None is painted on a road shorter than 16 m.
 
 Generating junction geometry is the hardest part of this crate. SUMO's netconvert is largely heuristics for it; procedural networks keep it tractable.
 
@@ -268,7 +270,7 @@ The debug view shows what the simulation actually used, never a recomputation. E
 
 The `ui` crate renders the simulation with egui's painter and offers two views.
 
-- **Pretty view:** road and junction surfaces and lane markings from the render geometry, vehicles as oriented shapes drawn between steps, and indicators.
+- **Pretty view:** road and junction surfaces, lane markings, stop lines and turn arrows from the render geometry, vehicles as oriented shapes drawn between steps, and indicators.
 - **Debug view:** layers for lane outlines, centrelines, s ticks, neighbours, occupants, vehicles, lane-change paths, leaders and merge orders, passing checks and lookahead points. Clicking a vehicle opens an inspector with its state, its lane-change desires and its acceleration terms.
 - **Controls:** pause, single step, speed multiplier, camera pan and zoom, scenario choice, traffic (a target count on the ring, a flow per entry lane elsewhere), lane changes for the selected vehicle, and saving a replay or a freeze frame.
 

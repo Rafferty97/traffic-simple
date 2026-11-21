@@ -1,5 +1,5 @@
-//! What to draw for a road network: road and intersection surfaces, and lane
-//! markings.
+//! What to draw for a road network: road and intersection surfaces, lane
+//! markings, stop lines and turn arrows.
 
 use glam::DVec2;
 
@@ -16,6 +16,7 @@ pub struct RenderGeometry {
     /// see its centroid, so it can be drawn as a fan from there.
     pub intersections: Vec<Vec<DVec2>>,
     pub markings: Vec<Marking>,
+    pub arrows: Vec<Arrow>,
 }
 
 /// A surface between two edges, vertex for vertex: drawn as quads between
@@ -33,6 +34,29 @@ pub struct Marking {
     pub style: MarkingStyle,
 }
 
+/// A turn arrow painted on a lane coming into an intersection, saying which
+/// ways it goes on: at least one of them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Arrow {
+    /// Its anchor, on the lane's centreline, about where its shaft starts.
+    pub pos: DVec2,
+    /// The way the lane runs there, in radians counterclockwise from +x.
+    pub heading: f64,
+    pub left: bool,
+    pub straight: bool,
+    pub right: bool,
+}
+
+/// How far back from the end of a lane coming into an intersection its arrow's
+/// anchor is, in meters: the arrow runs about 1.75 m back from there and 3.6 m
+/// on.
+const ARROW_SETBACK: f64 = 8.0;
+/// How wide a stop line is, in meters: 300 mm, as Australian standards (AS
+/// 1742.2) have it.
+const STOP_LINE_WIDTH: f64 = 0.3;
+/// The most a connection turns, either way, and still goes straight on: 30°.
+const STRAIGHT_ON: f64 = std::f64::consts::PI / 6.0;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MarkingStyle {
     /// Between lanes going the same way: changing lanes is allowed.
@@ -41,6 +65,9 @@ pub enum MarkingStyle {
     Edge,
     /// Between lanes going opposite ways.
     Centre,
+    /// Across a lane where it comes into an intersection: a stop line, 300 mm
+    /// wide, its far edge where the intersection starts.
+    Stop,
 }
 
 pub(crate) fn build(net: &RoadNetwork, polylines: &[Polyline]) -> RenderGeometry {
@@ -88,8 +115,93 @@ pub(crate) fn build(net: &RoadNetwork, polylines: &[Polyline]) -> RenderGeometry
         out.intersections.push(surface);
         out.markings
             .extend(curbs.into_iter().map(|points| Marking { points, style: MarkingStyle::Edge }));
+        approaches(net, polylines, intersection, &mut out);
     }
     out
+}
+
+/// On each lane coming into an intersection: a stop line across its end, and
+/// an arrow for the ways its connections turn, as SUMO classes a link's
+/// direction by the angle between its lanes. No arrow on a road too short to
+/// fit one.
+fn approaches(
+    net: &RoadNetwork,
+    polylines: &[Polyline],
+    intersection: &Intersection,
+    out: &mut RenderGeometry,
+) {
+    let lane = |l: LaneRef| &net.roads[l.road.0].lanes[l.lane];
+    // Each lane's direction of travel where it meets the intersection: along
+    // its road's end segment, which lies on the tangent there.
+    let end_dir = |l: LaneRef, arriving: bool| {
+        let points = &polylines[l.road.0].points;
+        let n = points.len();
+        let at_end = (lane(l).direction == Direction::Forward) == arriving;
+        let dir = match at_end {
+            true => points[n - 1] - points[n - 2],
+            false => points[1] - points[0],
+        };
+        if lane(l).direction == Direction::Forward {
+            dir
+        } else {
+            -dir
+        }
+    };
+    let mut froms: Vec<LaneRef> = Vec::new();
+    for &(from, _) in &intersection.connections {
+        if !froms.contains(&from) {
+            froms.push(from);
+        }
+    }
+    for from in froms {
+        let road_lane = lane(from);
+        let line = &polylines[from.road.0];
+        let forward = road_lane.direction == Direction::Forward;
+        let arriving = end_dir(from, true);
+
+        // Across the lane where it ends, set back by half its width so that
+        // it's painted on the road.
+        let k = if forward { line.points.len() - 1 } else { 0 };
+        let back = -0.5 * STOP_LINE_WIDTH * arriving.normalize();
+        let across = |side: f64| {
+            let s = line.s[k];
+            let t = road_lane.offset.at(s) + side * 0.5 * road_lane.width.at(s);
+            line.points[k] + t * line.miters[k] + back
+        };
+        out.markings.push(Marking {
+            points: vec![across(1.0), across(-1.0)],
+            style: MarkingStyle::Stop,
+        });
+
+        let (mut left, mut straight, mut right) = (false, false, false);
+        for &(_, to) in intersection.connections.iter().filter(|c| c.0 == from) {
+            match arriving.angle_to(end_dir(to, false)) {
+                t if t.abs() <= STRAIGHT_ON => straight = true,
+                t if t > 0.0 => left = true,
+                _ => right = true,
+            }
+        }
+        let length = *line.s.last().unwrap();
+        if length < 2.0 * ARROW_SETBACK {
+            continue;
+        }
+        let s = if forward {
+            length - ARROW_SETBACK
+        } else {
+            ARROW_SETBACK
+        };
+        // The segment it falls on, and how far along it.
+        let i = line.s.partition_point(|&x| x <= s).clamp(1, line.s.len() - 1);
+        let t = (s - line.s[i - 1]) / (line.s[i] - line.s[i - 1]);
+        let centre = |k: usize| line.points[k] + road_lane.offset.at(line.s[k]) * line.miters[k];
+        let pos = centre(i - 1).lerp(centre(i), t);
+        let dir = if forward {
+            centre(i) - centre(i - 1)
+        } else {
+            centre(i - 1) - centre(i)
+        };
+        out.arrows.push(Arrow { pos, heading: dir.to_angle(), left, straight, right });
+    }
 }
 
 /// Where a road meets an intersection: its corners, left and right as seen

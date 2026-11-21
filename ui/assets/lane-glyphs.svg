@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 21 6" width="840" height="240">
+  <!-- Units are metres, glyph-local frame: origin at the glyph anchor, arrow points up (canvas y-down). -->
+  <defs>
+    <!-- 'turn' arrow: used by tl / tr / tlr (right-turn shape; left is the x-mirrored copy) -->
+    <path id="turn" d="M24.4146,4 L24.4146,21.5751 C9.78049,25.5923 1,41.6609 1,50.6996 L1,121 L6.85366,121 L6.85366,63.2532 C6.85366,58.2318 15.1463,47.1846 24.4146,47.1846 L24.4146,59.7382 L41,33.1245 L24.4146,4 Z"/>
+    <!-- 'straight + turn' arrow: used by tsl / tsr / tslr -->
+    <path id="straightturn" d="M14.5,178.5 L8.5,178.5 L8.5,61.5 L2,61.5 L11,1 L21,61.5 L14.5,61.5 L14.5,140.5 C18.5,132.5 25,126 31.5,123.5 L31.5,105.5 L49.5,135.5 L31.5,161.5 L31.5,149.5 C23,150.5 14.5,159.5 14.5,164.5 L14.5,178.5 Z"/>
+    <!-- 'straight + left + right' arrow: single shaft/head, symmetric about x=11.5 -->
+    <path id="straightlr" d="M8.5,178.5 L14.5,178.5 L14.5,164.5 C14.5,159.5 23,150.5 31.5,149.5 L31.5,161.5 L49.5,135.5 L31.5,105.5 L31.5,123.5 C25,126 18.5,132.5 14.5,140.5 L14.5,61.5 L21,61.5 L11.5,1 L2,61.5 L8.5,61.5 L8.5,140.5 C4.5,132.5 -2,126 -8.5,123.5 L-8.5,105.5 L-26.5,135.5 L-8.5,161.5 L-8.5,149.5 C0,150.5 8.5,159.5 8.5,164.5 L8.5,178.5 Z"/>
+    <!-- 'ts' straight arrow -->
+    <path id="straight" d="M14.5,178.5 L8.5,178.5 L8.5,61.5 L2,61.5 L11,1 L21,61.5 L14.5,61.5 L14.5,178.5 Z"/>
+  </defs>
+
+  <rect id="bg" width="21" height="6" fill="#444"/>
+
+  <g fill="#fff">
+    <!-- tl -->
+    <g transform="translate(1.5 4)">
+      <use xlink:href="#turn" transform="scale(-0.03 0.03) translate(-20 -62.5)"/>
+    </g>
+    <!-- tr -->
+    <g transform="translate(4.5 4)">
+      <use xlink:href="#turn" transform="scale(0.03 0.03) translate(-20 -62.5)"/>
+    </g>
+    <!-- tlr -->
+    <g transform="translate(7.5 4)">
+      <use xlink:href="#turn" transform="scale(-0.03 0.03) translate(-5 -62.5)"/>
+      <use xlink:href="#turn" transform="scale(0.03 0.03) translate(-5 -62.5)"/>
+    </g>
+    <!-- tsl -->
+    <g transform="translate(10.5 4)">
+      <use xlink:href="#straightturn" transform="scale(-0.03 0.03) translate(-25 -121)"/>
+    </g>
+    <!-- tsr -->
+    <g transform="translate(13.5 4)">
+      <use xlink:href="#straightturn" transform="scale(0.03 0.03) translate(-25 -121)"/>
+    </g>
+    <!-- tslr -->
+    <g transform="translate(16.5 4)">
+      <use xlink:href="#straightlr" transform="scale(0.03 0.03) translate(-11.5 -121)"/>
+    </g>
+    <!-- ts -->
+    <g transform="translate(19.5 4)">
+      <use xlink:href="#straight" transform="scale(0.03 0.03) translate(-12 -121)"/>
+    </g>
+  </g>
+</svg>

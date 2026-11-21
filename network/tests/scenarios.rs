@@ -22,6 +22,69 @@ fn crossroads_of_one_and_three_lanes_each_way_compile() {
     }
 }
 
+/// Driving on the left, a crossroads' lanes by the centre line go straight on
+/// or right, and its outer lanes straight on or left; with one lane each way,
+/// it goes all three. Each arrow lies on its lane, a little way back from the
+/// junction, pointing into it.
+#[test]
+fn crossroads_lanes_have_arrows_for_the_ways_they_turn() {
+    for (lanes, expected) in [
+        (1, vec![(true, true, true)]),
+        (2, vec![(false, true, true), (true, true, false)]),
+    ] {
+        let compiled = compile(&scenarios::crossroads(lanes, 14.0)).unwrap();
+        let arrows = &compiled.render.arrows;
+        assert_eq!(arrows.len(), 4 * lanes);
+        for (k, arrow) in arrows.iter().enumerate() {
+            assert_eq!(
+                (arrow.left, arrow.straight, arrow.right),
+                expected[k % lanes]
+            );
+            // Along its arm toward the centre, beside the centre line.
+            let p = arrow.pos;
+            let inward = match p.x.abs() > p.y.abs() {
+                true => glam::DVec2::new(-p.x.signum(), 0.0),
+                false => glam::DVec2::new(0.0, -p.y.signum()),
+            };
+            assert!(glam::DVec2::from_angle(arrow.heading).dot(inward) > 0.999);
+            let off_centre = arrow.pos.perp_dot(inward).abs();
+            assert!((off_centre - 3.5 * ((k % lanes) as f64 + 0.5)).abs() < 1e-6);
+        }
+    }
+}
+
+/// Each lane coming into a crossroads has a stop line across its whole width,
+/// at the edge of the junction, square to the lane.
+#[test]
+fn crossroads_lanes_have_stop_lines_where_they_come_in() {
+    use traffic_network::MarkingStyle;
+    for lanes in 1..=3 {
+        let compiled = compile(&scenarios::crossroads(lanes, 14.0)).unwrap();
+        let half = lanes as f64 * 3.5 + 6.0;
+        let stops: Vec<_> = compiled
+            .render
+            .markings
+            .iter()
+            .filter(|m| m.style == MarkingStyle::Stop)
+            .collect();
+        assert_eq!(stops.len(), 4 * lanes);
+        for stop in stops {
+            let [a, b] = stop.points[..] else {
+                panic!("a stop line is one segment")
+            };
+            assert!((a.distance(b) - 3.5).abs() < 1e-6);
+            // Set back half its width from the junction's edge, across its arm.
+            let mid = 0.5 * (a + b);
+            assert!((mid.x.abs().max(mid.y.abs()) - (half + 0.15)).abs() < 1e-6);
+            let along = match mid.x.abs() > mid.y.abs() {
+                true => glam::DVec2::X,
+                false => glam::DVec2::Y,
+            };
+            assert!((a - b).dot(along).abs() < 1e-6);
+        }
+    }
+}
+
 #[test]
 fn the_freeway_merges_at_the_lane_drop_and_forks_at_the_off_ramp() {
     let compiled = compile(&scenarios::ramps(100.0 / 3.6, 80.0 / 3.6)).unwrap();

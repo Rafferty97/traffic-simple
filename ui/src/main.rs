@@ -1,5 +1,6 @@
 //! egui app with a pretty view and a debug view of the simulation.
 
+mod glyphs;
 mod replay;
 
 /// The simulation's test helpers, for checking that replays read back exactly.
@@ -25,7 +26,9 @@ use glam::DVec2;
 use rand::rngs::Xoshiro256PlusPlus;
 use rand::{RngExt, SeedableRng};
 use replay::Recorded;
-use traffic_network::{MarkingStyle, RenderGeometry, RoadNetwork, Strip, compile, scenarios};
+use traffic_network::{
+    Arrow, MarkingStyle, RenderGeometry, RoadNetwork, Strip, compile, scenarios,
+};
 use traffic_sim::{
     AccelSource, ConflictKind, DebugEvent, DebugSink, LaneChangeError, LaneChangeEval, LaneId,
     Leaving, PassCheck, Placement, Route, Side, Simulation, Vehicle, VehicleId, VehicleSpec,
@@ -734,11 +737,13 @@ fn draw_pretty(
     }
     let white = Stroke::new(0.15, Color32::from_gray(230));
     let yellow = Stroke::new(0.15, Color32::from_rgb(240, 200, 40));
+    let stop = Stroke::new(0.3, Color32::from_gray(230));
     for marking in &render.markings {
         let points: Vec<Pos2> = marking.points.iter().map(|&p| to_scene(p)).collect();
         match marking.style {
             MarkingStyle::Edge => drop(painter.add(Shape::line(points, white))),
             MarkingStyle::Centre => drop(painter.add(Shape::line(points, yellow))),
+            MarkingStyle::Stop => drop(painter.add(Shape::line(points, stop))),
             // 3 m dashes every 9 m.
             MarkingStyle::Dashed => {
                 for dash in dashes(&marking.points, 3.0, 9.0) {
@@ -747,6 +752,7 @@ fn draw_pretty(
             }
         }
     }
+    painter.add(arrows_mesh(&render.arrows, Color32::from_gray(230)));
     for (id, v) in sim.vehicles() {
         // Where it is drawn, between steps: the indicators go with the body.
         let drawn = poses.corners(id, v, sim.alpha());
@@ -1220,6 +1226,35 @@ fn fan_mesh(points: &[DVec2], color: Color32) -> Shape {
     let n = points.len() as u32;
     for i in 0..n {
         mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
+    }
+    Shape::mesh(mesh)
+}
+
+/// Turn arrows, each its glyph turned to its heading and placed at its anchor.
+fn arrows_mesh(arrows: &[Arrow], color: Color32) -> Shape {
+    let mut mesh = egui::Mesh::default();
+    for arrow in arrows {
+        let glyph = match (arrow.left, arrow.straight, arrow.right) {
+            (true, false, false) => &glyphs::TL,
+            (false, false, true) => &glyphs::TR,
+            (true, false, true) => &glyphs::TLR,
+            (true, true, false) => &glyphs::TSL,
+            (false, true, true) => &glyphs::TSR,
+            (true, true, true) => &glyphs::TSLR,
+            (false, true, false) => &glyphs::TS,
+            (false, false, false) => continue,
+        };
+        // The glyph's +y along the heading, and its +x to the right of it.
+        let ahead = DVec2::from_angle(arrow.heading);
+        let right = DVec2::new(ahead.y, -ahead.x);
+        let base = mesh.vertices.len() as u32;
+        for &[x, y] in glyph.vertices {
+            let p = arrow.pos + x as f64 * right + y as f64 * ahead;
+            mesh.colored_vertex(to_scene(p), color);
+        }
+        for &[a, b, c] in glyph.triangles {
+            mesh.add_triangle(base + a as u32, base + b as u32, base + c as u32);
+        }
     }
     Shape::mesh(mesh)
 }
