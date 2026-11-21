@@ -5,19 +5,21 @@ use traffic_network::{compile, scenarios};
 #[test]
 fn a_crossroads_with_two_lanes_each_way_compiles() {
     let compiled = compile(&scenarios::crossroads(2, 14.0)).unwrap();
-    // Four arms of four lanes, and per arm two straight on, one right and one left.
+    // Four arms of four lanes, and per arm two straight on, and a right and a
+    // left into each lane of the road turned into.
     assert_eq!(compiled.road_lanes.iter().flatten().count(), 16);
-    assert_eq!(compiled.connectors[0].len(), 16);
+    assert_eq!(compiled.connectors[0].len(), 24);
     assert_eq!(compiled.render.intersections.len(), 1);
     let junction = compiled.sim.junctions().next().unwrap().1;
-    assert_eq!(junction.lanes().len(), 16);
+    assert_eq!(junction.lanes().len(), 24);
 }
 
 #[test]
 fn crossroads_of_one_and_three_lanes_each_way_compile() {
-    for (lanes, connectors) in [(1, 12), (3, 20)] {
+    for (lanes, connectors) in [(1, 12), (3, 36)] {
         let compiled = compile(&scenarios::crossroads(lanes, 14.0)).unwrap();
-        // Per arm, one straight on from each lane, one right and one left.
+        // Per arm, one straight on from each lane, and a right and a left into
+        // each lane of the road turned into.
         assert_eq!(compiled.connectors[0].len(), connectors);
     }
 }

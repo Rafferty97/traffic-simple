@@ -18,8 +18,8 @@ const RIGHT_TURN_STRAIGHT: f64 = 3.0;
 /// Two two-way roads crossing at right angles, each with `lanes` lanes each
 /// way, 300 m long, driving on the left. Every lane coming in connects to the
 /// lane at the same place across the junction, straight on; only the leftmost
-/// turns left and only the rightmost turns right, running 3 m straight on
-/// before it turns. Its stop lines are set back, and its run outs as long, as
+/// turns left and only the rightmost turns right, into every lane of the road
+/// it turns into, running 3 m straight on before it turns right. Its stop lines are set back, and its run outs as long, as
 /// turning vehicles need (see [`crate::fit_arms`]).
 pub fn crossroads(lanes: usize, speed_limit: f64) -> RoadNetwork {
     oblique_crossroads(lanes, speed_limit, FRAC_PI_2)
@@ -73,8 +73,11 @@ pub fn oblique_crossroads(lanes: usize, speed_limit: f64, angle: f64) -> RoadNet
         for i in 0..lanes {
             intersection.connections.push((inbound(k, i), outbound(straight, i)));
         }
-        intersection.connections.push((inbound(k, outer), outbound(left, outer)));
-        intersection.connections.push((inbound(k, 0), outbound(right, 0)));
+        // Turning, into every lane of the road it turns into.
+        for i in 0..lanes {
+            intersection.connections.push((inbound(k, outer), outbound(left, i)));
+            intersection.connections.push((inbound(k, 0), outbound(right, i)));
+        }
         // Its stop line along the other road: as far from square as the other
         // road is from crossing square, counterclockwise from the way in, and
         // back far enough that none of it is past the arm's end.
