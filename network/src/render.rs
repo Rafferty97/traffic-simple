@@ -38,7 +38,7 @@ pub struct Marking {
 /// ways it goes on: at least one of them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Arrow {
-    /// Its anchor, on the lane's centreline, about where its shaft starts.
+    /// Its anchor, on the lane's centreline, where its shaft starts.
     pub pos: DVec2,
     /// The way the lane runs there, in radians counterclockwise from +x.
     pub heading: f64,
@@ -48,8 +48,7 @@ pub struct Arrow {
 }
 
 /// How far back from the end of a lane coming into an intersection its arrow's
-/// anchor is, in meters: the arrow runs about 1.75 m back from there and 3.6 m
-/// on.
+/// anchor is, in meters: the arrow's tail is there, and it runs 6 m on.
 const ARROW_SETBACK: f64 = 8.0;
 /// How wide a stop line is, in meters: 300 mm, as Australian standards (AS
 /// 1742.2) have it.
