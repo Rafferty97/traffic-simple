@@ -304,3 +304,35 @@ fn a_give_way_line_goes_through_a_wide_gap() {
     run_until(&mut sim, 4.0);
     assert!(front(&sim, yielding).y > 5.0, "it waited for a car far off");
 }
+
+#[test]
+fn a_give_way_line_waits_for_traffic_with_priority_at_rest_at_a_green_light() {
+    let mut net = give_way();
+    // The road with priority has a signal that is always green.
+    let first = net.add_signal(SignalPlan {
+        movements: vec![Movement { conflicts: 0, amber: 3.0, clearance: 0.0 }],
+        phases: vec![Phase { green: 0b1, duration: 1e9 }],
+    });
+    let kind = BarrierKind::Signal { movement: first };
+    net.add_barrier(LaneId(2), Barrier { s: 0.0, kind });
+    let mut sim = Simulation::new(net, NoopSink);
+    sim.step();
+    assert_eq!(sim.light(first).light, Light::Green);
+    let line = sim.network().lane(LaneId(3)).barriers()[0].s - 10.0;
+    // Both at rest at their lines: the one at the green light is about to go,
+    // so the one at the give-way line waits for it.
+    let yielding = sim.insert(car(), at(3, 0.0, 0.0));
+    let priority = sim.insert(car(), at(0, 84.0, 0.0));
+    let mut waited_for_it = true;
+    for _ in 0..(20.0 / DT) as usize {
+        sim.step();
+        let across = sim.get(priority).is_none_or(|_| front(&sim, priority).x > 3.0);
+        if !across && front(&sim, yielding).y > line {
+            waited_for_it = false;
+        }
+    }
+    assert!(
+        waited_for_it,
+        "it went ahead of the car about to move off at its green light"
+    );
+}

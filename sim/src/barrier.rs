@@ -86,6 +86,36 @@ pub(crate) fn holds_before(network: &SimNetwork, vehicle: &Vehicle, k: usize, s:
     rank(network, vehicle, k, s, true) > vehicle.committed as usize
 }
 
+/// Whether a light holds `vehicle` short of the point `s` on its `k`th lane: a
+/// signal at or before it, that it hasn't committed to, on amber or red. Under
+/// [`decide`], nothing commits to one then, so it will surely stop there. One at
+/// a green light, or a give-way line, it hasn't committed to may yet go.
+pub(crate) fn held_by_light(state: &SimState, vehicle: &Vehicle, k: usize, s: f64) -> bool {
+    let network = &state.network;
+    let mut rank = 0;
+    for (j, &lane) in vehicle.path.iter().enumerate().take(k + 1) {
+        let from = if j == 0 {
+            vehicle.lane_pos.s
+        } else {
+            f64::NEG_INFINITY
+        };
+        let to = if j == k { s } else { f64::INFINITY };
+        for barrier in network.lane(lane).barriers().iter().filter(|b| b.s > from && b.s <= to) {
+            let holds = match barrier.kind {
+                BarrierKind::Signal { movement } => {
+                    state.lights[movement.0 as usize].light != Light::Green
+                }
+                BarrierKind::GiveWay => false,
+            };
+            if rank >= vehicle.committed as usize && holds {
+                return true;
+            }
+            rank += 1;
+        }
+    }
+    false
+}
+
 /// The deceleration that amber times are set for a driver to stop at, in m/s²,
 /// as ITE's change interval has it.
 pub const AMBER_DECEL: f64 = 3.0;
@@ -223,9 +253,10 @@ struct Way<'a> {
 /// as the follower search does, where `lane`'s start is `ahead` back from the
 /// conflict's start on the priority lane, and its end `between` back from that
 /// lane's start: minus that lane's length on the priority lane itself. On each branch only the nearest vehicle headed for the conflict
-/// matters, since those behind it there arrive later. A vehicle held at a
-/// barrier it hasn't committed to holds back the rest of its branch. One in the
-/// conflict already refuses the gap.
+/// matters, since those behind it there arrive later. A vehicle a red or amber
+/// light holds short of the conflict holds back the rest of its branch (see
+/// [`held_by_light`]); one at a green light or a give-way line may yet go, and
+/// counts. One in the conflict already refuses the gap.
 #[allow(clippy::too_many_arguments)]
 fn clear(
     state: &SimState,
@@ -245,7 +276,16 @@ fn clear(
         let other = &state.vehicles[o.id];
         let on_it = lane == way.theirs;
         let k = other.path.iter().position(|&l| l == way.theirs);
-        if o.is_ghost() || o.id == id || (!on_it && k.is_none()) {
+        if o.is_ghost() || o.id == id {
+            continue;
+        }
+        // Headed elsewhere, it is passed over, unless it waits in the lane at a
+        // barrier it hasn't committed to, a turner waiting for a gap say: then
+        // nobody behind it can come until it goes.
+        if !on_it && k.is_none() {
+            if waits_in_lane(network, other, o) {
+                return true;
+            }
             continue;
         }
         // Its front, back from the conflict's start: past it, it is in it.
@@ -254,7 +294,7 @@ fn clear(
             return false;
         }
         let committed = || state.queues[way.junction.0 as usize].committed.contains(&o.id);
-        let held = k.is_some_and(|k| holds_before(network, other, k, at));
+        let held = k.is_some_and(|k| held_by_light(state, other, k, at));
         if held || (way.equal && !committed()) {
             return true;
         }
@@ -294,6 +334,16 @@ pub(crate) fn released(state: &SimState, vehicle: &Vehicle, barrier: Barrier, ga
             }
             BarrierKind::GiveWay => speed == 0.0,
         }
+}
+
+/// Whether `vehicle`, with record `o` on a lane leading to a conflict, blocks
+/// that lane, waiting: at rest in the lane, with a barrier it hasn't committed
+/// to on the lane it follows or the next.
+fn waits_in_lane(network: &SimNetwork, vehicle: &Vehicle, o: &crate::occupancy::Occupant) -> bool {
+    let next = nth(network, vehicle, vehicle.committed as usize);
+    o.lateral == crate::occupancy::Lateral::InLane
+        && vehicle.speed == 0.0
+        && next.is_some_and(|lane| vehicle.path.iter().take(2).any(|&l| l == lane))
 }
 
 /// The term holding a vehicle `gap` short of a line: a stationary leader there,

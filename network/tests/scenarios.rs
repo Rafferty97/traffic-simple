@@ -288,7 +288,7 @@ fn a_signalised_crossroads_holds_each_connector_at_its_movements_light() {
 }
 
 #[test]
-fn at_signals_nobody_crosses_a_line_on_red() {
+fn at_signals_nobody_crosses_a_line_on_red_and_traffic_keeps_flowing() {
     use std::collections::HashMap;
     use traffic_sim::{
         BarrierKind, LaneId, Light, NoopSink, Placement, Route, Simulation, VehicleSpec,
@@ -313,7 +313,9 @@ fn at_signals_nobody_crosses_a_line_on_red() {
         .collect();
     let mut was_past = HashMap::new();
     let mut on_red = Vec::new();
-    for step in 0..(300.0 * 60.0) as u64 {
+    let (mut spawned, mut left_before) = (0, 0);
+    // Ten minutes: long enough to lock up, if anything does.
+    for step in 0..(600.0 * 60.0) as u64 {
         if step % 30 == 0 {
             let lane = entries[(step / 30) as usize % entries.len()];
             let car = VehicleSpec {
@@ -326,9 +328,21 @@ fn at_signals_nobody_crosses_a_line_on_red() {
             };
             let speed = sim.network().lane(lane).speed_limit() * car.speed_factor;
             let at = Placement { lane, s: 5.0, speed, route: Route::random(step) };
-            let _ = sim.try_insert(car, at);
+            if sim.try_insert(car, at).is_ok() {
+                spawned += 1;
+            }
         }
         sim.step();
+        // Traffic keeps flowing: vehicles leave every minute after the first.
+        if step % 3600 == 0 && step > 3600 {
+            let left = spawned - sim.vehicles().count();
+            assert!(
+                left > left_before + 5,
+                "standstill in the minute to {:.0} s",
+                sim.time()
+            );
+            left_before = left;
+        }
         // Each vehicle's front against the signal line ahead on its path, at the
         // start of the lane after the one it follows.
         let network = sim.network();
@@ -355,6 +369,86 @@ fn at_signals_nobody_crosses_a_line_on_red() {
         on_red.is_empty(),
         "{} crossed on red: {on_red:?}",
         on_red.len()
+    );
+}
+
+#[test]
+fn at_signals_straight_traffic_never_stops_or_brakes_hard_for_right_turners_on_its_green() {
+    use std::collections::HashMap;
+    use traffic_network::Turn;
+    use traffic_sim::{
+        AccelSource, BarrierKind, DebugEvent, DebugSink, LaneId, Light, MovementId, Placement,
+        Route, Simulation, VehicleId, VehicleSpec,
+    };
+    /// Each vehicle's junction terms from the last longitudinal update.
+    #[derive(Default)]
+    struct Terms(Vec<(VehicleId, VehicleId, f64)>);
+    impl DebugSink for Terms {
+        fn record(&mut self, event: impl FnOnce() -> DebugEvent) {
+            match event() {
+                DebugEvent::RecomputeAccels => self.0.clear(),
+                DebugEvent::AccelTerm {
+                    vehicle,
+                    source: AccelSource::Junction { id, .. },
+                    accel,
+                } => self.0.push((vehicle, id, accel)),
+                _ => {}
+            }
+        }
+    }
+    let compiled = compile(&scenarios::signalised_crossroads(2, 50.0 / 3.6)).unwrap();
+    // Each connector's turn and movement.
+    let mut way: HashMap<LaneId, (Turn, MovementId)> = HashMap::new();
+    for (&c, &turn) in compiled.connectors[0].iter().zip(&compiled.turns[0]) {
+        let BarrierKind::Signal { movement } = compiled.sim.lane(c).barriers()[0].kind else {
+            panic!("{c:?} has no signal");
+        };
+        way.insert(c, (turn, movement));
+    }
+    let mut sim = Simulation::new(compiled.sim, Terms::default());
+    let entries: Vec<LaneId> = sim
+        .network()
+        .lanes()
+        .filter(|(_, lane)| lane.predecessors().is_empty())
+        .map(|(id, _)| id)
+        .collect();
+    let way_of = |sim: &Simulation<Terms>, id: VehicleId| {
+        sim.get(id).and_then(|v| v.path().iter().find_map(|l| way.get(l).copied()))
+    };
+    let mut hard = Vec::new();
+    for step in 0..(300.0 * 60.0) as u64 {
+        if step % 30 == 0 {
+            let lane = entries[(step / 30) as usize % entries.len()];
+            let speed = sim.network().lane(lane).speed_limit();
+            let at = Placement { lane, s: 5.0, speed, route: Route::random(step) };
+            let _ = sim.try_insert(VehicleSpec::passenger_car(), at);
+        }
+        sim.step();
+        if step % 3 != 0 {
+            continue;
+        }
+        for &(id, other, accel) in &sim.sink().0 {
+            let (Some((Turn::Straight, mine)), Some((Turn::Right, theirs))) =
+                (way_of(&sim, id), way_of(&sim, other))
+            else {
+                continue;
+            };
+            let green = |m| sim.light(m).light == Light::Green;
+            // Held up by it at all, it may slow a little as a turner clears
+            // ahead, but never stop or brake hard for one.
+            let held = sim.get(id).is_some_and(|v| v.accel() == accel && v.speed() < 0.1);
+            let hard_braking = accel < -VehicleSpec::passenger_car().comfy_decel;
+            let binding = sim.get(id).is_some_and(|v| v.accel() == accel);
+            if binding && green(mine) && green(theirs) && (held || hard_braking) {
+                hard.push((id, other, sim.time(), accel));
+            }
+        }
+    }
+    assert!(
+        hard.is_empty(),
+        "{} hard: {:?}",
+        hard.len(),
+        &hard[..hard.len().min(5)]
     );
 }
 
