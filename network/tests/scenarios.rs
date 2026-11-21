@@ -22,6 +22,38 @@ fn crossroads_of_one_and_three_lanes_each_way_compile() {
     }
 }
 
+#[test]
+fn lane_lines_stop_at_the_stop_line_coming_in_and_run_to_the_junction_going_out() {
+    use traffic_network::MarkingStyle;
+    let net = scenarios::crossroads(2, 14.0);
+    let compiled = compile(&net).unwrap();
+    let back = net.intersections[0].arm(traffic_network::RoadId(0)).stop_line;
+    assert!(
+        back > 0.0,
+        "the stop lines aren't set back, so this shows nothing"
+    );
+    let half = 2.0 * 3.5 + 6.0;
+    // How far each line between lanes gets toward the junction's centre, along
+    // its arm, with which way its lanes beside it go there.
+    let mut ends: Vec<(MarkingStyle, f64)> = Vec::new();
+    for m in &compiled.render.markings {
+        if !matches!(m.style, MarkingStyle::Dashed | MarkingStyle::Centre) {
+            continue;
+        }
+        let near = |p: &glam::DVec2| p.x.abs().max(p.y.abs());
+        let reach = m.points.iter().map(near).fold(f64::INFINITY, f64::min);
+        ends.push((m.style, reach));
+    }
+    let at = |style, reach: f64| {
+        ends.iter().filter(|&&(s, r)| s == style && (r - reach).abs() < 1e-3).count()
+    };
+    // Every arm's centre line and the line between its lanes coming in stop at
+    // its stop line; the line between its lanes going out runs on.
+    assert_eq!(at(MarkingStyle::Centre, half + back), 4, "{ends:?}");
+    assert_eq!(at(MarkingStyle::Dashed, half + back), 4, "{ends:?}");
+    assert_eq!(at(MarkingStyle::Dashed, half), 4, "{ends:?}");
+}
+
 /// Driving on the left, a crossroads' lanes by the centre line go straight on
 /// or right, and its outer lanes straight on or left; with one lane each way,
 /// it goes all three. Each arrow lies on its lane, a little way back from the
