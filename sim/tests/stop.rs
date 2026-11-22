@@ -205,3 +205,26 @@ fn a_car_arriving_at_a_stop_line_records_when_it_came_to_rest() {
     }
     assert!(recorded, "it never recorded coming to rest");
 }
+
+/// A driver kept waiting grows impatient, and in time cuts in front of a car
+/// with priority that has stopped short of the junction.
+#[test]
+fn a_car_kept_waiting_in_time_goes_ahead_of_a_stopped_car_with_priority() {
+    let mut sim = Simulation::new(stop(), NoopSink);
+    let yielding = sim.insert(car(), at_line());
+    // At rest 5 m short of the junction, held there.
+    let spec = car();
+    let priority = sim.insert(spec, at(0, 85.0 - (spec.length - spec.rear_axle), 0.0));
+    sim.hold(priority);
+    while sim.time() < 3.0 {
+        sim.step();
+    }
+    assert!(front_y(&sim, yielding) < -10.0, "it went at once");
+    while sim.time() < 40.0 {
+        sim.step();
+    }
+    assert!(
+        sim.get(yielding).is_none_or(|_| front_y(&sim, yielding) > 10.0),
+        "it never went"
+    );
+}

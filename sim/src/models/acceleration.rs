@@ -152,10 +152,19 @@ const CAP_EASE: f64 = 0.5;
 /// accelerating at `accel` up to `max_speed` and holding it: `(√(v² + 2ad) − v) / a`,
 /// or, once at its top speed, `t₁ + (d − d₁) / v_max`, with `t₁` and `d₁` the
 /// time and distance to reach it. Zero for no distance; one already above its
-/// top speed is held to its speed.
+/// top speed is held to its speed. Braking, with `accel` negative, or holding
+/// its speed, it never covers more than it does before it stops: infinite.
 pub fn reach_time(speed: f64, accel: f64, max_speed: f64, distance: f64) -> f64 {
     if distance <= 0.0 {
         return 0.0;
+    }
+    if accel <= 0.0 {
+        let left = speed * speed + 2.0 * accel * distance;
+        return match accel == 0.0 {
+            true if speed > 0.0 => distance / speed,
+            false if left > 0.0 => (left.sqrt() - speed) / accel,
+            _ => f64::INFINITY,
+        };
     }
     let max_speed = max_speed.max(speed);
     let to_top = (max_speed - speed) / accel;

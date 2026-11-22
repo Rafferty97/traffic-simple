@@ -163,10 +163,11 @@ impl DebugSink for JunctionTerms {
     }
 }
 
-/// Traffic on the major road, straight on or turning near-side, never stops
-/// or brakes harder than comfortably for a vehicle from the minor road.
+/// Traffic on the major road, straight on or turning near-side, never brakes
+/// harder than comfortably for a vehicle from the minor road. It may stop for
+/// one: a minor-road driver grows impatient waiting, and cuts in.
 #[test]
-fn major_road_traffic_never_stops_or_brakes_hard_for_minor_road_traffic() {
+fn major_road_traffic_never_brakes_hard_for_minor_road_traffic() {
     for (name, net) in scenarios() {
         let compiled = compile(&net).unwrap();
         // Each connector's first lane, and whether it is from the major road
@@ -205,9 +206,10 @@ fn major_road_traffic_never_stops_or_brakes_hard_for_minor_road_traffic() {
                 let theirs = on(&sim, other, &|l| minor.contains(&l));
                 let Some(v) = sim.get(id) else { continue };
                 let binding = v.accel() == accel;
-                let held = v.speed() < 0.1;
-                let braking = accel < -VehicleSpec::passenger_car().comfy_decel;
-                if mine && theirs && binding && (held || braking) {
+                // A little over: an impatient driver reckons it will brake as
+                // hard as is comfortable, and IDM overshoots that slightly.
+                let braking = accel < -1.1 * VehicleSpec::passenger_car().comfy_decel;
+                if mine && theirs && binding && braking {
                     hard.push((id, other, sim.time(), accel));
                 }
             }

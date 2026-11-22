@@ -257,6 +257,30 @@ pub(crate) fn decide(
 /// priority must be able to reach it at the soonest, in seconds.
 const GAP_MARGIN: f64 = 0.5;
 
+/// How long a driver of no assertiveness waits at rest at its line before it
+/// is fully impatient, in seconds; a fully assertive one, a third as long.
+/// SUMO's `timeToImpatience` is 180 s by default, which leaves ties between
+/// waiting drivers locked for minutes.
+const TIME_TO_IMPATIENCE: f64 = 30.0;
+
+/// How impatient `vehicle` is, from 0 to 1: nothing at first, growing the
+/// longer it has waited at rest at its line, and faster the more assertive it
+/// is, as SUMO's `impatience` grows with waiting time. An impatient driver
+/// reckons a priority vehicle not yet committed will give way to it, braking
+/// at that fraction of its comfortable deceleration, rather than coming on as
+/// fast as it can: so it comes to cut in front of traffic, stopped or not,
+/// which breaks the ties where each of two waits on traffic stuck behind the
+/// other. The junction keeps it safe, and a vehicle that hasn't committed can
+/// always stop for it at comfortable deceleration.
+fn impatience(state: &SimState, vehicle: &Vehicle) -> f64 {
+    let Some(since) = vehicle.stopped_at else {
+        return 0.0;
+    };
+    let waited = state.steps.saturating_sub(since) as f64 * state.config.step;
+    let rate = (1.0 + 2.0 * vehicle.spec.assertiveness) / TIME_TO_IMPATIENCE;
+    (waited * rate).min(1.0)
+}
+
 /// Whether `vehicle`, at a give-way or stop `barrier` on its `k`th lane, has a
 /// gap: on its lanes in that junction, up to the next barrier on its path, it
 /// can clear each conflict with a lane the barrier gives way to before any
@@ -290,6 +314,7 @@ fn has_gap(
         barriers.iter().find(|b| b.s > from).map(|b| (j, b.s))
     });
     let front = vehicle.lane_pos.s - spec.rear_axle + spec.length;
+    let impatience = impatience(state, vehicle);
     // The start of each lane of its path, from its front.
     let mut start = -front;
     for (j, &mine) in path.iter().enumerate() {
@@ -326,6 +351,7 @@ fn has_gap(
                     arrives,
                     headway,
                     queued_only,
+                    impatience,
                 };
                 let between = -network.lane(theirs).geometry().length();
                 let (from, ahead) = (conflict.theirs.end, conflict.theirs.start);
@@ -351,6 +377,8 @@ struct Way<'a> {
     /// Whether the barrier doesn't give way to the lane, so only vehicles that
     /// have committed count, and those only to go behind.
     queued_only: bool,
+    /// How impatient the yielding vehicle is (see [`impatience`]).
+    impatience: f64,
 }
 
 /// Whether there is a gap for the yielding vehicle among the vehicles with
@@ -452,11 +480,14 @@ fn clear(
         };
         let behind_margin = GAP_MARGIN + way.headway;
         // On a lane not given way to, only those that have committed count:
-        // queued, or past every barrier before the conflict, as one moving off
-        // an all-way stop line is; and those only to go behind.
+        // queued, or moving past every barrier before the conflict, as one
+        // moving off an all-way stop line is; and those only to go behind. At
+        // rest and not queued, it can stop, as one stuck behind a vehicle
+        // released from its line, having committed behind it, is.
         let committed = || {
             queued()
-                || k.is_some_and(|k| !holds_before(network, other, k, at))
+                || other.speed > 0.0
+                    && k.is_some_and(|k| !holds_before(network, other, k, at))
                     && !state.queues[way.junction.0 as usize].held.contains(&o.id)
         };
         if queued() || way.queued_only && committed() {
@@ -477,7 +508,10 @@ fn clear(
         }
         let limit = network.lane(way.theirs).speed_limit();
         let desired = other.spec.desired_speed(limit);
-        let reaches = reach_time(other.speed, other.spec.max_accel, desired, distance);
+        // As fast as it can, or, to an impatient driver, giving way to it.
+        let i = way.impatience;
+        let accel = (1.0 - i) * other.spec.max_accel - i * other.spec.comfy_decel;
+        let reaches = reach_time(other.speed, accel, desired, distance);
         // Whichever follows the other through the conflict keeps its time
         // headway behind it there, as the junction makes it, so needn't brake.
         let ahead_margin = GAP_MARGIN + other.spec.time_headway;
