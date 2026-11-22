@@ -245,6 +245,36 @@ struct App {
     /// Each vehicle's corners before the last step, to draw it between there and
     /// where it is now (see [`Poses`]).
     poses: Poses,
+    /// How long the last frames took to compute.
+    frame_times: FrameTimes,
+}
+
+/// How many frames the frame time is averaged over: half a second at 60 fps.
+const FRAMES_AVERAGED: usize = 30;
+
+/// The time each of the last [`FRAMES_AVERAGED`] frames took the app to
+/// compute, stepping the simulation and building what to draw, in seconds: not
+/// egui's tessellation and painting, which follow.
+#[derive(Default)]
+struct FrameTimes {
+    times: [f64; FRAMES_AVERAGED],
+    /// Where the next goes.
+    next: usize,
+    /// How many there are, up to [`FRAMES_AVERAGED`].
+    count: usize,
+}
+
+impl FrameTimes {
+    fn push(&mut self, seconds: f64) {
+        self.times[self.next] = seconds;
+        self.next = (self.next + 1) % FRAMES_AVERAGED;
+        self.count = (self.count + 1).min(FRAMES_AVERAGED);
+    }
+
+    /// The average, in seconds, or none before the first frame.
+    fn average(&self) -> Option<f64> {
+        (self.count > 0).then(|| self.times[..self.count].iter().sum::<f64>() / self.count as f64)
+    }
 }
 
 /// Where vehicles were before the simulation's last fixed step, so they can be
@@ -434,6 +464,7 @@ impl App {
             capture_status: None,
             harness: Harness::default(),
             poses: Poses::default(),
+            frame_times: FrameTimes::default(),
         };
         app.load(scenario);
         app
@@ -518,6 +549,19 @@ impl App {
                 (20.0, "20×"),
             ] {
                 ui.selectable_value(&mut self.speed, speed, label);
+            }
+            ui.separator();
+            // The average frame time, and the share of a 60 fps frame's budget.
+            if let Some(average) = self.frame_times.average() {
+                ui.monospace(format!(
+                    "frame {:.1} ms ({:.0}% of 1/60 s)",
+                    average * 1000.0,
+                    average * 60.0 * 100.0
+                ))
+                .on_hover_text(
+                    "The last 30 frames' average time stepping the simulation and building \
+                     what to draw, before egui tessellates and paints it",
+                );
             }
             ui.separator();
             let mut scenario = self.scenario;
@@ -822,6 +866,7 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let started = std::time::Instant::now();
         // Space toggles pause, unless a text field is being edited. Consumed
         // before the panels are drawn, so a focused button doesn't also click.
         let typing = ui.ctx().egui_wants_keyboard_input();
@@ -913,6 +958,7 @@ impl eframe::App for App {
                 self.pick(point, (PICK_TOLERANCE / scale) as f64);
             }
         });
+        self.frame_times.push(started.elapsed().as_secs_f64());
     }
 }
 
