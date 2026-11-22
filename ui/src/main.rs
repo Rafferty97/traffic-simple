@@ -245,33 +245,39 @@ struct App {
     /// Each vehicle's corners before the last step, to draw it between there and
     /// where it is now (see [`Poses`]).
     poses: Poses,
-    /// How long the last frames took to compute.
-    frame_times: FrameTimes,
+    /// How long the last fixed steps took to simulate.
+    step_times: StepTimes,
 }
 
-/// How many frames the frame time is averaged over: half a second at 60 fps.
-const FRAMES_AVERAGED: usize = 30;
+/// How many fixed steps the step time is averaged over: half a second of
+/// simulated time at 60 steps a second.
+const STEPS_AVERAGED: usize = 30;
 
-/// The time each of the last [`FRAMES_AVERAGED`] frames took the app to
-/// compute, stepping the simulation and building what to draw, in seconds: not
-/// egui's tessellation and painting, which follow.
+/// The time each of the last [`STEPS_AVERAGED`] fixed steps of the simulation
+/// took, in seconds, with the UI's recording debug sink. Several steps run in
+/// one rendered frame at higher speeds, each counting as one, so it doesn't
+/// vary with the speed; drawing doesn't count.
 #[derive(Default)]
-struct FrameTimes {
-    times: [f64; FRAMES_AVERAGED],
+struct StepTimes {
+    times: [f64; STEPS_AVERAGED],
     /// Where the next goes.
     next: usize,
-    /// How many there are, up to [`FRAMES_AVERAGED`].
+    /// How many there are, up to [`STEPS_AVERAGED`].
     count: usize,
 }
 
-impl FrameTimes {
-    fn push(&mut self, seconds: f64) {
-        self.times[self.next] = seconds;
-        self.next = (self.next + 1) % FRAMES_AVERAGED;
-        self.count = (self.count + 1).min(FRAMES_AVERAGED);
+impl StepTimes {
+    /// Records `steps` steps that took `seconds` together, each the average.
+    fn push(&mut self, steps: u32, seconds: f64) {
+        let each = seconds / f64::from(steps.max(1));
+        for _ in 0..(steps as usize).min(STEPS_AVERAGED) {
+            self.times[self.next] = each;
+            self.next = (self.next + 1) % STEPS_AVERAGED;
+            self.count = (self.count + 1).min(STEPS_AVERAGED);
+        }
     }
 
-    /// The average, in seconds, or none before the first frame.
+    /// The average, in seconds, or none before the first step.
     fn average(&self) -> Option<f64> {
         (self.count > 0).then(|| self.times[..self.count].iter().sum::<f64>() / self.count as f64)
     }
@@ -464,7 +470,7 @@ impl App {
             capture_status: None,
             harness: Harness::default(),
             poses: Poses::default(),
-            frame_times: FrameTimes::default(),
+            step_times: StepTimes::default(),
         };
         app.load(scenario);
         app
@@ -492,7 +498,10 @@ impl App {
 
     fn step(&mut self, dt: f64) {
         let before: HashMap<_, _> = self.sim.vehicles().map(|(id, v)| (id, v.corners())).collect();
-        if self.sim.step_variable(dt) > 0 {
+        let started = std::time::Instant::now();
+        let steps = self.sim.step_variable(dt);
+        if steps > 0 {
+            self.step_times.push(steps, started.elapsed().as_secs_f64());
             self.poses.before = before;
         }
         self.harness.step(&mut self.sim, self.selected, dt);
@@ -551,16 +560,17 @@ impl App {
                 ui.selectable_value(&mut self.speed, speed, label);
             }
             ui.separator();
-            // The average frame time, and the share of a 60 fps frame's budget.
-            if let Some(average) = self.frame_times.average() {
+            // The average time a fixed step takes, and its share of the 1/60 s
+            // it simulates.
+            if let Some(average) = self.step_times.average() {
                 ui.monospace(format!(
-                    "frame {:.1} ms ({:.0}% of 1/60 s)",
+                    "step {:.2} ms ({:.0}% of 1/60 s)",
                     average * 1000.0,
                     average * 60.0 * 100.0
                 ))
                 .on_hover_text(
-                    "The last 30 frames' average time stepping the simulation and building \
-                     what to draw, before egui tessellates and paints it",
+                    "The last 30 fixed steps' average time to simulate, with the UI's \
+                     debug recording, whatever the speed; drawing isn't counted",
                 );
             }
             ui.separator();
@@ -866,7 +876,6 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let started = std::time::Instant::now();
         // Space toggles pause, unless a text field is being edited. Consumed
         // before the panels are drawn, so a focused button doesn't also click.
         let typing = ui.ctx().egui_wants_keyboard_input();
@@ -958,7 +967,6 @@ impl eframe::App for App {
                 self.pick(point, (PICK_TOLERANCE / scale) as f64);
             }
         });
-        self.frame_times.push(started.elapsed().as_secs_f64());
     }
 }
 
