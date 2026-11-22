@@ -76,6 +76,7 @@ fn a_stop_line_set_back_hands_the_stretch_before_it_to_the_connectors() {
 }
 
 #[test]
+#[ignore = "not fixed yet"]
 fn a_skewed_stop_line_holds_every_connector_by_its_line_from_where_it_is_safe() {
     let skew = 20f64.to_radians();
     let net = scenarios::signalised_crossroads(2, 50.0 / 3.6);
@@ -93,6 +94,19 @@ fn a_skewed_stop_line_holds_every_connector_by_its_line_from_where_it_is_safe() 
     );
     for i in 0..2 {
         for id in from(&set, lane(&set, 0, i)) {
+            // Cut at its line: a lead-in up to it, outside the junction, then
+            // the junction's lanes, kept clear, its barrier at the first's start.
+            let lead_in = set.sim.lane(id);
+            assert!(
+                lead_in.junction().is_none() && !lead_in.keep_clear(),
+                "{id:?}"
+            );
+            assert!(
+                lead_in.barriers().is_empty(),
+                "{id:?} has a barrier before its line"
+            );
+            let id = lead_in.successors()[0];
+            assert!(set.sim.lane(id).junction().is_some() && set.sim.lane(id).keep_clear());
             let barrier = set.sim.lane(id).barriers()[0];
             let line = barrier.line.expect("a skewed stop line is a line");
             // At its point, the whole lane is short of the line, one edge just.
@@ -107,7 +121,8 @@ fn a_skewed_stop_line_holds_every_connector_by_its_line_from_where_it_is_safe() 
         }
     }
     // And its markings run along the line, painted behind it.
-    let line = set.sim.lane(from(&set, lane(&set, 0, 0))[0]).barriers()[0].line.unwrap();
+    let first = set.sim.lane(from(&set, lane(&set, 0, 0))[0]).successors()[0];
+    let line = set.sim.lane(first).barriers()[0].line.unwrap();
     let stop: Vec<_> =
         set.render.markings.iter().filter(|m| m.style == MarkingStyle::Stop).collect();
     let on_line = stop

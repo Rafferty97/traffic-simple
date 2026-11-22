@@ -183,32 +183,31 @@ pub fn compile(net: &RoadNetwork) -> Result<Compiled, CompileError> {
 /// at a time, each lane's conflicts its own (see `docs/DESIGN.md`, Barriers
 /// inside a junction). Its sweep is checked whole, in the first pass.
 fn compile_swept(net: &RoadNetwork) -> Result<(Compiled, Vec<CompileError>), CompileError> {
-    let (mut compiled, swept, mut waiting) = assemble(net, &[])?;
-    if !swept.is_empty() {
+    let (compiled, swept, waiting) = assemble(net, &[], false)?;
+    if !swept.is_empty() || net.intersections.is_empty() {
         return Ok((compiled, swept));
     }
-    // Split where each waits, and again further back while the lane before
-    // it still meets traffic it gives way to, as a sliver at its end can.
+    // Cut each connector at its stop line, where that isn't at its start, and
+    // where it waits; and again further back while the lane before where it
+    // waits still meets traffic it gives way to, as a sliver at its end can.
     let mut splits: Vec<Vec<Option<f64>>> =
         compiled.connectors.iter().map(|ids| vec![None; ids.len()]).collect();
+    let mut waiting = waiting;
     for _ in 0..SPLIT_PASSES {
-        if waiting.is_empty() {
-            return Ok((compiled, swept));
-        }
         for (k, c, at) in waiting {
             if at <= SPLIT_MARGIN {
                 return Err(CompileError::Waiting { intersection: k, connection: c });
             }
             splits[k][c] = Some(at);
         }
-        (compiled, _, waiting) = assemble(net, &splits)?;
-    }
-    match waiting.first() {
-        None => Ok((compiled, swept)),
-        Some(&(intersection, connection, _)) => {
-            Err(CompileError::Waiting { intersection, connection })
+        let compiled;
+        (compiled, _, waiting) = assemble(net, &splits, true)?;
+        if waiting.is_empty() {
+            return Ok((compiled, swept));
         }
     }
+    let (intersection, connection, _) = waiting[0];
+    Err(CompileError::Waiting { intersection, connection })
 }
 
 /// How many times [`compile_swept`] splits a connector again before giving up.
@@ -222,13 +221,17 @@ const SPLIT_SNAP: f64 = 0.05;
 const SPLIT_MARGIN: f64 = 0.01;
 
 /// [`compile_swept`]'s passes: each connector split where `splits` says, if it
-/// says, and checked for its sweep if none is. With it, each connector that
+/// says, and, with `lead_ins`, at its stop line, where that isn't at its start:
+/// the lane up to the line, its lead-in, is no part of the junction, and the
+/// junction's lanes after it are kept clear. Checked for its sweep if neither
+/// is, along its whole length. With it, each connector that
 /// should be split where it waits, further back if it is already, by
 /// intersection, connection and how far along it.
 #[allow(clippy::type_complexity)]
 fn assemble(
     net: &RoadNetwork,
     splits: &[Vec<Option<f64>>],
+    lead_ins: bool,
 ) -> Result<(Compiled, Vec<CompileError>, Vec<(usize, usize, f64)>), CompileError> {
     let mut lanes: Vec<Lane> = Vec::new();
     let mut built: Vec<Built> = Vec::new();
@@ -310,8 +313,10 @@ fn assemble(
     }
 
     let mut connectors = Vec::new();
-    // Each connection's lanes, more than one where it is split.
+    // Each connection's lanes in its junction, more than one where it is split;
+    // and how far along it the first of them starts, after any lead-in.
     let mut pieces = Vec::new();
+    let mut lead_lengths: Vec<Vec<f64>> = Vec::new();
     let mut turns = Vec::new();
     let mut stops = Vec::new();
     let mut bodies = Vec::new();
@@ -319,6 +324,7 @@ fn assemble(
     for (k, intersection) in net.intersections.iter().enumerate() {
         let mut ids = Vec::new();
         let mut parts = Vec::new();
+        let mut leads = Vec::new();
         let mut ways = Vec::new();
         let mut lines = Vec::new();
         for (c, &(from, to)) in intersection.connections.iter().enumerate() {
@@ -366,12 +372,20 @@ fn assemble(
             let limit = net.roads[from.road.0].speed_limit.min(net.roads[to.road.0].speed_limit);
             let what = || format!("intersection {k} connection {c}");
             let limit = turn_limit(&connector.points, limit);
-            let split = splits.get(k).and_then(|s| s[c]);
+            // Cut at its stop line, then where it waits, each along the whole.
+            let line = lines.last().map_or(0.0, |&(s, _)| s);
+            let lead = (lead_ins && line > SPLIT_MARGIN).then_some(line);
+            let waits = splits.get(k).and_then(|s| s[c]);
+            let mut cut = Vec::new();
+            let (mut rest, mut done) = (connector, 0.0);
+            for at in [lead, waits].into_iter().flatten() {
+                let [before, after] = rest.split(at - done);
+                cut.push(before);
+                (rest, done) = (after, at);
+            }
+            cut.push(rest);
             let mut lanes_of = Vec::new();
-            for piece in match split {
-                Some(at) => connector.split(at).into(),
-                None => vec![connector],
-            } {
+            for piece in cut {
                 lanes.push(build(&piece, limit, what)?);
                 lanes_of.push(LaneId(built.len() as u32));
                 built.push(piece);
@@ -379,12 +393,21 @@ fn assemble(
             let ends = [lane_id(from)].into_iter().chain(lanes_of.iter().copied());
             links.extend(ends.zip(lanes_of.iter().copied().chain([lane_id(to)])));
             ids.push(lanes_of[0]);
+            // Its stop line now at the start of its first lane in the junction.
+            if let Some(lead) = lead {
+                lanes_of.remove(0);
+                lines.last_mut().expect("its stop line").0 = 0.0;
+                leads.push(lead);
+            } else {
+                leads.push(0.0);
+            }
             parts.push(lanes_of);
         }
         connectors.push(ids);
         pieces.push(parts);
         turns.push(ways);
         stops.push(lines);
+        lead_lengths.push(leads);
     }
 
     let mut sim = SimNetwork::new(lanes);
@@ -440,6 +463,9 @@ fn assemble(
         if !ids.is_empty() {
             sim.add_junction(&ids);
         }
+        for &id in &ids {
+            sim.set_keep_clear(id, true);
+        }
     }
     let mut waiting = Vec::new();
     for (k, intersection) in net.intersections.iter().enumerate() {
@@ -453,7 +479,9 @@ fn assemble(
                 &stops[k],
                 phases,
             );
-            waiting.extend(waits.into_iter().map(|(c, at)| (k, c, at)));
+            // Along the whole connector, its lead-in too.
+            let lead = &lead_lengths[k];
+            waiting.extend(waits.into_iter().map(|(c, at)| (k, c, at + lead[c])));
         }
         if intersection.control == Control::AllWayStop {
             add_all_way_stop(&mut sim, &pieces[k], &stops[k]);

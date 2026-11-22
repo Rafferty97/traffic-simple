@@ -465,39 +465,47 @@ fn conflict_start(network: &SimNetwork, lane: LaneId) -> Option<f64> {
     conflicts.map(|c| c.mine.start).reduce(f64::min)
 }
 
-/// How far a vehicle's front is from the start of the first conflict on its
-/// path in a junction, negative once past it, if its path has one there.
-fn conflict_distance(network: &SimNetwork, junction: JunctionId, vehicle: &Vehicle) -> Option<f64> {
+/// How far a vehicle's front is from where it commits to a junction, negative
+/// once past it, if its path has such a point there: the start of the first
+/// of the junction's lanes on its path that is to be kept clear, or the start
+/// of the first conflict, whichever comes first.
+fn commit_distance(network: &SimNetwork, junction: JunctionId, vehicle: &Vehicle) -> Option<f64> {
     let front = vehicle.lane_pos.s - vehicle.spec.rear_axle + vehicle.spec.length;
     // From its front to the start of each lane on its path.
     let mut start = -front;
     for &lane in &vehicle.path {
-        if network.lane(lane).junction() == Some(junction)
-            && let Some(conflict) = conflict_start(network, lane)
-        {
-            return Some(start + conflict);
+        let l = network.lane(lane);
+        if l.junction() == Some(junction) {
+            if l.keep_clear() {
+                return Some(start);
+            }
+            if let Some(conflict) = conflict_start(network, lane) {
+                return Some(start + conflict);
+            }
         }
-        start += network.lane(lane).geometry().length();
+        start += l.geometry().length();
     }
     None
 }
 
 /// Whether a vehicle approaching a junction must commit there: it can no
-/// longer stop, braking at `SAFE_BRAKING`, before the first conflict on its
-/// path in the junction, or its front is past the start of it already. One
-/// with no conflict on its path never needs to.
+/// longer stop, braking at `SAFE_BRAKING`, before the first of the junction's
+/// lanes on its path to be kept clear, or before its first conflict there,
+/// or its front is past that already (see [`commit_distance`]). So a vehicle
+/// inside the junction, past its stop line, is always in the queue, never
+/// unseen. One with neither on its path never needs to.
 ///
 /// Vehicles at the front of the ways in already slow for committed vehicles in
 /// their way, so committing late costs no harder braking, and keeps the order
-/// vehicles commit in close to the order they reach their conflicts.
+/// vehicles commit in close to the order they reach the junction.
 fn must_commit(network: &SimNetwork, junction: JunctionId, vehicle: &Vehicle) -> bool {
-    conflict_distance(network, junction, vehicle)
+    commit_distance(network, junction, vehicle)
         .is_some_and(|distance| distance <= stopping_distance(vehicle))
 }
 
 /// Whether the vehicle committed at `index` in a junction's committed list may
-/// be released: it could now stop, at `SAFE_BRAKING`, a car length short of its
-/// conflict, so it plainly can stop, and no vehicle that committed after it is
+/// be released: it could now stop, at `SAFE_BRAKING`, a car length short of
+/// where it commits (see [`commit_distance`]), so it plainly can stop, and no vehicle that committed after it is
 /// behind it on its way in. The car length is the hysteresis against
 /// [`must_commit`], and keeps a vehicle held at the line committed.
 ///
@@ -516,7 +524,7 @@ fn may_release(
 ) -> bool {
     let id = committed[index].id;
     let vehicle = &vehicles[id];
-    let Some(distance) = conflict_distance(network, junction, vehicle) else {
+    let Some(distance) = commit_distance(network, junction, vehicle) else {
         return false;
     };
     if stopping_distance(vehicle) > distance - vehicle.spec.length {

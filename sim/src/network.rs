@@ -133,6 +133,10 @@ pub struct Lane {
     /// `docs/DESIGN.md`, Gap acceptance and priority).
     #[cfg_attr(feature = "serde", serde(default))]
     priority: u8,
+    /// Whether it is to be kept clear: a vehicle that can no longer stop before
+    /// it is committed to its junction (see `docs/DESIGN.md`, Committing).
+    #[cfg_attr(feature = "serde", serde(default))]
+    keep_clear: bool,
 }
 
 impl Lane {
@@ -169,6 +173,7 @@ impl Lane {
             leaving: None,
             barriers: Vec::new(),
             priority: 0,
+            keep_clear: false,
         })
     }
 
@@ -230,6 +235,11 @@ impl Lane {
     /// Its priority level in its junction, the higher going first.
     pub fn priority(&self) -> u8 {
         self.priority
+    }
+
+    /// Whether it is to be kept clear.
+    pub fn keep_clear(&self) -> bool {
+        self.keep_clear
     }
 
     /// The junction this lane belongs to, if any.
@@ -427,6 +437,12 @@ impl SimNetwork {
     /// Sets `lane`'s priority level in its junction.
     pub fn set_priority(&mut self, lane: LaneId, priority: u8) {
         self.lanes[lane.0 as usize].priority = priority;
+    }
+
+    /// Marks a lane to be kept clear, or not: a vehicle that can no longer stop
+    /// before it is committed to its junction.
+    pub fn set_keep_clear(&mut self, lane: LaneId, keep_clear: bool) {
+        self.lanes[lane.0 as usize].keep_clear = keep_clear;
     }
 
     /// Adds a signal plan, returning the id of its first movement: the rest
@@ -658,10 +674,10 @@ impl SimNetwork {
             let ends = [lane_a, lane_b].map(|l| l.geometry().length()..l.geometry().length());
             return Some((ConflictKind::Merge, overlap.unwrap_or(ends)));
         }
-        // A connector may be split into several lanes, one after another, so
-        // branches of a fork are traced back to the first lane of each in the
-        // junction.
-        let (first_a, first_b) = (self.first_in_junction(a), self.first_in_junction(b));
+        // A connector may be split into several lanes, one after another, its
+        // first perhaps a lead-in before the junction, so branches of a fork
+        // are traced back to the first lane of each.
+        let (first_a, first_b) = (self.first_of_connector(a), self.first_of_connector(b));
         let linked = first_a == first_b
             || shares(
                 self.lane(first_a).predecessors(),
@@ -703,6 +719,18 @@ impl SimNetwork {
     pub(crate) fn left_behind(&self, now: LaneId, lane: LaneId) -> bool {
         let junction = self.lane(lane).junction.map(|j| j.0);
         self.lane(now).junction.map(|j| j.0) != junction || self.leads_to(now, lane)
+    }
+
+    /// The first lane of the connector `lane` is part of: as
+    /// [`first_in_junction`](Self::first_in_junction), and then back through a
+    /// lead-in before the junction, a lane outside any junction whose only
+    /// successor is that one, if there is one.
+    fn first_of_connector(&self, lane: LaneId) -> LaneId {
+        let first = self.first_in_junction(lane);
+        match self.lane(first).predecessors()[..] {
+            [p] if self.lane(p).junction.is_none() && self.lane(p).successors() == [first] => p,
+            _ => first,
+        }
     }
 
     /// Whether `from` leads to `to` through that run of lanes: `to` comes
