@@ -110,6 +110,14 @@ pub fn signalised_oblique_crossroads(lanes: usize, speed_limit: f64, angle: f64)
     signalised(oblique_crossroads(lanes, speed_limit, angle))
 }
 
+/// As [`crossroads`], an all-way stop: every approach stops at its line, and
+/// vehicles go in the order they came to rest there.
+pub fn all_way_stop_crossroads(lanes: usize, speed_limit: f64) -> RoadNetwork {
+    let mut net = crossroads(lanes, speed_limit);
+    net.intersections[0].control = Control::AllWayStop;
+    net
+}
+
 /// `net`, a crossroads, with a fixed-time plan: its first road green for
 /// 30 s, every way, then its second.
 fn signalised(mut net: RoadNetwork) -> RoadNetwork {

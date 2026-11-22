@@ -235,6 +235,10 @@ pub enum Control {
     Uncontrolled,
     /// A fixed-time signal plan, its phases run in turn.
     Signals(Vec<SignalPhase>),
+    /// An all-way stop, as in the US: every approach stops at its line, and
+    /// vehicles go in the order they came to rest there, every movement of
+    /// the same priority.
+    AllWayStop,
 }
 
 /// One phase of an intersection's signal plan.

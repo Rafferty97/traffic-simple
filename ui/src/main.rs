@@ -149,13 +149,15 @@ enum Scenario {
     Signals(usize),
     /// As `Signals`, with two lanes each way, the roads crossing at 60°.
     ObliqueSignals,
+    /// As `Crossroads`, an all-way stop.
+    AllWayStop(usize),
     /// A freeway with an on-ramp and an off-ramp, the acceleration lane left as
     /// this says.
     Ramps(Leaving),
 }
 
 impl Scenario {
-    const ALL: [Scenario; 10] = [
+    const ALL: [Scenario; 12] = [
         Scenario::Ring,
         Scenario::Crossroads(1),
         Scenario::Crossroads(2),
@@ -164,6 +166,8 @@ impl Scenario {
         Scenario::Signals(2),
         Scenario::Signals(3),
         Scenario::ObliqueSignals,
+        Scenario::AllWayStop(1),
+        Scenario::AllWayStop(2),
         Scenario::Ramps(Leaving::Zipper),
         Scenario::Ramps(Leaving::Early),
     ];
@@ -179,6 +183,8 @@ impl Scenario {
             Scenario::Signals(2) => "signals-2",
             Scenario::Signals(_) => "signals-3",
             Scenario::ObliqueSignals => "oblique-signals",
+            Scenario::AllWayStop(1) => "all-way-1",
+            Scenario::AllWayStop(_) => "all-way-2",
             Scenario::Ramps(Leaving::Zipper) => "ramps-zipper",
             Scenario::Ramps(Leaving::Early) => "ramps-early",
         }
@@ -194,6 +200,8 @@ impl Scenario {
             Scenario::Signals(2) => "Signalised crossroads of 4-lane roads",
             Scenario::Signals(_) => "Signalised crossroads of 6-lane roads",
             Scenario::ObliqueSignals => "Signalised 4-lane roads crossing at 60°",
+            Scenario::AllWayStop(1) => "All-way stop of 2-lane roads",
+            Scenario::AllWayStop(_) => "All-way stop of 4-lane roads",
             Scenario::Ramps(Leaving::Zipper) => "Freeway with ramps, zipper merge",
             Scenario::Ramps(Leaving::Early) => "Freeway with ramps, early merge",
         }
@@ -207,6 +215,7 @@ impl Scenario {
             Scenario::ObliqueSignals => {
                 scenarios::signalised_oblique_crossroads(2, SPEED_LIMIT, 60f64.to_radians())
             }
+            Scenario::AllWayStop(lanes) => scenarios::all_way_stop_crossroads(lanes, SPEED_LIMIT),
             Scenario::Ramps(leaving) => scenarios::ramps_leaving(100.0 / 3.6, 80.0 / 3.6, leaving),
         }
     }

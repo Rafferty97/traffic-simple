@@ -273,6 +273,74 @@ fn crossroads_flooded_with_traffic_have_no_collisions() {
 }
 
 #[test]
+fn an_all_way_stop_holds_every_connector_at_its_line_at_one_level() {
+    use traffic_sim::BarrierKind;
+    for lanes in 1..=2 {
+        let compiled = compile(&scenarios::all_way_stop_crossroads(lanes, 14.0)).unwrap();
+        let sim = &compiled.sim;
+        let level = sim.lane(compiled.connectors[0][0]).priority();
+        for &connector in &compiled.connectors[0] {
+            let lane = sim.lane(connector);
+            let barriers = lane.barriers();
+            assert_eq!(barriers.len(), 1, "{connector:?} has {barriers:?}");
+            assert_eq!(barriers[0].kind, BarrierKind::AllWayStop);
+            assert_eq!(barriers[0].s, 0.0);
+            assert_eq!(lane.priority(), level, "{connector:?} is of another level");
+            // Not split: nobody waits inside.
+            assert!(sim.lane(lane.successors()[0]).junction().is_none());
+        }
+    }
+}
+
+#[test]
+fn all_way_stops_flooded_with_traffic_have_no_collisions() {
+    for lanes in 1..=2 {
+        flood(
+            &scenarios::all_way_stop_crossroads(lanes, 50.0 / 3.6),
+            150.0,
+        );
+    }
+}
+
+/// Busy all-way stops keep going: every vehicle comes to rest at its line,
+/// so they take their turns, and vehicles leave every minute.
+#[test]
+fn all_way_stops_keep_traffic_flowing() {
+    use traffic_sim::{LaneId, NoopSink, Placement, Route, Simulation, VehicleSpec};
+    for lanes in 1..=2 {
+        let compiled = compile(&scenarios::all_way_stop_crossroads(lanes, 50.0 / 3.6)).unwrap();
+        let mut sim = Simulation::new(compiled.sim, NoopSink);
+        let entries: Vec<LaneId> = sim
+            .network()
+            .lanes()
+            .filter(|(_, lane)| lane.predecessors().is_empty())
+            .map(|(id, _)| id)
+            .collect();
+        let (mut spawned, mut left_before) = (0, 0);
+        for step in 1..=(600 * 60) as u64 {
+            if step % 40 == 0 {
+                let lane = entries[(step / 40 * 7) as usize % entries.len()];
+                let speed = sim.network().lane(lane).speed_limit();
+                let at = Placement { lane, s: 5.0, speed, route: Route::random(step) };
+                if sim.try_insert(VehicleSpec::passenger_car(), at).is_ok() {
+                    spawned += 1;
+                }
+            }
+            sim.step();
+            if step % 3600 == 0 && step > 3600 {
+                let left = spawned - sim.vehicles().count();
+                assert!(
+                    left > left_before + 5,
+                    "{lanes} lanes: standstill in the minute to {:.0} s",
+                    sim.time()
+                );
+                left_before = left;
+            }
+        }
+    }
+}
+
+#[test]
 fn signalised_crossroads_flooded_with_traffic_have_no_collisions() {
     for lanes in 1..=2 {
         flood(&scenarios::signalised_crossroads(lanes, 50.0 / 3.6), 150.0);

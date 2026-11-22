@@ -455,6 +455,9 @@ fn assemble(
             );
             waiting.extend(waits.into_iter().map(|(c, at)| (k, c, at)));
         }
+        if intersection.control == Control::AllWayStop {
+            add_all_way_stop(&mut sim, &pieces[k], &stops[k]);
+        }
     }
     sim.validate().map_err(CompileError::Network)?;
     let swept = match splits.is_empty() {
@@ -672,6 +675,20 @@ fn add_signals(
         }
     }
     waiting
+}
+
+/// An all-way stop barrier at the stop line at the start of each of an
+/// intersection's connectors, and every connector of one priority level, so
+/// vehicles go in the order they came to rest at their lines (see
+/// `docs/DESIGN.md`, Barriers and signals).
+fn add_all_way_stop(sim: &mut SimNetwork, pieces: &[Vec<LaneId>], stops: &[(f64, Option<Line>)]) {
+    for (piece, &(s, line)) in pieces.iter().zip(stops) {
+        let kind = BarrierKind::AllWayStop;
+        sim.add_barrier(piece[0], Barrier { line, ..Barrier::new(s, kind) });
+        for &lane in piece {
+            sim.set_priority(lane, PRIORITY_ROAD + STRAIGHT_OR_NEAR);
+        }
+    }
 }
 
 /// The priority levels of a junction's connectors (see `docs/DESIGN.md`,
