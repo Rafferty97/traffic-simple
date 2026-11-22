@@ -155,13 +155,14 @@ enum Scenario {
 }
 
 impl Scenario {
-    const ALL: [Scenario; 9] = [
+    const ALL: [Scenario; 10] = [
         Scenario::Ring,
         Scenario::Crossroads(1),
         Scenario::Crossroads(2),
         Scenario::Crossroads(3),
         Scenario::Signals(1),
         Scenario::Signals(2),
+        Scenario::Signals(3),
         Scenario::ObliqueSignals,
         Scenario::Ramps(Leaving::Zipper),
         Scenario::Ramps(Leaving::Early),
@@ -175,7 +176,8 @@ impl Scenario {
             Scenario::Crossroads(2) => "crossroads-2",
             Scenario::Crossroads(_) => "crossroads-3",
             Scenario::Signals(1) => "signals-1",
-            Scenario::Signals(_) => "signals-2",
+            Scenario::Signals(2) => "signals-2",
+            Scenario::Signals(_) => "signals-3",
             Scenario::ObliqueSignals => "oblique-signals",
             Scenario::Ramps(Leaving::Zipper) => "ramps-zipper",
             Scenario::Ramps(Leaving::Early) => "ramps-early",
@@ -189,7 +191,8 @@ impl Scenario {
             Scenario::Crossroads(2) => "Crossroads of 4-lane roads",
             Scenario::Crossroads(_) => "Crossroads of 6-lane roads",
             Scenario::Signals(1) => "Signalised crossroads of 2-lane roads",
-            Scenario::Signals(_) => "Signalised crossroads of 4-lane roads",
+            Scenario::Signals(2) => "Signalised crossroads of 4-lane roads",
+            Scenario::Signals(_) => "Signalised crossroads of 6-lane roads",
             Scenario::ObliqueSignals => "Signalised 4-lane roads crossing at 60°",
             Scenario::Ramps(Leaving::Zipper) => "Freeway with ramps, zipper merge",
             Scenario::Ramps(Leaving::Early) => "Freeway with ramps, early merge",
