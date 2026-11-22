@@ -76,7 +76,6 @@ fn a_stop_line_set_back_hands_the_stretch_before_it_to_the_connectors() {
 }
 
 #[test]
-#[ignore = "not fixed yet"]
 fn a_skewed_stop_line_holds_every_connector_by_its_line_from_where_it_is_safe() {
     let skew = 20f64.to_radians();
     let net = scenarios::signalised_crossroads(2, 50.0 / 3.6);
@@ -94,22 +93,18 @@ fn a_skewed_stop_line_holds_every_connector_by_its_line_from_where_it_is_safe() 
     );
     for i in 0..2 {
         for id in from(&set, lane(&set, 0, i)) {
-            // Cut at its line, unless that is at its start: a lead-in up to it,
-            // outside the junction, then the junction's lanes, kept clear, its
-            // barrier at the first's start.
+            // Cut where its line crosses its centreline, unless that is its
+            // start: a lead-in up to it, outside the junction, its barrier on
+            // it, then the junction's lanes, kept clear.
             let first = set.sim.lane(id);
-            let id = match first.junction() {
-                Some(_) => id,
+            match first.junction() {
+                Some(_) => assert!(first.keep_clear(), "{id:?}"),
                 None => {
                     assert!(!first.keep_clear(), "{id:?}");
-                    assert!(
-                        first.barriers().is_empty(),
-                        "{id:?} has a barrier before its line"
-                    );
-                    first.successors()[0]
+                    let next = set.sim.lane(first.successors()[0]);
+                    assert!(next.junction().is_some() && next.keep_clear(), "{id:?}");
                 }
-            };
-            assert!(set.sim.lane(id).junction().is_some() && set.sim.lane(id).keep_clear());
+            }
             let barrier = set.sim.lane(id).barriers()[0];
             let line = barrier.line.expect("a skewed stop line is a line");
             // At its point, the whole lane is short of the line, one edge just.
@@ -124,12 +119,7 @@ fn a_skewed_stop_line_holds_every_connector_by_its_line_from_where_it_is_safe() 
         }
     }
     // And its markings run along the line, painted behind it.
-    // The barrier on the connector's first lane in the junction.
-    let lines = from(&set, lane(&set, 0, 0)).into_iter().flat_map(|id| {
-        [id].into_iter().chain(set.sim.lane(id).successors().iter().copied().take(1))
-    });
-    let mut lines = lines.filter_map(|id| set.sim.lane(id).barriers().first()?.line);
-    let line = lines.next().expect("a skewed line");
+    let line = set.sim.lane(from(&set, lane(&set, 0, 0))[0]).barriers()[0].line.unwrap();
     let stop: Vec<_> =
         set.render.markings.iter().filter(|m| m.style == MarkingStyle::Stop).collect();
     let on_line = stop

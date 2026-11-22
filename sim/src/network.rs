@@ -725,7 +725,7 @@ impl SimNetwork {
     /// [`first_in_junction`](Self::first_in_junction), and then back through a
     /// lead-in before the junction, a lane outside any junction whose only
     /// successor is that one, if there is one.
-    fn first_of_connector(&self, lane: LaneId) -> LaneId {
+    pub(crate) fn first_of_connector(&self, lane: LaneId) -> LaneId {
         let first = self.first_in_junction(lane);
         match self.lane(first).predecessors()[..] {
             [p] if self.lane(p).junction.is_none() && self.lane(p).successors() == [first] => p,

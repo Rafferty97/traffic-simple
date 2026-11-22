@@ -298,8 +298,9 @@ fn has_gap(
 /// clearing it, outranks the traffic now green, and every vehicle behind its
 /// red line is held there anyway; otherwise the level its junction gives it.
 pub(crate) fn level(network: &SimNetwork, lights: &[MovementLight], lane: LaneId) -> u8 {
-    // A connector split in pieces has its signal on its first.
-    let first = network.lane(network.first_in_junction(lane));
+    // A connector split in pieces has its signal on its first, its lead-in if it
+    // has one.
+    let first = network.lane(network.first_of_connector(lane));
     let lane = network.lane(lane);
     let red = first.barriers().iter().chain(lane.barriers()).any(|b| match b.kind {
         BarrierKind::Signal { movement } => lights[movement.0 as usize].light == Light::Red,
@@ -434,7 +435,10 @@ fn clear(
                 }
             }
         };
-        let held = k.is_some_and(|k| held_by_light(state, other, k, at));
+        // Held short of the conflict by a light, or by the junction, it will
+        // surely stop there.
+        let held = k.is_some_and(|k| held_by_light(state, other, k, at))
+            || state.queues[way.junction.0 as usize].held.contains(&o.id);
         if held || (way.equal && !committed()) {
             return Ok(());
         }
@@ -481,23 +485,43 @@ pub(crate) fn gap_to(vehicle: &Vehicle, barrier: &Barrier, along: f64) -> f64 {
     }
 }
 
-/// Whether `vehicle`, committed to `barrier`, `gap` ahead of its front, is
-/// released from it, to decide afresh: at a red light, it can still stop before
-/// the line without braking harder than [`acceleration::SAFE_BRAKING`], having
-/// been slowed short of it by traffic ahead or a junction, as a driver who could
-/// stop does; at a give-way line, it has come to rest short of the line, so the
-/// gap it took is stale. On amber, a committed vehicle goes on: one caught in
-/// the dilemma zone, or a turner waiting past its line for a gap, which comes
-/// as the oncoming traffic stops.
-pub(crate) fn released(state: &SimState, vehicle: &Vehicle, barrier: Barrier, gap: f64) -> bool {
+/// Whether `vehicle`, `id`, committed to `barrier` on `lane`, `gap` ahead of
+/// its front, is released from it, to decide afresh: at a red light, it can
+/// still stop before the line without braking harder than
+/// [`acceleration::SAFE_BRAKING`], having been slowed short of it by traffic
+/// ahead or a junction, as a driver who could stop does; at a give-way line,
+/// it has come to rest short of the line, so the gap it took is stale, unless
+/// its junction has queued it past the line already, so that others are queued
+/// behind it on that footing (see `docs/DESIGN.md`, Queue invariants). On amber,
+/// a committed vehicle goes on: one caught in the dilemma zone, or a turner
+/// waiting past its line for a gap, which comes as the oncoming traffic stops.
+pub(crate) fn released(
+    state: &SimState,
+    id: VehicleId,
+    vehicle: &Vehicle,
+    lane: LaneId,
+    barrier: Barrier,
+    gap: f64,
+) -> bool {
     let speed = vehicle.speed;
+    let queued_past = || {
+        let Some(junction) = state.network.lane(lane).junction() else {
+            return false;
+        };
+        let queue = &state.queues[junction.0 as usize].committed;
+        queue
+            .iter()
+            .rev()
+            .find(|e| e.id == id)
+            .is_some_and(|last| last.covers(vehicle, lane))
+    };
     gap > 0.0
         && match barrier.kind {
             BarrierKind::Signal { movement } => {
                 state.lights[movement.0 as usize].light == Light::Red
                     && speed * speed / (2.0 * acceleration::SAFE_BRAKING) <= gap
             }
-            BarrierKind::GiveWay | BarrierKind::AllWayStop => speed == 0.0,
+            BarrierKind::GiveWay | BarrierKind::AllWayStop => speed == 0.0 && !queued_past(),
         }
 }
 

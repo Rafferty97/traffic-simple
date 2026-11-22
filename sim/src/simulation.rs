@@ -449,6 +449,7 @@ impl<D: DebugSink> Simulation<D> {
         for queue in &mut self.state.queues {
             queue.committed.retain(|e| e.id != id);
             queue.fronts.retain(|&q| q != id);
+            queue.held.retain(|&q| q != id);
         }
         self.state.caps.retain(|&(c, _)| c != id);
         self.sink.record(|| DebugEvent::VehicleRemoved { vehicle: id });
@@ -1232,7 +1233,7 @@ fn longitudinal<D: DebugSink>(
             let barrier = state.network.lane(lane).barriers()[usize::from(index)];
             let gap = barrier::gap_to(vehicle, &barrier, gap);
             if rank < u16::from(committed) {
-                if !barrier::released(state, vehicle, barrier, gap) {
+                if !barrier::released(state, id, vehicle, lane, barrier, gap) {
                     return;
                 }
                 committed = rank as u8;
@@ -1446,6 +1447,15 @@ fn junction_terms<D: DebugSink>(
     for (id, ahead, stretch) in followers.chain(fronts) {
         let accel = junction_term(state, sink, junction, id, ahead, stretch);
         if accel < f64::INFINITY {
+            decisions.push(AccelUpdate::Junction { id, accel });
+        }
+    } // Those it holds out of its queue, short of their first conflicts.
+    for &id in &queue.held {
+        if let Some((accel, gap)) =
+            junction::hold_term(&state.network, junction, &state.vehicles[id])
+        {
+            let source = AccelSource::JunctionHold { gap };
+            sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel });
             decisions.push(AccelUpdate::Junction { id, accel });
         }
     }

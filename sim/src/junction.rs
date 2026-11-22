@@ -66,6 +66,12 @@ pub(crate) struct Queue {
     /// vehicles hold these back too (see [`junction_term`]). Those behind them
     /// follow them. Refilled every step.
     pub fronts: Vec<VehicleId>,
+    /// The vehicles that must commit but that the junction holds out of its
+    /// queue, short of their first conflicts, as they would be both blocked by
+    /// a vehicle queued only part of its way and block its next stretch (see
+    /// [`closes_cycle`]). Refilled every step.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub held: Vec<VehicleId>,
 }
 
 /// Brings the junctions' queues up to date after a step's motion and
@@ -113,10 +119,11 @@ pub(crate) fn update(
             }
         }
         queue.fronts.clear();
+        queue.held.clear();
         if queue.approaching.is_empty() {
             continue;
         }
-        let Queue { committed, approaching, fronts } = queue;
+        let Queue { committed, approaching, fronts, held } = queue;
         let mut scan = Scan {
             network,
             vehicles,
@@ -127,6 +134,7 @@ pub(crate) fn update(
             empty: scan_empty,
             kept: scan_kept,
             fronts,
+            held,
         };
         scan.empty.clear();
         scan.kept.clear();
@@ -286,6 +294,8 @@ struct Scan<'a> {
     /// The vehicles not yet committed the scans stopped at, headed onto the
     /// lane scanned.
     fronts: &'a mut Vec<VehicleId>,
+    /// The vehicles held out of the queue (see [`Queue::held`]).
+    held: &'a mut Vec<VehicleId>,
 }
 
 /// How many lanes a scan back from a junction's lane holds at once: that lane
@@ -317,19 +327,6 @@ fn commit_along(scan: &mut Scan, lane: LaneId, committed: &mut Vec<Entry>) {
     let Some(start) = conflict_start(scan.network, lane) else {
         return;
     };
-    // A vehicle waiting part way through, its body on the lane but not handed
-    // over for it, is in the way of everyone coming onto it.
-    let blocked = scan.occupants[lane.0 as usize].iter().any(|o| {
-        !o.is_ghost()
-            && committed
-                .iter()
-                .rev()
-                .find(|e| e.id == o.id)
-                .is_some_and(|last| !handed_over_for(last, &scan.vehicles[o.id], lane))
-    });
-    if blocked {
-        return;
-    }
     let mut way = ArrayVec::<LaneId, SCAN_DEPTH>::new();
     scan_back(scan, lane, lane, start, &mut way, committed);
 }
@@ -397,6 +394,21 @@ fn stops_on(
         }
         if vehicle.path.contains(&target) {
             if must_commit(scan.network, scan.junction, vehicle) {
+                // Held out of the queue, short of its conflicts, so nobody
+                // behind it commits before it either.
+                if closes_cycle(
+                    scan.network,
+                    scan.vehicles,
+                    scan.occupants,
+                    scan.junction,
+                    committed,
+                    vehicle,
+                ) {
+                    if !scan.held.contains(&o.id) {
+                        scan.held.push(o.id);
+                    }
+                    return true;
+                }
                 let until = handed_over(scan.network, vehicle, scan.junction);
                 committed.push(Entry { id: o.id, until });
                 continue;
@@ -421,6 +433,209 @@ fn stops_on(
         }
     }
     false
+}
+
+/// How long a queue [`closes_cycle`] reasons about: one longer is unheard of, and
+/// holds anyone it would otherwise check, to be safe.
+const QUEUE_DEPTH: usize = 256;
+
+/// Whether queuing `vehicle` at `junction`, after `committed`, would let its
+/// order hold a cycle: the fourth queue invariant (see `docs/DESIGN.md`, Queue
+/// invariants).
+///
+/// Each vehicle queued only part of its way, T, has a next stretch still to be
+/// queued, at the back. A vehicle is blocked by T if it would wait on T, its way
+/// crossing the stretch T is queued for where T hasn't cleared it, or following
+/// it, or would wait on a queued vehicle itself blocked by T; it blocks T if its
+/// way crosses T's next stretch, which will then wait on it. One blocked by `a`
+/// and blocking `b` makes `b`'s next stretch wait on `a`'s. It is queued unless
+/// that would close a cycle among the next stretches: unless `b` is `a`, or `a`'s
+/// next stretch already waits, through queued vehicles, on `b`'s.
+fn closes_cycle(
+    network: &SimNetwork,
+    vehicles: &SlotMap<VehicleId, Vehicle>,
+    occupants: &[Vec<Occupant>],
+    junction: JunctionId,
+    committed: &[Entry],
+    vehicle: &Vehicle,
+) -> bool {
+    // The vehicles queued only part of their way, by the entry they last have.
+    let mut partial = ArrayVec::<usize, 64>::new();
+    for (i, e) in committed.iter().enumerate() {
+        let last = !committed[i + 1..].iter().any(|later| later.id == e.id);
+        if e.until.is_some() && last && partial.try_push(i).is_err() {
+            // So many is unheard of: hold it, to be safe.
+            return true;
+        }
+    }
+    if partial.is_empty() {
+        return false;
+    }
+    let inside = |l: &&LaneId| network.lane(**l).junction() == Some(junction);
+    let entry_of = |p: usize| &committed[partial[p]];
+    // Which of them `v` blocks, as a mask by their place in `partial`.
+    let blocks = |v: &Vehicle| {
+        (0..partial.len()).fold(0u64, |mask, p| {
+            let e = entry_of(p);
+            let t = &vehicles[e.id];
+            let until = e.until.expect("queued only part of its way");
+            let Some(from) = t.path.iter().position(|&l| l == until) else {
+                return mask;
+            };
+            let crosses = v.path.iter().filter(inside).any(|&mine| {
+                t.path[from..]
+                    .iter()
+                    .filter(inside)
+                    .any(|&theirs| network.conflict_between(mine, theirs).is_some())
+            });
+            if crosses { mask | 1 << p } else { mask }
+        })
+    };
+    let waits = |v: &Vehicle, id: VehicleId, e: &Entry| {
+        waits_on(network, occupants, junction, v, id, &vehicles[id], e)
+    };
+    // Which of them each queued vehicle is blocked by, until no more are found.
+    if committed.len() > QUEUE_DEPTH {
+        return true;
+    }
+    let mut blocked: ArrayVec<u64, QUEUE_DEPTH> = committed
+        .iter()
+        .map(|w| {
+            let v = &vehicles[w.id];
+            (0..partial.len()).fold(0u64, |mask, p| {
+                let e = entry_of(p);
+                if e.id != w.id && waits(v, e.id, e) {
+                    mask | 1 << p
+                } else {
+                    mask
+                }
+            })
+        })
+        .collect();
+    loop {
+        let mut changed = false;
+        for a in 0..committed.len() {
+            let v = &vehicles[committed[a].id];
+            for b in 0..committed.len() {
+                let (w, u) = (&committed[a], &committed[b]);
+                if w.id == u.id || blocked[b] & !blocked[a] == 0 || !waits(v, u.id, u) {
+                    continue;
+                }
+                blocked[a] |= blocked[b];
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    // What each next stretch waits on: `b` on `a` for each queued vehicle
+    // blocked by `a` that blocks `b`; then through each other.
+    let mut waits_for = [0u64; 64];
+    for (w, &by) in committed.iter().zip(&blocked) {
+        let mask = blocks(&vehicles[w.id]);
+        for (b, slot) in waits_for.iter_mut().enumerate().take(partial.len()) {
+            if mask & 1 << b != 0 {
+                *slot |= by;
+            }
+        }
+    }
+    for k in 0..partial.len() {
+        for a in 0..partial.len() {
+            if waits_for[a] & 1 << k != 0 {
+                waits_for[a] |= waits_for[k];
+            }
+        }
+    }
+    // The vehicle's own: blocked by those it waits on, directly or through
+    // queued vehicles, and blocking those its way crosses.
+    let mut by = (0..partial.len()).fold(0u64, |mask, p| {
+        let e = entry_of(p);
+        if waits(vehicle, e.id, e) {
+            mask | 1 << p
+        } else {
+            mask
+        }
+    });
+    for (u, &mask) in committed.iter().zip(&blocked) {
+        if waits(vehicle, u.id, u) {
+            by |= mask;
+        }
+    }
+    let blocking = blocks(vehicle);
+    // `b` would wait on each `a` it is blocked by: a cycle if `a` is `b`, or
+    // `a` waits on `b` already.
+    (0..partial.len())
+        .any(|a| by & 1 << a != 0 && (blocking & 1 << a != 0 || waits_for[a] & blocking != 0))
+}
+
+/// Whether `follower` would wait on `leader`, `id`, queued as `entry`: its path
+/// running onto the lane `leader` is on, or onto one where `leader` has a record
+/// ahead of it, as a vehicle forking off just ahead has; or crossing a lane of
+/// `junction` that the entry covers where `leader` hasn't cleared it, its rear
+/// short of the conflict's end.
+fn waits_on(
+    network: &SimNetwork,
+    occupants: &[Vec<Occupant>],
+    junction: JunctionId,
+    follower: &Vehicle,
+    id: VehicleId,
+    leader: &Vehicle,
+    entry: &Entry,
+) -> bool {
+    if follower.path.contains(&leader.path[0]) {
+        return true;
+    }
+    let own_s = follower.lane_pos.s - follower.spec.rear_axle;
+    let ahead = follower.path.iter().enumerate().any(|(k, &lane)| {
+        occupants[lane.0 as usize]
+            .iter()
+            .any(|o| o.is_record_of(id) && !o.is_ghost() && (k > 0 || o.s() > own_s))
+    });
+    if ahead {
+        return true;
+    }
+    // The leader's rear, back from the start of each lane of its path.
+    let mut before = 0.0;
+    for &theirs in &leader.path {
+        let length = network.lane(theirs).geometry().length();
+        let rear = leader.lane_pos.s - leader.spec.rear_axle - before;
+        before += length;
+        if network.lane(theirs).junction() != Some(junction) || !entry.covers(leader, theirs) {
+            continue;
+        }
+        let crosses = follower.path.iter().any(|&mine| {
+            network.lane(mine).junction() == Some(junction)
+                && network.conflict_between(mine, theirs).is_some_and(|c| rear < c.theirs.end)
+        });
+        if crosses {
+            return true;
+        }
+    }
+    false
+}
+
+/// The term holding a vehicle the junction holds out of its queue short of
+/// the first conflict on its path there, as at a stationary vehicle at its
+/// start, and the gap to it; `None` once it is past that start, or has none.
+pub(crate) fn hold_term(
+    network: &SimNetwork,
+    junction: JunctionId,
+    vehicle: &Vehicle,
+) -> Option<(f64, f64)> {
+    let front = vehicle.lane_pos.s - vehicle.spec.rear_axle + vehicle.spec.length;
+    let mut start = -front;
+    for &lane in &vehicle.path {
+        if network.lane(lane).junction() == Some(junction)
+            && let Some(conflict) = conflict_start(network, lane)
+        {
+            let gap = start + conflict;
+            let term = acceleration::interaction(&vehicle.spec, vehicle.speed, gap, 0.0);
+            return Some((term, gap));
+        }
+        start += network.lane(lane).geometry().length();
+    }
+    None
 }
 
 /// Whether `vehicle`, its last entry in a junction's queue `last`, is handed

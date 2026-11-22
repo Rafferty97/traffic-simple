@@ -104,6 +104,10 @@ pub enum AccelSource {
     /// which it waits short of; at a merge, the gap to the other vehicle as if it
     /// were on the vehicle's own lane.
     Junction { id: VehicleId, kind: ConflictKind, gap: f64 },
+    /// Held out of a junction's queue, short of its first conflict there, with
+    /// the gap to it: it would be both blocked by a vehicle queued only part of
+    /// its way and block its next stretch.
+    JunctionHold { gap: f64 },
     /// The leader it would have in the lane it is indicating into, as it adjusts
     /// its speed to change into it: LMRS's synchronisation.
     Sync { id: VehicleId, gap: f64 },

@@ -11,10 +11,7 @@ use traffic_sim::{
 use crate::arms::{self, StopLine};
 use crate::reference::{self, Polyline};
 use crate::render;
-use crate::{
-    Compiled, Control, Direction, Intersection, LaneRef, Pose, RoadId, RoadNetwork, SignalPhase,
-    Turn,
-};
+use crate::{Compiled, Control, Direction, Intersection, LaneRef, Pose, RoadId, RoadNetwork, Turn};
 
 /// The sideways acceleration a connector's speed limit allows on its tightest
 /// bend, in m/s²: drivers accept more at the low speeds of a turn than at
@@ -317,6 +314,8 @@ fn assemble(
     // and how far along it the first of them starts, after any lead-in.
     let mut pieces = Vec::new();
     let mut lead_lengths: Vec<Vec<f64>> = Vec::new();
+    // Each connection's first lane, where its stop line's barrier goes.
+    let mut entries: Vec<Vec<LaneId>> = Vec::new();
     let mut turns = Vec::new();
     let mut stops = Vec::new();
     let mut bodies = Vec::new();
@@ -325,6 +324,7 @@ fn assemble(
         let mut ids = Vec::new();
         let mut parts = Vec::new();
         let mut leads = Vec::new();
+        let mut firsts = Vec::new();
         let mut ways = Vec::new();
         let mut lines = Vec::new();
         for (c, &(from, to)) in intersection.connections.iter().enumerate() {
@@ -367,14 +367,15 @@ fn assemble(
                 tail,
                 intersection.connector_width,
             );
-            lines.push(stop(net, &polylines, &ends, from));
+            let (safe, centre, line) = stop(net, &polylines, &ends, from);
+            lines.push((safe, line));
             bodies.push(body);
             let limit = net.roads[from.road.0].speed_limit.min(net.roads[to.road.0].speed_limit);
             let what = || format!("intersection {k} connection {c}");
             let limit = turn_limit(&connector.points, limit);
-            // Cut at its stop line, then where it waits, each along the whole.
-            let line = lines.last().map_or(0.0, |&(s, _)| s);
-            let lead = (lead_ins && line > SPLIT_MARGIN).then_some(line);
+            // Cut where its stop line crosses its centreline, which no vehicle
+            // stopping for it passes, then where it waits, each along the whole.
+            let lead = (lead_ins && centre > SPLIT_MARGIN).then_some(centre);
             let waits = splits.get(k).and_then(|s| s[c]);
             let mut cut = Vec::new();
             let (mut rest, mut done) = (connector, 0.0);
@@ -393,10 +394,11 @@ fn assemble(
             let ends = [lane_id(from)].into_iter().chain(lanes_of.iter().copied());
             links.extend(ends.zip(lanes_of.iter().copied().chain([lane_id(to)])));
             ids.push(lanes_of[0]);
-            // Its stop line now at the start of its first lane in the junction.
+            // Its barrier at its stop line, on its lead-in if it has one, and
+            // its lanes in the junction after it.
+            firsts.push(lanes_of[0]);
             if let Some(lead) = lead {
                 lanes_of.remove(0);
-                lines.last_mut().expect("its stop line").0 = 0.0;
                 leads.push(lead);
             } else {
                 leads.push(0.0);
@@ -408,6 +410,7 @@ fn assemble(
         turns.push(ways);
         stops.push(lines);
         lead_lengths.push(leads);
+        entries.push(firsts);
     }
 
     let mut sim = SimNetwork::new(lanes);
@@ -469,22 +472,22 @@ fn assemble(
     }
     let mut waiting = Vec::new();
     for (k, intersection) in net.intersections.iter().enumerate() {
-        if let Control::Signals(phases) = &intersection.control {
+        if let Control::Signals(_) = &intersection.control {
             let waits = add_signals(
                 net,
                 &mut sim,
                 intersection,
                 &pieces[k],
+                &entries[k],
                 &turns[k],
                 &stops[k],
-                phases,
             );
             // Along the whole connector, its lead-in too.
             let lead = &lead_lengths[k];
             waiting.extend(waits.into_iter().map(|(c, at)| (k, c, at + lead[c])));
         }
         if intersection.control == Control::AllWayStop {
-            add_all_way_stop(&mut sim, &pieces[k], &stops[k]);
+            add_all_way_stop(&mut sim, &pieces[k], &entries[k], &stops[k]);
         }
     }
     sim.validate().map_err(CompileError::Network)?;
@@ -591,10 +594,13 @@ fn add_signals(
     sim: &mut SimNetwork,
     intersection: &Intersection,
     pieces: &[Vec<LaneId>],
+    entries: &[LaneId],
     turns: &[Turn],
     stops: &[(f64, Option<Line>)],
-    phases: &[SignalPhase],
 ) -> Vec<(usize, f64)> {
+    let Control::Signals(phases) = &intersection.control else {
+        return Vec::new();
+    };
     let mut movements: Vec<(RoadId, Turn)> = Vec::new();
     let of: Vec<usize> = intersection
         .connections
@@ -652,10 +658,10 @@ fn add_signals(
         phases,
     };
     let first = sim.add_signal(plan);
-    for ((piece, &m), &(s, line)) in pieces.iter().zip(&of).zip(stops) {
+    for ((&entry, &m), &(s, line)) in entries.iter().zip(&of).zip(stops) {
         let movement = MovementId(first.0 + m as u32);
         let kind = BarrierKind::Signal { movement };
-        sim.add_barrier(piece[0], Barrier { line, ..Barrier::new(s, kind) });
+        sim.add_barrier(entry, Barrier { line, ..Barrier::new(s, kind) });
     }
     // Every road has priority at signals: a far-side turn gives way to the
     // traffic it crosses, waiting inside the junction at its first conflict with
@@ -709,10 +715,15 @@ fn add_signals(
 /// intersection's connectors, and every connector of one priority level, so
 /// vehicles go in the order they came to rest at their lines (see
 /// `docs/DESIGN.md`, Barriers and signals).
-fn add_all_way_stop(sim: &mut SimNetwork, pieces: &[Vec<LaneId>], stops: &[(f64, Option<Line>)]) {
-    for (piece, &(s, line)) in pieces.iter().zip(stops) {
+fn add_all_way_stop(
+    sim: &mut SimNetwork,
+    pieces: &[Vec<LaneId>],
+    entries: &[LaneId],
+    stops: &[(f64, Option<Line>)],
+) {
+    for ((piece, &entry), &(s, line)) in pieces.iter().zip(entries).zip(stops) {
         let kind = BarrierKind::AllWayStop;
-        sim.add_barrier(piece[0], Barrier { line, ..Barrier::new(s, kind) });
+        sim.add_barrier(entry, Barrier { line, ..Barrier::new(s, kind) });
         for &lane in piece {
             sim.set_priority(lane, PRIORITY_ROAD + STRAIGHT_OR_NEAR);
         }
@@ -867,7 +878,8 @@ fn nearest(net: &RoadNetwork, lane: LaneRef, turn: Turn) -> bool {
 }
 
 /// Where the stop line of `from`'s road end crosses a connector from it,
-/// along the connector: where no vehicle crossing it along the lane could reach
+/// along the connector, first where it is safe to stop, then where it crosses
+/// its centreline, which no vehicle stopping for it can pass: where no vehicle crossing it along the lane could reach
 /// it sooner, the crossing of its centreline set back by the lane's half-width
 /// times the tangent of the line's skew; with the line itself, if it is skewed.
 fn stop(
@@ -875,23 +887,25 @@ fn stop(
     polylines: &[Polyline],
     ends: &[[Option<(usize, crate::Arm)>; 2]],
     from: LaneRef,
-) -> (f64, Option<Line>) {
+) -> (f64, f64, Option<Line>) {
     let road = &net.roads[from.road.0];
     let lane = &road.lanes[from.lane];
     let at_end = lane.direction == Direction::Forward;
     let Some((_, arm)) = ends[from.road.0][at_end as usize] else {
-        return (0.0, None);
+        return (0.0, 0.0, None);
     };
     let line = &polylines[from.road.0];
     let total = *line.s.last().unwrap();
     let s_end = if at_end { total } else { 0.0 };
     let (offset, half) = (lane.offset.at(s_end), 0.5 * lane.width.at(s_end));
     let cut = arms::cuts(road, total, &arm, at_end)[0];
-    let along = cut - arms::back(&arm, at_end, offset) - half * arm.skew.tan().abs();
+    let centre = cut - arms::back(&arm, at_end, offset);
+    let along = centre - half * arm.skew.tan().abs();
     let stop = StopLine::new(line, &arm, at_end);
     let skewed = arm.skew != 0.0;
     (
         along.max(0.0),
+        centre.max(0.0),
         skewed.then_some(Line { point: stop.point, normal: stop.normal }),
     )
 }

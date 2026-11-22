@@ -209,7 +209,9 @@ impl Scenario {
             Scenario::AllWayStop(_) => "All-way stop of 4-lane roads",
             Scenario::Ramps(Leaving::Zipper) => "Freeway with ramps, zipper merge",
             Scenario::Ramps(Leaving::Early) => "Freeway with ramps, early merge",
-            Scenario::TurnerCycle => "Freeze frame: a turner and a car waiting on each other",
+            Scenario::TurnerCycle => {
+                "Freeze frame: a turner and a car that would wait on each other"
+            }
         }
     }
 
@@ -825,6 +827,10 @@ impl App {
                 AccelSource::Junction { kind: ConflictKind::Cross, gap, .. } => {
                     ("crossing after ".into(), format!(", gap {gap:.2} m"))
                 }
+                AccelSource::JunctionHold { gap } => (
+                    format!("held out of the junction's queue, gap {gap:.2} m"),
+                    String::new(),
+                ),
                 AccelSource::Junction { kind: ConflictKind::Merge, gap, .. } => {
                     ("merging after ".into(), format!(", gap {gap:.2} m"))
                 }
@@ -1676,8 +1682,10 @@ fn draw_lights(painter: &egui::Painter, sim: &Simulation<DebugState>) {
             // junction, each the only way on from the last.
             let (mut on, mut colour) = (lane, colour);
             while let [next] = on.successors()[..] {
+                // Into the junction from a lead-in, or on through it.
                 let next_lane = network.lane(next);
-                if next_lane.junction().is_none() || next_lane.junction() != on.junction() {
+                let on_through = on.junction().is_none_or(|j| next_lane.junction() == Some(j));
+                if next_lane.junction().is_none() || !on_through {
                     break;
                 }
                 let gives_way = next_lane.barriers().iter().any(|b| b.kind == BarrierKind::GiveWay);

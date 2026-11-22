@@ -423,8 +423,6 @@ fn a_signalised_crossroads_holds_each_connector_at_its_movements_light() {
 }
 
 #[test]
-#[ignore = "locks up at 512 s: a straight car stopped inside the junction, unqueued, \
-            is queued behind a turner from the next phase (see DESIGN.md, Junction lockups)"]
 fn at_signals_nobody_crosses_a_line_on_red_and_traffic_keeps_flowing() {
     use std::collections::HashMap;
     use traffic_sim::{

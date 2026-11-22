@@ -20,11 +20,19 @@ pub struct Frame {
 /// fourth invariant (see `docs/DESIGN.md`, Queue invariants): on a signalised
 /// crossroads of 4-lane roads, a right turner T waits at its waiting point
 /// for a gap, its light now red; a car X from the cross street, its light
-/// green, is placed inside the junction, behind T's first stretch, as if
-/// nothing had held it at its line. X's way crosses both T's waiting stretch
-/// and its turn: X waits for T's body to leave its way, and T, giving way to
-/// X, waits for X. T is selected.
+/// green, is placed just inside the junction, as if nothing had held it at
+/// its line. X's way crosses both T's waiting stretch and its turn, so it is
+/// both blocked by T and blocks its turn: queued after T's first stretch, it
+/// would wait for T's body to leave its way while T waited for it. The junction
+/// holds X out of its queue, short of T's way, instead, so T turns, and X
+/// follows. Captured as the oncoming car that held T at its waiting point is
+/// let go, T selected.
 pub fn turner_cycle() -> Frame {
+    turner_cycle_with_x().0
+}
+
+/// [`turner_cycle`], and X.
+fn turner_cycle_with_x() -> (Frame, VehicleId) {
     let compiled =
         compile(&scenarios::signalised_crossroads(2, 50.0 / 3.6)).expect("the crossroads compile");
     let net = &compiled.sim;
@@ -101,21 +109,20 @@ pub fn turner_cycle() -> Frame {
         sim.get(t).is_some_and(|v| v.lane() == t_first && v.speed() == 0.0)
     });
     // Once T's light is red and X's green, X just inside the junction, as if
-    // nothing had held it at its line, queued after T's first stretch. Then
-    // the oncoming car goes, and T and X are left waiting for each other.
+    // nothing had held it at its line. Then the oncoming car is let go.
     run_until(&mut sim, &|sim| {
         sim.light(t_movement).light == Light::Red && sim.light(x_movement).light == Light::Green
     });
-    sim.insert(car, at_rest(x_lane, inside));
+    let x = sim.insert(car, at_rest(x_lane, inside));
     for _ in 0..30 {
         sim.step();
     }
     sim.release(o);
-    run_until(&mut sim, &|sim| sim.get(o).is_none());
-    for _ in 0..(5 * 60) {
-        sim.step();
-    }
-    Frame { state: sim.state().clone(), render, selected: Some(t) }
+    sim.step();
+    (
+        Frame { state: sim.state().clone(), render, selected: Some(t) },
+        x,
+    )
 }
 
 #[cfg(test)]
@@ -124,34 +131,31 @@ mod test {
     use traffic_sim::JunctionId;
 
     #[test]
-    fn the_turner_and_the_car_wait_on_each_other_for_good() {
-        let frame = turner_cycle();
+    fn the_junction_holds_the_car_out_until_the_turner_goes_then_both_get_through() {
+        let (frame, x) = turner_cycle_with_x();
         let t = frame.selected.expect("T is selected");
         let mut sim = Simulation::restore(frame.state, NoopSink);
-        let queue = |sim: &Simulation| sim.queue(JunctionId(0)).to_vec();
-        let x = queue(&sim).iter().map(|e| e.id).find(|&id| id != t).expect("X is queued");
-        // T is queued for its first stretch only, X after it, right through.
-        let entries = queue(&sim);
-        assert_eq!(entries.len(), 2, "{entries:?}");
+        // T is queued for its first stretch only; X isn't queued, but held.
+        let queue = sim.queue(JunctionId(0)).to_vec();
         assert!(
-            entries[0].id == t && entries[0].until.is_some(),
-            "{entries:?}"
+            queue.iter().any(|e| e.id == t && e.until.is_some()),
+            "{queue:?}"
         );
-        assert!(
-            entries[1].id == x && entries[1].until.is_none(),
-            "{entries:?}"
-        );
-        // And neither ever moves again.
+        assert!(queue.iter().all(|e| e.id != x), "X is queued: {queue:?}");
+        // Both get through, T first.
+        let mut t_out = None;
         for _ in 0..(60 * 60) {
             sim.step();
-            for id in [t, x] {
-                assert_eq!(
-                    sim.get(id).unwrap().speed(),
-                    0.0,
-                    "{id:?} moved at {:.1} s",
-                    sim.time()
-                );
+            let out =
+                |id| sim.get(id).is_none_or(|v| sim.network().lane(v.lane()).junction().is_none());
+            if t_out.is_none() && out(t) {
+                t_out = Some(sim.time());
+                assert!(!out(x), "X got through before T");
+            }
+            if out(t) && out(x) {
+                return;
             }
         }
+        panic!("they never got through");
     }
 }
