@@ -10,6 +10,7 @@ use slotmap::SlotMap;
 use crate::barrier;
 use crate::debug::{AccelSource, DebugEvent, DebugSink};
 use crate::models::acceleration;
+use crate::models::signal::MovementLight;
 use crate::network::{Conflict, JunctionId, LaneId, SimNetwork};
 use crate::occupancy::Occupant;
 use crate::simulation::SimState;
@@ -79,7 +80,7 @@ pub(crate) fn update(
     scan_empty: &mut Vec<LaneId>,
     scan_kept: &mut Vec<LaneId>,
 ) {
-    let SimState { network, vehicles, occupants, queues, .. } = state;
+    let SimState { network, vehicles, occupants, queues, lights, .. } = state;
     // Some may have left the network since.
     for &id in arrivals.iter() {
         if let Some(vehicle) = vehicles.get(id) {
@@ -120,6 +121,7 @@ pub(crate) fn update(
             network,
             vehicles,
             occupants,
+            lights,
             junction,
             approaching,
             empty: scan_empty,
@@ -272,6 +274,8 @@ struct Scan<'a> {
     network: &'a SimNetwork,
     vehicles: &'a SlotMap<VehicleId, Vehicle>,
     occupants: &'a [Vec<Occupant>],
+    /// The signals' lights, for whether one holds a vehicle back.
+    lights: &'a [MovementLight],
     junction: JunctionId,
     /// The lanes vehicles approach the junction along, sorted.
     approaching: &'a [LaneId],
@@ -396,6 +400,14 @@ fn stops_on(
                 let until = handed_over(scan.network, vehicle, scan.junction);
                 committed.push(Entry { id: o.id, until });
                 continue;
+            }
+            // A red or amber light holds it short of the conflict, so it will
+            // surely stop there: the junction's terms can't matter to it, nor to
+            // those behind it.
+            let k = vehicle.path.iter().position(|&l| l == target).unwrap_or(0);
+            let at = conflict_start(scan.network, target).unwrap_or(0.0);
+            if barrier::held_by(scan.network, scan.lights, vehicle, k, at) {
+                return true;
             }
             if !scan.fronts.contains(&o.id) {
                 scan.fronts.push(o.id);

@@ -95,7 +95,17 @@ pub(crate) fn holds_before(network: &SimNetwork, vehicle: &Vehicle, k: usize, s:
 /// [`decide`], nothing commits to one then, so it will surely stop there. One at
 /// a green light, or a give-way line, it hasn't committed to may yet go.
 pub(crate) fn held_by_light(state: &SimState, vehicle: &Vehicle, k: usize, s: f64) -> bool {
-    let network = &state.network;
+    held_by(&state.network, &state.lights, vehicle, k, s)
+}
+
+/// [`held_by_light`], from the network and the lights alone.
+pub(crate) fn held_by(
+    network: &SimNetwork,
+    lights: &[MovementLight],
+    vehicle: &Vehicle,
+    k: usize,
+    s: f64,
+) -> bool {
     let mut rank = 0;
     for (j, &lane) in vehicle.path.iter().enumerate().take(k + 1) {
         let from = if j == 0 {
@@ -107,7 +117,7 @@ pub(crate) fn held_by_light(state: &SimState, vehicle: &Vehicle, k: usize, s: f6
         for barrier in network.lane(lane).barriers().iter().filter(|b| b.s > from && b.s <= to) {
             let holds = match barrier.kind {
                 BarrierKind::Signal { movement } => {
-                    state.lights[movement.0 as usize].light != Light::Green
+                    lights[movement.0 as usize].light != Light::Green
                 }
                 BarrierKind::GiveWay | BarrierKind::AllWayStop => false,
             };
