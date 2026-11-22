@@ -1,9 +1,12 @@
 //! Busy intersections for a quarter of an hour each, drivers varied, over many
 //! seeds: signalised crossroads, square and oblique, one to three lanes each
 //! way, turning on red or with a keep-clear zone; priority crossroads and
-//! T-junctions; and all-way stops. None may lock up, and the junction's queue
-//! invariants must hold throughout. Slow, so ignored by default:
-//! `cargo test --release --test stress -- --ignored`.
+//! T-junctions; all-way stops; and grids of signalised and priority crossroads
+//! joined by short roads. None may lock up, and the junction's queue invariants
+//! must hold throughout. A grid may gridlock, as a queue backs up from one
+//! crossroads through the next and round to the first, which the design allows:
+//! that is counted and printed, not failed. Slow, so ignored by default:
+//! `cargo test --release --test stress -- --ignored --nocapture`.
 
 use traffic_network::{RoadNetwork, Sign, compile, scenarios};
 use traffic_sim::{LaneId, NoopSink, Placement, Route, Simulation, VehicleSpec};
@@ -15,7 +18,14 @@ mod common;
 const STILL: f64 = 40.0;
 
 /// Runs `net` for 15 minutes, a vehicle tried every `every` steps at a random
-/// entry, its driver and route from `seed`: how many left, or what went wrong.
+/// entry, its driver and route from `seed`: how many times it gridlocked, or
+/// what went wrong.
+///
+/// A junction whose vehicles all stand still for [`STILL`] is locked up,
+/// unless meanwhile one of them has had nowhere to go: the lane it leaves the
+/// junction by has had a vehicle stopped too near its start to leave room for
+/// it. That is gridlock, a queue backed up from beyond, and counts as one; the
+/// junction is then watched afresh.
 fn run(net: &RoadNetwork, seed: u64, every: u64) -> Result<usize, String> {
     let compiled = compile(net).unwrap();
     let mut sim = Simulation::new(compiled.sim, NoopSink);
@@ -34,7 +44,11 @@ fn run(net: &RoadNetwork, seed: u64, every: u64) -> Result<usize, String> {
         z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
         ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
     };
-    let (mut spawned, mut still) = (0, 0);
+    let mut gridlocks = 0;
+    // How long each junction's vehicles have all stood still, in steps.
+    // and whether a queue has backed up into it from beyond meanwhile.
+    let mut still = vec![0u64; sim.network().junctions().count()];
+    let mut backed = vec![false; still.len()];
     for step in 0..(15 * 60 * 60) as u64 {
         if step % every == 0 {
             let lane = entries[(uniform() * entries.len() as f64) as usize];
@@ -49,9 +63,7 @@ fn run(net: &RoadNetwork, seed: u64, every: u64) -> Result<usize, String> {
             };
             let speed = sim.network().lane(lane).speed_limit() * car.speed_factor;
             let at = Placement { lane, s: 5.0, speed, route: Route::random(step ^ seed) };
-            if sim.try_insert(car, at).is_ok() {
-                spawned += 1;
-            }
+            let _ = sim.try_insert(car, at);
         }
         sim.step();
         if step % 6 != 0 {
@@ -60,31 +72,87 @@ fn run(net: &RoadNetwork, seed: u64, every: u64) -> Result<usize, String> {
         if let Some(what) = common::queue_violation(&sim) {
             return Err(format!("{what} at {:.1} s", sim.time()));
         }
+        // Each junction's vehicles, whether any is moving.
         let net = sim.network();
-        let inside = sim.vehicles().filter(|(_, v)| net.lane(v.lane()).junction().is_some());
-        let (mut any, mut moving) = (false, false);
-        for (_, v) in inside {
-            any = true;
-            moving |= v.speed() > 0.05;
+        let mut any = vec![false; still.len()];
+        let mut moving = vec![false; still.len()];
+        for (_, v) in sim.vehicles() {
+            if let Some(j) = net.lane(v.lane()).junction() {
+                any[j.0 as usize] = true;
+                moving[j.0 as usize] |= v.speed() > 0.05;
+            }
         }
-        still = if any && !moving { still + 6 } else { 0 };
-        if still as f64 / 60.0 > STILL {
-            return Err(format!("locked up at {:.0} s", sim.time()));
+        for j in 0..still.len() {
+            if !any[j] || moving[j] {
+                (still[j], backed[j]) = (0, false);
+                continue;
+            }
+            still[j] += 6;
+            backed[j] = backed[j] || backed_up(&sim, j);
+            if still[j] as f64 / 60.0 > STILL {
+                if !backed[j] {
+                    return Err(format!("junction {j} locked up at {:.0} s", sim.time()));
+                }
+                gridlocks += 1;
+                (still[j], backed[j]) = (0, false);
+            }
         }
     }
-    Ok(spawned - sim.vehicles().count())
+    Ok(gridlocks)
+}
+
+/// Whether a vehicle stopped in junction `j` has no room on the lane it leaves
+/// it by: a vehicle there is stopped short of a car's length and minimum gap
+/// from its start. Or one in its queue has stopped on its way out, its rear
+/// axle past the junction's lanes, so it waits on traffic beyond.
+fn backed_up(sim: &Simulation, j: usize) -> bool {
+    let net = sim.network();
+    let junction = traffic_sim::JunctionId(j as u32);
+    let stuck_leaving = sim.queue(junction).iter().any(|e| {
+        sim.get(e.id)
+            .is_some_and(|v| v.speed() <= 0.05 && net.lane(v.lane()).junction().is_none())
+    });
+    if stuck_leaving {
+        return true;
+    }
+    let inside = |l: LaneId| net.lane(l).junction().is_some_and(|k| k.0 as usize == j);
+    sim.vehicles()
+        .filter(|(_, v)| inside(v.lane()) && v.speed() <= 0.05)
+        .any(|(_, v)| {
+            let Some(&exit) = v.path().iter().find(|&&l| net.lane(l).junction().is_none()) else {
+                return false;
+            };
+            let room = v.spec().length + v.spec().min_gap;
+            sim.occupants(exit)
+                .iter()
+                .filter(|o| !o.is_ghost())
+                .any(|o| o.s() < room && sim.get(o.id).is_some_and(|w| w.speed() <= 0.05))
+        })
 }
 
 /// Runs each of `nets` over 20 seeds, a vehicle tried every 20 and every 40
 /// steps, asserting that none went wrong.
 fn stress(nets: &[(&str, RoadNetwork)]) {
+    stress_every(nets, &[20, 40]);
+}
+
+/// As [`stress`], a vehicle tried every so many steps as `every` says, and
+/// printing how many runs of each network gridlocked.
+fn stress_every(nets: &[(&str, RoadNetwork)], every: &[u64]) {
     let mut failures = Vec::new();
-    for seed in 1..=20u64 {
-        for (name, net) in nets {
-            for every in [20, 40] {
-                if let Err(what) = run(net, seed, every) {
-                    failures.push(format!("{name}, seed {seed}, every {every}: {what}"));
+    for (name, net) in nets {
+        for &every in every {
+            let mut gridlocked = 0;
+            for seed in 1..=20u64 {
+                match run(net, seed, every) {
+                    Ok(gridlocks) => gridlocked += usize::from(gridlocks > 0),
+                    Err(what) => {
+                        failures.push(format!("{name}, seed {seed}, every {every}: {what}"))
+                    }
                 }
+            }
+            if gridlocked > 0 {
+                println!("{name}, every {every}: {gridlocked} of 20 runs gridlocked");
             }
         }
     }
@@ -178,4 +246,16 @@ fn busy_all_way_stops_never_lock_up() {
             scenarios::all_way_stop_crossroads(2, SPEED),
         ),
     ]);
+}
+
+#[test]
+#[ignore = "slow: a few minutes in release"]
+fn busy_grids_never_lock_up() {
+    stress_every(
+        &[
+            ("grid, 1 lane", scenarios::grid(4, 4, 1, 100.0, SPEED)),
+            ("grid, 2 lanes", scenarios::grid(4, 4, 2, 100.0, SPEED)),
+        ],
+        &[20, 40, 80],
+    );
 }

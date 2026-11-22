@@ -63,18 +63,7 @@ fn junction(lanes: [usize; 2], speed_limit: f64, angle: f64, present: [bool; 4])
     let half = [0, 1].map(|r| across[1 - r] / angle.sin() + across[r] / angle.tan().abs() + 6.0);
     // Each arm runs in toward the centre, from the first road's east end, the
     // second's far end, the first's west end and the second's near end, so
-    // counterclockwise. Its forward lanes come in, on the left of its
-    // reference line, and its backward lanes go out, on the right; lane 0 of
-    // each is by the centre line.
-    let arm_lanes = |n: usize| -> Vec<RoadLane> {
-        (0..n)
-            .map(|i| RoadLane::new(WIDTH * (i as f64 + 0.5), WIDTH, Direction::Forward))
-            .chain(
-                (0..n)
-                    .map(|i| RoadLane::new(-WIDTH * (i as f64 + 0.5), WIDTH, Direction::Backward)),
-            )
-            .collect()
-    };
+    // counterclockwise, its forward lanes coming in.
     let from = [0.0, angle, PI, PI + angle];
     let arms: Vec<Option<RoadId>> = (0..4)
         .map(|k| {
@@ -84,40 +73,19 @@ fn junction(lanes: [usize; 2], speed_limit: f64, angle: f64, present: [bool; 4])
                 heading: from[k] + PI,
             };
             let pieces = vec![Piece::Line { length: ARM - half }];
-            let road = || Road::ending_at(end, pieces, arm_lanes(lanes_of(k)), speed_limit);
+            let road = || Road::ending_at(end, pieces, two_way(lanes_of(k)), speed_limit);
             present[k].then(|| net.add_road(road()))
         })
         .collect();
-    let inbound = |arm: usize, i: usize| arms[arm].map(|road| LaneRef { road, lane: i });
-    let outbound =
-        |arm: usize, i: usize| arms[arm].map(|road| LaneRef { road, lane: lanes_of(arm) + i });
+    let ways: [Option<Way>; 4] =
+        std::array::from_fn(|k| arms[k].map(|road| Way::at_end(road, lanes_of(k))));
     let mut intersection = Intersection {
         far_side_straight: RIGHT_TURN_STRAIGHT,
         ..Intersection::default()
     };
+    connect(&mut intersection, &ways);
     for (k, &road) in arms.iter().enumerate() {
         let Some(road) = road else { continue };
-        // Arms counterclockwise from this one: right, straight on, left.
-        let (right, straight, left) = ((k + 1) % 4, (k + 2) % 4, (k + 3) % 4);
-        let mut connect = |from: Option<LaneRef>, to: Option<LaneRef>| {
-            if let (Some(from), Some(to)) = (from, to) {
-                intersection.connections.push((from, to));
-            }
-        };
-        for i in 0..lanes_of(k) {
-            connect(inbound(k, i), outbound(straight, i));
-        }
-        // Turning, into every lane of the road it turns into, or, from a road
-        // with fewer lanes, into as many as it has, nearest the side it turns
-        // toward: by the kerb turning near-side, by the centre line far-side.
-        let outer = lanes_of(k) - 1;
-        let into = |arm: usize| lanes_of(arm).min(lanes_of(k));
-        for i in lanes_of(left) - into(left)..lanes_of(left) {
-            connect(inbound(k, outer), outbound(left, i));
-        }
-        for i in 0..into(right) {
-            connect(inbound(k, 0), outbound(right, i));
-        }
         // Its stop line along the other road: as far from square as the other
         // road is from crossing square, counterclockwise from the way in, and
         // back far enough that none of it is past the arm's end.
@@ -132,6 +100,76 @@ fn junction(lanes: [usize; 2], speed_limit: f64, angle: f64, present: [bool; 4])
     // Stop lines set back, and run outs, wherever turning vehicles sweep.
     crate::fit_arms(&mut net).expect("the crossroads compile once fitted");
     net
+}
+
+/// How a road meets a crossroads: its lanes coming in and going out, each
+/// from the centre line outward.
+struct Way {
+    inbound: Vec<LaneRef>,
+    outbound: Vec<LaneRef>,
+}
+
+impl Way {
+    /// A road of `n` lanes each way, laid out as [`two_way`] has it, meeting
+    /// the intersection at its end: its forward lanes come in.
+    fn at_end(road: RoadId, n: usize) -> Self {
+        let lane = |lane| LaneRef { road, lane };
+        Way {
+            inbound: (0..n).map(lane).collect(),
+            outbound: (n..2 * n).map(lane).collect(),
+        }
+    }
+
+    /// As [`Way::at_end`], meeting it at its start: its backward lanes come in.
+    fn at_start(road: RoadId, n: usize) -> Self {
+        let Way { inbound, outbound } = Way::at_end(road, n);
+        Way { inbound: outbound, outbound: inbound }
+    }
+}
+
+/// `n` lanes each way: forward lanes on the left of the reference line,
+/// backward on its right, lane 0 of each by it, as driving on the left has it.
+fn two_way(n: usize) -> Vec<RoadLane> {
+    (0..n)
+        .map(|i| RoadLane::new(WIDTH * (i as f64 + 0.5), WIDTH, Direction::Forward))
+        .chain((0..n).map(|i| RoadLane::new(-WIDTH * (i as f64 + 0.5), WIDTH, Direction::Backward)))
+        .collect()
+}
+
+/// Connects the ways into a crossroads, `ways` counterclockwise, any of them
+/// missing. Every lane coming in connects to the lane at the same place across
+/// it, straight on; only the leftmost turns left and only the rightmost turns
+/// right, into every lane of the road it turns into, or, from a road with
+/// fewer lanes, into as many as it has, nearest the side it turns toward: by
+/// the kerb turning near-side, by the centre line far-side.
+fn connect(intersection: &mut Intersection, ways: &[Option<Way>; 4]) {
+    for (k, way) in ways.iter().enumerate() {
+        let Some(way) = way else { continue };
+        // Ways counterclockwise from this one: right, straight on, left.
+        let (right, straight, left) = (
+            ways[(k + 1) % 4].as_ref(),
+            ways[(k + 2) % 4].as_ref(),
+            ways[(k + 3) % 4].as_ref(),
+        );
+        let n = way.inbound.len();
+        let mut push = |from: LaneRef, to: LaneRef| intersection.connections.push((from, to));
+        if let Some(straight) = straight {
+            for i in 0..n.min(straight.outbound.len()) {
+                push(way.inbound[i], straight.outbound[i]);
+            }
+        }
+        if let Some(left) = left {
+            let m = left.outbound.len();
+            for &to in &left.outbound[m - m.min(n)..] {
+                push(way.inbound[n - 1], to);
+            }
+        }
+        if let Some(right) = right {
+            for &to in &right.outbound[..right.outbound.len().min(n)] {
+                push(way.inbound[0], to);
+            }
+        }
+    }
 }
 
 /// As [`crossroads`], signalised: a fixed-time plan, the roads from the east
@@ -216,18 +254,134 @@ fn prioritise(net: &mut RoadNetwork, major: &[RoadId], minor: &[RoadId], sign: S
 /// `net`, a crossroads, with a fixed-time plan: its first road green for
 /// 30 s, every way, then its second.
 fn signalised(mut net: RoadNetwork) -> RoadNetwork {
-    let roads: Vec<RoadId> = (0..4).map(RoadId).collect();
+    net.intersections[0].control = signal_plan([0, 1, 2, 3].map(RoadId));
+    net
+}
+
+/// A crossroads' fixed-time plan, its ways' roads counterclockwise: the first
+/// and third green for 30 s, every way, then the second and fourth.
+fn signal_plan(roads: [RoadId; 4]) -> Control {
     let every_way = |arms: [usize; 2]| {
         arms.iter()
             .flat_map(|&a| [Turn::Straight, Turn::Left, Turn::Right].map(|t| (roads[a], t)))
             .collect()
     };
-    net.intersections[0].control = Control::Signals(vec![
+    Control::Signals(vec![
         SignalPhase { green: every_way([0, 2]), duration: 30.0 },
         SignalPhase { green: every_way([1, 3]), duration: 30.0 },
-    ]);
+    ])
+}
+
+/// A grid of `columns` by `rows` crossroads, `spacing` meters apart, joined
+/// by two-way roads of `lanes` lanes each way, driving on the left, with a
+/// road [`GRID_ARM`] long out from each crossroads on its edge. The
+/// crossroads alternate as a chessboard does: signalised as
+/// [`signalised_crossroads`] is, starting from the south-west corner, and
+/// controlled by priority, the east–west road having it and the north–south
+/// one giving way. Each is connected as [`crossroads`] is, its stop lines set
+/// back and its run outs as long as a lone crossroads of the same roads needs.
+pub fn grid(
+    columns: usize,
+    rows: usize,
+    lanes: usize,
+    spacing: f64,
+    speed_limit: f64,
+) -> RoadNetwork {
+    // From its centre to where each road meeting it ends, as a lone
+    // crossroads has it.
+    let half = lanes as f64 * WIDTH + 6.0;
+    assert!(spacing > 2.0 * half, "the crossroads overlap");
+    // Every crossroads is the same, so each fits its roads as a lone one does.
+    let fitted = crossroads(lanes, speed_limit).intersections[0].arms.iter().fold(
+        Arm::new(RoadId(0)),
+        |a, b| Arm {
+            stop_line: a.stop_line.max(b.stop_line),
+            run_out: a.run_out.max(b.run_out),
+            ..a
+        },
+    );
+    let mut net = RoadNetwork::default();
+    let centre = |i: usize, j: usize| Pose::new(i as f64 * spacing, j as f64 * spacing, 0.0).pos;
+    let road = |start: Pose, length: f64| Road {
+        start,
+        pieces: vec![Piece::Line { length }],
+        lanes: two_way(lanes),
+        speed_limit,
+        keep_clear: Vec::new(),
+    };
+    // The roads between neighbouring crossroads, running east from each with
+    // one to its east, and north from each with one to its north: so their
+    // forward lanes come in to the crossroads they end at.
+    let link = spacing - 2.0 * half;
+    let mut east = vec![vec![None; rows]; columns];
+    let mut north = vec![vec![None; rows]; columns];
+    for i in 0..columns {
+        for j in 0..rows {
+            let c = centre(i, j);
+            if i + 1 < columns {
+                let start = Pose::new(c.x + half, c.y, 0.0);
+                east[i][j] = Some(net.add_road(road(start, link)));
+            }
+            if j + 1 < rows {
+                let start = Pose::new(c.x, c.y + half, FRAC_PI_2);
+                north[i][j] = Some(net.add_road(road(start, link)));
+            }
+        }
+    }
+    for j in 0..rows {
+        for i in 0..columns {
+            // Its ways counterclockwise, from the east: each a road between it
+            // and a neighbour, or one out from the edge, ending at it.
+            let mut edge = |k: usize| {
+                let from = k as f64 * FRAC_PI_2;
+                let end = Pose {
+                    pos: centre(i, j) + half * Pose::new(0.0, 0.0, from).dir(),
+                    heading: from + PI,
+                };
+                let pieces = vec![Piece::Line { length: GRID_ARM }];
+                let road = net.add_road(Road::ending_at(end, pieces, two_way(lanes), speed_limit));
+                Way::at_end(road, lanes)
+            };
+            let ways = [
+                match i + 1 < columns {
+                    true => Way::at_start(east[i][j].unwrap(), lanes),
+                    false => edge(0),
+                },
+                match j + 1 < rows {
+                    true => Way::at_start(north[i][j].unwrap(), lanes),
+                    false => edge(1),
+                },
+                match i > 0 {
+                    true => Way::at_end(east[i - 1][j].unwrap(), lanes),
+                    false => edge(2),
+                },
+                match j > 0 {
+                    true => Way::at_end(north[i][j - 1].unwrap(), lanes),
+                    false => edge(3),
+                },
+            ];
+            let roads = ways.each_ref().map(|w| w.inbound[0].road);
+            let mut intersection = Intersection {
+                far_side_straight: RIGHT_TURN_STRAIGHT,
+                arms: roads.iter().map(|&road| Arm { road, ..fitted }).collect(),
+                ..Intersection::default()
+            };
+            connect(&mut intersection, &ways.map(Some));
+            intersection.control = match (i + j) % 2 {
+                0 => signal_plan(roads),
+                _ => Control::Priority {
+                    major: vec![roads[0], roads[2]],
+                    signs: vec![(roads[1], Sign::GiveWay), (roads[3], Sign::GiveWay)],
+                },
+            };
+            net.intersections.push(intersection);
+        }
+    }
     net
 }
+
+/// How far the roads out from the edge of a [`grid`] reach, in meters.
+pub const GRID_ARM: f64 = 200.0;
 
 /// A ring road of `lanes` concentric lanes, clockwise as roundabouts go when
 /// driving on the left, the innermost `circumference` meters round.

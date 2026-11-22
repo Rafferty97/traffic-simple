@@ -169,10 +169,13 @@ enum Scenario {
     /// A freeway with an on-ramp and an off-ramp, the acceleration lane left as
     /// this says.
     Ramps(Leaving),
+    /// A grid of 4 by 4 crossroads 100 m apart, of roads with two lanes each
+    /// way, signalised and controlled by priority in turn.
+    Grid,
 }
 
 impl Scenario {
-    const ALL: [Scenario; 24] = [
+    const ALL: [Scenario; 25] = [
         Scenario::Ring,
         Scenario::Crossroads(1),
         Scenario::Crossroads(2),
@@ -196,6 +199,7 @@ impl Scenario {
         Scenario::TJunction([2, 1], Sign::Stop),
         Scenario::Ramps(Leaving::Zipper),
         Scenario::Ramps(Leaving::Early),
+        Scenario::Grid,
         Scenario::TurnerCycle,
     ];
 
@@ -225,6 +229,7 @@ impl Scenario {
             Scenario::TJunction(_, Sign::Stop) => "t-stop-2x1",
             Scenario::Ramps(Leaving::Zipper) => "ramps-zipper",
             Scenario::Ramps(Leaving::Early) => "ramps-early",
+            Scenario::Grid => "grid",
             Scenario::TurnerCycle => "turner-cycle",
         }
     }
@@ -262,6 +267,7 @@ impl Scenario {
             }
             Scenario::Ramps(Leaving::Zipper) => "Freeway with ramps, zipper merge",
             Scenario::Ramps(Leaving::Early) => "Freeway with ramps, early merge",
+            Scenario::Grid => "Grid of 4 by 4 crossroads of 4-lane roads, signals and priority",
             Scenario::TurnerCycle => {
                 "Freeze frame: a turner and a car that would wait on each other"
             }
@@ -286,6 +292,7 @@ impl Scenario {
                 scenarios::priority_t_junction(lanes, SPEED_LIMIT, sign)
             }
             Scenario::Ramps(leaving) => scenarios::ramps_leaving(100.0 / 3.6, 80.0 / 3.6, leaving),
+            Scenario::Grid => scenarios::grid(4, 4, 2, 100.0, SPEED_LIMIT),
             Scenario::TurnerCycle => unreachable!("a freeze frame is restored, not built"),
         }
     }
