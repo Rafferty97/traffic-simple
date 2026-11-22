@@ -17,8 +17,10 @@ use crate::{
 };
 
 /// The sideways acceleration a connector's speed limit allows on its tightest
-/// bend, in m/s².
-const TURN_ACCEL: f64 = 2.0;
+/// bend, in m/s²: drivers accept more at the low speeds of a turn than at
+/// speed, as AASHTO's side friction factors for intersection curves, about
+/// 0.32 to 0.40 at 15 to 25 km/h, have it.
+const TURN_ACCEL: f64 = 3.5;
 /// The lowest speed limit a connector gets, however tight, in m/s.
 const MIN_TURN_SPEED: f64 = 3.0;
 
