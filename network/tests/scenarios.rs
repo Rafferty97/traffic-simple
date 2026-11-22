@@ -2,6 +2,8 @@
 
 use traffic_network::{compile, scenarios};
 
+mod common;
+
 #[test]
 fn a_crossroads_with_two_lanes_each_way_compiles() {
     let compiled = compile(&scenarios::crossroads(2, 14.0)).unwrap();
@@ -250,6 +252,9 @@ fn flood(net: &traffic_network::RoadNetwork, seconds: f64) {
             }
             if let Some(what) = uncovered(&sim) {
                 panic!("{what} with no record there at {:.2} s", sim.time());
+            }
+            if let Some(what) = common::queue_violation(&sim) {
+                panic!("{what} at {:.2} s", sim.time());
             }
             let bodies: Vec<_> = sim.vehicles().map(|(id, v)| (id, v.corners())).collect();
             for (i, &(a, body_a)) in bodies.iter().enumerate() {
