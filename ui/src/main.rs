@@ -1385,9 +1385,19 @@ fn fan_mesh(points: &[DVec2], color: Color32) -> Shape {
 
 /// Each signal barrier's lane, from the barrier on, in its movement's light's
 /// colour while green or amber, and nothing while red, as the old visualiser
-/// drew them: the ways through the junction open now.
+/// drew them: the ways through the junction open now. A connector split where
+/// it waits for a gap, a far-side turn's, goes on in white from its give-way
+/// line: open, but giving way.
 fn draw_lights(painter: &egui::Painter, sim: &Simulation<DebugState>) {
-    for (_, lane) in sim.network().lanes() {
+    let network = sim.network();
+    let line = |lane: &traffic_sim::Lane, from: f64, colour: Color32| {
+        let geometry = lane.geometry();
+        let ahead = geometry.vertex_s().zip(geometry.centerline());
+        let points: Vec<Pos2> =
+            ahead.filter(|&(s, _)| s >= from).map(|(_, p)| to_scene(p)).collect();
+        painter.add(Shape::line(points, Stroke::new(0.6, colour)));
+    };
+    for (_, lane) in network.lanes() {
         for barrier in lane.barriers() {
             let BarrierKind::Signal { movement } = barrier.kind else {
                 continue;
@@ -1397,11 +1407,22 @@ fn draw_lights(painter: &egui::Painter, sim: &Simulation<DebugState>) {
                 Light::Amber => Color32::from_rgba_unmultiplied(250, 190, 40, 170),
                 Light::Red => continue,
             };
-            let geometry = lane.geometry();
-            let ahead = geometry.vertex_s().zip(geometry.centerline());
-            let points: Vec<Pos2> =
-                ahead.filter(|&(s, _)| s >= barrier.s).map(|(_, p)| to_scene(p)).collect();
-            painter.add(Shape::line(points, Stroke::new(0.6, colour)));
+            line(lane, barrier.s, colour);
+            // On through the rest of its connector, the lanes after it in the
+            // junction, each the only way on from the last.
+            let (mut on, mut colour) = (lane, colour);
+            while let [next] = on.successors()[..] {
+                let next_lane = network.lane(next);
+                if next_lane.junction().is_none() || next_lane.junction() != on.junction() {
+                    break;
+                }
+                let gives_way = next_lane.barriers().iter().any(|b| b.kind == BarrierKind::GiveWay);
+                if gives_way {
+                    colour = Color32::from_rgba_unmultiplied(240, 240, 240, 170);
+                }
+                line(next_lane, 0.0, colour);
+                on = next_lane;
+            }
         }
     }
 }
