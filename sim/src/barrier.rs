@@ -91,9 +91,10 @@ pub(crate) fn holds_before(network: &SimNetwork, vehicle: &Vehicle, k: usize, s:
 }
 
 /// Whether a light holds `vehicle` short of the point `s` on its `k`th lane: a
-/// signal at or before it, that it hasn't committed to, on amber or red. Under
-/// [`decide`], nothing commits to one then, so it will surely stop there. One at
-/// a green light, or a give-way line, it hasn't committed to may yet go.
+/// signal at or before it, that it hasn't committed to, on amber, or on red
+/// unless it may turn on red. Under [`decide`], nothing commits to one then, so
+/// it will surely stop there. One at a green light, or a give-way line, or a
+/// red light it may turn on, it hasn't committed to may yet go.
 pub(crate) fn held_by_light(state: &SimState, vehicle: &Vehicle, k: usize, s: f64) -> bool {
     held_by(&state.network, &state.lights, vehicle, k, s)
 }
@@ -116,8 +117,13 @@ pub(crate) fn held_by(
         let to = if j == k { s } else { f64::INFINITY };
         for barrier in network.lane(lane).barriers().iter().filter(|b| b.s > from && b.s <= to) {
             let holds = match barrier.kind {
-                BarrierKind::Signal { movement } => {
-                    lights[movement.0 as usize].light != Light::Green
+                // Turning on red, it may go after stopping, as at a stop line.
+                BarrierKind::Signal { movement, on_red } => {
+                    match lights[movement.0 as usize].light {
+                        Light::Green => false,
+                        Light::Amber => true,
+                        Light::Red => on_red.is_none(),
+                    }
                 }
                 BarrierKind::GiveWay
                 | BarrierKind::Stop
@@ -206,13 +212,19 @@ pub(crate) fn decide(
         // Only on green, once it can no longer stop comfortably: never on amber
         // or red, so one that hasn't committed by then brakes, and one that
         // couldn't have stopped comfortably committed while it was green.
-        BarrierKind::Signal { movement } => match state.lights[movement.0 as usize].light {
+        BarrierKind::Signal { movement, on_red } => match state.lights[movement.0 as usize].light {
             Light::Green if can_stop(spec.comfy_decel) => match room() {
                 true => return (Decision::Pass, None),
                 false => false,
             },
             Light::Green => room(),
-            Light::Amber | Light::Red => false,
+            Light::Amber => false,
+            // Turning on red, a stop line giving way to the lanes it crosses.
+            Light::Red => on_red.is_some_and(|set| {
+                vehicle.stopped_at.is_some()
+                    && has_gap(&Barrier { yields: Some(set), ..barrier })
+                    && room()
+            }),
         },
         BarrierKind::GiveWay => has_gap(&barrier) && room(),
         BarrierKind::Stop => vehicle.stopped_at.is_some() && has_gap(&barrier) && room(),
@@ -510,7 +522,8 @@ pub(crate) fn gap_to(vehicle: &Vehicle, barrier: &Barrier, along: f64) -> f64 {
 /// its front, is released from it, to decide afresh: at a red light, it can
 /// still stop before the line without braking harder than
 /// [`acceleration::SAFE_BRAKING`], having been slowed short of it by traffic
-/// ahead or a junction, as a driver who could stop does; at a give-way or stop
+/// ahead or a junction, as a driver who could stop does, unless it may turn on
+/// red, when it is released as at a stop line; at a give-way or stop
 /// line, or a keep-clear zone, it has come to rest short of the line, so the
 /// gap it took, or the room it saw beyond the zone, is stale, unless its
 /// junction has queued it past the line already, so that others are queued
@@ -539,9 +552,15 @@ pub(crate) fn released(
     };
     gap > 0.0
         && match barrier.kind {
-            BarrierKind::Signal { movement } => {
+            // Turning on red, once it has come to rest, as at a stop line: a
+            // vehicle that has committed to turn moves off slowly enough to
+            // stop, so isn't released otherwise.
+            BarrierKind::Signal { movement, on_red } => {
                 state.lights[movement.0 as usize].light == Light::Red
-                    && speed * speed / (2.0 * acceleration::SAFE_BRAKING) <= gap
+                    && match on_red {
+                        None => speed * speed / (2.0 * acceleration::SAFE_BRAKING) <= gap,
+                        Some(_) => speed == 0.0 && !queued_past(),
+                    }
             }
             BarrierKind::GiveWay
             | BarrierKind::Stop

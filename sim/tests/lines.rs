@@ -41,7 +41,7 @@ fn red_line(skew: f64) -> (SimNetwork, Line) {
         normal: DVec2::new(-skew.cos(), skew.sin()),
     };
     let s = 20.0 - HALF_WIDTH * skew.tan().abs();
-    let kind = BarrierKind::Signal { movement };
+    let kind = BarrierKind::Signal { movement, on_red: None };
     net.add_barrier(
         LaneId(1),
         Barrier { line: Some(line), ..Barrier::new(s, kind) },

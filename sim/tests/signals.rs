@@ -52,7 +52,7 @@ fn crossroads_with(plan: SignalPlan) -> (SimNetwork, [MovementId; 2]) {
     let first = net.add_signal(plan);
     let movements = [first, MovementId(first.0 + 1)];
     for (lane, movement) in [(2, movements[0]), (3, movements[1])] {
-        let kind = BarrierKind::Signal { movement };
+        let kind = BarrierKind::Signal { movement, on_red: None };
         net.add_barrier(LaneId(lane), Barrier::new(0.0, kind));
     }
     (net, movements)
@@ -315,7 +315,7 @@ fn a_give_way_line_waits_for_traffic_with_priority_at_rest_at_a_green_light() {
         movements: vec![Movement { conflicts: 0, amber: 3.0, clearance: 0.0 }],
         phases: vec![Phase { green: 0b1, duration: 1e9 }],
     });
-    let kind = BarrierKind::Signal { movement: first };
+    let kind = BarrierKind::Signal { movement: first, on_red: None };
     net.add_barrier(LaneId(2), Barrier::new(0.0, kind));
     let mut sim = Simulation::new(net, NoopSink);
     sim.step();

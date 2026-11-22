@@ -308,8 +308,15 @@ impl Line {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BarrierKind {
     /// A signal for a movement: crossed once a vehicle can no longer stop
-    /// comfortably before it, while the light isn't red.
-    Signal { movement: MovementId },
+    /// comfortably before it, while the light is green. With `on_red`, the
+    /// lanes it gives way to turning on red, it is a stop line on red: crossed
+    /// once the vehicle has come to rest there and there is a gap in the
+    /// traffic on them.
+    Signal {
+        movement: MovementId,
+        #[cfg_attr(feature = "serde", serde(default))]
+        on_red: Option<YieldsId>,
+    },
     /// A give-way line: crossed once there is a gap in the traffic with
     /// priority.
     GiveWay,

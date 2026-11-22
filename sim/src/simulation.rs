@@ -18,7 +18,7 @@ use crate::models::acceleration;
 use crate::models::lane_change::{self, Decision};
 use crate::models::lateral;
 use crate::models::routing::Route;
-use crate::models::signal::{self, MovementLight, SignalState};
+use crate::models::signal::{self, Light, MovementLight, SignalState};
 use crate::network::{
     BarrierKind, JunctionId, LaneId, MAX_SUCCESSORS, MovementId, Side, SimNetwork,
 };
@@ -1245,10 +1245,17 @@ fn longitudinal<D: DebugSink>(
             let k = vehicle.path.iter().position(|&l| l == lane).unwrap_or(0);
             let (decision, yields_to) =
                 barrier::decide(state, through, id, vehicle, k, barrier, gap);
-            // At rest at a stop or all-way stop line, as the head on its way to
-            // it: it has arrived there. Not at rest further back, behind a
-            // vehicle headed elsewhere.
-            if matches!(barrier.kind, BarrierKind::Stop | BarrierKind::AllWayStop)
+            // At rest at a stop or all-way stop line, or a red light it may turn
+            // on, as the head on its way to it: it has arrived there. Not at rest
+            // further back, behind a vehicle headed elsewhere.
+            let stops = match barrier.kind {
+                BarrierKind::Stop | BarrierKind::AllWayStop => true,
+                BarrierKind::Signal { movement, on_red } => {
+                    on_red.is_some() && state.lights[movement.0 as usize].light == Light::Red
+                }
+                _ => false,
+            };
+            if stops
                 && vehicle.speed == 0.0
                 && gap <= vehicle.line_gap + barrier::AT_LINE
                 && vehicle.stopped_at.is_none()

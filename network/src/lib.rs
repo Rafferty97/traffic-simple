@@ -212,6 +212,11 @@ pub struct Intersection {
     /// How each road meets it, where that isn't simply at its end with a stop
     /// line square across it there (see [`Arm`]).
     pub arms: Vec<Arm>,
+    /// At signals, movements that may turn on red besides those the network
+    /// allows ([`RoadNetwork::turn_on_red`]), each the road it comes in from and
+    /// which way it goes: turning left on red from one one-way street into
+    /// another, say.
+    pub turn_on_red: Vec<(RoadId, Turn)>,
 }
 
 /// How a road meets an intersection: where its stop line is, and how far its
@@ -320,6 +325,10 @@ pub struct RoadNetwork {
     pub keep: Keep,
     /// In meters per second.
     pub keep_above: f64,
+    /// Whether near-side turns at signals may turn on red, coming to rest at
+    /// their line and then going through a gap, as in much of North America.
+    /// Not by default, as in Australia.
+    pub turn_on_red: bool,
     pub roads: Vec<Road>,
     /// Each joins the end of the first road to the start of the second, which
     /// should start where and as the first ends. A road may join itself.

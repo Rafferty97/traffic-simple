@@ -38,7 +38,7 @@ fn turner_cycle_with_x() -> (Frame, VehicleId) {
     let net = &compiled.sim;
     let movement = |lane: LaneId| {
         net.lane(lane).barriers().iter().find_map(|b| match b.kind {
-            BarrierKind::Signal { movement } => Some(movement),
+            BarrierKind::Signal { movement, .. } => Some(movement),
             _ => None,
         })
     };

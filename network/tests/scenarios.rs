@@ -316,7 +316,7 @@ fn a_signalised_crossroads_holds_each_connector_at_its_movements_light() {
             }
         }
         assert_eq!(barriers[0].s, 0.0);
-        let BarrierKind::Signal { movement } = barriers[0].kind else {
+        let BarrierKind::Signal { movement, .. } = barriers[0].kind else {
             panic!("{connector:?} has a {:?}", barriers[0].kind);
         };
         assert!((first.0..first.0 + 12).contains(&movement.0));
@@ -404,7 +404,7 @@ fn at_signals_nobody_crosses_a_line_on_red_and_traffic_keeps_flowing() {
             let Some(barrier) = network.lane(next).barriers().first() else {
                 continue;
             };
-            let BarrierKind::Signal { movement } = barrier.kind else {
+            let BarrierKind::Signal { movement, .. } = barrier.kind else {
                 continue;
             };
             let length = network.lane(v.lane()).geometry().length();
@@ -451,7 +451,7 @@ fn at_signals_straight_traffic_never_stops_or_brakes_hard_for_right_turners_on_i
     // Each connector's turn and movement.
     let mut way: HashMap<LaneId, (Turn, MovementId)> = HashMap::new();
     for (&c, &turn) in compiled.connectors[0].iter().zip(&compiled.turns[0]) {
-        let BarrierKind::Signal { movement } = compiled.sim.lane(c).barriers()[0].kind else {
+        let BarrierKind::Signal { movement, .. } = compiled.sim.lane(c).barriers()[0].kind else {
             panic!("{c:?} has no signal");
         };
         way.insert(c, (turn, movement));
@@ -521,7 +521,7 @@ fn at_signals_a_right_turner_at_its_line_turns_on_its_next_green() {
         .zip(&compiled.turns[0])
         .filter(|(_, t)| **t == Turn::Right)
         .map(|(&c, _)| match compiled.sim.lane(c).barriers()[0].kind {
-            BarrierKind::Signal { movement } => (c, movement),
+            BarrierKind::Signal { movement, .. } => (c, movement),
             kind => panic!("{c:?} starts with a {kind:?}"),
         })
         .collect();

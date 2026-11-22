@@ -722,10 +722,26 @@ fn add_signals(
     let waiting = add_far_side_waits(sim, pieces, &levels, |c, o| together(of[c], of[o]));
     // Each connector's signal at its stop line, giving way to the turners
     // waiting inside on movements never green with it whose next stretches
-    // cross its way.
+    // cross its way; and, if it may turn on red, giving way then to every lane
+    // its own lanes conflict with.
+    let on_red = |c: usize| {
+        let (from, turn) = (intersection.connections[c].0.road, turns[c]);
+        let near_side = turn != Turn::Straight && !turn.far_side(drives_on);
+        net.turn_on_red && near_side || intersection.turn_on_red.contains(&(from, turn))
+    };
     for (c, ((&entry, &m), &(s, line))) in entries.iter().zip(&of).zip(stops).enumerate() {
         let movement = MovementId(first.0 + m as u32);
-        let kind = BarrierKind::Signal { movement };
+        let crossed: Vec<LaneId> = pieces
+            .iter()
+            .enumerate()
+            .filter(|&(o, _)| o != c)
+            .flat_map(|(_, other)| other.iter().copied())
+            .filter(|&other| {
+                pieces[c].iter().any(|&mine| sim.conflict_between(mine, other).is_some())
+            })
+            .collect();
+        let on_red = on_red(c).then(|| sim.add_yields(&crossed));
+        let kind = BarrierKind::Signal { movement, on_red };
         let waiting_turners: Vec<LaneId> = pieces
             .iter()
             .enumerate()

@@ -152,6 +152,8 @@ enum Scenario {
     /// As `Signals`, with two lanes each way, and a keep-clear zone on the
     /// way in from the west.
     KeepClear,
+    /// As `Signals`, with two lanes each way, turning left on red.
+    TurnOnRed,
     /// As `Crossroads`, an all-way stop.
     AllWayStop(usize),
     /// As `Crossroads`, the east–west road with priority, the other with
@@ -169,7 +171,7 @@ enum Scenario {
 }
 
 impl Scenario {
-    const ALL: [Scenario; 19] = [
+    const ALL: [Scenario; 20] = [
         Scenario::Ring,
         Scenario::Crossroads(1),
         Scenario::Crossroads(2),
@@ -179,6 +181,7 @@ impl Scenario {
         Scenario::Signals(3),
         Scenario::ObliqueSignals,
         Scenario::KeepClear,
+        Scenario::TurnOnRed,
         Scenario::AllWayStop(1),
         Scenario::AllWayStop(2),
         Scenario::Priority(1, Sign::GiveWay),
@@ -203,6 +206,7 @@ impl Scenario {
             Scenario::Signals(_) => "signals-3",
             Scenario::ObliqueSignals => "oblique-signals",
             Scenario::KeepClear => "keep-clear",
+            Scenario::TurnOnRed => "turn-on-red",
             Scenario::AllWayStop(1) => "all-way-1",
             Scenario::AllWayStop(_) => "all-way-2",
             Scenario::Priority(1, Sign::GiveWay) => "priority-1",
@@ -227,6 +231,7 @@ impl Scenario {
             Scenario::Signals(_) => "Signalised crossroads of 6-lane roads",
             Scenario::ObliqueSignals => "Signalised 4-lane roads crossing at 60°",
             Scenario::KeepClear => "Signalised crossroads with a keep-clear zone",
+            Scenario::TurnOnRed => "Signalised crossroads, turning left on red",
             Scenario::AllWayStop(1) => "All-way stop of 2-lane roads",
             Scenario::AllWayStop(_) => "All-way stop of 4-lane roads",
             Scenario::Priority(1, Sign::GiveWay) => "Give-way crossroads of 2-lane roads",
@@ -251,6 +256,7 @@ impl Scenario {
                 scenarios::signalised_oblique_crossroads(2, SPEED_LIMIT, 60f64.to_radians())
             }
             Scenario::KeepClear => scenarios::signalised_crossroads_keep_clear(2, SPEED_LIMIT),
+            Scenario::TurnOnRed => scenarios::signalised_crossroads_turn_on_red(2, SPEED_LIMIT),
             Scenario::AllWayStop(lanes) => scenarios::all_way_stop_crossroads(lanes, SPEED_LIMIT),
             Scenario::Priority(lanes, sign) => {
                 scenarios::priority_crossroads(lanes, SPEED_LIMIT, sign)
@@ -1223,7 +1229,7 @@ fn draw_debug(
             let geometry = lane.geometry();
             for barrier in lane.barriers() {
                 let colour = match barrier.kind {
-                    BarrierKind::Signal { movement } => match sim.light(movement).light {
+                    BarrierKind::Signal { movement, .. } => match sim.light(movement).light {
                         Light::Green => LIGHT_GREEN,
                         Light::Amber => LIGHT_AMBER,
                         Light::Red => LIGHT_RED,
@@ -1702,7 +1708,7 @@ fn fan_mesh(points: &[DVec2], color: Color32) -> Shape {
 /// colour while green or amber, and nothing while red, as the old visualiser
 /// drew them: the ways through the junction open now. A connector split where
 /// it waits for a gap, a far-side turn's, goes on in white from its give-way
-/// line: open, but giving way.
+/// line: open, but giving way; and so does one that may turn on red, while red.
 fn draw_lights(painter: &egui::Painter, sim: &Simulation<DebugState>) {
     let network = sim.network();
     let line = |lane: &traffic_sim::Lane, from: f64, colour: Color32| {
@@ -1714,12 +1720,14 @@ fn draw_lights(painter: &egui::Painter, sim: &Simulation<DebugState>) {
     };
     for (_, lane) in network.lanes() {
         for barrier in lane.barriers() {
-            let BarrierKind::Signal { movement } = barrier.kind else {
+            let BarrierKind::Signal { movement, on_red } = barrier.kind else {
                 continue;
             };
+            let giving_way = Color32::from_rgba_unmultiplied(240, 240, 240, 170);
             let colour = match sim.light(movement).light {
                 Light::Green => Color32::from_rgba_unmultiplied(60, 220, 90, 150),
                 Light::Amber => Color32::from_rgba_unmultiplied(250, 190, 40, 170),
+                Light::Red if on_red.is_some() => giving_way,
                 Light::Red => continue,
             };
             line(lane, barrier.s, colour);
@@ -1735,7 +1743,7 @@ fn draw_lights(painter: &egui::Painter, sim: &Simulation<DebugState>) {
                 }
                 let gives_way = next_lane.barriers().iter().any(|b| b.kind == BarrierKind::GiveWay);
                 if gives_way {
-                    colour = Color32::from_rgba_unmultiplied(240, 240, 240, 170);
+                    colour = giving_way;
                 }
                 line(next_lane, 0.0, colour);
                 on = next_lane;

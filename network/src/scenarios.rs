@@ -128,6 +128,14 @@ pub fn signalised_crossroads(lanes: usize, speed_limit: f64) -> RoadNetwork {
     signalised(crossroads(lanes, speed_limit))
 }
 
+/// As [`signalised_crossroads`], with near-side turns allowed on red: each
+/// comes to rest at its line, then goes through a gap.
+pub fn signalised_crossroads_turn_on_red(lanes: usize, speed_limit: f64) -> RoadNetwork {
+    let mut net = signalised_crossroads(lanes, speed_limit);
+    net.turn_on_red = true;
+    net
+}
+
 /// How far back from the end of the west arm of
 /// [`signalised_crossroads_keep_clear`] its keep-clear zone starts and ends,
 /// in meters.
