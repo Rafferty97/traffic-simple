@@ -11,12 +11,16 @@ use crate::{
 
 const WIDTH: f64 = 3.5;
 
+/// How far each road of a crossroads reaches from its centre, in meters: room
+/// for long queues, and plenty of vehicles at once.
+const ARM: f64 = 300.0;
+
 /// How far right turns run straight on into a crossroads before turning, in
 /// meters, as drivers pull in to wait for a gap.
 const RIGHT_TURN_STRAIGHT: f64 = 3.0;
 
 /// Two two-way roads crossing at right angles, each with `lanes` lanes each
-/// way, 300 m long, driving on the left. Every lane coming in connects to the
+/// way, 600 m long, driving on the left. Every lane coming in connects to the
 /// lane at the same place across the junction, straight on; only the leftmost
 /// turns left and only the rightmost turns right, into every lane of the road
 /// it turns into, running 3 m straight on before it turns right. Its stop lines are set back, and its run outs as long, as
@@ -37,7 +41,7 @@ pub fn oblique_crossroads(lanes: usize, speed_limit: f64, angle: f64) -> RoadNet
     // The junction's half-width along each arm, from its centre to where the
     // arm ends: where its outermost lane clears the other road, and 6 m more.
     let half = across / angle.sin() + across / angle.tan().abs() + 6.0;
-    let arm_length = 150.0 - half;
+    let arm_length = ARM - half;
     // Each arm runs in toward the centre, from the first road's east end, the
     // second's far end, the first's west end and the second's near end, so
     // counterclockwise. Its forward lanes come in, on the left of its
