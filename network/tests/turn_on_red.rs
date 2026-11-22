@@ -158,3 +158,57 @@ fn a_crossroads_turning_on_red_flooded_with_traffic_has_no_collisions() {
         );
     }
 }
+
+/// Busy, traffic keeps flowing, and near-side turners do turn on red, through
+/// gaps in the traffic on its green.
+#[test]
+fn a_busy_crossroads_turning_on_red_keeps_flowing_and_turners_go_on_red() {
+    let compiled = compile(&scenarios::signalised_crossroads_turn_on_red(2, LIMIT)).unwrap();
+    // Each near-side connector, with its movement.
+    let near: Vec<(LaneId, MovementId)> = compiled.connectors[0]
+        .iter()
+        .zip(&compiled.turns[0])
+        .filter(|&(_, &t)| t == Turn::Left)
+        .map(|(&c, _)| match compiled.sim.lane(c).barriers()[0].kind {
+            BarrierKind::Signal { movement, .. } => (c, movement),
+            kind => panic!("{c:?} starts with a {kind:?}"),
+        })
+        .collect();
+    let mut sim = Simulation::new(compiled.sim, NoopSink);
+    let entries: Vec<LaneId> = sim
+        .network()
+        .lanes()
+        .filter(|(_, lane)| lane.predecessors().is_empty())
+        .map(|(id, _)| id)
+        .collect();
+    let mut seen: Vec<VehicleId> = Vec::new();
+    let (mut on_red, mut spawned, mut left_before) = (0, 0, 0);
+    for step in 1..=(300 * 60) as u64 {
+        if step % 45 == 0 {
+            let lane = entries[(step / 45 * 7) as usize % entries.len()];
+            let at = Placement { lane, s: 5.0, speed: LIMIT, route: Route::random(step) };
+            if sim.try_insert(VehicleSpec::passenger_car(), at).is_ok() {
+                spawned += 1;
+            }
+        }
+        sim.step();
+        for &(c, movement) in &near {
+            for o in sim.occupants(c) {
+                if !seen.contains(&o.id) && !o.is_ghost() {
+                    seen.push(o.id);
+                    on_red += (sim.light(movement).light == Light::Red) as usize;
+                }
+            }
+        }
+        if step % 3600 == 0 && step > 3600 {
+            let left = spawned - sim.vehicles().count();
+            assert!(
+                left > left_before + 5,
+                "standstill in the minute to {:.0} s",
+                sim.time()
+            );
+            left_before = left;
+        }
+    }
+    assert!(on_red > 5, "only {on_red} of {} turned on red", seen.len());
+}

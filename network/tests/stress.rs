@@ -1,9 +1,11 @@
-//! Busy signalised crossroads for a quarter of an hour each, square and
-//! oblique, one to three lanes each way, drivers varied, over many seeds: none
-//! may lock up, and the junction's queue invariants must hold throughout. Slow,
-//! so ignored by default: `cargo test --release --test stress -- --ignored`.
+//! Busy intersections for a quarter of an hour each, drivers varied, over many
+//! seeds: signalised crossroads, square and oblique, one to three lanes each
+//! way, turning on red or with a keep-clear zone; priority crossroads and
+//! T-junctions; and all-way stops. None may lock up, and the junction's queue
+//! invariants must hold throughout. Slow, so ignored by default:
+//! `cargo test --release --test stress -- --ignored`.
 
-use traffic_network::{RoadNetwork, compile, scenarios};
+use traffic_network::{RoadNetwork, Sign, compile, scenarios};
 use traffic_sim::{LaneId, NoopSink, Placement, Route, Simulation, VehicleSpec};
 
 mod common;
@@ -73,26 +75,12 @@ fn run(net: &RoadNetwork, seed: u64, every: u64) -> Result<usize, String> {
     Ok(spawned - sim.vehicles().count())
 }
 
-#[test]
-#[ignore = "slow: a few minutes in release"]
-fn busy_signalised_crossroads_never_lock_up() {
-    let speed = 50.0 / 3.6;
-    let nets = [
-        ("1 lane", scenarios::signalised_crossroads(1, speed)),
-        ("2 lanes", scenarios::signalised_crossroads(2, speed)),
-        ("3 lanes", scenarios::signalised_crossroads(3, speed)),
-        (
-            "60°",
-            scenarios::signalised_oblique_crossroads(2, speed, 60f64.to_radians()),
-        ),
-        (
-            "75°",
-            scenarios::signalised_oblique_crossroads(2, speed, 75f64.to_radians()),
-        ),
-    ];
+/// Runs each of `nets` over 20 seeds, a vehicle tried every 20 and every 40
+/// steps, asserting that none went wrong.
+fn stress(nets: &[(&str, RoadNetwork)]) {
     let mut failures = Vec::new();
     for seed in 1..=20u64 {
-        for (name, net) in &nets {
+        for (name, net) in nets {
             for every in [20, 40] {
                 if let Err(what) = run(net, seed, every) {
                     failures.push(format!("{name}, seed {seed}, every {every}: {what}"));
@@ -101,4 +89,85 @@ fn busy_signalised_crossroads_never_lock_up() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+const SPEED: f64 = 50.0 / 3.6;
+
+#[test]
+#[ignore = "slow: a few minutes in release"]
+fn busy_signalised_crossroads_never_lock_up() {
+    stress(&[
+        ("1 lane", scenarios::signalised_crossroads(1, SPEED)),
+        ("2 lanes", scenarios::signalised_crossroads(2, SPEED)),
+        ("3 lanes", scenarios::signalised_crossroads(3, SPEED)),
+        (
+            "60°",
+            scenarios::signalised_oblique_crossroads(2, SPEED, 60f64.to_radians()),
+        ),
+        (
+            "75°",
+            scenarios::signalised_oblique_crossroads(2, SPEED, 75f64.to_radians()),
+        ),
+    ]);
+}
+
+#[test]
+#[ignore = "slow: a few minutes in release"]
+fn busy_signalised_crossroads_turning_on_red_or_keeping_clear_never_lock_up() {
+    stress(&[
+        (
+            "turn on red, 1 lane",
+            scenarios::signalised_crossroads_turn_on_red(1, SPEED),
+        ),
+        (
+            "turn on red, 2 lanes",
+            scenarios::signalised_crossroads_turn_on_red(2, SPEED),
+        ),
+        (
+            "keep clear",
+            scenarios::signalised_crossroads_keep_clear(2, SPEED),
+        ),
+    ]);
+}
+
+#[test]
+#[ignore = "slow: a few minutes in release"]
+fn busy_priority_intersections_never_lock_up() {
+    stress(&[
+        (
+            "give way, 1 lane",
+            scenarios::priority_crossroads(1, SPEED, Sign::GiveWay),
+        ),
+        (
+            "give way, 2 lanes",
+            scenarios::priority_crossroads(2, SPEED, Sign::GiveWay),
+        ),
+        (
+            "stop, 1 lane",
+            scenarios::priority_crossroads(1, SPEED, Sign::Stop),
+        ),
+        (
+            "T, give way",
+            scenarios::priority_t_junction(1, SPEED, Sign::GiveWay),
+        ),
+        (
+            "T, stop",
+            scenarios::priority_t_junction(1, SPEED, Sign::Stop),
+        ),
+    ]);
+}
+
+#[test]
+#[ignore = "slow: a few minutes in release"]
+fn busy_all_way_stops_never_lock_up() {
+    stress(&[
+        (
+            "all-way, 1 lane",
+            scenarios::all_way_stop_crossroads(1, SPEED),
+        ),
+        (
+            "all-way, 2 lanes",
+            scenarios::all_way_stop_crossroads(2, SPEED),
+        ),
+    ]);
 }
