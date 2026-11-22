@@ -157,10 +157,6 @@ pub struct Simulation<D: DebugSink = NoopSink> {
     sink: D,
 }
 
-/// The speed below which a vehicle that isn't speeding up has come to rest, in
-/// m/s: a millimetre a second.
-const REST_SPEED: f64 = 1e-3;
-
 /// What the longitudinal update decided for a vehicle, from one of its records.
 #[derive(Clone, Copy, Debug)]
 enum AccelUpdate {
@@ -399,6 +395,7 @@ impl<D: DebugSink> Simulation<D> {
                 }
             },
             committed: 0,
+            stopping: false,
             line_gap: spec.line_gap,
             stopped_at: None,
         };
@@ -937,6 +934,20 @@ impl<D: DebugSink> Simulation<D> {
                 vehicles[leader].old_follower = Some(follower);
             }
         }
+        // Slow and slowing, it finishes its stop, or stays put until it can
+        // move off properly.
+        for update in &self.decisions {
+            if let AccelUpdate::Own { id, .. } = *update {
+                let vehicle = &mut vehicles[id];
+                let (speed, accel) = (vehicle.speed, vehicle.accel);
+                vehicle.stopping = acceleration::stopping(vehicle.stopping, speed, accel);
+                if let Some(term) = vehicle.stopping.then_some(-acceleration::STOPPING_DECEL) {
+                    let source = AccelSource::FinishingStop;
+                    self.sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
+                    vehicle.accel = vehicle.accel.min(term);
+                }
+            }
+        }
     }
 
     /// Path tracking and integration: steers, moves, then advances each vehicle
@@ -967,16 +978,8 @@ impl<D: DebugSink> Simulation<D> {
             sink.record(|| DebugEvent::Lookahead { vehicle: id, point: target });
 
             // Trapezoidal distance is exact for constant acceleration, unless the
-            // vehicle stopped during the step. One crawling slower than
-            // `REST_SPEED` without speeding up has come to rest: IDM eases a
-            // vehicle up to a stop exponentially, leaving it creeping at a
-            // vanishing speed that never reaches zero.
+            // vehicle stopped during the step.
             let speed = (vehicle.speed + vehicle.accel * dt).max(0.0);
-            let speed = if speed < REST_SPEED && vehicle.accel <= 0.0 {
-                0.0
-            } else {
-                speed
-            };
             let dist = 0.5 * (vehicle.speed + speed) * dt;
             vehicle.speed = speed;
             (vehicle.pos, vehicle.heading) =

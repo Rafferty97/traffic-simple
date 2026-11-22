@@ -151,6 +151,8 @@ fn a_queue_comes_to_rest_at_the_minimum_gap() {
     for (follower, leader) in [(a, stopped), (b, a)] {
         assert!(sim.get(follower).unwrap().speed() < 1e-3);
         let gap = gap(&sim, follower, leader);
-        assert!(gap < spec.min_gap + 0.1, "stopped {gap} m short");
+        // Finishing its stop, braking firmly at walking pace, leaves it a few
+        // centimetres further back than IDM alone would.
+        assert!(gap < spec.min_gap + 0.2, "stopped {gap} m behind");
     }
 }

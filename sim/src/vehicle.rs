@@ -180,6 +180,11 @@ pub struct Vehicle {
     /// committed to crossing (see `docs/DESIGN.md`, Barriers and signals).
     #[cfg_attr(feature = "serde", serde(default))]
     pub(crate) committed: u8,
+    /// Whether it is finishing a stop, braking at least firmly enough to come
+    /// to rest promptly, or staying at rest, until it can move off properly
+    /// (see `models::acceleration::stopping`).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) stopping: bool,
     /// How far short of the barrier it is heading for it will stop, in meters,
     /// drawn afresh for each (see [`VehicleSpec::line_gap`]).
     #[cfg_attr(feature = "serde", serde(default = "default_line_gap"))]
@@ -277,6 +282,12 @@ impl Vehicle {
     /// committed to crossing.
     pub fn committed(&self) -> u8 {
         self.committed
+    }
+
+    /// Whether it is finishing a stop, or staying at rest until it can move
+    /// off properly.
+    pub fn stopping(&self) -> bool {
+        self.stopping
     }
 
     /// How far short of the barrier it is heading for it will stop, in meters.

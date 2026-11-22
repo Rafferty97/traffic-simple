@@ -167,6 +167,34 @@ pub fn reach_time(speed: f64, accel: f64, max_speed: f64, distance: f64) -> f64 
     }
 }
 
+/// Below this speed, in m/s (3 km/h), a vehicle that is slowing starts
+/// finishing its stop (see [`stopping`]).
+pub const STOPPING_SPEED: f64 = 3.0 / 3.6;
+
+/// The least a vehicle finishing its stop brakes, in m/s².
+pub const STOPPING_DECEL: f64 = 0.5;
+
+/// The acceleration a vehicle finishing its stop, or at rest, must be able to
+/// manage to move off again, in m/s².
+pub const MOVING_OFF: f64 = 0.2;
+
+/// Whether a vehicle is finishing a stop, given whether it was (`stopping`),
+/// its speed, and its acceleration from every other term. It starts once it
+/// is slowing below [`STOPPING_SPEED`], and goes on until it can accelerate at
+/// [`MOVING_OFF`]; meanwhile it brakes at least at [`STOPPING_DECEL`], or harder
+/// if it must, one more term. So it comes to rest promptly, as drivers do,
+/// rather than easing toward rest ever more slowly, as IDM approaching a
+/// stationary leader does, never quite reaching it; it doesn't creep on after
+/// a leader that edges forward, but waits until it can move off properly, as
+/// a driver at a light turning green takes a moment to; and, starting and
+/// ending at different accelerations, it doesn't flick between the two.
+pub fn stopping(stopping: bool, speed: f64, accel: f64) -> bool {
+    match stopping {
+        true => accel <= MOVING_OFF,
+        false => speed < STOPPING_SPEED && accel < 0.0,
+    }
+}
+
 /// The acceleration a speed cap allows: braking at [`SAFE_BRAKING`] while above
 /// it, so a held vehicle stops promptly, easing up to it from below, and with a
 /// cap of 0 braking until it stops. Like any term, it only binds when it is the

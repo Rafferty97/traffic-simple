@@ -90,6 +90,9 @@ pub enum AccelSource {
     Leader { id: VehicleId, gap: f64, headway: f64 },
     /// A maximum speed imposed on the vehicle, in m/s: 0 holds it to a stop.
     Cap { max_speed: f64 },
+    /// Slow and short of moving off, it finishes its stop or stays at rest (see
+    /// `models::acceleration::stopping`).
+    FinishingStop,
     /// Making room for a vehicle indicating into its lane ahead, as if that
     /// vehicle's ghost were a leader, with the gap to it.
     Yield { id: VehicleId, gap: f64 },

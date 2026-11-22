@@ -12,6 +12,11 @@ mod common;
 use common::car;
 
 const LIMIT: f64 = 14.0;
+
+/// How near its gap short of a line a vehicle stops, in meters: finishing its
+/// stop, braking firmly at walking pace, leaves it a few centimetres further
+/// back than IDM alone would (see `models::acceleration::stopping`).
+const STOP_TOLERANCE: f64 = 0.1;
 const HALF_WIDTH: f64 = 1.75;
 
 /// A lane from the west to the origin and one on east from there, with a line
@@ -85,7 +90,7 @@ fn a_vehicle_stops_its_gap_short_of_an_oblique_line_by_its_nearest_corner() {
     let spec = exact(1.9);
     let (short, _) = stop(30f64.to_radians(), spec);
     assert!(
-        (short - spec.line_gap).abs() < 0.05,
+        (short - spec.line_gap).abs() < STOP_TOLERANCE,
         "it stopped {short:.3} m short"
     );
 }
@@ -109,11 +114,11 @@ fn a_square_line_stops_a_vehicle_where_its_position_alone_does() {
     let spec = exact(1.9);
     let (short, nose) = stop(0.0, spec);
     assert!(
-        (short - spec.line_gap).abs() < 0.05,
+        (short - spec.line_gap).abs() < STOP_TOLERANCE,
         "it stopped {short:.3} m short"
     );
     assert!(
-        (nose - (20.0 - spec.line_gap)).abs() < 0.05,
+        (nose - (20.0 - spec.line_gap)).abs() < STOP_TOLERANCE,
         "its nose is at {nose:.3}"
     );
 }
@@ -125,7 +130,7 @@ fn a_vehicle_never_stops_short_of_where_the_line_is_safe_to_reach() {
     let spec = exact(1.9);
     let (short, _) = stop(-30f64.to_radians(), spec);
     assert!(
-        (short - spec.line_gap).abs() < 0.05,
+        (short - spec.line_gap).abs() < STOP_TOLERANCE,
         "it stopped {short:.3} m short"
     );
 }

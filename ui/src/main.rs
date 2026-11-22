@@ -681,6 +681,7 @@ impl App {
                 format!("{:.1} km/h ({:.2} m/s)", v.speed() * 3.6, v.speed()),
             );
             row("accel", format!("{:+.2} m/s²", v.accel()));
+            row("stopping", if v.stopping() { "yes" } else { "no" }.into());
             row("curvature", format!("{:+.4} /m", v.curvature()));
         });
 
@@ -774,6 +775,13 @@ impl App {
                 ),
                 AccelSource::Leader { gap, .. } => ("leader ".into(), format!(", gap {gap:.2} m")),
                 AccelSource::Cap { max_speed: 0.0 } => ("held to a stop".into(), String::new()),
+                AccelSource::FinishingStop => (
+                    format!(
+                        "stopping or staying put, below {:.0} km/h",
+                        traffic_sim::STOPPING_SPEED * 3.6
+                    ),
+                    String::new(),
+                ),
                 AccelSource::Cap { max_speed } => (
                     format!("capped at {:.0} km/h", max_speed * 3.6),
                     String::new(),
