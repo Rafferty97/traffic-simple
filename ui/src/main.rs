@@ -51,10 +51,23 @@ const PICK_TOLERANCE: f32 = 6.0;
 const SELECTED: Color32 = Color32::from_rgb(250, 210, 60);
 
 fn main() -> eframe::Result {
+    let scenario = match std::env::args().nth(1) {
+        None => Scenario::Ring,
+        Some(key) => match Scenario::ALL.into_iter().find(|s| s.key() == key) {
+            Some(scenario) => scenario,
+            None => {
+                eprintln!("No scenario called {key:?}. The scenarios are:");
+                for s in Scenario::ALL {
+                    eprintln!("  {:<16} {}", s.key(), s.name());
+                }
+                std::process::exit(2);
+            }
+        },
+    };
     eframe::run_native(
         "Traffic Simulator",
         eframe::NativeOptions::default(),
-        Box::new(|_cc| Ok(Box::new(App::new()))),
+        Box::new(move |_cc| Ok(Box::new(App::new(scenario)))),
     )
 }
 
@@ -85,6 +98,21 @@ impl Scenario {
         Scenario::Ramps(Leaving::Zipper),
         Scenario::Ramps(Leaving::Early),
     ];
+
+    /// What to call it on the command line.
+    fn key(self) -> &'static str {
+        match self {
+            Scenario::Ring => "ring",
+            Scenario::Crossroads(1) => "crossroads-1",
+            Scenario::Crossroads(2) => "crossroads-2",
+            Scenario::Crossroads(_) => "crossroads-3",
+            Scenario::Signals(1) => "signals-1",
+            Scenario::Signals(_) => "signals-2",
+            Scenario::ObliqueSignals => "oblique-signals",
+            Scenario::Ramps(Leaving::Zipper) => "ramps-zipper",
+            Scenario::Ramps(Leaving::Early) => "ramps-early",
+        }
+    }
 
     fn name(self) -> &'static str {
         match self {
@@ -319,8 +347,7 @@ impl Harness {
 }
 
 impl App {
-    fn new() -> Self {
-        let scenario = Scenario::Ring;
+    fn new(scenario: Scenario) -> Self {
         let (sim, render) = new_sim(scenario);
         let mut app = Self {
             sim,
@@ -679,6 +706,17 @@ impl eframe::App for App {
         let typing = ui.ctx().egui_wants_keyboard_input();
         if !typing && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Space)) {
             self.paused = !self.paused;
+        }
+        // The number keys pick a speed: 1×, 2×, 5× and 20×.
+        for (key, speed) in [
+            (egui::Key::Num1, 1.0),
+            (egui::Key::Num2, 2.0),
+            (egui::Key::Num3, 5.0),
+            (egui::Key::Num4, 20.0),
+        ] {
+            if !typing && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key)) {
+                self.speed = speed;
+            }
         }
 
         egui::Panel::top("controls").show(ui, |ui| self.controls(ui));
