@@ -565,6 +565,7 @@ impl App {
                 (5.0, "5×"),
                 (10.0, "10×"),
                 (20.0, "20×"),
+                (100.0, "100×"),
             ] {
                 ui.selectable_value(&mut self.speed, speed, label);
             }
@@ -1463,6 +1464,7 @@ impl Default for Layers {
         let mut layers = [false; Layer::ALL.len()];
         for layer in [
             Layer::LaneOutlines,
+            Layer::Occupants,
             Layer::Vehicles,
             Layer::LaneChanges,
             Layer::PassChecks,
