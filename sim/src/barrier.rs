@@ -119,7 +119,7 @@ pub(crate) fn held_by(
                 BarrierKind::Signal { movement } => {
                     lights[movement.0 as usize].light != Light::Green
                 }
-                BarrierKind::GiveWay | BarrierKind::AllWayStop => false,
+                BarrierKind::GiveWay | BarrierKind::Stop | BarrierKind::AllWayStop => false,
             };
             if rank >= vehicle.committed as usize && holds {
                 return true;
@@ -194,6 +194,7 @@ pub(crate) fn decide(
             Light::Amber | Light::Red => false,
         },
         BarrierKind::GiveWay => has_gap(&barrier) && room(),
+        BarrierKind::Stop => vehicle.stopped_at.is_some() && has_gap(&barrier) && room(),
         BarrierKind::AllWayStop => {
             vehicle.stopped_at.is_some()
                 && first_to_arrive(state, id, vehicle, k, barrier)
@@ -480,7 +481,7 @@ pub(crate) fn gap_to(vehicle: &Vehicle, barrier: &Barrier, along: f64) -> f64 {
 /// still stop before the line without braking harder than
 /// [`acceleration::SAFE_BRAKING`], having been slowed short of it by traffic
 /// ahead or a junction, as a driver who could stop does; at a give-way line,
-/// it has come to rest short of the line, so the gap it took is stale, unless
+/// or a stop line, it has come to rest short of the line, so the gap it took is stale, unless
 /// its junction has queued it past the line already, so that others are queued
 /// behind it on that footing (see `docs/DESIGN.md`, Queue invariants). On amber,
 /// a committed vehicle goes on: one caught in the dilemma zone, or a turner
@@ -511,7 +512,9 @@ pub(crate) fn released(
                 state.lights[movement.0 as usize].light == Light::Red
                     && speed * speed / (2.0 * acceleration::SAFE_BRAKING) <= gap
             }
-            BarrierKind::GiveWay | BarrierKind::AllWayStop => speed == 0.0 && !queued_past(),
+            BarrierKind::GiveWay | BarrierKind::Stop | BarrierKind::AllWayStop => {
+                speed == 0.0 && !queued_past()
+            }
         }
 }
 

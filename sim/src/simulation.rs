@@ -1245,9 +1245,9 @@ fn longitudinal<D: DebugSink>(
             let k = vehicle.path.iter().position(|&l| l == lane).unwrap_or(0);
             let (decision, yields_to) =
                 barrier::decide(state, through, id, vehicle, k, barrier, gap);
-            // At rest as the head on its way to an all-way stop line: it has
-            // arrived there.
-            if barrier.kind == BarrierKind::AllWayStop
+            // At rest as the head on its way to a stop or all-way stop line: it
+            // has arrived there.
+            if matches!(barrier.kind, BarrierKind::Stop | BarrierKind::AllWayStop)
                 && vehicle.speed == 0.0
                 && vehicle.stopped_at.is_none()
             {

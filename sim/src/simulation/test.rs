@@ -6,7 +6,7 @@ use glam::DVec2;
 use super::*;
 use crate::debug::DebugEvent;
 use crate::models::lane_change::{LaneChangeEval, Outcome};
-use crate::network::Lane;
+use crate::network::{Barrier, Lane};
 
 const LIMIT: f64 = 14.0;
 const WIDTH: f64 = 3.5;
@@ -1559,4 +1559,43 @@ fn the_follower_search_goes_back_as_far_as_paths_reach() {
     let (found, gap) = follower(&sim, 9, 1.0, VehicleId::null()).unwrap();
     assert_eq!(found, behind);
     assert!((gap - 41.4).abs() < 1e-9, "gap {gap}");
+}
+
+#[test]
+fn a_car_at_rest_short_of_a_stop_line_is_released_unless_queued_past_it() {
+    // A connector from the south, starting with a stop line, crosses one from
+    // the west.
+    let lane = |a: DVec2, b: DVec2| Lane::new(&[a, b], WIDTH, LIMIT).unwrap();
+    let p = DVec2::new;
+    let mut network = SimNetwork::new(vec![
+        lane(p(0.0, -100.0), p(0.0, -10.0)),
+        lane(p(0.0, -10.0), p(0.0, 10.0)),
+        lane(p(-10.0, 0.0), p(10.0, 0.0)),
+    ]);
+    network.connect(LaneId(0), LaneId(1));
+    network.add_junction(&[LaneId(1), LaneId(2)]);
+    let yields = Some(network.add_yields(&[LaneId(2)]));
+    let line = Barrier { yields, ..Barrier::new(0.0, BarrierKind::Stop) };
+    network.add_barrier(LaneId(1), line);
+    let mut sim = Simulation::new(network, NoopSink);
+    let id = sim.insert(car(), at(0, 80.0, 0.0));
+    let vehicle = &sim.state.vehicles[id];
+    assert!(barrier::released(
+        &sim.state,
+        id,
+        vehicle,
+        LaneId(1),
+        line,
+        5.0
+    ));
+    sim.state.queues[0].committed.push(Entry { id, until: None });
+    let vehicle = &sim.state.vehicles[id];
+    assert!(!barrier::released(
+        &sim.state,
+        id,
+        vehicle,
+        LaneId(1),
+        line,
+        5.0
+    ));
 }

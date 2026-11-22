@@ -1196,6 +1196,7 @@ fn draw_debug(
                         Light::Red => LIGHT_RED,
                     },
                     BarrierKind::GiveWay => GIVE_WAY,
+                    BarrierKind::Stop => STOP,
                     BarrierKind::AllWayStop => ALL_WAY,
                 };
                 let pos = geometry.lane_pos(barrier.s, 0.0);
@@ -1392,6 +1393,7 @@ const LIGHT_GREEN: Color32 = Color32::from_rgb(60, 220, 90);
 const LIGHT_AMBER: Color32 = Color32::from_rgb(250, 190, 40);
 const LIGHT_RED: Color32 = Color32::from_rgb(230, 60, 50);
 const GIVE_WAY: Color32 = Color32::from_rgb(240, 240, 240);
+const STOP: Color32 = Color32::from_rgb(255, 120, 190);
 const ALL_WAY: Color32 = Color32::from_rgb(190, 120, 255);
 const PASS_CORNER: Color32 = Color32::from_rgb(255, 120, 200);
 const PASS_BODY: Color32 = Color32::from_rgb(120, 170, 255);
@@ -1475,8 +1477,8 @@ impl Layer {
             ),
             Layer::Barriers => (
                 "Barriers",
-                &[LIGHT_GREEN, LIGHT_AMBER, LIGHT_RED, GIVE_WAY, ALL_WAY],
-                "Each barrier across its lane: a signal in its light's colour, a give-way line in white, an all-way stop line in violet",
+                &[LIGHT_GREEN, LIGHT_AMBER, LIGHT_RED, GIVE_WAY, STOP, ALL_WAY],
+                "Each barrier across its lane: a signal in its light's colour, a give-way line in white, a stop line in pink, an all-way stop line in violet",
             ),
             Layer::Lookahead => (
                 "Lookahead",
