@@ -94,18 +94,21 @@ fn a_skewed_stop_line_holds_every_connector_by_its_line_from_where_it_is_safe() 
     );
     for i in 0..2 {
         for id in from(&set, lane(&set, 0, i)) {
-            // Cut at its line: a lead-in up to it, outside the junction, then
-            // the junction's lanes, kept clear, its barrier at the first's start.
-            let lead_in = set.sim.lane(id);
-            assert!(
-                lead_in.junction().is_none() && !lead_in.keep_clear(),
-                "{id:?}"
-            );
-            assert!(
-                lead_in.barriers().is_empty(),
-                "{id:?} has a barrier before its line"
-            );
-            let id = lead_in.successors()[0];
+            // Cut at its line, unless that is at its start: a lead-in up to it,
+            // outside the junction, then the junction's lanes, kept clear, its
+            // barrier at the first's start.
+            let first = set.sim.lane(id);
+            let id = match first.junction() {
+                Some(_) => id,
+                None => {
+                    assert!(!first.keep_clear(), "{id:?}");
+                    assert!(
+                        first.barriers().is_empty(),
+                        "{id:?} has a barrier before its line"
+                    );
+                    first.successors()[0]
+                }
+            };
             assert!(set.sim.lane(id).junction().is_some() && set.sim.lane(id).keep_clear());
             let barrier = set.sim.lane(id).barriers()[0];
             let line = barrier.line.expect("a skewed stop line is a line");
@@ -121,8 +124,12 @@ fn a_skewed_stop_line_holds_every_connector_by_its_line_from_where_it_is_safe() 
         }
     }
     // And its markings run along the line, painted behind it.
-    let first = set.sim.lane(from(&set, lane(&set, 0, 0))[0]).successors()[0];
-    let line = set.sim.lane(first).barriers()[0].line.unwrap();
+    // The barrier on the connector's first lane in the junction.
+    let lines = from(&set, lane(&set, 0, 0)).into_iter().flat_map(|id| {
+        [id].into_iter().chain(set.sim.lane(id).successors().iter().copied().take(1))
+    });
+    let mut lines = lines.filter_map(|id| set.sim.lane(id).barriers().first()?.line);
+    let line = lines.next().expect("a skewed line");
     let stop: Vec<_> =
         set.render.markings.iter().filter(|m| m.style == MarkingStyle::Stop).collect();
     let on_line = stop
