@@ -137,7 +137,9 @@ pub enum Decision {
 }
 
 /// What `vehicle`, the head on its way to `barrier`, the `k`th lane of its path,
-/// `gap` from its front to the line, does about it.
+/// `gap` from its front to the line, does about it, and the vehicle it gives
+/// way to, if it is held for one: the first with priority it found no gap
+/// before or behind, or one already in the junction it gives way to.
 pub(crate) fn decide(
     state: &SimState,
     through: &[f64],
@@ -146,36 +148,55 @@ pub(crate) fn decide(
     k: usize,
     barrier: Barrier,
     gap: f64,
-) -> Decision {
+) -> (Decision, Option<VehicleId>) {
     let spec = &vehicle.spec;
     let speed = vehicle.speed;
     // Whether it can stop where it would like, a line gap short, at `decel`.
     let can_stop = |decel: f64| speed * speed / (2.0 * decel) <= gap - vehicle.line_gap;
-    let room =
-        || room_beyond(state, id, vehicle, k, barrier.s) && !yields_inside(state, id, vehicle, k);
+    let yields_to = std::cell::Cell::new(None);
+    let room = || {
+        room_beyond(state, id, vehicle, k, barrier.s)
+            && match yields_inside(state, id, vehicle, k) {
+                Some(other) => {
+                    yields_to.set(Some(other));
+                    false
+                }
+                None => true,
+            }
+    };
+    let has_gap = |s: f64| match has_gap(state, through, id, vehicle, k, s) {
+        Ok(()) => true,
+        Err(other) => {
+            yields_to.set(Some(other));
+            false
+        }
+    };
     let commit = match barrier.kind {
         // Only on green, once it can no longer stop comfortably: never on amber
         // or red, so one that hasn't committed by then brakes, and one that
         // couldn't have stopped comfortably committed while it was green.
         BarrierKind::Signal { movement } => match state.lights[movement.0 as usize].light {
             Light::Green if can_stop(spec.comfy_decel) => match room() {
-                true => return Decision::Pass,
+                true => return (Decision::Pass, None),
                 false => false,
             },
             Light::Green => room(),
             Light::Amber | Light::Red => false,
         },
-        BarrierKind::GiveWay => has_gap(state, through, id, vehicle, k, barrier.s) && room(),
+        BarrierKind::GiveWay => has_gap(barrier.s) && room(),
         BarrierKind::AllWayStop => {
             vehicle.stopped_at.is_some()
                 && first_to_arrive(state, id, vehicle, k, barrier)
-                && has_gap(state, through, id, vehicle, k, barrier.s)
+                && has_gap(barrier.s)
                 && room()
         }
     };
     match commit {
-        true => Decision::Commit,
-        false => Decision::Hold(hold(spec, vehicle.line_gap, speed, gap)),
+        true => (Decision::Commit, None),
+        false => (
+            Decision::Hold(hold(spec, vehicle.line_gap, speed, gap)),
+            yields_to.get(),
+        ),
     }
 }
 
@@ -198,11 +219,11 @@ fn has_gap(
     vehicle: &Vehicle,
     k: usize,
     s: f64,
-) -> bool {
+) -> Result<(), VehicleId> {
     let network = &state.network;
     let (path, spec) = (&vehicle.path, &vehicle.spec);
     let Some(junction) = network.lane(path[k]).junction() else {
-        return true;
+        return Ok(());
     };
     // The next barrier on its path, as its lane's index on the path and `s` there.
     let next = (k..path.len()).find_map(|j| {
@@ -254,14 +275,12 @@ fn has_gap(
                 };
                 let between = -network.lane(theirs).geometry().length();
                 let (from, ahead) = (conflict.theirs.end, conflict.theirs.start);
-                if !clear(state, through, id, &way, theirs, from, ahead, between) {
-                    return false;
-                }
+                clear(state, through, id, &way, theirs, from, ahead, between)?;
             }
         }
         start += lane.geometry().length();
     }
-    true
+    Ok(())
 }
 
 /// A lane's priority level now: above every level a network gives while its
@@ -327,7 +346,7 @@ fn clear(
     s: f64,
     ahead: f64,
     between: f64,
-) -> bool {
+) -> Result<(), VehicleId> {
     let network = &state.network;
     let at = way.conflict.theirs.start;
     let list = &state.occupants[lane.0 as usize];
@@ -351,7 +370,7 @@ fn clear(
             && o.s() + other.spec.length > way.conflict.theirs.start;
         if k.is_none() && !in_conflict {
             if waits_in_lane(network, other, o) {
-                return true;
+                return Ok(());
             }
             continue;
         }
@@ -379,7 +398,7 @@ fn clear(
         let behind_margin = GAP_MARGIN + way.headway;
         if queued() {
             if way.arrives < clears + behind_margin {
-                return false;
+                return Err(o.id);
             }
             continue;
         }
@@ -405,7 +424,7 @@ fn clear(
         };
         let held = k.is_some_and(|k| held_by_light(state, other, k, at));
         if held || (way.equal && !committed()) {
-            return true;
+            return Ok(());
         }
         let limit = network.lane(way.theirs).speed_limit();
         let desired = other.spec.desired_speed(limit);
@@ -414,20 +433,21 @@ fn clear(
         // headway behind it there, as the junction makes it, so needn't brake.
         let ahead_margin = GAP_MARGIN + other.spec.time_headway;
         if distance >= 0.0 && reaches > way.clears + ahead_margin {
-            return true;
+            return Ok(());
         }
         if way.arrives < clears + behind_margin {
-            return false;
+            return Err(o.id);
         }
     }
     // Nobody on this lane: on to those leading into it that a path through
     // reaches the priority lane from.
     let between = between + network.lane(lane).geometry().length();
     let reaches = |p: &&LaneId| through[p.0 as usize] > between;
-    network.lane(lane).predecessors().iter().filter(reaches).all(|&p| {
+    for &p in network.lane(lane).predecessors().iter().filter(reaches) {
         let length = network.lane(p).geometry().length();
-        clear(state, through, id, way, p, length, ahead + length, between)
-    })
+        clear(state, through, id, way, p, length, ahead + length, between)?;
+    }
+    Ok(())
 }
 
 /// How far `vehicle` is short of `barrier`, given its front is `along` short of
@@ -560,15 +580,18 @@ pub(crate) fn hold(spec: &VehicleSpec, line_gap: f64, speed: f64, gap: f64) -> f
 /// is inside it. Once it is handed over right through, this one may commit,
 /// and joins the queue behind it. Never, for a vehicle in the junction's queue
 /// already: its barriers inside the junction decide for it.
-fn yields_inside(state: &SimState, id: VehicleId, vehicle: &Vehicle, k: usize) -> bool {
+fn yields_inside(
+    state: &SimState,
+    id: VehicleId,
+    vehicle: &Vehicle,
+    k: usize,
+) -> Option<VehicleId> {
     let network = &state.network;
-    let Some(junction) = network.lane(vehicle.path[k]).junction() else {
-        return false;
-    };
+    let junction = network.lane(vehicle.path[k]).junction()?;
     let queue = &state.queues[junction.0 as usize];
     let committed = &queue.committed;
     if committed.iter().any(|e| e.id == id) {
-        return false;
+        return None;
     }
     let inside = |l: &&LaneId| network.lane(**l).junction() == Some(junction);
     let now = |lane| level(network, &state.lights, lane);
@@ -583,18 +606,16 @@ fn yields_inside(state: &SimState, id: VehicleId, vehicle: &Vehicle, k: usize) -
         })
     };
     // In the queue, handed over part way, and no further since.
-    let queued = committed.iter().enumerate().any(|(i, e)| {
-        let Some(until) = e.until else {
-            return false;
-        };
+    let queued = committed.iter().enumerate().find_map(|(i, e)| {
+        let until = e.until?;
         let last = !committed[i + 1..].iter().any(|later| later.id == e.id);
-        last && crosses(&state.vehicles[e.id], until)
+        (last && crosses(&state.vehicles[e.id], until)).then_some(e.id)
     });
     // Committed to its barrier into the junction, not yet in the queue, and
     // next held inside it.
     let coming = || {
-        queue.approaching.iter().any(|&lane| {
-            state.occupants[lane.0 as usize].iter().any(|o| {
+        queue.approaching.iter().find_map(|&lane| {
+            state.occupants[lane.0 as usize].iter().find(|o| {
                 let other = &state.vehicles[o.id];
                 let next = nth(network, other, usize::from(other.committed));
                 o.id != id
@@ -607,7 +628,7 @@ fn yields_inside(state: &SimState, id: VehicleId, vehicle: &Vehicle, k: usize) -
             })
         })
     };
-    queued || coming()
+    queued.or_else(|| coming().map(|o| o.id))
 }
 
 /// Whether, entering the junction its `k`th lane is in at `s` along it, `vehicle`

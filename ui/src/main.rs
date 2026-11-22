@@ -84,12 +84,14 @@ fn named(source: AccelSource) -> Option<VehicleId> {
     }
 }
 
-/// The vehicles `id`'s acceleration terms name, each with its colour, in the
-/// order its terms name them.
+/// The vehicles `id` gives way to at its barriers and its acceleration terms
+/// name, each with its colour, in that order.
 fn related(sim: &Simulation<DebugState>, id: VehicleId) -> Vec<(VehicleId, Color32)> {
     let mut out: Vec<(VehicleId, Color32)> = Vec::new();
-    for (source, _) in sim.sink().terms(id) {
-        if let Some(other) = named(source)
+    let barriers = sim.sink().barriers.iter().filter(|b| b.0 == id).map(|b| b.5);
+    let terms = sim.sink().terms(id).map(|(source, _)| named(source));
+    for other in barriers.chain(terms) {
+        if let Some(other) = other
             && other != id
             && !out.iter().any(|&(v, _)| v == other)
         {
@@ -660,23 +662,36 @@ impl App {
 
         ui.separator();
         ui.label(format!("Committed to {} barriers ahead", v.committed()));
+        let related = related(&self.sim, id);
+        let colour_of = |other: VehicleId| {
+            related.iter().find(|&&(v, _)| v == other).map_or(SELECTED, |&(_, c)| c)
+        };
         let decisions = self.sim.sink().barriers.iter().filter(|b| b.0 == id);
-        for &(_, lane, index, gap, decision) in decisions {
+        for &(_, lane, index, gap, decision, yields_to) in decisions {
             let what = match decision {
                 BarrierDecision::Commit => "commits".to_string(),
                 BarrierDecision::Pass => "passes for now".to_string(),
                 BarrierDecision::Hold(accel) => format!("held, {accel:+.2} m/s²"),
             };
-            ui.small(format!(
-                "Barrier {index} on lane {}, gap {gap:.1} m: {what}",
-                lane.0
-            ));
+            let font = egui::TextStyle::Small.resolve(ui.style());
+            let plain = egui::TextFormat::simple(font.clone(), ui.visuals().text_color());
+            let mut text = egui::text::LayoutJob::default();
+            let line = format!("Barrier {index} on lane {}, gap {gap:.1} m: {what}", lane.0);
+            text.append(&line, 0.0, plain.clone());
+            if let Some(other) = yields_to {
+                text.append(", giving way to ", 0.0, plain);
+                text.append(
+                    &number(other),
+                    0.0,
+                    egui::TextFormat::simple(font, colour_of(other)),
+                );
+            }
+            ui.add(egui::Label::new(text).wrap());
         }
 
         ui.separator();
         ui.label("Acceleration terms (minimum binds)");
         let terms: Vec<_> = self.sim.sink().terms(id).collect();
-        let related = related(&self.sim, id);
         for &(source, accel) in &terms {
             // Its description, either side of the vehicle it names, if any.
             let (before, after): (String, String) = match source {
@@ -725,9 +740,11 @@ impl App {
             let mut name = egui::text::LayoutJob::default();
             name.append(&before, 0.0, plain.clone());
             if let Some(other) = named(source) {
-                let colour =
-                    related.iter().find(|&&(v, _)| v == other).map_or(SELECTED, |&(_, c)| c);
-                name.append(&number(other), 0.0, egui::TextFormat::simple(font, colour));
+                name.append(
+                    &number(other),
+                    0.0,
+                    egui::TextFormat::simple(font, colour_of(other)),
+                );
             }
             name.append(&after, 0.0, plain);
             let text = egui::RichText::new(format!("{accel:+.2} m/s²")).monospace();
@@ -1333,7 +1350,7 @@ impl Layer {
             Layer::Vehicles => (
                 "Vehicles",
                 &[VEHICLE, SELECTED],
-                "Solid bodies, each with its rear axle across it; the selected vehicle in yellow, those its acceleration terms name each in its own colour, as the inspector names them, and the rest white",
+                "Solid bodies, each with its rear axle across it; the selected vehicle in yellow, those it gives way to and its acceleration terms name each in its own colour, as the inspector names them, and the rest white",
             ),
             Layer::LaneChanges => (
                 "Lane changes",
@@ -1420,7 +1437,16 @@ struct DebugState {
     pass_checks: Vec<(VehicleId, PassCheck)>,
     /// The last longitudinal update's barrier decisions, by vehicle: the lane,
     /// the barrier's index there, the gap to it, and what it did.
-    barriers: Vec<(VehicleId, LaneId, u16, f64, BarrierDecision)>,
+    /// Each barrier decision: the vehicle, the barrier's lane and index, the
+    /// gap to it, what it did, and the vehicle it gives way to, if any.
+    barriers: Vec<(
+        VehicleId,
+        LaneId,
+        u16,
+        f64,
+        BarrierDecision,
+        Option<VehicleId>,
+    )>,
 }
 
 impl DebugSink for DebugState {
@@ -1446,8 +1472,8 @@ impl DebugSink for DebugState {
                 self.decisions.remove(&vehicle);
             }
             DebugEvent::PassCheck { vehicle, check } => self.pass_checks.push((vehicle, check)),
-            DebugEvent::Barrier { vehicle, lane, index, gap, decision } => {
-                self.barriers.push((vehicle, lane, index, gap, decision))
+            DebugEvent::Barrier { vehicle, lane, index, gap, decision, yields_to } => {
+                self.barriers.push((vehicle, lane, index, gap, decision, yields_to))
             }
         }
     }

@@ -1227,7 +1227,8 @@ fn longitudinal<D: DebugSink>(
                 return;
             }
             let k = vehicle.path.iter().position(|&l| l == lane).unwrap_or(0);
-            let decision = barrier::decide(state, through, id, vehicle, k, barrier, gap);
+            let (decision, yields_to) =
+                barrier::decide(state, through, id, vehicle, k, barrier, gap);
             // At rest as the head on its way to an all-way stop line: it has
             // arrived there.
             if barrier.kind == BarrierKind::AllWayStop
@@ -1236,7 +1237,14 @@ fn longitudinal<D: DebugSink>(
             {
                 arrived = true;
             }
-            sink.record(|| DebugEvent::Barrier { vehicle: id, lane, index, gap, decision });
+            sink.record(|| DebugEvent::Barrier {
+                vehicle: id,
+                lane,
+                index,
+                gap,
+                decision,
+                yields_to,
+            });
             match decision {
                 barrier::Decision::Commit => committed = committed.saturating_add(1),
                 barrier::Decision::Pass => held = true,

@@ -52,6 +52,8 @@ pub enum DebugEvent {
         index: u16,
         gap: f64,
         decision: BarrierDecision,
+        /// The vehicle it gives way to, held for one.
+        yields_to: Option<VehicleId>,
     },
 }
 
