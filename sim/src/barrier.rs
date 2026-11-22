@@ -151,7 +151,8 @@ pub(crate) fn decide(
     let speed = vehicle.speed;
     // Whether it can stop where it would like, a line gap short, at `decel`.
     let can_stop = |decel: f64| speed * speed / (2.0 * decel) <= gap - vehicle.line_gap;
-    let room = || room_beyond(state, id, vehicle, k, barrier.s);
+    let room =
+        || room_beyond(state, id, vehicle, k, barrier.s) && !yields_inside(state, id, vehicle, k);
     let commit = match barrier.kind {
         // Only on green, once it can no longer stop comfortably: never on amber
         // or red, so one that hasn't committed by then brakes, and one that
@@ -227,7 +228,7 @@ fn has_gap(
                 let before_next =
                     next.is_none_or(|(nj, ns)| j < nj || (j == nj && conflict.mine.start < ns));
                 let after_this = j > k || conflict.mine.end > s;
-                if other < own || !before_next || !after_this {
+                if !before_next || !after_this {
                     continue;
                 }
                 // It clears a crossing once its rear is past it.
@@ -238,7 +239,19 @@ fn has_gap(
                 let arrives = reach_time(vehicle.speed, spec.max_accel, desired, to_start);
                 let headway = spec.time_headway;
                 let equal = other == own;
-                let way = Way { junction, theirs, conflict, clears, arrives, headway, equal };
+                // Of a lower level, only those in the junction's queue for it
+                // count, which the junction holds it back for all the same.
+                let queued_only = other < own;
+                let way = Way {
+                    junction,
+                    theirs,
+                    conflict,
+                    clears,
+                    arrives,
+                    headway,
+                    equal,
+                    queued_only,
+                };
                 let between = -network.lane(theirs).geometry().length();
                 let (from, ahead) = (conflict.theirs.end, conflict.theirs.start);
                 if !clear(state, through, id, &way, theirs, from, ahead, between) {
@@ -256,8 +269,10 @@ fn has_gap(
 /// clearing it, outranks the traffic now green, and every vehicle behind its
 /// red line is held there anyway; otherwise the level its junction gives it.
 pub(crate) fn level(network: &SimNetwork, lights: &[MovementLight], lane: LaneId) -> u8 {
+    // A connector split in pieces has its signal on its first.
+    let first = network.lane(network.first_in_junction(lane));
     let lane = network.lane(lane);
-    let red = lane.barriers().iter().any(|b| match b.kind {
+    let red = first.barriers().iter().chain(lane.barriers()).any(|b| match b.kind {
         BarrierKind::Signal { movement } => lights[movement.0 as usize].light == Light::Red,
         BarrierKind::GiveWay | BarrierKind::AllWayStop => false,
     });
@@ -278,6 +293,9 @@ struct Way<'a> {
     /// Whether the lane has the same priority level, so only vehicles committed
     /// at the junction have priority there.
     equal: bool,
+    /// Whether the lane has a lower priority level, so only vehicles in the
+    /// junction's queue for it count, and those only to go behind.
+    queued_only: bool,
 }
 
 /// Whether there is a gap for the yielding vehicle among the vehicles with
@@ -323,8 +341,15 @@ fn clear(
         }
         // Headed elsewhere, it is passed over, unless it waits in the lane at a
         // barrier it hasn't committed to, a turner waiting for a gap say: then
-        // nobody behind it can come until it goes.
-        if !on_it && k.is_none() {
+        // nobody behind it can come until it goes. On the priority lane itself,
+        // its body lingering in the conflict as it leaves counts while it is
+        // there; a body beside the lane, overlapping it where it runs alongside
+        // its own, is in the way only where its own lanes are, as the junction
+        // has it.
+        let in_conflict = on_it
+            && network.left_behind(other.path[0], lane)
+            && o.s() + other.spec.length > way.conflict.theirs.start;
+        if k.is_none() && !in_conflict {
             if waits_in_lane(network, other, o) {
                 return true;
             }
@@ -337,6 +362,30 @@ fn clear(
         if rear <= 0.0 {
             continue;
         }
+        // One in the junction's queue for the conflict can't be gone ahead of:
+        // going, this one joins the queue behind it, for its way from here, so
+        // would stop for it in the conflict, whatever their levels. Committing
+        // late, only once it can't stop safely, a vehicle that is still
+        // approaching can stop, if this one couldn't clear as it meant to.
+        let queued = || {
+            let queue = &state.queues[way.junction.0 as usize].committed;
+            queue.iter().any(|e| e.id == o.id && e.covers(other, way.theirs))
+        };
+        let clears = if other.speed > 0.0 {
+            rear / other.speed
+        } else {
+            f64::INFINITY
+        };
+        let behind_margin = GAP_MARGIN + way.headway;
+        if queued() {
+            if way.arrives < clears + behind_margin {
+                return false;
+            }
+            continue;
+        }
+        if way.queued_only {
+            continue;
+        }
         // Committed: past every barrier before the conflict, or so committed
         // that the junction holds others back for it.
         // Of the same level, it counts only if it committed first: before this
@@ -345,8 +394,8 @@ fn clear(
         // other, the first to commit goes, and they can't deadlock.
         let committed = || {
             let queue = &state.queues[way.junction.0 as usize].committed;
-            let mine = queue.iter().position(|&v| v == id);
-            match (queue.iter().position(|&v| v == o.id), mine) {
+            let mine = queue.iter().position(|e| e.id == id);
+            match (queue.iter().position(|e| e.id == o.id), mine) {
                 (Some(theirs), Some(mine)) => theirs < mine,
                 (Some(_), None) => true,
                 (None, mine) => {
@@ -361,28 +410,10 @@ fn clear(
         let limit = network.lane(way.theirs).speed_limit();
         let desired = other.spec.desired_speed(limit);
         let reaches = reach_time(other.speed, other.spec.max_accel, desired, distance);
-        let clears = if other.speed > 0.0 {
-            rear / other.speed
-        } else {
-            f64::INFINITY
-        };
         // Whichever follows the other through the conflict keeps its time
         // headway behind it there, as the junction makes it, so needn't brake.
-        let (ahead_margin, behind_margin) = (
-            GAP_MARGIN + other.spec.time_headway,
-            GAP_MARGIN + way.headway,
-        );
-        // One in the junction's queue before it can't be gone ahead of: going,
-        // it joins the queue behind it, so would stop for it in the conflict.
-        // Committing late, only once it can't stop safely, a vehicle that is
-        // still approaching can stop, if this one couldn't clear as it meant to.
-        let queued = || {
-            let queue = &state.queues[way.junction.0 as usize].committed;
-            let theirs = queue.iter().position(|&v| v == o.id);
-            let mine = queue.iter().position(|&v| v == id);
-            theirs.is_some_and(|theirs| mine.is_none_or(|mine| theirs < mine))
-        };
-        if distance >= 0.0 && reaches > way.clears + ahead_margin && !queued() {
+        let ahead_margin = GAP_MARGIN + other.spec.time_headway;
+        if distance >= 0.0 && reaches > way.clears + ahead_margin {
             return true;
         }
         if way.arrives < clears + behind_margin {
@@ -516,6 +547,67 @@ pub(crate) fn draw_line_gap(vehicle: &mut Vehicle) {
 pub(crate) fn hold(spec: &VehicleSpec, line_gap: f64, speed: f64, gap: f64) -> f64 {
     let at_line = VehicleSpec { min_gap: line_gap, ..*spec };
     acceleration::interaction(&at_line, speed, gap, 0.0)
+}
+
+/// Whether `vehicle`, entering the junction its `k`th lane is in, must first give
+/// way to a vehicle already in it part way through, as the road rules have
+/// drivers give way to vehicles in an intersection: one whose barriers have
+/// handed it over only so far, as a turner waiting inside for a gap is, whose
+/// way on from there crosses this one's at a priority level at least as high
+/// as this one's lane's now. That is one in the junction's queue for only part
+/// of its way, or one committed to its barrier into the junction but not yet
+/// in the queue, on a lane the junction is approached along, whose next barrier
+/// is inside it. Once it is handed over right through, this one may commit,
+/// and joins the queue behind it. Never, for a vehicle in the junction's queue
+/// already: its barriers inside the junction decide for it.
+fn yields_inside(state: &SimState, id: VehicleId, vehicle: &Vehicle, k: usize) -> bool {
+    let network = &state.network;
+    let Some(junction) = network.lane(vehicle.path[k]).junction() else {
+        return false;
+    };
+    let queue = &state.queues[junction.0 as usize];
+    let committed = &queue.committed;
+    if committed.iter().any(|e| e.id == id) {
+        return false;
+    }
+    let inside = |l: &&LaneId| network.lane(**l).junction() == Some(junction);
+    let now = |lane| level(network, &state.lights, lane);
+    let mine = || vehicle.path[k..].iter().take_while(inside);
+    // Whether `other`'s way through the junction from `until` crosses this one's.
+    let crosses = |other: &Vehicle, until: LaneId| {
+        let Some(from) = other.path.iter().position(|&l| l == until) else {
+            return false;
+        };
+        other.path[from..].iter().take_while(inside).any(|&theirs| {
+            mine().any(|&m| network.conflict_between(m, theirs).is_some() && now(theirs) >= now(m))
+        })
+    };
+    // In the queue, handed over part way, and no further since.
+    let queued = committed.iter().enumerate().any(|(i, e)| {
+        let Some(until) = e.until else {
+            return false;
+        };
+        let last = !committed[i + 1..].iter().any(|later| later.id == e.id);
+        last && crosses(&state.vehicles[e.id], until)
+    });
+    // Committed to its barrier into the junction, not yet in the queue, and
+    // next held inside it.
+    let coming = || {
+        queue.approaching.iter().any(|&lane| {
+            state.occupants[lane.0 as usize].iter().any(|o| {
+                let other = &state.vehicles[o.id];
+                let next = nth(network, other, usize::from(other.committed));
+                o.id != id
+                    && !o.is_ghost()
+                    && other.committed > 0
+                    && !committed.iter().any(|e| e.id == o.id)
+                    && next.is_some_and(|(until, _)| {
+                        network.lane(until).junction() == Some(junction) && crosses(other, until)
+                    })
+            })
+        })
+    };
+    queued || coming()
 }
 
 /// Whether, entering the junction its `k`th lane is in at `s` along it, `vehicle`

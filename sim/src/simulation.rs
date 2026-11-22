@@ -6,7 +6,7 @@ use slotmap::{Key, SlotMap};
 use crate::barrier;
 use crate::debug::{AccelSource, DebugEvent, DebugSink, NoopSink};
 use crate::following::{self, Overlaps};
-use crate::junction::{self, Queue, arrive, junction_term};
+use crate::junction::{self, Entry, Queue, arrive, junction_term};
 use crate::kinematics;
 use crate::lane_changing::{
     LaneSpeeds, check_gap, comfortable_stop, friction, halfway_from_rest, incentives, plan_change,
@@ -446,7 +446,7 @@ impl<D: DebugSink> Simulation<D> {
             list.retain(|o| o.id != id);
         }
         for queue in &mut self.state.queues {
-            queue.committed.retain(|&q| q != id);
+            queue.committed.retain(|e| e.id != id);
             queue.fronts.retain(|&q| q != id);
         }
         self.state.caps.retain(|&(c, _)| c != id);
@@ -467,8 +467,9 @@ impl<D: DebugSink> Simulation<D> {
         &self.state.occupants[lane.0 as usize]
     }
 
-    /// The vehicles committed at a junction, in the order they committed.
-    pub fn queue(&self, junction: JunctionId) -> &[VehicleId] {
+    /// The vehicles committed at a junction, in the order they committed: an
+    /// entry for each stretch of its way a vehicle was handed over for.
+    pub fn queue(&self, junction: JunctionId) -> &[Entry] {
         &self.state.queues[junction.0 as usize].committed
     }
 
@@ -863,6 +864,7 @@ impl<D: DebugSink> Simulation<D> {
         for update in &self.decisions {
             if let AccelUpdate::Own { id, yielding, committed, arrived, .. } = *update {
                 let commits = committed.saturating_sub(self.state.vehicles[id].committed);
+                let released = committed < self.state.vehicles[id].committed;
                 let vehicle = &mut self.state.vehicles[id];
                 // Heading for another barrier now, it draws how far short it stops;
                 // past one it arrived at, it has yet to arrive at the next.
@@ -876,8 +878,9 @@ impl<D: DebugSink> Simulation<D> {
                 if arrived {
                     vehicle.stopped_at = Some(self.state.steps);
                 }
-                // Committed past a barrier, it may now arrive at a junction beyond.
-                if commits > 0 {
+                // Committed past a barrier, it may now arrive at a junction beyond,
+                // or be handed over further in one; released, handed back.
+                if commits > 0 || released {
                     self.arrivals.push(id);
                 }
                 let spread = vehicle.spec.accel_noise;
@@ -1408,12 +1411,17 @@ fn junction_terms<D: DebugSink>(
     decisions: &mut Vec<AccelUpdate>,
 ) {
     let committed = &queue.committed;
-    let followers = committed.iter().enumerate().map(|(k, &id)| (id, &committed[..k]));
+    // Each entry for the stretch it covers: from where the vehicle's entry
+    // before it stops covering it.
+    let followers = committed.iter().enumerate().map(|(k, e)| {
+        let from = committed[..k].iter().rev().find(|b| b.id == e.id).and_then(|b| b.until);
+        (e.id, &committed[..k], [from, e.until])
+    });
     // The vehicles at the front of the ways in, not yet committed, are behind
     // every committed one.
-    let fronts = queue.fronts.iter().map(|&id| (id, &committed[..]));
-    for (id, ahead) in followers.chain(fronts) {
-        let accel = junction_term(state, sink, junction, id, ahead);
+    let fronts = queue.fronts.iter().map(|&id| (id, &committed[..], [None; 2]));
+    for (id, ahead, stretch) in followers.chain(fronts) {
+        let accel = junction_term(state, sink, junction, id, ahead, stretch);
         if accel < f64::INFINITY {
             decisions.push(AccelUpdate::Junction { id, accel });
         }

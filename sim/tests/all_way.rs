@@ -9,7 +9,7 @@ use traffic_sim::{
 };
 
 mod common;
-use common::{car, overlap};
+use common::{car, overlap, queued};
 
 const LIMIT: f64 = 14.0;
 
@@ -263,7 +263,7 @@ fn of_two_waiting_for_each_other_at_the_same_level_the_first_to_commit_goes() {
     sim.step();
     let second = sim.insert(spec, at(starts[1]));
     sim.step();
-    assert_eq!(sim.queue(traffic_sim::JunctionId(0)), &[first, second]);
+    assert_eq!(queued(&sim, traffic_sim::JunctionId(0)), &[first, second]);
     let out = |sim: &Simulation, id| sim.get(id).is_none_or(|v| v.lane().0 >= 8);
     let (mut first_out, mut second_out) = (None, None);
     run(&mut sim, 20.0, |sim| {

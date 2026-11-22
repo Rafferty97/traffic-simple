@@ -10,11 +10,37 @@ use slotmap::SlotMap;
 use crate::barrier;
 use crate::debug::{AccelSource, DebugEvent, DebugSink};
 use crate::models::acceleration;
-use crate::models::signal::MovementLight;
 use crate::network::{Conflict, JunctionId, LaneId, SimNetwork};
 use crate::occupancy::Occupant;
 use crate::simulation::SimState;
 use crate::vehicle::{Vehicle, VehicleId};
+
+/// A vehicle's place in a junction's queue, for a stretch of its way through:
+/// the stretch its barriers have handed it over for (see [`handed_over`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Entry {
+    pub id: VehicleId,
+    /// The lane of its path, in the junction, from which this entry no longer
+    /// covers it, where its next barrier is: `None` if it covers it right
+    /// through.
+    pub until: Option<LaneId>,
+}
+
+impl Entry {
+    /// Whether it covers `vehicle`, its vehicle, on `lane`: `lane` comes before
+    /// its `until` on its path, or isn't on it any more, being behind it.
+    pub(crate) fn covers(&self, vehicle: &Vehicle, lane: LaneId) -> bool {
+        let Some(until) = self.until else {
+            return true;
+        };
+        let at = |l: LaneId| vehicle.path.iter().position(|&p| p == l);
+        match (at(until), at(lane)) {
+            (Some(until), Some(lane)) => lane < until,
+            _ => true,
+        }
+    }
+}
 
 /// A junction's queue: the vehicles committed there, which can no longer stop
 /// short of their conflicts, in the order they committed, and the lanes that
@@ -22,8 +48,11 @@ use crate::vehicle::{Vehicle, VehicleId};
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct Queue {
-    /// Each holds back every vehicle committed after it.
-    pub committed: Vec<VehicleId>,
+    /// Each holds back every vehicle committed after it, on the lanes it
+    /// covers. A vehicle handed over in two stretches, as a turner waiting
+    /// inside the junction for a gap is, has an entry for each, the second
+    /// joining at the back when it commits to the barrier between them.
+    pub committed: Vec<Entry>,
     /// Every lane on the way of a vehicle that has arrived, from the lane it
     /// was on to the first of the junction's lanes with a conflict on its path,
     /// that lane included, sorted and without repeats. The junction's scans
@@ -50,7 +79,7 @@ pub(crate) fn update(
     scan_empty: &mut Vec<LaneId>,
     scan_kept: &mut Vec<LaneId>,
 ) {
-    let SimState { network, vehicles, occupants, queues, lights, .. } = state;
+    let SimState { network, vehicles, occupants, queues, .. } = state;
     // Some may have left the network since.
     for &id in arrivals.iter() {
         if let Some(vehicle) = vehicles.get(id) {
@@ -61,15 +90,19 @@ pub(crate) fn update(
     for (j, queue) in queues.iter_mut().enumerate() {
         let junction = JunctionId(j as u32);
         // Headed into it, or still on it.
-        queue.committed.retain(|&v| {
-            headed(network, &vehicles[v], junction) || entered(network, occupants, junction, v)
+        queue.committed.retain(|e| {
+            headed(network, &vehicles[e.id], junction)
+                || entered(network, occupants, junction, e.id)
         });
         // From the back, so a lane's vehicles are released back to front in
         // one pass. A released vehicle's way in is marked again, as the
         // scans passed it over while it was committed.
         for k in (0..queue.committed.len()).rev() {
-            if may_release(network, vehicles, occupants, junction, &queue.committed, k) {
-                let id = queue.committed.remove(k);
+            if k < queue.committed.len()
+                && may_release(network, vehicles, occupants, junction, &queue.committed, k)
+            {
+                let id = queue.committed[k].id;
+                queue.committed.retain(|e| e.id != id);
                 mark_way(
                     network,
                     &mut queue.approaching,
@@ -87,7 +120,6 @@ pub(crate) fn update(
             network,
             vehicles,
             occupants,
-            lights,
             junction,
             approaching,
             empty: scan_empty,
@@ -129,6 +161,13 @@ pub(crate) fn arrive(
         if last == Some(j) {
             continue;
         }
+        // In its queue already, it is handed over afresh.
+        let queue = &mut queues[j.0 as usize].committed;
+        if queue.iter().any(|e| e.id == id) {
+            hand_over(network, queue, id, vehicle, j);
+            last = Some(j);
+            continue;
+        }
         if let Some(previous) = last
             && !entered(network, occupants, previous, id)
         {
@@ -152,6 +191,58 @@ pub(crate) fn arrive(
         );
         last = Some(j);
     }
+}
+
+/// Brings `id`'s entries in a junction's queue, `queue`, up to date with how
+/// far its barriers now hand it over (see [`handed_over`]): further than its
+/// last entry covers, having committed to the barrier there, it joins the back
+/// again for the rest; released from a barrier it had committed to, the
+/// entries from there on go.
+fn hand_over(
+    network: &SimNetwork,
+    queue: &mut Vec<Entry>,
+    id: VehicleId,
+    vehicle: &Vehicle,
+    junction: JunctionId,
+) {
+    let until = handed_over(network, vehicle, junction);
+    let mine = || queue.iter().enumerate().filter(|(_, e)| e.id == id).map(|(k, _)| k);
+    let Some(last) = mine().next_back() else {
+        return;
+    };
+    // Released short of where an entry of it starts: that one goes, and those
+    // after it.
+    let mut start = None;
+    let starts = mine().find(|&k| {
+        let at = start;
+        start = queue[k].until;
+        at.is_some() && at == until
+    });
+    if let Some(k) = starts {
+        let mut i = 0;
+        queue.retain(|e| {
+            i += 1;
+            i <= k || e.id != id
+        });
+        return;
+    }
+    match (queue[last].until, until) {
+        // Handed over further: it joins the back again for the rest.
+        (Some(covered), _) if until != Some(covered) => queue.push(Entry { id, until }),
+        // Released short of the end of its last entry, which covered it right
+        // through: it covers it only so far now.
+        (None, Some(_)) => queue[last].until = until,
+        _ => {}
+    }
+}
+
+/// How far `vehicle`'s barriers hand it over to `junction`: up to the lane
+/// of its path where the next barrier it hasn't committed to is, if that is in
+/// the junction, or right through (`None`).
+fn handed_over(network: &SimNetwork, vehicle: &Vehicle, junction: JunctionId) -> Option<LaneId> {
+    barrier::nth(network, vehicle, usize::from(vehicle.committed))
+        .map(|(lane, _)| lane)
+        .filter(|&lane| network.lane(lane).junction() == Some(junction))
 }
 
 /// Adds the lanes of `path` up to the first of `junction`'s lanes on it with a
@@ -181,8 +272,6 @@ struct Scan<'a> {
     network: &'a SimNetwork,
     vehicles: &'a SlotMap<VehicleId, Vehicle>,
     occupants: &'a [Vec<Occupant>],
-    /// The signals' lights, for the lanes' priority levels now.
-    lights: &'a [MovementLight],
     junction: JunctionId,
     /// The lanes vehicles approach the junction along, sorted.
     approaching: &'a [LaneId],
@@ -220,10 +309,23 @@ const SCAN_DEPTH: usize = 32;
 /// So vehicles commit in their order along each lane. IDM keeps a follower able
 /// to stop behind its leader only roughly: one closing fast on a slow leader
 /// could otherwise commit first.
-fn commit_along(scan: &mut Scan, lane: LaneId, committed: &mut Vec<VehicleId>) {
+fn commit_along(scan: &mut Scan, lane: LaneId, committed: &mut Vec<Entry>) {
     let Some(start) = conflict_start(scan.network, lane) else {
         return;
     };
+    // A vehicle waiting part way through, its body on the lane but not handed
+    // over for it, is in the way of everyone coming onto it.
+    let blocked = scan.occupants[lane.0 as usize].iter().any(|o| {
+        !o.is_ghost()
+            && committed
+                .iter()
+                .rev()
+                .find(|e| e.id == o.id)
+                .is_some_and(|last| !handed_over_for(last, &scan.vehicles[o.id], lane))
+    });
+    if blocked {
+        return;
+    }
     let mut way = ArrayVec::<LaneId, SCAN_DEPTH>::new();
     scan_back(scan, lane, lane, start, &mut way, committed);
 }
@@ -237,7 +339,7 @@ fn scan_back(
     on: LaneId,
     s: f64,
     way: &mut ArrayVec<LaneId, SCAN_DEPTH>,
-    committed: &mut Vec<VehicleId>,
+    committed: &mut Vec<Entry>,
 ) -> bool {
     // So long a way back is unheard of: stop, as if at someone, to be safe.
     if way.try_push(on).is_err() {
@@ -271,21 +373,28 @@ fn stops_on(
     on: LaneId,
     s: f64,
     way: &[LaneId],
-    committed: &mut Vec<VehicleId>,
+    committed: &mut Vec<Entry>,
 ) -> bool {
     let list = &scan.occupants[on.0 as usize];
     let end = list.partition_point(|o| o.s() < s);
     for o in list[..end].iter().rev() {
-        if o.is_ghost() || committed.contains(&o.id) {
+        if o.is_ghost() {
             continue;
         }
         let vehicle = &scan.vehicles[o.id];
+        // Committed for the way to `target`, it is passed over; handed over
+        // only part way, short of it, it may yet go on ahead of those behind
+        // it, as a turner waiting for a gap may, so stops the scan.
+        if let Some(last) = committed.iter().rev().find(|e| e.id == o.id) {
+            if handed_over_for(last, vehicle, target) {
+                continue;
+            }
+            return true;
+        }
         if vehicle.path.contains(&target) {
             if must_commit(scan.network, scan.junction, vehicle) {
-                let Scan { network, vehicles, occupants, lights, junction, .. } = *scan;
-                join(
-                    network, vehicles, occupants, lights, junction, committed, o.id,
-                );
+                let until = handed_over(scan.network, vehicle, scan.junction);
+                committed.push(Entry { id: o.id, until });
                 continue;
             }
             if !scan.fronts.contains(&o.id) {
@@ -302,79 +411,17 @@ fn stops_on(
     false
 }
 
-/// Puts `id` in a junction's queue of committed vehicles: at the back, behind
-/// everyone committed before it, and then ahead of each there that would give
-/// way to it, which can't have moved on into the conflict, with those behind it
-/// on its way in, in their order (see [`gives_way`]). So a turner waiting
-/// inside the junction for a gap sinks behind each vehicle it gives way to that
-/// commits while it waits, and stays ahead of those it doesn't.
-pub(crate) fn join(
-    network: &SimNetwork,
-    vehicles: &SlotMap<VehicleId, Vehicle>,
-    occupants: &[Vec<Occupant>],
-    lights: &[MovementLight],
-    junction: JunctionId,
-    committed: &mut Vec<VehicleId>,
-    id: VehicleId,
-) {
-    committed.push(id);
-    // Where it is, and how many have gone behind it, just after it.
-    let (mut at, mut moved) = (committed.len() - 1, 0);
-    let mut i = 0;
-    while i < at {
-        let waiting = committed[i];
-        if !gives_way(network, vehicles, lights, junction, waiting, id) {
-            i += 1;
-            continue;
-        }
-        // It and those behind it on its way in go just behind those moved
-        // before, in their order, in place.
-        let mut k = i;
-        while k < at {
-            let other = committed[k];
-            if other == waiting || behind(network, vehicles, occupants, junction, waiting, other) {
-                committed[k..=at + moved].rotate_left(1);
-                at -= 1;
-                moved += 1;
-            } else {
-                k += 1;
-            }
-        }
+/// Whether `vehicle`, its last entry in a junction's queue `last`, is handed
+/// over for `lane`: right through, or for a stretch of its way that `lane` comes
+/// before. One handed over only part way, short of `lane`, or not headed onto it
+/// at all, may wait there, in the way of others coming onto it.
+fn handed_over_for(last: &Entry, vehicle: &Vehicle, lane: LaneId) -> bool {
+    let at = |l: LaneId| vehicle.path.iter().position(|&p| p == l);
+    match (last.until, at(lane)) {
+        (None, _) => true,
+        (Some(until), Some(t)) => at(until).is_none_or(|u| t < u),
+        (Some(_), None) => false,
     }
-}
-
-/// Whether `waiting`, in a junction's queue, would give way to `other`: it is
-/// held at a give-way or stop barrier in the junction it hasn't committed to,
-/// so hasn't moved on into its conflicts, and a lane of its path in the
-/// junction from there conflicts with one of `other`'s at a higher priority
-/// level now (see [`barrier::level`]), as a turner gives way to oncoming
-/// traffic.
-fn gives_way(
-    network: &SimNetwork,
-    vehicles: &SlotMap<VehicleId, Vehicle>,
-    lights: &[MovementLight],
-    junction: JunctionId,
-    waiting: VehicleId,
-    other: VehicleId,
-) -> bool {
-    let w = &vehicles[waiting];
-    let Some((lane, at)) = barrier::nth(network, w, usize::from(w.committed)) else {
-        return false;
-    };
-    if network.lane(lane).junction() != Some(junction)
-        || matches!(at.kind, crate::network::BarrierKind::Signal { .. })
-    {
-        return false;
-    }
-    let inside = |l: &&LaneId| network.lane(**l).junction() == Some(junction);
-    let from = w.path.iter().position(|&l| l == lane).unwrap_or(0);
-    let theirs = || vehicles[other].path.iter().filter(inside);
-    w.path[from..].iter().take_while(inside).any(|&mine| {
-        theirs().any(|&lane| {
-            network.conflict_between(mine, lane).is_some()
-                && barrier::level(network, lights, mine) < barrier::level(network, lights, lane)
-        })
-    })
 }
 
 /// Whether a vehicle has physically entered a junction: it has a record, not a
@@ -452,10 +499,10 @@ fn may_release(
     vehicles: &SlotMap<VehicleId, Vehicle>,
     occupants: &[Vec<Occupant>],
     junction: JunctionId,
-    committed: &[VehicleId],
+    committed: &[Entry],
     index: usize,
 ) -> bool {
-    let id = committed[index];
+    let id = committed[index].id;
     let vehicle = &vehicles[id];
     let Some(distance) = conflict_distance(network, junction, vehicle) else {
         return false;
@@ -472,33 +519,11 @@ fn may_release(
         Some(o) => o.s() < rear,
         None => vehicles[later].path.contains(&lane),
     };
-    !committed[index + 1..].iter().any(behind)
-}
-
-/// Whether `other` is behind `ahead` on its way into `junction`: on a lane
-/// where `ahead` has a record, behind that record, or headed onto one. Those
-/// lanes are the junction's and those on `ahead`'s path, so a vehicle behind
-/// another at a fork, on the branch it didn't take, is found through its
-/// record there.
-pub(crate) fn behind(
-    network: &SimNetwork,
-    vehicles: &SlotMap<VehicleId, Vehicle>,
-    occupants: &[Vec<Occupant>],
-    junction: JunctionId,
-    ahead: VehicleId,
-    other: VehicleId,
-) -> bool {
-    let lanes = network.junction(junction).lanes().iter().chain(&vehicles[ahead].path);
-    lanes.into_iter().any(|&lane| {
-        let records = &occupants[lane.0 as usize];
-        let Some(mine) = records.iter().find(|o| o.is_record_of(ahead) && !o.is_ghost()) else {
-            return false;
-        };
-        match records.iter().find(|o| o.is_record_of(other) && !o.is_ghost()) {
-            Some(theirs) => theirs.s() < mine.s(),
-            None => vehicles[other].path.contains(&lane),
-        }
-    })
+    !committed[index + 1..]
+        .iter()
+        .map(|e| e.id)
+        .filter(|&e| e != id)
+        .any(|e| behind(&e))
 }
 
 /// Whether a vehicle's path takes it onto any of a junction's lanes.
@@ -507,32 +532,39 @@ fn headed(network: &SimNetwork, vehicle: &Vehicle, junction: JunctionId) -> bool
 }
 
 /// The lowest of the terms the vehicles `ahead` of `id` in a junction impose on
-/// it, each recorded to the debug sink: infinite if none does.
+/// it, on the lanes their entries cover, each recorded to the debug sink:
+/// infinite if none does. Only on its own lanes in `stretch`, the lanes of its
+/// path from the first, if any, up to the second, if any: those its entry
+/// behind them was handed over for. An earlier entry of its own covers the
+/// lanes before, from its own place in the queue.
 pub(crate) fn junction_term<D: DebugSink>(
     state: &SimState,
     sink: &mut D,
     junction: JunctionId,
     id: VehicleId,
-    ahead: &[VehicleId],
+    ahead: &[Entry],
+    stretch: [Option<LaneId>; 2],
 ) -> f64 {
     let network = &state.network;
     let lanes = network.junction(junction).lanes();
     let follower = &state.vehicles[id];
+    let at = |lane: Option<LaneId>| lane.and_then(|l| follower.path.iter().position(|&p| p == l));
+    let (from, until) = (at(stretch[0]), at(stretch[1]));
     let mut accel = f64::INFINITY;
     let front = follower.lane_pos.s - follower.spec.rear_axle + follower.spec.length;
     // From its front to the start of each lane on its path.
     let mut start = -front;
-    for &mine in &follower.path {
+    for (j, &mine) in follower.path.iter().enumerate() {
         let length = network.lane(mine).geometry().length();
-        if network.lane(mine).junction() == Some(junction) {
+        let within = from.is_none_or(|f| j >= f) && until.is_none_or(|u| j < u);
+        if within && network.lane(mine).junction() == Some(junction) {
             for &theirs in lanes {
                 let Some(conflict) = network.conflict_between(mine, theirs) else {
                     continue;
                 };
-                for &other in ahead {
-                    // One that would give way to it, waiting at its line, holds
-                    // nothing back: joining, it goes ahead of it (see [`join`]).
-                    if gives_way(network, &state.vehicles, &state.lights, junction, other, id) {
+                for entry in ahead {
+                    let other = entry.id;
+                    if other == id || !entry.covers(&state.vehicles[other], theirs) {
                         continue;
                     }
                     let Some((term, gap)) =
@@ -599,8 +631,10 @@ fn conflict_term(
     });
     let clear = match rear {
         Some(rear) => rear >= conflict.theirs.end,
-        // Not headed there: only its body, lingering past the lane's end or
-        // beside it, can be in the way.
+        // Not headed there: only its body, lingering on the lane as it leaves
+        // it, can be in the way. Beside it, overlapping it only where it runs
+        // alongside its own, it is in the way only where its own lanes are.
+        None if !network.left_behind(leader.path[0], theirs) => true,
         None => state.occupants[theirs.0 as usize]
             .iter()
             .find(|o| o.is_record_of(other))

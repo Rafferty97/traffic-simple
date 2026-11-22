@@ -142,3 +142,13 @@ pub fn overlap(a: [glam::DVec2; 4], b: [glam::DVec2; 4]) -> bool {
     let axes = [a[1] - a[0], a[2] - a[1], b[1] - b[0], b[2] - b[1]];
     !axes.iter().any(|&axis| separated(axis.perp()))
 }
+
+/// The vehicles in a junction's queue, an entry for each stretch it was handed
+/// over for.
+#[allow(dead_code)]
+pub fn queued<D: traffic_sim::DebugSink>(
+    sim: &Simulation<D>,
+    junction: traffic_sim::JunctionId,
+) -> Vec<traffic_sim::VehicleId> {
+    sim.queue(junction).iter().map(|e| e.id).collect()
+}

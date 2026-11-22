@@ -304,22 +304,34 @@ fn a_signalised_crossroads_holds_each_connector_at_its_movements_light() {
     assert_eq!(plan.movements.len(), 12);
     for (&connector, &turn) in compiled.connectors[0].iter().zip(&compiled.turns[0]) {
         let barriers = sim.lane(connector).barriers();
-        // Right turns, across oncoming traffic green with them, also wait for
-        // a gap inside the junction, at a lower priority than the rest.
-        let (count, priority) = match turn {
-            Turn::Right => (2, 2),
-            _ => (1, 3),
-        };
         assert_eq!(
             barriers.len(),
-            count,
+            1,
             "{connector:?} turning {turn:?} has {barriers:?}"
         );
+        // Right turns, across oncoming traffic green with them, also wait for
+        // a gap inside the junction, at a lower priority than the rest: at the
+        // start of a second lane, which the first leads on to, alone.
+        let next = sim.lane(connector).successors()[0];
+        let priority = match turn {
+            Turn::Right => {
+                let inner = sim.lane(next).barriers();
+                assert_eq!(inner.len(), 1, "{next:?} after {connector:?} has {inner:?}");
+                assert_eq!(inner[0].kind, BarrierKind::GiveWay);
+                assert_eq!(inner[0].s, 0.0);
+                assert_eq!(sim.lane(next).priority(), 2);
+                assert_eq!(sim.lane(next).junction(), sim.lane(connector).junction());
+                2
+            }
+            _ => {
+                assert!(
+                    sim.lane(next).junction().is_none(),
+                    "{connector:?} is split"
+                );
+                3
+            }
+        };
         assert_eq!(sim.lane(connector).priority(), priority);
-        if count == 2 {
-            assert_eq!(barriers[1].kind, BarrierKind::GiveWay);
-            assert!(barriers[1].s > 0.0);
-        }
         assert_eq!(barriers[0].s, 0.0);
         let BarrierKind::Signal { movement } = barriers[0].kind else {
             panic!("{connector:?} has a {:?}", barriers[0].kind);
@@ -773,8 +785,9 @@ fn at_signals_a_car_waits_behind_its_line_for_a_turner_in_its_way() {
     };
     let (right, straight) = (of(Turn::Right), of(Turn::Straight));
     let line = compiled.sim.lane(straight).barriers()[0].s;
-    // Where the turner waits for a gap.
-    let waits = compiled.sim.lane(right).barriers()[1].s;
+    // Where the turner waits for a gap: at the end of its first lane, where the
+    // second, with its give-way line, starts.
+    let waits = compiled.sim.lane(right).geometry().length();
     let mut sim = Simulation::new(compiled.sim, NoopSink);
     let car = VehicleSpec::passenger_car();
     // A turner held at its waiting line inside, on the road's first green.

@@ -8,7 +8,7 @@ use traffic_sim::{
 };
 
 mod common;
-use common::{car, overlap};
+use common::{car, overlap, queued};
 
 const DT: f64 = 1.0 / 60.0;
 const WIDTH: f64 = 3.5;
@@ -160,7 +160,7 @@ fn the_second_to_commit_waits_for_the_first_to_clear_the_crossing() {
     let mut b_slowest = f64::INFINITY;
     for _ in 0..(20.0 / DT) as usize {
         sim.step_variable(DT);
-        if sim.queue(junction) == [a, b] {
+        if queued(&sim, junction) == [a, b] {
             both = true;
         }
         if let (Some(va), Some(vb)) = (sim.get(a), sim.get(b)) {
@@ -180,7 +180,7 @@ fn the_second_to_commit_waits_for_the_first_to_clear_the_crossing() {
         sim.get(a).is_none() && sim.get(b).is_none(),
         "both get through"
     );
-    assert!(sim.queue(junction).is_empty(), "and leave the queue");
+    assert!(queued(&sim, junction).is_empty(), "and leave the queue");
 }
 
 #[test]
@@ -283,7 +283,7 @@ fn a_fast_follower_commits_only_after_the_slow_vehicle_ahead_of_it() {
 /// Adds the vehicles newly committed at a junction to `order`, in the order
 /// they committed.
 fn commit_order(sim: &Simulation, junction: JunctionId, order: &mut Vec<VehicleId>) {
-    for &id in sim.queue(junction) {
+    for id in queued(sim, junction) {
         if !order.contains(&id) {
             order.push(id);
         }
@@ -298,7 +298,7 @@ fn a_vehicle_that_cuts_in_ahead_commits_first() {
     // changes into lane 0.
     let behind = sim.insert(car(), at(0, 85.0, 5.0));
     let ahead = sim.insert(car(), at(1, 92.0, 5.0));
-    assert!(sim.queue(junction).is_empty());
+    assert!(queued(&sim, junction).is_empty());
     assert_eq!(sim.approaching(junction), [0, 1, 2, 3].map(LaneId));
     sim.change_lane(ahead, Side::Left).unwrap();
     let mut order = Vec::new();
@@ -323,7 +323,7 @@ fn a_vehicle_not_yet_committed_stops_gently_for_a_committed_one_in_its_way() {
     let mut hardest = 0.0f64;
     for _ in 0..(20.0 / DT) as usize {
         sim.step_variable(DT);
-        assert_eq!(sim.queue(junction), [blocker], "it never commits");
+        assert_eq!(queued(&sim, junction), [blocker], "it never commits");
         let v = sim.get(id).unwrap();
         hardest = hardest.min(v.accel());
         let front = v.lane_pos().s - spec.rear_axle + spec.length;
@@ -348,13 +348,13 @@ fn a_committed_vehicle_held_up_short_of_its_conflict_is_released() {
     let held = sim.insert(car(), at(0, 72.0, 14.0));
     let slow = sim.insert(car(), at(1, 82.0, 6.0));
     sim.step_variable(DT);
-    assert_eq!(sim.queue(junction), [held]);
+    assert_eq!(queued(&sim, junction), [held]);
     sim.change_lane(slow, Side::Left).unwrap();
     let mut released = false;
     for _ in 0..(5.0 / DT) as usize {
         sim.step_variable(DT);
         let short = sim.get(held).is_some_and(|v| v.lane() == LaneId(0));
-        released |= short && !sim.queue(junction).contains(&held);
+        released |= short && !queued(&sim, junction).contains(&held);
         let bodies: Vec<_> = sim.vehicles().map(|(_, v)| v.corners()).collect();
         if let [x, y] = bodies[..] {
             assert!(!overlap(x, y), "they overlap");
@@ -394,12 +394,12 @@ fn it_arrives_at_the_next_junction_only_once_it_has_entered_the_one_before() {
             break;
         };
         // On the first junction's lane or beyond: its rear axle has entered it.
-        let at_second = !sim.approaching(second).is_empty() || sim.queue(second) == [id];
+        let at_second = !sim.approaching(second).is_empty() || queued(&sim, second) == [id];
         assert!(
             !at_second || v.lane().0 >= 1,
             "it arrives at the second before entering the first"
         );
-        arrived |= at_second && sim.queue(first) == [id];
+        arrived |= at_second && queued(&sim, first) == [id];
     }
     assert!(
         arrived,

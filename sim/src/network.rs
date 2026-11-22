@@ -658,7 +658,17 @@ impl SimNetwork {
             let ends = [lane_a, lane_b].map(|l| l.geometry().length()..l.geometry().length());
             return Some((ConflictKind::Merge, overlap.unwrap_or(ends)));
         }
-        let linked = shares(lane_a.predecessors(), lane_b.predecessors())
+        // A connector may be split into several lanes, one after another, so
+        // branches of a fork are traced back to the first lane of each in the
+        // junction.
+        let (first_a, first_b) = (self.first_in_junction(a), self.first_in_junction(b));
+        let linked = first_a == first_b
+            || shares(
+                self.lane(first_a).predecessors(),
+                self.lane(first_b).predecessors(),
+            )
+            || self.leads_to(a, b)
+            || self.leads_to(b, a)
             || lane_a.successors().contains(&b)
             || lane_b.successors().contains(&a)
             || [Side::Left, Side::Right]
@@ -668,6 +678,45 @@ impl SimNetwork {
             return None;
         }
         overlap.map(|ranges| (ConflictKind::Cross, ranges))
+    }
+
+    /// The first lane of the run of lanes in `lane`'s junction that it ends,
+    /// each the only lane leading into the next: where a connector split into
+    /// pieces starts.
+    pub(crate) fn first_in_junction(&self, mut lane: LaneId) -> LaneId {
+        let junction = self.lane(lane).junction;
+        while let [p] = self.lane(lane).predecessors()[..]
+            && junction.is_some()
+            && self.lane(p).junction.map(|j| j.0) == junction.map(|j| j.0)
+            && p != lane
+        {
+            lane = p;
+        }
+        lane
+    }
+
+    /// Whether a vehicle following `now`, its body on `lane` though it isn't
+    /// headed there, has left it behind: `lane` comes before `now` in the same
+    /// connector, or `now` is out of `lane`'s junction, so its body lingers as
+    /// it leaves. Otherwise its body only overlaps `lane` beside its own, whose
+    /// conflicts are its own lanes'.
+    pub(crate) fn left_behind(&self, now: LaneId, lane: LaneId) -> bool {
+        let junction = self.lane(lane).junction.map(|j| j.0);
+        self.lane(now).junction.map(|j| j.0) != junction || self.leads_to(now, lane)
+    }
+
+    /// Whether `from` leads to `to` through that run of lanes: `to` comes
+    /// before it, in the same connector.
+    fn leads_to(&self, from: LaneId, to: LaneId) -> bool {
+        let first = self.first_in_junction(from);
+        let mut lane = from;
+        while lane != first {
+            lane = self.lane(lane).predecessors()[0];
+            if lane == to {
+                return true;
+            }
+        }
+        false
     }
 
     /// The junction with the given id. Panics if it doesn't exist.
