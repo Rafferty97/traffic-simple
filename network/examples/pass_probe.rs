@@ -345,6 +345,7 @@ fn freeway(n: usize, length: f64) -> RoadNetwork {
         pieces: vec![Piece::Line { length }],
         lanes,
         speed_limit: 100.0 / 3.6,
+        keep_clear: Vec::new(),
     });
     net
 }
@@ -368,6 +369,7 @@ fn winding(n: usize, radius: f64) -> RoadNetwork {
         pieces,
         lanes,
         speed_limit: 100.0 / 3.6,
+        keep_clear: Vec::new(),
     });
     net
 }
@@ -467,6 +469,7 @@ fn freeway3() -> RoadNetwork {
         pieces: vec![Piece::Line { length: 1500.0 }],
         lanes: vec![lane(3.5), lane(0.0), lane(-3.5)],
         speed_limit: 120.0 / 3.6,
+        keep_clear: Vec::new(),
     });
     net
 }

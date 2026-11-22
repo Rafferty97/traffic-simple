@@ -304,7 +304,7 @@ impl Line {
 }
 
 /// What a barrier is, and so when a vehicle commits to crossing it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BarrierKind {
     /// A signal for a movement: crossed once a vehicle can no longer stop
@@ -320,6 +320,10 @@ pub enum BarrierKind {
     /// no vehicle at a conflicting all-way stop line of its junction came to
     /// rest earlier, and there is a gap in the traffic that has committed.
     AllWayStop,
+    /// The start of a keep-clear zone `length` meters long, in meters along
+    /// the vehicle's way: crossed once there is room beyond its far end, and
+    /// it can no longer stop comfortably before it.
+    KeepClear { length: f64 },
 }
 
 /// Identifies a signal movement: its index among every controller's movements,

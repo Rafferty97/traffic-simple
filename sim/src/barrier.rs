@@ -119,7 +119,10 @@ pub(crate) fn held_by(
                 BarrierKind::Signal { movement } => {
                     lights[movement.0 as usize].light != Light::Green
                 }
-                BarrierKind::GiveWay | BarrierKind::Stop | BarrierKind::AllWayStop => false,
+                BarrierKind::GiveWay
+                | BarrierKind::Stop
+                | BarrierKind::AllWayStop
+                | BarrierKind::KeepClear { .. } => false,
             };
             if rank >= vehicle.committed as usize && holds {
                 return true;
@@ -213,6 +216,15 @@ pub(crate) fn decide(
         },
         BarrierKind::GiveWay => has_gap(&barrier) && room(),
         BarrierKind::Stop => vehicle.stopped_at.is_some() && has_gap(&barrier) && room(),
+        // As a green light: nothing holds it back while it can still stop
+        // comfortably and there is room, and it commits once it can't.
+        BarrierKind::KeepClear { length } => {
+            let room = room_past(state, id, vehicle, k, barrier.s, length);
+            if room && can_stop(spec.comfy_decel) {
+                return (Decision::Pass, None);
+            }
+            room
+        }
         BarrierKind::AllWayStop => {
             vehicle.stopped_at.is_some()
                 && first_to_arrive(state, id, vehicle, k, barrier)
@@ -498,9 +510,10 @@ pub(crate) fn gap_to(vehicle: &Vehicle, barrier: &Barrier, along: f64) -> f64 {
 /// its front, is released from it, to decide afresh: at a red light, it can
 /// still stop before the line without braking harder than
 /// [`acceleration::SAFE_BRAKING`], having been slowed short of it by traffic
-/// ahead or a junction, as a driver who could stop does; at a give-way line,
-/// or a stop line, it has come to rest short of the line, so the gap it took is stale, unless
-/// its junction has queued it past the line already, so that others are queued
+/// ahead or a junction, as a driver who could stop does; at a give-way or stop
+/// line, or a keep-clear zone, it has come to rest short of the line, so the
+/// gap it took, or the room it saw beyond the zone, is stale, unless its
+/// junction has queued it past the line already, so that others are queued
 /// behind it on that footing (see `docs/DESIGN.md`, Queue invariants). On amber,
 /// a committed vehicle goes on: one caught in the dilemma zone, or a turner
 /// waiting past its line for a gap, which comes as the oncoming traffic stops.
@@ -530,9 +543,10 @@ pub(crate) fn released(
                 state.lights[movement.0 as usize].light == Light::Red
                     && speed * speed / (2.0 * acceleration::SAFE_BRAKING) <= gap
             }
-            BarrierKind::GiveWay | BarrierKind::Stop | BarrierKind::AllWayStop => {
-                speed == 0.0 && !queued_past()
-            }
+            BarrierKind::GiveWay
+            | BarrierKind::Stop
+            | BarrierKind::AllWayStop
+            | BarrierKind::KeepClear { .. } => speed == 0.0 && !queued_past(),
         }
 }
 
@@ -667,6 +681,55 @@ fn yields_inside(
         })
     };
     queued.or_else(|| coming().map(|o| o.id))
+}
+
+/// Whether there is room for `vehicle`, entering a keep-clear zone `length`
+/// long at `s` on its `k`th lane, beyond the zone's far end: room for itself
+/// and every vehicle ahead of it short of the far end, each its length and
+/// minimum gap. Taking the vehicles beyond nearest first: if there is that
+/// room behind one now, there is room; if there wouldn't be even once it had
+/// gone on as far as it would if it stopped comfortably, there isn't; and
+/// otherwise there is room only if there is room behind the next one for this
+/// one too. Along its path, as far as it knows it.
+fn room_past(
+    state: &SimState,
+    id: VehicleId,
+    vehicle: &Vehicle,
+    k: usize,
+    s: f64,
+    length: f64,
+) -> bool {
+    let network = &state.network;
+    let path = &vehicle.path;
+    let mut needed = vehicle.spec.length + vehicle.spec.min_gap;
+    // Where each lane of its path starts, back from the zone's far end.
+    let to_zone: f64 = path[..k].iter().map(|&l| network.lane(l).geometry().length()).sum();
+    let mut start = -(to_zone + s + length);
+    for (j, &lane) in path.iter().enumerate() {
+        let from = if j == 0 {
+            vehicle.lane_pos.s
+        } else {
+            f64::NEG_INFINITY
+        };
+        for o in state.occupants[lane.0 as usize].iter().filter(|o| o.s() >= from) {
+            if o.is_ghost() || o.id == id {
+                continue;
+            }
+            let other = &state.vehicles[o.id];
+            let beyond = start + o.s();
+            if beyond >= 0.0 {
+                if beyond >= needed {
+                    return true;
+                }
+                if beyond + comfortable_stop(other) < needed {
+                    return false;
+                }
+            }
+            needed += other.spec.length + other.spec.min_gap;
+        }
+        start += network.lane(lane).geometry().length();
+    }
+    true
 }
 
 /// Whether, entering the junction its `k`th lane is in at `s` along it, `vehicle`

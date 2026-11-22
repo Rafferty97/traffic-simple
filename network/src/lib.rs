@@ -130,6 +130,21 @@ pub struct Road {
     pub lanes: Vec<RoadLane>,
     /// In meters per second.
     pub speed_limit: f64,
+    /// Stretches its traffic keeps clear.
+    pub keep_clear: Vec<KeepClear>,
+}
+
+/// A stretch of a road that its traffic going one way keeps clear, as a box
+/// painted across a side road's mouth asks: a vehicle enters it only if there
+/// is room for it beyond, so a queue leaves it empty.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KeepClear {
+    /// Where it starts and ends along the road's reference line, in meters,
+    /// `from` before `to`.
+    pub from: f64,
+    pub to: f64,
+    /// The way the lanes it is across run.
+    pub direction: Direction,
 }
 
 impl Road {
@@ -156,7 +171,13 @@ impl Road {
         let rel = reference::end_pose(Pose::new(0.0, 0.0, 0.0), &pieces);
         let heading = end.heading - rel.heading;
         let pos = end.pos - DVec2::from_angle(heading).rotate(rel.pos);
-        Self { start: Pose { pos, heading }, pieces, lanes, speed_limit }
+        Self {
+            start: Pose { pos, heading },
+            pieces,
+            lanes,
+            speed_limit,
+            keep_clear: Vec::new(),
+        }
     }
 }
 

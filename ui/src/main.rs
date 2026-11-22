@@ -149,6 +149,9 @@ enum Scenario {
     Signals(usize),
     /// As `Signals`, with two lanes each way, the roads crossing at 60°.
     ObliqueSignals,
+    /// As `Signals`, with two lanes each way, and a keep-clear zone on the
+    /// way in from the west.
+    KeepClear,
     /// As `Crossroads`, an all-way stop.
     AllWayStop(usize),
     /// As `Crossroads`, the east–west road with priority, the other with
@@ -166,7 +169,7 @@ enum Scenario {
 }
 
 impl Scenario {
-    const ALL: [Scenario; 18] = [
+    const ALL: [Scenario; 19] = [
         Scenario::Ring,
         Scenario::Crossroads(1),
         Scenario::Crossroads(2),
@@ -175,6 +178,7 @@ impl Scenario {
         Scenario::Signals(2),
         Scenario::Signals(3),
         Scenario::ObliqueSignals,
+        Scenario::KeepClear,
         Scenario::AllWayStop(1),
         Scenario::AllWayStop(2),
         Scenario::Priority(1, Sign::GiveWay),
@@ -198,6 +202,7 @@ impl Scenario {
             Scenario::Signals(2) => "signals-2",
             Scenario::Signals(_) => "signals-3",
             Scenario::ObliqueSignals => "oblique-signals",
+            Scenario::KeepClear => "keep-clear",
             Scenario::AllWayStop(1) => "all-way-1",
             Scenario::AllWayStop(_) => "all-way-2",
             Scenario::Priority(1, Sign::GiveWay) => "priority-1",
@@ -221,6 +226,7 @@ impl Scenario {
             Scenario::Signals(2) => "Signalised crossroads of 4-lane roads",
             Scenario::Signals(_) => "Signalised crossroads of 6-lane roads",
             Scenario::ObliqueSignals => "Signalised 4-lane roads crossing at 60°",
+            Scenario::KeepClear => "Signalised crossroads with a keep-clear zone",
             Scenario::AllWayStop(1) => "All-way stop of 2-lane roads",
             Scenario::AllWayStop(_) => "All-way stop of 4-lane roads",
             Scenario::Priority(1, Sign::GiveWay) => "Give-way crossroads of 2-lane roads",
@@ -244,6 +250,7 @@ impl Scenario {
             Scenario::ObliqueSignals => {
                 scenarios::signalised_oblique_crossroads(2, SPEED_LIMIT, 60f64.to_radians())
             }
+            Scenario::KeepClear => scenarios::signalised_crossroads_keep_clear(2, SPEED_LIMIT),
             Scenario::AllWayStop(lanes) => scenarios::all_way_stop_crossroads(lanes, SPEED_LIMIT),
             Scenario::Priority(lanes, sign) => {
                 scenarios::priority_crossroads(lanes, SPEED_LIMIT, sign)
@@ -1068,6 +1075,7 @@ fn draw_pretty(
             MarkingStyle::Edge => drop(painter.add(Shape::line(points, white))),
             MarkingStyle::Centre => drop(painter.add(Shape::line(points, yellow))),
             MarkingStyle::Stop => drop(painter.add(Shape::line(points, stop))),
+            MarkingStyle::KeepClear => drop(painter.add(Shape::line(points, yellow))),
             // 3 m dashes every 9 m.
             MarkingStyle::Dashed => {
                 for dash in dashes(&marking.points, 3.0, 9.0) {
@@ -1223,6 +1231,7 @@ fn draw_debug(
                     BarrierKind::GiveWay => GIVE_WAY,
                     BarrierKind::Stop => STOP,
                     BarrierKind::AllWayStop => ALL_WAY,
+                    BarrierKind::KeepClear { .. } => KEEP_CLEAR,
                 };
                 let pos = geometry.lane_pos(barrier.s, 0.0);
                 let left = geometry.half_width(pos, Side::Left);
@@ -1420,6 +1429,7 @@ const LIGHT_RED: Color32 = Color32::from_rgb(230, 60, 50);
 const GIVE_WAY: Color32 = Color32::from_rgb(240, 240, 240);
 const STOP: Color32 = Color32::from_rgb(255, 120, 190);
 const ALL_WAY: Color32 = Color32::from_rgb(190, 120, 255);
+const KEEP_CLEAR: Color32 = Color32::from_rgb(240, 200, 40);
 const PASS_CORNER: Color32 = Color32::from_rgb(255, 120, 200);
 const PASS_BODY: Color32 = Color32::from_rgb(120, 170, 255);
 const PASS_OK: Color32 = Color32::from_rgb(80, 220, 80);
@@ -1502,8 +1512,16 @@ impl Layer {
             ),
             Layer::Barriers => (
                 "Barriers",
-                &[LIGHT_GREEN, LIGHT_AMBER, LIGHT_RED, GIVE_WAY, STOP, ALL_WAY],
-                "Each barrier across its lane: a signal in its light's colour, a give-way line in white, a stop line in pink, an all-way stop line in violet",
+                &[
+                    LIGHT_GREEN,
+                    LIGHT_AMBER,
+                    LIGHT_RED,
+                    GIVE_WAY,
+                    STOP,
+                    ALL_WAY,
+                    KEEP_CLEAR,
+                ],
+                "Each barrier across its lane: a signal in its light's colour, a give-way line in white, a stop line in pink, an all-way stop line in violet, the start of a keep-clear zone in yellow",
             ),
             Layer::Lookahead => (
                 "Lookahead",

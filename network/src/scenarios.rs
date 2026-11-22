@@ -5,8 +5,8 @@ use std::f64::consts::{FRAC_PI_2, PI, TAU};
 use traffic_sim::{Keep, Leaving};
 
 use crate::{
-    Arm, Control, Direction, Intersection, LaneRef, Piece, Pose, Profile, Road, RoadId, RoadLane,
-    RoadNetwork, Sign, SignalPhase, Turn,
+    Arm, Control, Direction, Intersection, KeepClear, LaneRef, Piece, Pose, Profile, Road, RoadId,
+    RoadLane, RoadNetwork, Sign, SignalPhase, Turn,
 };
 
 const WIDTH: f64 = 3.5;
@@ -128,6 +128,26 @@ pub fn signalised_crossroads(lanes: usize, speed_limit: f64) -> RoadNetwork {
     signalised(crossroads(lanes, speed_limit))
 }
 
+/// How far back from the end of the west arm of
+/// [`signalised_crossroads_keep_clear`] its keep-clear zone starts and ends,
+/// in meters.
+pub const KEEP_CLEAR_BACK: [f64; 2] = [60.0, 45.0];
+
+/// As [`signalised_crossroads`], with a keep-clear zone across the lanes
+/// coming in from the west, 45 to 60 m back from the end of the road, as if
+/// across a side road's mouth: the queue at a red light leaves it empty.
+pub fn signalised_crossroads_keep_clear(lanes: usize, speed_limit: f64) -> RoadNetwork {
+    let mut net = signalised_crossroads(lanes, speed_limit);
+    let west = &mut net.roads[2];
+    let length = west.length();
+    west.keep_clear.push(KeepClear {
+        from: length - KEEP_CLEAR_BACK[0],
+        to: length - KEEP_CLEAR_BACK[1],
+        direction: Direction::Forward,
+    });
+    net
+}
+
 /// As [`oblique_crossroads`], signalised as [`signalised_crossroads`] is.
 pub fn signalised_oblique_crossroads(lanes: usize, speed_limit: f64, angle: f64) -> RoadNetwork {
     signalised(oblique_crossroads(lanes, speed_limit, angle))
@@ -200,6 +220,7 @@ pub fn ring(circumference: f64, lanes: usize, speed_limit: f64) -> RoadNetwork {
         pieces: vec![Piece::Arc { length: circumference, curvature: -1.0 / radius }],
         lanes: road_lanes,
         speed_limit,
+        keep_clear: Vec::new(),
     });
     net.join(road, road);
     net
@@ -234,6 +255,7 @@ pub fn ramps_leaving(speed_limit: f64, ramp_limit: f64, leaving: Leaving) -> Roa
         pieces: vec![Piece::Line { length }],
         lanes,
         speed_limit,
+        keep_clear: Vec::new(),
     };
     let accel = 1.5 * WIDTH;
 
@@ -278,6 +300,7 @@ pub fn ramps_leaving(speed_limit: f64, ramp_limit: f64, leaving: Leaving) -> Roa
         ],
         lanes: vec![lane(0.0)],
         speed_limit: ramp_limit,
+        keep_clear: Vec::new(),
     });
 
     for (from, to) in [

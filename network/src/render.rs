@@ -5,7 +5,7 @@ use glam::DVec2;
 
 use crate::arms::{self, StopLine};
 use crate::reference::Polyline;
-use crate::{Direction, Intersection, LaneRef, RoadNetwork, Turn};
+use crate::{Direction, Intersection, KeepClear, LaneRef, Road, RoadNetwork, Turn};
 
 /// A road network's drawable geometry, in world meters.
 #[derive(Clone, Debug, Default)]
@@ -66,7 +66,12 @@ pub enum MarkingStyle {
     /// Across a lane where it comes into an intersection: a stop line, 300 mm
     /// wide, its far edge where the intersection starts.
     Stop,
+    /// A keep-clear zone's outline, closed, or one of its diagonal hatches.
+    KeepClear,
 }
+
+/// How far apart a keep-clear zone's hatches are, along its road, in meters.
+const HATCH_SPACING: f64 = 2.0;
 
 pub(crate) fn build(
     net: &RoadNetwork,
@@ -124,6 +129,12 @@ pub(crate) fn build(
         }
     }
 
+    for (road, line) in net.roads.iter().zip(polylines) {
+        for zone in &road.keep_clear {
+            keep_clear(road, line, zone, &mut out);
+        }
+    }
+
     for (intersection, turns) in net.intersections.iter().zip(turns) {
         let (surface, curbs) = intersection_surface(net, polylines, &out.roads, intersection);
         out.intersections.push(surface);
@@ -132,6 +143,61 @@ pub(crate) fn build(
         approaches(net, polylines, intersection, turns, &mut out);
     }
     out
+}
+
+/// A keep-clear zone's outline, across the lanes of `road` going its way, and
+/// its hatches, at 45° across it.
+fn keep_clear(road: &Road, line: &Polyline, zone: &KeepClear, out: &mut RenderGeometry) {
+    let lanes: Vec<_> = road.lanes.iter().filter(|l| l.direction == zone.direction).collect();
+    if lanes.is_empty() {
+        return;
+    }
+    // Its edges, by offset from the reference line, at `s`.
+    let left = |s: f64| {
+        lanes
+            .iter()
+            .map(|l| l.offset.at(s) + 0.5 * l.width.at(s))
+            .fold(f64::MIN, f64::max)
+    };
+    let right = |s: f64| {
+        lanes
+            .iter()
+            .map(|l| l.offset.at(s) - 0.5 * l.width.at(s))
+            .fold(f64::MAX, f64::min)
+    };
+    // The point offset `t` from the reference line at `s`, between vertices.
+    let at = |s: f64, t: f64| {
+        let i = line.s.partition_point(|&x| x <= s).clamp(1, line.s.len() - 1);
+        let u = ((s - line.s[i - 1]) / (line.s[i] - line.s[i - 1])).clamp(0.0, 1.0);
+        let point = line.points[i - 1].lerp(line.points[i], u);
+        let miter = line.miters[i - 1].lerp(line.miters[i], u);
+        point + t * miter
+    };
+    let inside: Vec<f64> =
+        line.s.iter().copied().filter(|&s| s > zone.from && s < zone.to).collect();
+    let stations: Vec<f64> = std::iter::once(zone.from)
+        .chain(inside)
+        .chain(std::iter::once(zone.to))
+        .collect();
+    let mut outline: Vec<DVec2> = stations.iter().map(|&s| at(s, left(s))).collect();
+    outline.extend(stations.iter().rev().map(|&s| at(s, right(s))));
+    outline.push(outline[0]);
+    out.markings.push(Marking { points: outline, style: MarkingStyle::KeepClear });
+    // Each hatch from its right edge forward to its left, as far along as the
+    // zone is wide, clipped to the zone.
+    let width = left(zone.from) - right(zone.from);
+    let mut s0 = zone.from - width;
+    while s0 < zone.to {
+        let (a, b) = (s0.max(zone.from), (s0 + width).min(zone.to));
+        if b > a {
+            let t = |s: f64| right(s) + (s - s0) / width * (left(s) - right(s));
+            out.markings.push(Marking {
+                points: vec![at(a, t(a)), at(b, t(b))],
+                style: MarkingStyle::KeepClear,
+            });
+        }
+        s0 += HATCH_SPACING;
+    }
 }
 
 /// The stretch of `points`, at stations `s`, from `from` to `to`.

@@ -41,6 +41,8 @@ pub enum CompileError {
         lane: LaneRef,
         reach: [f64; 2],
     },
+    /// A keep-clear zone reaches beyond where its road's lanes are.
+    KeepClear { road: RoadId },
     /// A far-side turn's lane before where it waits for a gap keeps meeting
     /// the traffic it gives way to, however far back it is split.
     Waiting { intersection: usize, connection: usize },
@@ -56,6 +58,13 @@ impl fmt::Display for CompileError {
             CompileError::Lane { what, error } => write!(f, "{what}: {error}"),
             CompileError::Network(error) => write!(f, "{error}"),
             CompileError::Arm { road, reason } => write!(f, "road {}: {reason}", road.0),
+            CompileError::KeepClear { road } => {
+                write!(
+                    f,
+                    "road {}: a keep-clear zone reaches beyond its lanes",
+                    road.0
+                )
+            }
             CompileError::Sweeps { intersection, connection, lane, .. } => write!(
                 f,
                 "intersection {intersection} connection {connection} sweeps onto road {} lane {}",
@@ -240,6 +249,8 @@ fn assemble(
     // it, from the intersection to its start, and the one after it, from its
     // end into the intersection, in its direction of travel.
     let mut stretches: Vec<[Option<Vec<DVec2>>; 2]> = Vec::new();
+    // Each keep-clear zone's barrier, on each lane across it.
+    let mut zones: Vec<(LaneId, Barrier)> = Vec::new();
     let ends = arms::road_ends(net);
 
     for (r, road) in net.roads.iter().enumerate() {
@@ -252,11 +263,22 @@ fn assemble(
             cut[at_end as usize].map_or([0.0; 2], |arm| arms::cuts(road, total, &arm, at_end))
         });
         let kept = |c: [f64; 2]| c.into_iter().filter(|&d| d > 0.0).collect::<Vec<_>>();
+        if road
+            .keep_clear
+            .iter()
+            .any(|z| !(0.0 <= z.from && z.from < z.to && z.to <= total))
+        {
+            return Err(CompileError::KeepClear { road: RoadId(r) });
+        }
+        // Vertices where its lanes are cut, and where its keep-clear zones
+        // start and end, so they are square across it.
+        let mut from_start = kept(cuts[0]);
+        from_start.extend(road.keep_clear.iter().flat_map(|z| [z.from, z.to]));
         let line = Polyline::new(
             road.start,
             &road.pieces,
             &profiles,
-            [&kept(cuts[0]), &kept(cuts[1])],
+            [&from_start, &kept(cuts[1])],
         );
         let mut ids = Vec::new();
         for (i, lane) in road.lanes.iter().enumerate() {
@@ -285,6 +307,25 @@ fn assemble(
             let mut before = (lo > 0).then(|| points[..=lo].to_vec());
             let mut after = (hi < n - 1).then(|| points[hi..].to_vec());
             points = points[lo..=hi].to_vec();
+            // Each keep-clear zone across it, as a barrier at its start in the
+            // lane's own direction, its length along the lane.
+            let along = arc_lengths(&points);
+            let length = *along.last().unwrap();
+            for zone in road.keep_clear.iter().filter(|z| z.direction == lane.direction) {
+                let at = |s: f64| {
+                    let i = line.vertex(s);
+                    (lo..=hi).contains(&i).then(|| along[i - lo])
+                };
+                let (Some(a), Some(b)) = (at(zone.from), at(zone.to)) else {
+                    return Err(CompileError::KeepClear { road: RoadId(r) });
+                };
+                let start = match lane.direction {
+                    Direction::Forward => a,
+                    Direction::Backward => length - b,
+                };
+                let kind = BarrierKind::KeepClear { length: b - a };
+                zones.push((LaneId(built.len() as u32), Barrier::new(start, kind)));
+            }
             half_widths = half_widths[lo..=hi].to_vec();
             if lane.direction == Direction::Backward {
                 points.reverse();
@@ -435,6 +476,9 @@ fn assemble(
     }
     for &(from, to) in &links {
         sim.connect(from, to);
+    }
+    for &(lane, barrier) in &zones {
+        sim.add_barrier(lane, barrier);
     }
 
     for (r, road) in net.roads.iter().enumerate() {
