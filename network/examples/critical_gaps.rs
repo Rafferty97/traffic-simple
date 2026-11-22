@@ -12,7 +12,7 @@ use traffic_sim::{LaneId, NoopSink, Placement, Route, Simulation, VehicleId, Veh
 
 fn main() {
     let limit = 50.0 / 3.6;
-    let net = scenarios::priority_crossroads(1, limit, Sign::GiveWay);
+    let net = scenarios::priority_crossroads([1, 1], limit, Sign::GiveWay);
     let compiled = compile(&net).unwrap();
     let connections = &net.intersections[0].connections;
     // From the south (road 3), across or into the road from the east and west.

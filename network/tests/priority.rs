@@ -17,14 +17,16 @@ const LIMIT: f64 = 50.0 / 3.6;
 /// Every priority scenario, named.
 fn scenarios() -> Vec<(String, RoadNetwork)> {
     let mut nets = Vec::new();
+    // Lanes each way on the major road and the minor one.
     for sign in [Sign::GiveWay, Sign::Stop] {
-        for lanes in 1..=2 {
+        for lanes in [[1, 1], [2, 1], [2, 2]] {
+            let [major, minor] = lanes;
             nets.push((
-                format!("crossroads, {lanes} lanes, {sign:?}"),
+                format!("crossroads, {major} by {minor} lanes, {sign:?}"),
                 scenarios::priority_crossroads(lanes, LIMIT, sign),
             ));
             nets.push((
-                format!("T, {lanes} lanes, {sign:?}"),
+                format!("T, {major} by {minor} lanes, {sign:?}"),
                 scenarios::priority_t_junction(lanes, LIMIT, sign),
             ));
         }
@@ -206,9 +208,7 @@ fn major_road_traffic_never_brakes_hard_for_minor_road_traffic() {
                 let theirs = on(&sim, other, &|l| minor.contains(&l));
                 let Some(v) = sim.get(id) else { continue };
                 let binding = v.accel() == accel;
-                // A little over: an impatient driver reckons it will brake as
-                // hard as is comfortable, and IDM overshoots that slightly.
-                let braking = accel < -1.1 * VehicleSpec::passenger_car().comfy_decel;
+                let braking = accel < -VehicleSpec::passenger_car().comfy_decel;
                 if mine && theirs && binding && braking {
                     hard.push((id, other, sim.time(), accel));
                 }

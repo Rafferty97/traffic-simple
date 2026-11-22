@@ -156,12 +156,13 @@ enum Scenario {
     TurnOnRed,
     /// As `Crossroads`, an all-way stop.
     AllWayStop(usize),
-    /// As `Crossroads`, the east–west road with priority, the other with
+    /// A crossroads, the east–west road, with the first number of lanes each
+    /// way, with priority, and the other, with the second, with this sign.
+    Priority([usize; 2], Sign),
+    /// A T-junction, the road through, with the first number of lanes each
+    /// way, with priority, and the one from the south, with the second, with
     /// this sign.
-    Priority(usize, Sign),
-    /// A T-junction of 2-lane roads, the road through with priority, the one
-    /// from the south with this sign.
-    TJunction(Sign),
+    TJunction([usize; 2], Sign),
     /// A freeze frame: a right turner and a cross-street car waiting on each
     /// other (see `traffic_network::frames::turner_cycle`).
     TurnerCycle,
@@ -171,7 +172,7 @@ enum Scenario {
 }
 
 impl Scenario {
-    const ALL: [Scenario; 20] = [
+    const ALL: [Scenario; 24] = [
         Scenario::Ring,
         Scenario::Crossroads(1),
         Scenario::Crossroads(2),
@@ -184,11 +185,15 @@ impl Scenario {
         Scenario::TurnOnRed,
         Scenario::AllWayStop(1),
         Scenario::AllWayStop(2),
-        Scenario::Priority(1, Sign::GiveWay),
-        Scenario::Priority(2, Sign::GiveWay),
-        Scenario::Priority(1, Sign::Stop),
-        Scenario::TJunction(Sign::GiveWay),
-        Scenario::TJunction(Sign::Stop),
+        Scenario::Priority([1, 1], Sign::GiveWay),
+        Scenario::Priority([2, 1], Sign::GiveWay),
+        Scenario::Priority([2, 2], Sign::GiveWay),
+        Scenario::Priority([1, 1], Sign::Stop),
+        Scenario::Priority([2, 1], Sign::Stop),
+        Scenario::TJunction([1, 1], Sign::GiveWay),
+        Scenario::TJunction([2, 1], Sign::GiveWay),
+        Scenario::TJunction([1, 1], Sign::Stop),
+        Scenario::TJunction([2, 1], Sign::Stop),
         Scenario::Ramps(Leaving::Zipper),
         Scenario::Ramps(Leaving::Early),
         Scenario::TurnerCycle,
@@ -209,11 +214,15 @@ impl Scenario {
             Scenario::TurnOnRed => "turn-on-red",
             Scenario::AllWayStop(1) => "all-way-1",
             Scenario::AllWayStop(_) => "all-way-2",
-            Scenario::Priority(1, Sign::GiveWay) => "priority-1",
-            Scenario::Priority(_, Sign::GiveWay) => "priority-2",
-            Scenario::Priority(_, Sign::Stop) => "stop-1",
-            Scenario::TJunction(Sign::GiveWay) => "t-junction",
-            Scenario::TJunction(Sign::Stop) => "t-junction-stop",
+            Scenario::Priority([1, 1], Sign::GiveWay) => "give-way-1x1",
+            Scenario::Priority([2, 1], Sign::GiveWay) => "give-way-2x1",
+            Scenario::Priority(_, Sign::GiveWay) => "give-way-2x2",
+            Scenario::Priority([1, 1], Sign::Stop) => "stop-1x1",
+            Scenario::Priority(_, Sign::Stop) => "stop-2x1",
+            Scenario::TJunction([1, 1], Sign::GiveWay) => "t-give-way-1x1",
+            Scenario::TJunction(_, Sign::GiveWay) => "t-give-way-2x1",
+            Scenario::TJunction([1, 1], Sign::Stop) => "t-stop-1x1",
+            Scenario::TJunction(_, Sign::Stop) => "t-stop-2x1",
             Scenario::Ramps(Leaving::Zipper) => "ramps-zipper",
             Scenario::Ramps(Leaving::Early) => "ramps-early",
             Scenario::TurnerCycle => "turner-cycle",
@@ -234,11 +243,23 @@ impl Scenario {
             Scenario::TurnOnRed => "Signalised crossroads, turning left on red",
             Scenario::AllWayStop(1) => "All-way stop of 2-lane roads",
             Scenario::AllWayStop(_) => "All-way stop of 4-lane roads",
-            Scenario::Priority(1, Sign::GiveWay) => "Give-way crossroads of 2-lane roads",
+            Scenario::Priority([1, 1], Sign::GiveWay) => "Give-way crossroads of 2-lane roads",
+            Scenario::Priority([2, 1], Sign::GiveWay) => {
+                "Give-way crossroads, a 2-lane road across a 4-lane one"
+            }
             Scenario::Priority(_, Sign::GiveWay) => "Give-way crossroads of 4-lane roads",
-            Scenario::Priority(_, Sign::Stop) => "Stop-sign crossroads of 2-lane roads",
-            Scenario::TJunction(Sign::GiveWay) => "Give-way T-junction",
-            Scenario::TJunction(Sign::Stop) => "Stop-sign T-junction",
+            Scenario::Priority([1, 1], Sign::Stop) => "Stop-sign crossroads of 2-lane roads",
+            Scenario::Priority(_, Sign::Stop) => {
+                "Stop-sign crossroads, a 2-lane road across a 4-lane one"
+            }
+            Scenario::TJunction([1, 1], Sign::GiveWay) => "Give-way T-junction of 2-lane roads",
+            Scenario::TJunction(_, Sign::GiveWay) => {
+                "Give-way T-junction, a 2-lane road into a 4-lane one"
+            }
+            Scenario::TJunction([1, 1], Sign::Stop) => "Stop-sign T-junction of 2-lane roads",
+            Scenario::TJunction(_, Sign::Stop) => {
+                "Stop-sign T-junction, a 2-lane road into a 4-lane one"
+            }
             Scenario::Ramps(Leaving::Zipper) => "Freeway with ramps, zipper merge",
             Scenario::Ramps(Leaving::Early) => "Freeway with ramps, early merge",
             Scenario::TurnerCycle => {
@@ -261,7 +282,9 @@ impl Scenario {
             Scenario::Priority(lanes, sign) => {
                 scenarios::priority_crossroads(lanes, SPEED_LIMIT, sign)
             }
-            Scenario::TJunction(sign) => scenarios::priority_t_junction(1, SPEED_LIMIT, sign),
+            Scenario::TJunction(lanes, sign) => {
+                scenarios::priority_t_junction(lanes, SPEED_LIMIT, sign)
+            }
             Scenario::Ramps(leaving) => scenarios::ramps_leaving(100.0 / 3.6, 80.0 / 3.6, leaving),
             Scenario::TurnerCycle => unreachable!("a freeze frame is restored, not built"),
         }

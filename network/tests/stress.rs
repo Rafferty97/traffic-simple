@@ -136,23 +136,31 @@ fn busy_priority_intersections_never_lock_up() {
     stress(&[
         (
             "give way, 1 lane",
-            scenarios::priority_crossroads(1, SPEED, Sign::GiveWay),
+            scenarios::priority_crossroads([1, 1], SPEED, Sign::GiveWay),
         ),
         (
             "give way, 2 lanes",
-            scenarios::priority_crossroads(2, SPEED, Sign::GiveWay),
+            scenarios::priority_crossroads([2, 2], SPEED, Sign::GiveWay),
         ),
         (
             "stop, 1 lane",
-            scenarios::priority_crossroads(1, SPEED, Sign::Stop),
+            scenarios::priority_crossroads([1, 1], SPEED, Sign::Stop),
         ),
         (
             "T, give way",
-            scenarios::priority_t_junction(1, SPEED, Sign::GiveWay),
+            scenarios::priority_t_junction([1, 1], SPEED, Sign::GiveWay),
         ),
         (
             "T, stop",
-            scenarios::priority_t_junction(1, SPEED, Sign::Stop),
+            scenarios::priority_t_junction([1, 1], SPEED, Sign::Stop),
+        ),
+        (
+            "give way, 2 by 1 lanes",
+            scenarios::priority_crossroads([2, 1], SPEED, Sign::GiveWay),
+        ),
+        (
+            "T, give way, 2 by 1 lanes",
+            scenarios::priority_t_junction([2, 1], SPEED, Sign::GiveWay),
         ),
     ]);
 }

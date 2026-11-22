@@ -35,59 +35,66 @@ pub fn crossroads(lanes: usize, speed_limit: f64) -> RoadNetwork {
 /// the other road, skewed from square by as much as the roads are from
 /// crossing square.
 pub fn oblique_crossroads(lanes: usize, speed_limit: f64, angle: f64) -> RoadNetwork {
-    junction(lanes, speed_limit, angle, [true; 4])
+    junction([lanes; 2], speed_limit, angle, [true; 4])
 }
 
 /// A T-junction as [`crossroads`] has it, without its north arm: the first
-/// road runs east to west, roads 0 and 1, and the second comes in from the
-/// south, road 2.
-pub fn t_junction(lanes: usize, speed_limit: f64) -> RoadNetwork {
+/// road, with `lanes[0]` lanes each way, runs east to west, roads 0 and 1, and
+/// the second, with `lanes[1]`, comes in from the south, road 2.
+pub fn t_junction(lanes: [usize; 2], speed_limit: f64) -> RoadNetwork {
     junction(lanes, speed_limit, FRAC_PI_2, [true, false, true, true])
 }
 
-/// As [`oblique_crossroads`], with only the arms `present` says, by where they
-/// come in from: the first road's east end, the second's far end, the first's
-/// west end and the second's near end. Roads are numbered in that order, the
-/// arms left out skipped.
-fn junction(lanes: usize, speed_limit: f64, angle: f64, present: [bool; 4]) -> RoadNetwork {
+/// As [`oblique_crossroads`], the first road with `lanes[0]` lanes each way
+/// and the second with `lanes[1]`, and only the arms `present` says, by where
+/// they come in from: the first road's east end, the second's far end, the
+/// first's west end and the second's near end. Roads are numbered in that
+/// order, the arms left out skipped.
+fn junction(lanes: [usize; 2], speed_limit: f64, angle: f64, present: [bool; 4]) -> RoadNetwork {
     let mut net = RoadNetwork::default();
+    // Each arm's road, the first or the second, and its lanes each way.
+    let road_of = |arm: usize| arm % 2;
+    let lanes_of = |arm: usize| lanes[road_of(arm)];
     // How far across each road's lanes reach from its centre line.
-    let across = lanes as f64 * WIDTH;
-    // The junction's half-width along each arm, from its centre to where the
-    // arm ends: where its outermost lane clears the other road, and 6 m more.
-    let half = across / angle.sin() + across / angle.tan().abs() + 6.0;
-    let arm_length = ARM - half;
+    let across = lanes.map(|n| n as f64 * WIDTH);
+    // The junction's half-width along each road's arms, from its centre to
+    // where the arm ends: where its outermost lane clears the other road, and
+    // 6 m more.
+    let half = [0, 1].map(|r| across[1 - r] / angle.sin() + across[r] / angle.tan().abs() + 6.0);
     // Each arm runs in toward the centre, from the first road's east end, the
     // second's far end, the first's west end and the second's near end, so
     // counterclockwise. Its forward lanes come in, on the left of its
     // reference line, and its backward lanes go out, on the right; lane 0 of
     // each is by the centre line.
-    let arm_lanes: Vec<RoadLane> = (0..lanes)
-        .map(|i| RoadLane::new(WIDTH * (i as f64 + 0.5), WIDTH, Direction::Forward))
-        .chain(
-            (0..lanes)
-                .map(|i| RoadLane::new(-WIDTH * (i as f64 + 0.5), WIDTH, Direction::Backward)),
-        )
-        .collect();
+    let arm_lanes = |n: usize| -> Vec<RoadLane> {
+        (0..n)
+            .map(|i| RoadLane::new(WIDTH * (i as f64 + 0.5), WIDTH, Direction::Forward))
+            .chain(
+                (0..n)
+                    .map(|i| RoadLane::new(-WIDTH * (i as f64 + 0.5), WIDTH, Direction::Backward)),
+            )
+            .collect()
+    };
     let from = [0.0, angle, PI, PI + angle];
-    let arms: Vec<Option<RoadId>> = from
-        .iter()
-        .zip(present)
-        .map(|(&at, present)| {
-            let towards = at + PI;
-            let end = Pose { pos: half * Pose::new(0.0, 0.0, at).dir(), heading: towards };
-            let pieces = vec![Piece::Line { length: arm_length }];
-            present
-                .then(|| net.add_road(Road::ending_at(end, pieces, arm_lanes.clone(), speed_limit)))
+    let arms: Vec<Option<RoadId>> = (0..4)
+        .map(|k| {
+            let half = half[road_of(k)];
+            let end = Pose {
+                pos: half * Pose::new(0.0, 0.0, from[k]).dir(),
+                heading: from[k] + PI,
+            };
+            let pieces = vec![Piece::Line { length: ARM - half }];
+            let road = || Road::ending_at(end, pieces, arm_lanes(lanes_of(k)), speed_limit);
+            present[k].then(|| net.add_road(road()))
         })
         .collect();
     let inbound = |arm: usize, i: usize| arms[arm].map(|road| LaneRef { road, lane: i });
-    let outbound = |arm: usize, i: usize| arms[arm].map(|road| LaneRef { road, lane: lanes + i });
+    let outbound =
+        |arm: usize, i: usize| arms[arm].map(|road| LaneRef { road, lane: lanes_of(arm) + i });
     let mut intersection = Intersection {
         far_side_straight: RIGHT_TURN_STRAIGHT,
         ..Intersection::default()
     };
-    let outer = lanes - 1;
     for (k, &road) in arms.iter().enumerate() {
         let Some(road) = road else { continue };
         // Arms counterclockwise from this one: right, straight on, left.
@@ -97,12 +104,18 @@ fn junction(lanes: usize, speed_limit: f64, angle: f64, present: [bool; 4]) -> R
                 intersection.connections.push((from, to));
             }
         };
-        for i in 0..lanes {
+        for i in 0..lanes_of(k) {
             connect(inbound(k, i), outbound(straight, i));
         }
-        // Turning, into every lane of the road it turns into.
-        for i in 0..lanes {
+        // Turning, into every lane of the road it turns into, or, from a road
+        // with fewer lanes, into as many as it has, nearest the side it turns
+        // toward: by the kerb turning near-side, by the centre line far-side.
+        let outer = lanes_of(k) - 1;
+        let into = |arm: usize| lanes_of(arm).min(lanes_of(k));
+        for i in lanes_of(left) - into(left)..lanes_of(left) {
             connect(inbound(k, outer), outbound(left, i));
+        }
+        for i in 0..into(right) {
             connect(inbound(k, 0), outbound(right, i));
         }
         // Its stop line along the other road: as far from square as the other
@@ -112,7 +125,7 @@ fn junction(lanes: usize, speed_limit: f64, angle: f64, present: [bool; 4]) -> R
         // supplement on the second's.
         let crossing = if k % 2 == 0 { angle } else { PI - angle };
         let skew = crossing - FRAC_PI_2;
-        let stop_line = (-across * skew.tan()).max(0.0);
+        let stop_line = (-across[road_of(k)] * skew.tan()).max(0.0);
         intersection.arms.push(Arm { stop_line, skew, ..Arm::new(road) });
     }
     net.intersections.push(intersection);
@@ -169,10 +182,11 @@ pub fn all_way_stop_crossroads(lanes: usize, speed_limit: f64) -> RoadNetwork {
     net
 }
 
-/// As [`crossroads`], controlled by priority: the first road, east to west,
-/// has it, and the second road's approaches have `sign`.
-pub fn priority_crossroads(lanes: usize, speed_limit: f64, sign: Sign) -> RoadNetwork {
-    let mut net = crossroads(lanes, speed_limit);
+/// A crossroads as [`crossroads`] has it, controlled by priority: the first
+/// road, east to west, with `lanes[0]` lanes each way, has it, and the
+/// second, with `lanes[1]`, has `sign` on its approaches.
+pub fn priority_crossroads(lanes: [usize; 2], speed_limit: f64, sign: Sign) -> RoadNetwork {
+    let mut net = junction(lanes, speed_limit, FRAC_PI_2, [true; 4]);
     prioritise(
         &mut net,
         &[RoadId(0), RoadId(2)],
@@ -183,8 +197,9 @@ pub fn priority_crossroads(lanes: usize, speed_limit: f64, sign: Sign) -> RoadNe
 }
 
 /// As [`t_junction`], controlled by priority: the road through, east to west,
-/// has it, and the road from the south has `sign`.
-pub fn priority_t_junction(lanes: usize, speed_limit: f64, sign: Sign) -> RoadNetwork {
+/// with `lanes[0]` lanes each way, has it, and the road from the south, with
+/// `lanes[1]`, has `sign`.
+pub fn priority_t_junction(lanes: [usize; 2], speed_limit: f64, sign: Sign) -> RoadNetwork {
     let mut net = t_junction(lanes, speed_limit);
     prioritise(&mut net, &[RoadId(0), RoadId(1)], &[RoadId(2)], sign);
     net
