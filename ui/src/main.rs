@@ -151,13 +151,16 @@ enum Scenario {
     ObliqueSignals,
     /// As `Crossroads`, an all-way stop.
     AllWayStop(usize),
+    /// A freeze frame: a right turner and a cross-street car waiting on each
+    /// other (see `traffic_network::frames::turner_cycle`).
+    TurnerCycle,
     /// A freeway with an on-ramp and an off-ramp, the acceleration lane left as
     /// this says.
     Ramps(Leaving),
 }
 
 impl Scenario {
-    const ALL: [Scenario; 12] = [
+    const ALL: [Scenario; 13] = [
         Scenario::Ring,
         Scenario::Crossroads(1),
         Scenario::Crossroads(2),
@@ -170,6 +173,7 @@ impl Scenario {
         Scenario::AllWayStop(2),
         Scenario::Ramps(Leaving::Zipper),
         Scenario::Ramps(Leaving::Early),
+        Scenario::TurnerCycle,
     ];
 
     /// What to call it on the command line.
@@ -187,6 +191,7 @@ impl Scenario {
             Scenario::AllWayStop(_) => "all-way-2",
             Scenario::Ramps(Leaving::Zipper) => "ramps-zipper",
             Scenario::Ramps(Leaving::Early) => "ramps-early",
+            Scenario::TurnerCycle => "turner-cycle",
         }
     }
 
@@ -204,6 +209,7 @@ impl Scenario {
             Scenario::AllWayStop(_) => "All-way stop of 4-lane roads",
             Scenario::Ramps(Leaving::Zipper) => "Freeway with ramps, zipper merge",
             Scenario::Ramps(Leaving::Early) => "Freeway with ramps, early merge",
+            Scenario::TurnerCycle => "Freeze frame: a turner and a car waiting on each other",
         }
     }
 
@@ -217,7 +223,14 @@ impl Scenario {
             }
             Scenario::AllWayStop(lanes) => scenarios::all_way_stop_crossroads(lanes, SPEED_LIMIT),
             Scenario::Ramps(leaving) => scenarios::ramps_leaving(100.0 / 3.6, 80.0 / 3.6, leaving),
+            Scenario::TurnerCycle => unreachable!("a freeze frame is restored, not built"),
         }
+    }
+
+    /// Whether it is a freeze frame: a snapshot restored, opened paused, which
+    /// the harness adds no traffic to.
+    fn frame(self) -> bool {
+        matches!(self, Scenario::TurnerCycle)
     }
 
     /// Whether the network is closed: vehicles neither enter nor leave it.
@@ -318,6 +331,8 @@ impl Poses {
 /// it spawns at a flow into each lane that nothing leads into, and vehicles
 /// leave where lanes lead nowhere.
 struct Harness {
+    /// Whether it leaves the simulation alone, as for a freeze frame.
+    still: bool,
     /// Whether the network is closed: nowhere to come in or leave.
     closed: bool,
     /// How many vehicles it keeps on a closed network.
@@ -336,6 +351,7 @@ struct Harness {
 impl Default for Harness {
     fn default() -> Self {
         Self {
+            still: false,
             closed: true,
             target: 60,
             flow: 600.0,
@@ -350,6 +366,9 @@ impl Default for Harness {
 impl Harness {
     /// Runs after each simulation step of `dt` simulated seconds.
     fn step(&mut self, sim: &mut Recorded<DebugState>, selected: Option<VehicleId>, dt: f64) {
+        if self.still {
+            return;
+        }
         match self.closed {
             true => self.keep_count(sim, selected, dt),
             false => self.keep_flowing(sim, dt),
@@ -464,7 +483,7 @@ impl Harness {
 
 impl App {
     fn new(scenario: Scenario) -> Self {
-        let (sim, render) = new_sim(scenario);
+        let (sim, render, _) = new_sim(scenario);
         let mut app = Self {
             sim,
             render,
@@ -488,13 +507,19 @@ impl App {
     /// Starts the scenario afresh, with the harness's settings kept, and fits
     /// the view to it.
     fn load(&mut self, scenario: Scenario) {
-        (self.sim, self.render) = new_sim(scenario);
+        let selected;
+        (self.sim, self.render, selected) = new_sim(scenario);
         self.scenario = scenario;
-        self.selected = None;
+        self.selected = selected;
+        // A freeze frame opens paused, to look at before stepping on.
+        if scenario.frame() {
+            self.paused = true;
+        }
         self.capture_status = None;
         self.poses = Poses::default();
         let Harness { target, flow, .. } = self.harness;
         self.harness = Harness {
+            still: scenario.frame(),
             closed: scenario.closed(),
             target,
             flow,
@@ -1746,10 +1771,17 @@ fn to_scene(p: DVec2) -> Pos2 {
 
 /// An empty simulation of a scenario's network, and what to draw for it; the
 /// harness fills it.
-fn new_sim(scenario: Scenario) -> (Recorded<DebugState>, RenderGeometry) {
+/// The simulation for `scenario`, what to draw for its network, and the
+/// vehicle to select: built afresh, or, for a freeze frame, restored.
+fn new_sim(scenario: Scenario) -> (Recorded<DebugState>, RenderGeometry, Option<VehicleId>) {
+    if scenario == Scenario::TurnerCycle {
+        let frame = traffic_network::frames::turner_cycle();
+        let sim = Recorded::new(Simulation::restore(frame.state, DebugState::default()));
+        return (sim, frame.render, frame.selected);
+    }
     let compiled = compile(&scenario.network()).expect("every scenario compiles");
     let sim = Recorded::new(Simulation::new(compiled.sim, DebugState::default()));
-    (sim, compiled.render)
+    (sim, compiled.render, None)
 }
 
 fn demo_car() -> VehicleSpec {

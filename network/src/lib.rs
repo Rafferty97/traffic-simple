@@ -12,6 +12,7 @@
 
 mod arms;
 mod compile;
+pub mod frames;
 mod reference;
 mod render;
 pub mod scenarios;
