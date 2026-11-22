@@ -312,17 +312,21 @@ impl LaneGeometry {
     /// counts only if it is, on average, at least [`SAME_POINT`] thick. It compares every
     /// pair of segments, so it is for building networks, not for hot paths.
     pub fn overlap(&self, other: &LaneGeometry) -> Option<[Range<f64>; 2]> {
+        // Each lane's pieces and their bounds, built once, and the bounds of
+        // the whole lane: lanes whose bounds don't touch can't overlap.
+        let (mine, theirs) = (self.pieces(), other.pieces());
+        let (lo, hi) = enclosing(&mine);
+        let (other_lo, other_hi) = enclosing(&theirs);
+        if lo.cmpgt(other_hi).any() || other_lo.cmpgt(hi).any() {
+            return None;
+        }
         let mut ranges: Option<[Range<f64>; 2]> = None;
-        for i in 0..self.segs.len() {
-            let mine = self.quad(i);
-            let (lo, hi) = bounds(&mine);
-            for j in 0..other.segs.len() {
-                let theirs = other.quad(j);
-                let (other_lo, other_hi) = bounds(&theirs);
-                if lo.cmpgt(other_hi).any() || other_lo.cmpgt(hi).any() {
+        for (i, (mine, (lo, hi))) in mine.iter().enumerate() {
+            for (j, (theirs, (other_lo, other_hi))) in theirs.iter().enumerate() {
+                if lo.cmpgt(*other_hi).any() || other_lo.cmpgt(*hi).any() {
                     continue;
                 }
-                let clipped = clip(&mine, &theirs);
+                let clipped = clip(mine, theirs);
                 // An empty clip has neither area nor perimeter: it doesn't count.
                 if area(&clipped) <= SAME_POINT * 0.5 * perimeter(&clipped) {
                     continue;
@@ -345,6 +349,16 @@ impl LaneGeometry {
 
     /// Segment `i`'s piece of the outline, between its ribs, counterclockwise from
     /// its rear left corner.
+    /// Each segment's piece of its outline, with that piece's bounds.
+    fn pieces(&self) -> Vec<Piece> {
+        (0..self.segs.len())
+            .map(|i| {
+                let quad = self.quad(i);
+                (quad, bounds(&quad))
+            })
+            .collect()
+    }
+
     fn quad(&self, i: usize) -> [DVec2; 4] {
         let seg = &self.segs[i];
         let end = self.segs.get(i + 1).map_or(self.length, |next| next.cum_s);
@@ -447,6 +461,18 @@ fn perimeter(points: &[DVec2]) -> f64 {
 }
 
 /// The corners of the box around a polygon.
+/// A segment's piece of a lane's outline, a convex quadrilateral, and its
+/// bounds, lowest and highest corner.
+type Piece = ([DVec2; 4], (DVec2, DVec2));
+
+/// The bounds enclosing all of `pieces`.
+fn enclosing(pieces: &[Piece]) -> (DVec2, DVec2) {
+    pieces.iter().fold(
+        (DVec2::INFINITY, DVec2::NEG_INFINITY),
+        |(lo, hi), (_, (l, h))| (lo.min(*l), hi.max(*h)),
+    )
+}
+
 fn bounds(points: &[DVec2]) -> (DVec2, DVec2) {
     points.iter().fold((DVec2::INFINITY, DVec2::NEG_INFINITY), |(lo, hi), &p| {
         (lo.min(p), hi.max(p))
