@@ -1438,8 +1438,9 @@ fn junction_terms<D: DebugSink>(
     // Each entry for the stretch it covers: from where the vehicle's entry
     // before it stops covering it.
     let followers = committed.iter().enumerate().map(|(k, e)| {
-        let from = committed[..k].iter().rev().find(|b| b.id == e.id).and_then(|b| b.until);
-        (e.id, &committed[..k], [from, e.until])
+        let lane = |b: &Entry| b.until(&state.network, junction);
+        let from = committed[..k].iter().rev().find(|b| b.id == e.id).and_then(lane);
+        (e.id, &committed[..k], [from, lane(e)])
     });
     // The vehicles at the front of the ways in, not yet committed, are behind
     // every committed one.

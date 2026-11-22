@@ -29,7 +29,7 @@ pub fn queue_violation<D: DebugSink>(sim: &Simulation<D>) -> Option<String> {
             let at = |l: LaneId| v.path().iter().position(|&p| p == l);
             let entries: Vec<_> = queue.iter().filter(|e| e.id == id).collect();
             for pair in entries.windows(2) {
-                match (pair[0].until, pair[1].until) {
+                match (pair[0].until(net, junction), pair[1].until(net, junction)) {
                     (None, _) => return Some(format!("{id:?} queued again after its whole way")),
                     (Some(a), Some(b)) if at(a).zip(at(b)).is_some_and(|(a, b)| a >= b) => {
                         return Some(format!("{id:?} queued out of its path's order"));
@@ -61,9 +61,9 @@ pub fn queue_violation<D: DebugSink>(sim: &Simulation<D>) -> Option<String> {
         // covers it right through, or stops at a lane after it on its path.
         let covering = |id, v: &traffic_sim::Vehicle| {
             let at = |l: LaneId| v.path().iter().position(|&p| p == l);
-            queue
-                .iter()
-                .position(|e| e.id == id && e.until.is_none_or(|u| at(u).is_none_or(|u| u > 0)))
+            queue.iter().position(|e| {
+                e.id == id && e.until(net, junction).is_none_or(|u| at(u).is_none_or(|u| u > 0))
+            })
         };
         let queued: Vec<_> = sim
             .vehicles()
@@ -96,7 +96,7 @@ pub fn queue_violation<D: DebugSink>(sim: &Simulation<D>) -> Option<String> {
                         vb.speed(),
                         conflict.theirs,
                         va.speed(),
-                        queue.iter().map(|e| (e.id, e.until)).collect::<Vec<_>>()
+                        queue.iter().map(|e| (e.id, e.until(net, junction))).collect::<Vec<_>>()
                     ));
                 }
             }

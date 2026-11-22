@@ -22,24 +22,27 @@ use crate::vehicle::{Vehicle, VehicleId};
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Entry {
     pub id: VehicleId,
-    /// The lane of its path, in the junction, from which this entry no longer
-    /// covers it, where its next barrier is: `None` if it covers it right
-    /// through.
-    pub until: Option<LaneId>,
+    /// The lane, by its place among the junction's lanes, from which this
+    /// entry no longer covers it, where its next barrier is: `None` if it
+    /// covers it right through.
+    pub until: Option<u16>,
 }
 
 impl Entry {
-    /// Whether it covers `vehicle`, its vehicle, on `lane`: `lane` comes before
-    /// its `until` on its path, or isn't on it any more, being behind it.
-    pub(crate) fn covers(&self, vehicle: &Vehicle, lane: LaneId) -> bool {
-        let Some(until) = self.until else {
+    /// The lane it stops covering its vehicle at, if any.
+    pub fn until(&self, network: &SimNetwork, junction: JunctionId) -> Option<LaneId> {
+        self.until.map(|i| network.junction(junction).lanes()[usize::from(i)])
+    }
+
+    /// Whether it covers its vehicle on `lane`: anywhere but the lane it stops
+    /// at and the lanes of the same connector after it, found from the
+    /// junction alone.
+    pub(crate) fn covers(&self, network: &SimNetwork, lane: LaneId) -> bool {
+        let (Some(i), Some(junction)) = (self.until, network.lane(lane).junction()) else {
             return true;
         };
-        let at = |l: LaneId| vehicle.path.iter().position(|&p| p == l);
-        match (at(until), at(lane)) {
-            (Some(until), Some(lane)) => lane < until,
-            _ => true,
-        }
+        let until = network.junction(junction).lanes()[usize::from(i)];
+        lane != until && !network.leads_to(lane, until)
     }
 }
 
@@ -249,10 +252,11 @@ fn hand_over(
 /// How far `vehicle`'s barriers hand it over to `junction`: up to the lane
 /// of its path where the next barrier it hasn't committed to is, if that is in
 /// the junction, or right through (`None`).
-fn handed_over(network: &SimNetwork, vehicle: &Vehicle, junction: JunctionId) -> Option<LaneId> {
+fn handed_over(network: &SimNetwork, vehicle: &Vehicle, junction: JunctionId) -> Option<u16> {
     barrier::nth(network, vehicle, usize::from(vehicle.committed))
-        .map(|(lane, _)| lane)
-        .filter(|&lane| network.lane(lane).junction() == Some(junction))
+        .map(|(lane, _)| network.lane(lane))
+        .filter(|lane| lane.junction() == Some(junction))
+        .and_then(|lane| lane.junction_slot())
 }
 
 /// Adds the lanes of `path` up to the first of `junction`'s lanes on it with a
@@ -387,7 +391,7 @@ fn stops_on(
         // only part way, short of it, it may yet go on ahead of those behind
         // it, as a turner waiting for a gap may, so stops the scan.
         if let Some(last) = committed.iter().rev().find(|e| e.id == o.id) {
-            if handed_over_for(last, vehicle, target) {
+            if handed_over_for(scan.network, scan.junction, last, vehicle, target) {
                 continue;
             }
             return true;
@@ -478,7 +482,7 @@ fn closes_cycle(
         (0..partial.len()).fold(0u64, |mask, p| {
             let e = entry_of(p);
             let t = &vehicles[e.id];
-            let until = e.until.expect("queued only part of its way");
+            let until = e.until(network, junction).expect("queued only part of its way");
             let Some(from) = t.path.iter().position(|&l| l == until) else {
                 return mask;
             };
@@ -601,7 +605,7 @@ fn waits_on(
         let length = network.lane(theirs).geometry().length();
         let rear = leader.lane_pos.s - leader.spec.rear_axle - before;
         before += length;
-        if network.lane(theirs).junction() != Some(junction) || !entry.covers(leader, theirs) {
+        if network.lane(theirs).junction() != Some(junction) || !entry.covers(network, theirs) {
             continue;
         }
         let crosses = follower.path.iter().any(|&mine| {
@@ -642,9 +646,15 @@ pub(crate) fn hold_term(
 /// over for `lane`: right through, or for a stretch of its way that `lane` comes
 /// before. One handed over only part way, short of `lane`, or not headed onto it
 /// at all, may wait there, in the way of others coming onto it.
-fn handed_over_for(last: &Entry, vehicle: &Vehicle, lane: LaneId) -> bool {
+fn handed_over_for(
+    network: &SimNetwork,
+    junction: JunctionId,
+    last: &Entry,
+    vehicle: &Vehicle,
+    lane: LaneId,
+) -> bool {
     let at = |l: LaneId| vehicle.path.iter().position(|&p| p == l);
-    match (last.until, at(lane)) {
+    match (last.until(network, junction), at(lane)) {
         (None, _) => true,
         (Some(until), Some(t)) => at(until).is_none_or(|u| t < u),
         (Some(_), None) => false,
@@ -799,7 +809,7 @@ pub(crate) fn junction_term<D: DebugSink>(
                 };
                 for entry in ahead {
                     let other = entry.id;
-                    if other == id || !entry.covers(&state.vehicles[other], theirs) {
+                    if other == id || !entry.covers(network, theirs) {
                         continue;
                     }
                     let Some((term, gap)) =

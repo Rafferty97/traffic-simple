@@ -247,6 +247,11 @@ impl Lane {
         self.junction.map(|(id, _)| id)
     }
 
+    /// Its place among its junction's lanes, if it is in one.
+    pub(crate) fn junction_slot(&self) -> Option<u16> {
+        self.junction.map(|(_, i)| i)
+    }
+
     /// The lane beside this one on the given side, if any.
     pub fn adj(&self, side: Side) -> Option<Neighbor> {
         match side {
@@ -735,7 +740,7 @@ impl SimNetwork {
 
     /// Whether `from` leads to `to` through that run of lanes: `to` comes
     /// before it, in the same connector.
-    fn leads_to(&self, from: LaneId, to: LaneId) -> bool {
+    pub(crate) fn leads_to(&self, from: LaneId, to: LaneId) -> bool {
         let first = self.first_in_junction(from);
         let mut lane = from;
         while lane != first {

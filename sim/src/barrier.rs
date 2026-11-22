@@ -401,7 +401,7 @@ fn clear(
         // approaching can stop, if this one couldn't clear as it meant to.
         let queued = || {
             let queue = &state.queues[way.junction.0 as usize].committed;
-            queue.iter().any(|e| e.id == o.id && e.covers(other, way.theirs))
+            queue.iter().any(|e| e.id == o.id && e.covers(&state.network, way.theirs))
         };
         let clears = if other.speed > 0.0 {
             rear / other.speed
@@ -513,7 +513,7 @@ pub(crate) fn released(
             .iter()
             .rev()
             .find(|e| e.id == id)
-            .is_some_and(|last| last.covers(vehicle, lane))
+            .is_some_and(|last| last.covers(&state.network, lane))
     };
     gap > 0.0
         && match barrier.kind {
@@ -644,7 +644,7 @@ fn yields_inside(
     };
     // In the queue, handed over part way, and no further since.
     let queued = committed.iter().enumerate().find_map(|(i, e)| {
-        let until = e.until?;
+        let until = e.until(network, junction)?;
         let last = !committed[i + 1..].iter().any(|later| later.id == e.id);
         (last && crosses(&state.vehicles[e.id], until)).then_some(e.id)
     });
