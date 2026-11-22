@@ -278,19 +278,22 @@ fn crossroads_flooded_with_traffic_have_no_collisions() {
 }
 
 #[test]
-fn an_all_way_stop_holds_every_connector_at_its_line_at_one_level() {
+fn an_all_way_stop_holds_every_connector_at_its_line_giving_way_by_arrival() {
     use traffic_sim::BarrierKind;
     for lanes in 1..=2 {
         let compiled = compile(&scenarios::all_way_stop_crossroads(lanes, 14.0)).unwrap();
         let sim = &compiled.sim;
-        let level = sim.lane(compiled.connectors[0][0]).priority();
         for &connector in &compiled.connectors[0] {
             let lane = sim.lane(connector);
             let barriers = lane.barriers();
             assert_eq!(barriers.len(), 1, "{connector:?} has {barriers:?}");
             assert_eq!(barriers[0].kind, BarrierKind::AllWayStop);
             assert_eq!(barriers[0].s, 0.0);
-            assert_eq!(lane.priority(), level, "{connector:?} is of another level");
+            // No lanes given way to: only those already in the junction count.
+            assert!(
+                barriers[0].yields.is_none(),
+                "{connector:?} gives way to a set"
+            );
             // Not split: nobody waits inside.
             assert!(sim.lane(lane.successors()[0]).junction().is_none());
         }
@@ -383,28 +386,38 @@ fn a_signalised_crossroads_holds_each_connector_at_its_movements_light() {
             "{connector:?} turning {turn:?} has {barriers:?}"
         );
         // Right turns, across oncoming traffic green with them, also wait for
-        // a gap inside the junction, at a lower priority than the rest: at the
-        // start of a second lane, which the first leads on to, alone.
+        // a gap inside the junction: at the start of a second lane, which the
+        // first leads on to, alone, giving way only to the oncoming traffic,
+        // never another right turn.
         let next = sim.lane(connector).successors()[0];
-        let priority = match turn {
+        match turn {
             Turn::Right => {
                 let inner = sim.lane(next).barriers();
                 assert_eq!(inner.len(), 1, "{next:?} after {connector:?} has {inner:?}");
                 assert_eq!(inner[0].kind, BarrierKind::GiveWay);
                 assert_eq!(inner[0].s, 0.0);
-                assert_eq!(sim.lane(next).priority(), 2);
                 assert_eq!(sim.lane(next).junction(), sim.lane(connector).junction());
-                2
+                let yields = sim.yields(&inner[0]);
+                assert!(!yields.is_empty(), "{next:?} gives way to nothing");
+                let turn_of = |lane| {
+                    let ways = compiled.connectors[0].iter().zip(&compiled.turns[0]);
+                    ways.clone().find(|&(&c, _)| c == lane).map(|(_, &t)| t)
+                };
+                for &lane in yields {
+                    assert_ne!(
+                        turn_of(lane),
+                        Some(Turn::Right),
+                        "{next:?} gives way to {lane:?}"
+                    );
+                }
             }
             _ => {
                 assert!(
                     sim.lane(next).junction().is_none(),
                     "{connector:?} is split"
                 );
-                3
             }
-        };
-        assert_eq!(sim.lane(connector).priority(), priority);
+        }
         assert_eq!(barriers[0].s, 0.0);
         let BarrierKind::Signal { movement } = barriers[0].kind else {
             panic!("{connector:?} has a {:?}", barriers[0].kind);

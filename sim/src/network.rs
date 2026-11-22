@@ -129,10 +129,6 @@ pub struct Lane {
     /// Its barriers, sorted by `s`.
     #[cfg_attr(feature = "serde", serde(default))]
     barriers: Vec<Barrier>,
-    /// Its priority level in its junction, the higher going first (see
-    /// `docs/DESIGN.md`, Gap acceptance and priority).
-    #[cfg_attr(feature = "serde", serde(default))]
-    priority: u8,
     /// Whether it is to be kept clear: a vehicle that can no longer stop before
     /// it is committed to its junction (see `docs/DESIGN.md`, Committing).
     #[cfg_attr(feature = "serde", serde(default))]
@@ -172,7 +168,6 @@ impl Lane {
             keep: Keep::NoPreference,
             leaving: None,
             barriers: Vec::new(),
-            priority: 0,
             keep_clear: false,
         })
     }
@@ -232,11 +227,6 @@ impl Lane {
         &self.barriers
     }
 
-    /// Its priority level in its junction, the higher going first.
-    pub fn priority(&self) -> u8 {
-        self.priority
-    }
-
     /// Whether it is to be kept clear.
     pub fn keep_clear(&self) -> bool {
         self.keep_clear
@@ -275,14 +265,25 @@ pub struct Barrier {
     /// `s`: vehicles stop by how far their nearest corner is from it.
     #[cfg_attr(feature = "serde", serde(default))]
     pub line: Option<Line>,
+    /// The lanes it gives way to, if any (see [`SimNetwork::yields`]): a
+    /// give-way line's gap is judged against vehicles on them, and a signal's
+    /// lists the turners' next stretches it lets go first.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub yields: Option<YieldsId>,
 }
 
 impl Barrier {
-    /// A barrier square across its lane at `s`.
+    /// A barrier square across its lane at `s`, giving way to nothing.
     pub fn new(s: f64, kind: BarrierKind) -> Self {
-        Barrier { s, kind, line: None }
+        Barrier { s, kind, line: None, yields: None }
     }
 }
+
+/// Identifies a set of lanes a barrier gives way to: its index in the
+/// network's sets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct YieldsId(pub u32);
 
 /// A line in world space, as a half plane: the side `normal` points to is
 /// short of it.
@@ -424,12 +425,31 @@ pub struct SimNetwork {
     /// The signal plans, and where each one's movements start among all of them.
     #[cfg_attr(feature = "serde", serde(default))]
     signals: Vec<(SignalPlan, u32)>,
+    /// The sets of lanes barriers give way to.
+    #[cfg_attr(feature = "serde", serde(default))]
+    yields: Vec<Vec<LaneId>>,
 }
 
 impl SimNetwork {
     /// Builds a network from its lanes, with no links. Lane `i` gets id `LaneId(i)`.
     pub fn new(lanes: Vec<Lane>) -> Self {
-        Self { lanes, junctions: Vec::new(), signals: Vec::new() }
+        Self {
+            lanes,
+            junctions: Vec::new(),
+            signals: Vec::new(),
+            yields: Vec::new(),
+        }
+    }
+
+    /// Adds a set of lanes for barriers to give way to, returning its id.
+    pub fn add_yields(&mut self, lanes: &[LaneId]) -> YieldsId {
+        self.yields.push(lanes.to_vec());
+        YieldsId(self.yields.len() as u32 - 1)
+    }
+
+    /// The lanes `barrier` gives way to: none if it has no set.
+    pub fn yields(&self, barrier: &Barrier) -> &[LaneId] {
+        barrier.yields.map_or(&[], |id| &self.yields[id.0 as usize])
     }
 
     /// Adds a barrier to `lane`, keeping its barriers sorted.
@@ -437,11 +457,6 @@ impl SimNetwork {
         let barriers = &mut self.lanes[lane.0 as usize].barriers;
         let at = barriers.partition_point(|b| b.s <= barrier.s);
         barriers.insert(at, barrier);
-    }
-
-    /// Sets `lane`'s priority level in its junction.
-    pub fn set_priority(&mut self, lane: LaneId, priority: u8) {
-        self.lanes[lane.0 as usize].priority = priority;
     }
 
     /// Marks a lane to be kept clear, or not: a vehicle that can no longer stop

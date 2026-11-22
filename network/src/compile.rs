@@ -487,7 +487,7 @@ fn assemble(
             waiting.extend(waits.into_iter().map(|(c, at)| (k, c, at + lead[c])));
         }
         if intersection.control == Control::AllWayStop {
-            add_all_way_stop(&mut sim, &pieces[k], &entries[k], &stops[k]);
+            add_all_way_stop(&mut sim, &entries[k], &stops[k]);
         }
     }
     sim.validate().map_err(CompileError::Network)?;
@@ -658,49 +658,46 @@ fn add_signals(
         phases,
     };
     let first = sim.add_signal(plan);
-    for ((&entry, &m), &(s, line)) in entries.iter().zip(&of).zip(stops) {
-        let movement = MovementId(first.0 + m as u32);
-        let kind = BarrierKind::Signal { movement };
-        sim.add_barrier(entry, Barrier { line, ..Barrier::new(s, kind) });
-    }
     // Every road has priority at signals: a far-side turn gives way to the
     // traffic it crosses, waiting inside the junction at its first conflict with
-    // a connector of a higher level green with it.
+    // a connector of a higher level green with it, and gives way to the lanes
+    // of those connectors. Levels are compilation's alone: the simulation has
+    // only the lanes each barrier gives way to.
     let drives_on = net.drives_on.side();
     let level = |turn: Turn| match turn.far_side(drives_on) {
         true => PRIORITY_ROAD + FAR_SIDE,
         false => PRIORITY_ROAD + STRAIGHT_OR_NEAR,
     };
-    for (piece, &turn) in pieces.iter().zip(turns) {
-        for &lane in piece {
-            sim.set_priority(lane, level(turn));
-        }
-    }
     let mut waiting = Vec::new();
     for (c, (piece, &turn)) in pieces.iter().zip(turns).enumerate() {
         if !turn.far_side(drives_on) {
             continue;
         }
         let connector = piece[0];
-        let waits = pieces
+        let oncoming: Vec<LaneId> = pieces
             .iter()
             .zip(turns)
             .enumerate()
             .filter(|&(o, (_, &other))| level(other) > level(turn) && together(of[c], of[o]))
-            .flat_map(|(_, (other, _))| other)
+            .flat_map(|(_, (other, _))| other.iter().copied())
+            .collect();
+        let waits = oncoming
+            .iter()
             .filter_map(|&other| sim.conflict_between(connector, other))
             .map(|conflict| conflict.mine.start)
             .fold(f64::INFINITY, f64::min);
+        let yields = Some(sim.add_yields(&oncoming));
+        let give_way = |s| Barrier { yields, ..Barrier::new(s, BarrierKind::GiveWay) };
         match piece[..] {
             // Split already: it waits at its second lane's start.
             [_, inner] => {
-                sim.add_barrier(inner, Barrier::new(0.0, BarrierKind::GiveWay));
+                sim.add_barrier(inner, give_way(0.0));
                 if waits.is_finite() {
                     waiting.push((c, waits));
                 }
             }
             _ if waits.is_finite() => {
-                sim.add_barrier(connector, Barrier::new(waits, BarrierKind::GiveWay));
+                sim.add_barrier(connector, give_way(waits));
                 if waits > SPLIT_MARGIN {
                     waiting.push((c, waits));
                 }
@@ -708,25 +705,38 @@ fn add_signals(
             _ => {}
         }
     }
+    // Each connector's signal at its stop line, giving way to the turners
+    // waiting inside on movements never green with it whose next stretches
+    // cross its way.
+    for (c, ((&entry, &m), &(s, line))) in entries.iter().zip(&of).zip(stops).enumerate() {
+        let movement = MovementId(first.0 + m as u32);
+        let kind = BarrierKind::Signal { movement };
+        let waiting_turners: Vec<LaneId> = pieces
+            .iter()
+            .enumerate()
+            .filter(|&(o, _)| !together(of[c], of[o]))
+            .filter_map(|(_, other)| match other[..] {
+                [_, next] => Some(next),
+                _ => None,
+            })
+            .filter(|&next| {
+                pieces[c].iter().any(|&mine| sim.conflict_between(mine, next).is_some())
+            })
+            .collect();
+        let yields = (!waiting_turners.is_empty()).then(|| sim.add_yields(&waiting_turners));
+        sim.add_barrier(entry, Barrier { line, yields, ..Barrier::new(s, kind) });
+    }
     waiting
 }
 
 /// An all-way stop barrier at the stop line at the start of each of an
-/// intersection's connectors, and every connector of one priority level, so
-/// vehicles go in the order they came to rest at their lines (see
+/// intersection's connectors, counting only vehicles in the junction's queue,
+/// so vehicles go in the order they came to rest at their lines (see
 /// `docs/DESIGN.md`, Barriers and signals).
-fn add_all_way_stop(
-    sim: &mut SimNetwork,
-    pieces: &[Vec<LaneId>],
-    entries: &[LaneId],
-    stops: &[(f64, Option<Line>)],
-) {
-    for ((piece, &entry), &(s, line)) in pieces.iter().zip(entries).zip(stops) {
+fn add_all_way_stop(sim: &mut SimNetwork, entries: &[LaneId], stops: &[(f64, Option<Line>)]) {
+    for (&entry, &(s, line)) in entries.iter().zip(stops) {
         let kind = BarrierKind::AllWayStop;
         sim.add_barrier(entry, Barrier { line, ..Barrier::new(s, kind) });
-        for &lane in piece {
-            sim.set_priority(lane, PRIORITY_ROAD + STRAIGHT_OR_NEAR);
-        }
     }
 }
 

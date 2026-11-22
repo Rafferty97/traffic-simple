@@ -9,7 +9,7 @@ use traffic_sim::{
 };
 
 mod common;
-use common::{car, overlap, queued};
+use common::{car, overlap};
 
 const LIMIT: f64 = 14.0;
 
@@ -232,54 +232,4 @@ fn a_car_waits_its_turn_behind_an_earlier_one_it_would_hold_up() {
         tb < tc,
         "C, at {tc:.2} s, went before B, at {tb:.2} s, which came first"
     );
-}
-
-#[test]
-fn of_two_waiting_for_each_other_at_the_same_level_the_first_to_commit_goes() {
-    // Two crossing ways, each with a give-way line a metre into their
-    // crossing, at the same level, as two turners waiting inside the junction
-    // for each other once both their lights are red.
-    let mut net = four_ways();
-    let crossing = net.conflict_between(LaneId(4), LaneId(6)).unwrap().clone();
-    let starts = [(4, crossing.mine.start), (6, crossing.theirs.start)];
-    for (lane, start) in starts {
-        net.add_barrier(
-            LaneId(lane),
-            Barrier::new(start + 1.0, BarrierKind::GiveWay),
-        );
-    }
-    let mut sim = Simulation::new(net, NoopSink);
-    // Each at rest with its front just into the crossing, clear of the other,
-    // so committed to the junction at once: the first one first.
-    let spec = car();
-    let nose = spec.length - spec.rear_axle;
-    let at = |(lane, start): (u32, f64)| Placement {
-        lane: LaneId(lane),
-        s: start + 0.2 - nose,
-        speed: 0.0,
-        route: Route::random(0),
-    };
-    let first = sim.insert(spec, at(starts[0]));
-    sim.step();
-    let second = sim.insert(spec, at(starts[1]));
-    sim.step();
-    assert_eq!(queued(&sim, traffic_sim::JunctionId(0)), &[first, second]);
-    let out = |sim: &Simulation, id| sim.get(id).is_none_or(|v| v.lane().0 >= 8);
-    let (mut first_out, mut second_out) = (None, None);
-    run(&mut sim, 20.0, |sim| {
-        if first_out.is_none() && out(sim, first) {
-            first_out = Some(sim.time());
-        }
-        if second_out.is_none() && out(sim, second) {
-            second_out = Some(sim.time());
-        }
-    });
-    // Neither waits for the other for ever, and the first goes first.
-    let first_out = first_out.expect("the first never cleared the junction");
-    let second_out = second_out.expect("the second never cleared the junction");
-    assert!(
-        first_out < 10.0,
-        "the first cleared only at {first_out:.1} s"
-    );
-    assert!(first_out < second_out, "the second went first");
 }
