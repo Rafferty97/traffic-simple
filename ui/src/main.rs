@@ -43,13 +43,79 @@ const SPEED_LIMIT: f64 = 50.0 / 3.6;
 
 /// Most spawns or despawns per simulated second, while the count is off target.
 const CHANGE_RATE: f64 = 2.0;
+/// How wide the inspector's column of acceleration values is, in points.
+const TERM_WIDTH: f32 = 80.0;
+
 /// The speed the inspector's slow button imposes, in m/s: 20 km/h.
 const SLOW_CAP: f64 = 20.0 / 3.6;
 /// How far outside a vehicle a click still selects it, in screen points.
 const PICK_TOLERANCE: f32 = 6.0;
 
 const SELECTED: Color32 = Color32::from_rgb(250, 210, 60);
+/// With a vehicle selected, those it doesn't relate to.
+const UNRELATED: Color32 = Color32::from_gray(235);
+/// The colours of the vehicles the selected one relates to, in turn.
+const RELATED: [Color32; 8] = [
+    Color32::from_rgb(70, 140, 255),
+    Color32::from_rgb(230, 60, 200),
+    Color32::from_rgb(40, 200, 200),
+    Color32::from_rgb(255, 130, 30),
+    Color32::from_rgb(150, 90, 255),
+    Color32::from_rgb(60, 200, 80),
+    Color32::from_rgb(255, 90, 110),
+    Color32::from_rgb(140, 110, 60),
+];
 
+/// A vehicle's number, as the UI shows it: its slot's index, unique among the
+/// vehicles there at once.
+fn number(id: VehicleId) -> String {
+    id.index().to_string()
+}
+
+/// The vehicle an acceleration term is for, if any.
+fn named(source: AccelSource) -> Option<VehicleId> {
+    match source {
+        AccelSource::Leader { id, .. }
+        | AccelSource::Yield { id, .. }
+        | AccelSource::Junction { id, .. }
+        | AccelSource::Sync { id, .. }
+        | AccelSource::Merge { id, .. } => Some(id),
+        _ => None,
+    }
+}
+
+/// The vehicles `id`'s acceleration terms name, each with its colour, in the
+/// order its terms name them.
+fn related(sim: &Simulation<DebugState>, id: VehicleId) -> Vec<(VehicleId, Color32)> {
+    let mut out: Vec<(VehicleId, Color32)> = Vec::new();
+    for (source, _) in sim.sink().terms(id) {
+        if let Some(other) = named(source)
+            && other != id
+            && !out.iter().any(|&(v, _)| v == other)
+        {
+            out.push((other, RELATED[out.len() % RELATED.len()]));
+        }
+    }
+    out
+}
+
+/// What colour to draw `id`'s body: `plain` with nobody selected; otherwise
+/// the selected vehicle's colour, its related vehicles' colours, or white.
+fn body_colour(
+    id: VehicleId,
+    selected: Option<VehicleId>,
+    related: &[(VehicleId, Color32)],
+    plain: Color32,
+) -> Color32 {
+    match selected {
+        None => plain,
+        Some(s) if s == id => SELECTED,
+        Some(_) => related.iter().find(|&&(v, _)| v == id).map_or(UNRELATED, |&(_, c)| c),
+    }
+}
+
+/// Runs the UI, starting on the scenario named on the command line, by its
+/// key (see [`Scenario::key`]), or on the ring.
 fn main() -> eframe::Result {
     let scenario = match std::env::args().nth(1) {
         None => Scenario::Ring,
@@ -496,12 +562,14 @@ impl App {
         };
         let pos = v.lane_pos();
         egui::Grid::new("inspector").num_columns(2).show(ui, |ui| {
+            ui.label("id");
+            ui.label(egui::RichText::new(number(id)).monospace().color(SELECTED));
+            ui.end_row();
             let mut row = |name: &str, value: String| {
                 ui.label(name);
                 ui.monospace(value);
                 ui.end_row();
             };
-            row("id", format!("{id:?}"));
             row("lane", format!("{}", v.lane().0));
             let neighbor = |side| match self.sim.network().lane(v.lane()).adj(side) {
                 Some(n) if n.can_change => format!("{}", n.lane.0),
@@ -542,7 +610,7 @@ impl App {
             row("t", format!("{:+.3} m", pos.t));
             row(
                 "speed",
-                format!("{:.2} m/s ({:.0} km/h)", v.speed(), v.speed() * 3.6),
+                format!("{:.1} km/h ({:.2} m/s)", v.speed() * 3.6, v.speed()),
             );
             row("accel", format!("{:+.2} m/s²", v.accel()));
             row("curvature", format!("{:+.4} /m", v.curvature()));
@@ -551,7 +619,7 @@ impl App {
         ui.separator();
         ui.label("Lane-change desire (LMRS)");
         let evals = self.sim.sink().decisions.get(&id).cloned().unwrap_or_default();
-        egui::Grid::new("decision").num_columns(2).show(ui, |ui| {
+        {
             for eval in &evals {
                 let side = match eval.side {
                     Side::Left => "left",
@@ -571,7 +639,7 @@ impl App {
                 };
                 let i = eval.incentives;
                 ui.label(format!("{side}: {:?}", eval.outcome));
-                ui.small(format!(
+                let detail = egui::RichText::new(format!(
                     "desire {:+.2} (free {:.2}, sync {:.2}, coop {:.2}): route {:+.2}, speed {:+.2}, keep {:+.2}, courtesy {:+.2}{gap}",
                     eval.desire,
                     traffic_sim::D_FREE,
@@ -581,10 +649,11 @@ impl App {
                     i.speed,
                     i.keep,
                     i.courtesy,
-                ));
-                ui.end_row();
+                ))
+                .small();
+                ui.add(egui::Label::new(detail).wrap());
             }
-        });
+        }
         if evals.is_empty() {
             ui.small("No permitted lane to either side.");
         }
@@ -607,50 +676,79 @@ impl App {
         ui.separator();
         ui.label("Acceleration terms (minimum binds)");
         let terms: Vec<_> = self.sim.sink().terms(id).collect();
-        egui::Grid::new("terms").num_columns(2).show(ui, |ui| {
-            for &(source, accel) in &terms {
-                let name = match source {
-                    AccelSource::FreeRoad { desired_speed } => {
-                        format!("free road, v0 {desired_speed:.1} m/s")
-                    }
-                    AccelSource::Leader { id, gap, headway } if headway < 1.0 => {
-                        format!("leader {id:?}, gap {gap:.2} m, headway ×{headway:.2}")
-                    }
-                    AccelSource::Leader { id, gap, .. } => format!("leader {id:?}, gap {gap:.2} m"),
-                    AccelSource::Cap { max_speed: 0.0 } => "held to a stop".into(),
-                    AccelSource::Cap { max_speed } => {
-                        format!("capped at {:.0} km/h", max_speed * 3.6)
-                    }
-                    AccelSource::Yield { id, gap } => {
-                        format!("making room for {id:?}, gap {gap:.2} m")
-                    }
-                    AccelSource::PathEnd { gap } => format!("end of known path, gap {gap:.2} m"),
-                    AccelSource::Barrier { lane, gap, .. } => {
-                        format!("held at a barrier on lane {}, gap {gap:.2} m", lane.0)
-                    }
-                    AccelSource::Junction { id, kind: ConflictKind::Cross, gap } => {
-                        format!("crossing after {id:?}, gap {gap:.2} m")
-                    }
-                    AccelSource::Junction { id, kind: ConflictKind::Merge, gap } => {
-                        format!("merging after {id:?}, gap {gap:.2} m")
-                    }
-                    AccelSource::Sync { id, gap } => {
-                        format!("synchronising with {id:?}, gap {gap:.2} m")
-                    }
-                    AccelSource::Merge { id, gap } => {
-                        format!("merge order after {id:?}, gap {gap:.2} m")
-                    }
-                };
-                let text = egui::RichText::new(format!("{accel:+.2} m/s²")).monospace();
-                ui.label(name);
-                if accel == v.accel() {
-                    ui.label(text.strong().color(SELECTED));
-                } else {
-                    ui.label(text);
+        let related = related(&self.sim, id);
+        for &(source, accel) in &terms {
+            // Its description, either side of the vehicle it names, if any.
+            let (before, after): (String, String) = match source {
+                AccelSource::FreeRoad { desired_speed } => (
+                    format!(
+                        "free road, v0 {:.0} km/h ({desired_speed:.1} m/s)",
+                        desired_speed * 3.6
+                    ),
+                    String::new(),
+                ),
+                AccelSource::Leader { gap, headway, .. } if headway < 1.0 => (
+                    "leader ".into(),
+                    format!(", gap {gap:.2} m, headway ×{headway:.2}"),
+                ),
+                AccelSource::Leader { gap, .. } => ("leader ".into(), format!(", gap {gap:.2} m")),
+                AccelSource::Cap { max_speed: 0.0 } => ("held to a stop".into(), String::new()),
+                AccelSource::Cap { max_speed } => (
+                    format!("capped at {:.0} km/h", max_speed * 3.6),
+                    String::new(),
+                ),
+                AccelSource::Yield { gap, .. } => {
+                    ("making room for ".into(), format!(", gap {gap:.2} m"))
                 }
-                ui.end_row();
+                AccelSource::PathEnd { gap } => {
+                    (format!("end of known path, gap {gap:.2} m"), String::new())
+                }
+                AccelSource::Barrier { lane, gap, .. } => (
+                    format!("held at a barrier on lane {}, gap {gap:.2} m", lane.0),
+                    String::new(),
+                ),
+                AccelSource::Junction { kind: ConflictKind::Cross, gap, .. } => {
+                    ("crossing after ".into(), format!(", gap {gap:.2} m"))
+                }
+                AccelSource::Junction { kind: ConflictKind::Merge, gap, .. } => {
+                    ("merging after ".into(), format!(", gap {gap:.2} m"))
+                }
+                AccelSource::Sync { gap, .. } => {
+                    ("synchronising with ".into(), format!(", gap {gap:.2} m"))
+                }
+                AccelSource::Merge { gap, .. } => {
+                    ("merge order after ".into(), format!(", gap {gap:.2} m"))
+                }
+            };
+            let font = egui::TextStyle::Body.resolve(ui.style());
+            let plain = egui::TextFormat::simple(font.clone(), ui.visuals().text_color());
+            let mut name = egui::text::LayoutJob::default();
+            name.append(&before, 0.0, plain.clone());
+            if let Some(other) = named(source) {
+                let colour =
+                    related.iter().find(|&&(v, _)| v == other).map_or(SELECTED, |&(_, c)| c);
+                name.append(&number(other), 0.0, egui::TextFormat::simple(font, colour));
             }
-        });
+            name.append(&after, 0.0, plain);
+            let text = egui::RichText::new(format!("{accel:+.2} m/s²")).monospace();
+            let text = match accel == v.accel() {
+                true => text.strong().color(SELECTED),
+                false => text,
+            };
+            // Its description wrapped on the left, its value aligned on the
+            // right, so neither runs out of the panel.
+            ui.horizontal_top(|ui| {
+                let value = egui::Label::new(text);
+                let width = ui.available_width() - TERM_WIDTH - ui.spacing().item_spacing.x;
+                ui.allocate_ui(egui::vec2(width, 0.0), |ui| {
+                    ui.set_width(width);
+                    ui.add(egui::Label::new(name).wrap());
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                    ui.add(value);
+                });
+            });
+        }
         // The vehicle's acceleration is the minimum of its terms, so if none
         // matches, an input to the model wasn't recorded.
         if !terms.is_empty() && !terms.iter().any(|&(_, accel)| accel == v.accel()) {
@@ -658,7 +756,8 @@ impl App {
         }
     }
 
-    /// The selected vehicle's controls, in one row of equal-width buttons.
+    /// The selected vehicle's controls, in two rows of equal-width buttons: lane
+    /// changes, then speed caps.
     fn inspector_actions(&mut self, ui: &mut egui::Ui, id: VehicleId) {
         if let Some(error) = self.lane_change_error {
             ui.colored_label(Color32::RED, error.to_string());
@@ -666,13 +765,18 @@ impl App {
         let cap = self.sim.speed_cap(id);
         let gap = ui.spacing().item_spacing.x;
         let size = egui::vec2(
-            (ui.available_width() - 3.0 * gap) / 4.0,
+            (ui.available_width() - gap) / 2.0,
             ui.spacing().interact_size.y,
         );
         ui.horizontal(|ui| {
             if ui.add_sized(size, egui::Button::new("Change left")).clicked() {
                 self.lane_change_error = self.sim.change_lane(id, Side::Left).err();
             }
+            if ui.add_sized(size, egui::Button::new("Change right")).clicked() {
+                self.lane_change_error = self.sim.change_lane(id, Side::Right).err();
+            }
+        });
+        ui.horizontal(|ui| {
             // Each a toggle, drawn as an ordinary button when off and highlighted
             // when on; turning one on replaces the other.
             for (label, max_speed) in [("Stop", 0.0), ("20 km/h", SLOW_CAP)] {
@@ -684,9 +788,6 @@ impl App {
                         self.sim.cap_speed(id, max_speed);
                     }
                 }
-            }
-            if ui.add_sized(size, egui::Button::new("Change right")).clicked() {
-                self.lane_change_error = self.sim.change_lane(id, Side::Right).err();
             }
         });
     }
@@ -763,6 +864,7 @@ impl eframe::App for App {
             };
             ui.painter().rect_filled(ui.max_rect(), 0.0, background);
             let scene = egui::Scene::new().zoom_range(0.1..=200.0).scroll_zooms(true);
+            let related = self.selected.map(|id| related(&self.sim, id)).unwrap_or_default();
             let response = scene
                 .show(ui, &mut self.scene_rect, |ui| match self.view {
                     View::Pretty => draw_pretty(
@@ -770,12 +872,14 @@ impl eframe::App for App {
                         &self.sim,
                         &self.render,
                         self.selected,
+                        &related,
                         &self.poses,
                     ),
                     View::Debug => draw_debug(
                         ui.painter(),
                         &self.sim,
                         self.selected,
+                        &related,
                         &self.layers,
                         &self.poses,
                     ),
@@ -797,6 +901,7 @@ fn draw_pretty(
     sim: &Simulation<DebugState>,
     render: &RenderGeometry,
     selected: Option<VehicleId>,
+    related: &[(VehicleId, Color32)],
     poses: &Poses,
 ) {
     let asphalt = Color32::from_gray(60);
@@ -834,11 +939,8 @@ fn draw_pretty(
         } else {
             Stroke::NONE
         };
-        painter.add(Shape::convex_polygon(
-            corners,
-            Color32::from_rgb(200, 40, 40),
-            outline,
-        ));
+        let colour = body_colour(id, selected, related, Color32::from_rgb(200, 40, 40));
+        painter.add(Shape::convex_polygon(corners, colour, outline));
         draw_indicators(painter, sim, v, drawn);
     }
 }
@@ -884,6 +986,7 @@ fn draw_debug(
     painter: &egui::Painter,
     sim: &Simulation<DebugState>,
     selected: Option<VehicleId>,
+    related: &[(VehicleId, Color32)],
     layers: &Layers,
     poses: &Poses,
 ) {
@@ -1002,11 +1105,7 @@ fn draw_debug(
     let drawn = |id: VehicleId, v: &Vehicle| Drawn(poses.corners(id, v, sim.alpha()));
     for (id, v) in sim.vehicles() {
         if layers.on(Layer::Vehicles) {
-            let color = if Some(id) == selected {
-                SELECTED
-            } else {
-                VEHICLE
-            };
+            let color = body_colour(id, selected, related, VEHICLE);
             let body = drawn(id, v);
             painter.add(Shape::convex_polygon(
                 body.0.map(to_scene).to_vec(),
@@ -1234,7 +1333,7 @@ impl Layer {
             Layer::Vehicles => (
                 "Vehicles",
                 &[VEHICLE, SELECTED],
-                "Solid bodies, each with its rear axle across it; the selected vehicle in yellow",
+                "Solid bodies, each with its rear axle across it; the selected vehicle in yellow, those its acceleration terms name each in its own colour, as the inspector names them, and the rest white",
             ),
             Layer::LaneChanges => (
                 "Lane changes",

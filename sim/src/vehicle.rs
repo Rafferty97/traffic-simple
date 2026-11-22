@@ -11,6 +11,16 @@ slotmap::new_key_type! {
     pub struct VehicleId;
 }
 
+impl VehicleId {
+    /// Its slot's index: unique among the vehicles in the simulation at once,
+    /// though a vehicle inserted later may take it over.
+    pub fn index(self) -> u32 {
+        use slotmap::Key;
+        // The index is the low half; the slot's version, the high.
+        self.data().as_ffi() as u32
+    }
+}
+
 /// A vehicle's static attributes. Lengths in meters, speeds in m/s,
 /// accelerations in m/s².
 #[derive(Clone, Copy, Debug)]
