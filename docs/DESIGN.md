@@ -47,7 +47,7 @@ One Rust workspace. The simulation crate depends on nothing else in the workspac
 
 `sim` defines `SimNetwork` and `network` produces it, so the dependency graph is one-way and the core never sees authoring concepts like multi-lane roads.
 
-Inside `sim`, each part of the design has its own module: `lane` (geometry), `network` (`SimNetwork`), `occupancy` and `following` (records, the leader and follower searches, and classification), `junction` (the backstop), `merge`, `barrier` (**Planned:** barriers, commitment and gap acceptance), `lane_changing` (what the simulation measures for the lane-change model), `path`, and the models, each replaced by editing it: `acceleration`, `lane_change`, `lateral`, `routing` and `signal` (**Planned**). `simulation` holds the state, the update pipeline and the public API.
+Inside `sim`, each part of the design has its own module: `lane` (geometry), `network` (`SimNetwork`), `occupancy` and `following` (records, the leader and follower searches, and classification), `junction` (the backstop), `merge`, `barrier` (barriers, commitment and gap acceptance), `lane_changing` (what the simulation measures for the lane-change model), `path`, and the models, each replaced by editing it: `acceleration`, `lane_change`, `lateral`, `routing` and `signal` (**Planned**). `simulation` holds the state, the update pipeline and the public API.
 
 ## Network pipeline
 
@@ -406,7 +406,7 @@ Each milestone is a demo that can be finished on its own; anything after it is o
 4. An on-ramp merge and an off-ramp diverge. Merges, with zipper or early merging, and the diverge's car following are done; taking the off-ramp needs destination routing and its route desire.
 5. A single signalised intersection with barriers, a fixed signal plan and unprotected turns. **Done.**
 6. Hook turns and trams: tram tracks in the middle of the road, tram stops, and vehicle classes restricting lane use.
-7. Unsignalised intersections: priority roads with give-way and stop signs, all-way stops and keep-clear zones; and turning on red at signals.
+7. Unsignalised intersections: priority roads with give-way and stop signs, all-way stops and keep-clear zones; and turning on red at signals. All-way stops are done.
 8. A procedural grid with destination and random routing, origin–destination demand from the `demand` crate, and a mix of vehicle classes. Random routing is done.
 9. The validation harness, measuring capacities, waves, saturation flows and gaps against published values.
 
