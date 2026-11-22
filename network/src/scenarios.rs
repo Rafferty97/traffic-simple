@@ -6,7 +6,7 @@ use traffic_sim::{Keep, Leaving};
 
 use crate::{
     Arm, Control, Direction, Intersection, LaneRef, Piece, Pose, Profile, Road, RoadId, RoadLane,
-    RoadNetwork, SignalPhase, Turn,
+    RoadNetwork, Sign, SignalPhase, Turn,
 };
 
 const WIDTH: f64 = 3.5;
@@ -35,6 +35,21 @@ pub fn crossroads(lanes: usize, speed_limit: f64) -> RoadNetwork {
 /// the other road, skewed from square by as much as the roads are from
 /// crossing square.
 pub fn oblique_crossroads(lanes: usize, speed_limit: f64, angle: f64) -> RoadNetwork {
+    junction(lanes, speed_limit, angle, [true; 4])
+}
+
+/// A T-junction as [`crossroads`] has it, without its north arm: the first
+/// road runs east to west, roads 0 and 1, and the second comes in from the
+/// south, road 2.
+pub fn t_junction(lanes: usize, speed_limit: f64) -> RoadNetwork {
+    junction(lanes, speed_limit, FRAC_PI_2, [true, false, true, true])
+}
+
+/// As [`oblique_crossroads`], with only the arms `present` says, by where they
+/// come in from: the first road's east end, the second's far end, the first's
+/// west end and the second's near end. Roads are numbered in that order, the
+/// arms left out skipped.
+fn junction(lanes: usize, speed_limit: f64, angle: f64, present: [bool; 4]) -> RoadNetwork {
     let mut net = RoadNetwork::default();
     // How far across each road's lanes reach from its centre line.
     let across = lanes as f64 * WIDTH;
@@ -55,32 +70,40 @@ pub fn oblique_crossroads(lanes: usize, speed_limit: f64, angle: f64) -> RoadNet
         )
         .collect();
     let from = [0.0, angle, PI, PI + angle];
-    let arms: Vec<RoadId> = from
+    let arms: Vec<Option<RoadId>> = from
         .iter()
-        .map(|&at| {
+        .zip(present)
+        .map(|(&at, present)| {
             let towards = at + PI;
             let end = Pose { pos: half * Pose::new(0.0, 0.0, at).dir(), heading: towards };
             let pieces = vec![Piece::Line { length: arm_length }];
-            net.add_road(Road::ending_at(end, pieces, arm_lanes.clone(), speed_limit))
+            present
+                .then(|| net.add_road(Road::ending_at(end, pieces, arm_lanes.clone(), speed_limit)))
         })
         .collect();
-    let inbound = |arm: usize, i: usize| LaneRef { road: arms[arm], lane: i };
-    let outbound = |arm: usize, i: usize| LaneRef { road: arms[arm], lane: lanes + i };
+    let inbound = |arm: usize, i: usize| arms[arm].map(|road| LaneRef { road, lane: i });
+    let outbound = |arm: usize, i: usize| arms[arm].map(|road| LaneRef { road, lane: lanes + i });
     let mut intersection = Intersection {
         far_side_straight: RIGHT_TURN_STRAIGHT,
         ..Intersection::default()
     };
     let outer = lanes - 1;
     for (k, &road) in arms.iter().enumerate() {
+        let Some(road) = road else { continue };
         // Arms counterclockwise from this one: right, straight on, left.
         let (right, straight, left) = ((k + 1) % 4, (k + 2) % 4, (k + 3) % 4);
+        let mut connect = |from: Option<LaneRef>, to: Option<LaneRef>| {
+            if let (Some(from), Some(to)) = (from, to) {
+                intersection.connections.push((from, to));
+            }
+        };
         for i in 0..lanes {
-            intersection.connections.push((inbound(k, i), outbound(straight, i)));
+            connect(inbound(k, i), outbound(straight, i));
         }
         // Turning, into every lane of the road it turns into.
         for i in 0..lanes {
-            intersection.connections.push((inbound(k, outer), outbound(left, i)));
-            intersection.connections.push((inbound(k, 0), outbound(right, i)));
+            connect(inbound(k, outer), outbound(left, i));
+            connect(inbound(k, 0), outbound(right, i));
         }
         // Its stop line along the other road: as far from square as the other
         // road is from crossing square, counterclockwise from the way in, and
@@ -116,6 +139,35 @@ pub fn all_way_stop_crossroads(lanes: usize, speed_limit: f64) -> RoadNetwork {
     let mut net = crossroads(lanes, speed_limit);
     net.intersections[0].control = Control::AllWayStop;
     net
+}
+
+/// As [`crossroads`], controlled by priority: the first road, east to west,
+/// has it, and the second road's approaches have `sign`.
+pub fn priority_crossroads(lanes: usize, speed_limit: f64, sign: Sign) -> RoadNetwork {
+    let mut net = crossroads(lanes, speed_limit);
+    prioritise(
+        &mut net,
+        &[RoadId(0), RoadId(2)],
+        &[RoadId(1), RoadId(3)],
+        sign,
+    );
+    net
+}
+
+/// As [`t_junction`], controlled by priority: the road through, east to west,
+/// has it, and the road from the south has `sign`.
+pub fn priority_t_junction(lanes: usize, speed_limit: f64, sign: Sign) -> RoadNetwork {
+    let mut net = t_junction(lanes, speed_limit);
+    prioritise(&mut net, &[RoadId(0), RoadId(1)], &[RoadId(2)], sign);
+    net
+}
+
+/// Gives `net`'s intersection priority roads, `major`, and `sign` on `minor`.
+fn prioritise(net: &mut RoadNetwork, major: &[RoadId], minor: &[RoadId], sign: Sign) {
+    net.intersections[0].control = Control::Priority {
+        major: major.to_vec(),
+        signs: minor.iter().map(|&r| (r, sign)).collect(),
+    };
 }
 
 /// `net`, a crossroads, with a fixed-time plan: its first road green for

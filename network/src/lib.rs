@@ -240,6 +240,25 @@ pub enum Control {
     /// vehicles go in the order they came to rest there, every movement of
     /// the same priority.
     AllWayStop,
+    /// Priority roads, `major`, and every other approach with a sign, the one
+    /// `signs` gives its road, or a give-way sign. Connections have levels,
+    /// the higher going first: straight on or near-side from a priority road,
+    /// 3; far-side from one, 2; straight on or near-side from any other road,
+    /// 1; far-side from any other, 0. A far-side turn from a priority road
+    /// waits inside the intersection for a gap in its oncoming traffic, and
+    /// every other approach gives way at its line to every connection of a
+    /// higher level its own crosses or merges with.
+    Priority { major: Vec<RoadId>, signs: Vec<(RoadId, Sign)> },
+}
+
+/// The sign on an approach without priority.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Sign {
+    /// Give way: go once there is a gap in the traffic with priority.
+    #[default]
+    GiveWay,
+    /// Stop: come to rest at the line, then go once there is a gap.
+    Stop,
 }
 
 /// One phase of an intersection's signal plan.

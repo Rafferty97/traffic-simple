@@ -167,113 +167,10 @@ fn a_ring_compiles_into_lanes_that_lead_into_themselves() {
     assert!(compiled.sim.lane(compiled.road_lanes[0][1]).adj_left().is_some());
 }
 
-/// Whether two convex bodies, given by their corners, overlap: by the separating
-/// axis theorem, along the edges of each.
-fn overlap(a: [glam::DVec2; 4], b: [glam::DVec2; 4]) -> bool {
-    let separated = |axis: glam::DVec2| {
-        let span = |c: [glam::DVec2; 4]| {
-            let dots = c.map(|q| axis.dot(q));
-            (
-                dots.iter().copied().fold(f64::MAX, f64::min),
-                dots.iter().copied().fold(f64::MIN, f64::max),
-            )
-        };
-        let ((a0, a1), (b0, b1)) = (span(a), span(b));
-        a1 < b0 || b1 < a0
-    };
-    let axes = [a[1] - a[0], a[2] - a[1], b[1] - b[0], b[2] - b[1]];
-    !axes.iter().any(|&axis| separated(axis.perp()))
-}
-
-/// A vehicle whose body is well inside a lane outside junctions that it has no
-/// record on, if any, other than lanes on its path and those its nose pokes
-/// into past the end of a lane it is on: each vehicle has a record on every lane
-/// it intersects (see `docs/multilane-car-following.md`).
-fn uncovered<D: traffic_sim::DebugSink>(sim: &traffic_sim::Simulation<D>) -> Option<String> {
-    use traffic_sim::Side;
-    const INSIDE: f64 = 0.05;
-    let net = sim.network();
-    let on = |lane, id| sim.occupants(lane).iter().any(|o| o.is_record_of(id));
-    for (id, v) in sim.vehicles() {
-        for (lane_id, lane) in net.lanes() {
-            if lane.junction().is_some() || v.path().contains(&lane_id) || on(lane_id, id) {
-                continue;
-            }
-            if lane.predecessors().iter().any(|&p| on(p, id)) {
-                continue;
-            }
-            let g = lane.geometry();
-            let inside = v.corners().iter().any(|&c| {
-                let p = g.world_to_lane(c);
-                p.s > INSIDE
-                    && p.s < g.length() - INSIDE
-                    && p.t < g.half_width(p, Side::Left) - INSIDE
-                    && -p.t < g.half_width(p, Side::Right) - INSIDE
-                    && g.lane_to_world(p).distance(c) < 0.01
-            });
-            if inside {
-                return Some(format!("{id:?} on {:?} is in {lane_id:?}", v.lane()));
-            }
-        }
-    }
-    None
-}
-
-/// Floods a network with traffic for `seconds`, a car tried every third of a
-/// second at its entry lanes in turn, asserting that no two bodies ever overlap,
-/// and that every vehicle has a record on each lane its body is in.
-fn flood(net: &traffic_network::RoadNetwork, seconds: f64) {
-    use traffic_sim::{LaneId, NoopSink, Placement, Route, Simulation, VehicleSpec};
-    let car = VehicleSpec::passenger_car();
-
-    {
-        let compiled = compile(net).unwrap();
-        let mut sim = Simulation::new(compiled.sim, NoopSink);
-        let entries: Vec<LaneId> = sim
-            .network()
-            .lanes()
-            .filter(|(_, lane)| lane.predecessors().is_empty())
-            .map(|(id, _)| id)
-            .collect();
-        // A car tried every third of a second, more than the junction can take, so
-        // queues build up and drivers change lanes on the way in.
-        for step in 0..(seconds * 60.0) as u64 {
-            if step % 20 == 0 {
-                let lane = entries[(step / 20 * 7) as usize % entries.len()];
-                let speed = sim.network().lane(lane).speed_limit();
-                let at = Placement { lane, s: 5.0, speed, route: Route::random(step) };
-                let _ = sim.try_insert(car, at);
-            }
-            sim.step_variable(1.0 / 60.0);
-            // Collisions last for many frames, so a check every tenth of a second
-            // catches them.
-            if step % 6 != 0 {
-                continue;
-            }
-            if let Some(what) = uncovered(&sim) {
-                panic!("{what} with no record there at {:.2} s", sim.time());
-            }
-            if let Some(what) = common::queue_violation(&sim) {
-                panic!("{what} at {:.2} s", sim.time());
-            }
-            let bodies: Vec<_> = sim.vehicles().map(|(id, v)| (id, v.corners())).collect();
-            for (i, &(a, body_a)) in bodies.iter().enumerate() {
-                for &(b, body_b) in &bodies[i + 1..] {
-                    assert!(
-                        !overlap(body_a, body_b),
-                        "{a:?} and {b:?} collide at {:.2} s",
-                        sim.time()
-                    );
-                }
-            }
-        }
-    }
-}
-
 #[test]
 fn crossroads_flooded_with_traffic_have_no_collisions() {
     for lanes in 1..=3 {
-        flood(&scenarios::crossroads(lanes, 50.0 / 3.6), 100.0);
+        common::flood(&scenarios::crossroads(lanes, 50.0 / 3.6), 100.0);
     }
 }
 
@@ -303,7 +200,7 @@ fn an_all_way_stop_holds_every_connector_at_its_line_giving_way_by_arrival() {
 #[test]
 fn all_way_stops_flooded_with_traffic_have_no_collisions() {
     for lanes in 1..=2 {
-        flood(
+        common::flood(
             &scenarios::all_way_stop_crossroads(lanes, 50.0 / 3.6),
             150.0,
         );
@@ -351,7 +248,7 @@ fn all_way_stops_keep_traffic_flowing() {
 #[test]
 fn signalised_crossroads_flooded_with_traffic_have_no_collisions() {
     for lanes in 1..=2 {
-        flood(&scenarios::signalised_crossroads(lanes, 50.0 / 3.6), 150.0);
+        common::flood(&scenarios::signalised_crossroads(lanes, 50.0 / 3.6), 150.0);
     }
 }
 
@@ -361,8 +258,8 @@ fn signalised_crossroads_flooded_with_traffic_have_no_collisions() {
 fn an_oblique_crossroads_flooded_with_traffic_has_no_collisions() {
     for angle in [60.0, 120.0] {
         let angle = f64::to_radians(angle);
-        flood(&scenarios::oblique_crossroads(2, 50.0 / 3.6, angle), 150.0);
-        flood(
+        common::flood(&scenarios::oblique_crossroads(2, 50.0 / 3.6, angle), 150.0);
+        common::flood(
             &scenarios::signalised_oblique_crossroads(2, 50.0 / 3.6, angle),
             150.0,
         );
@@ -760,7 +657,7 @@ fn at_signals_every_way_is_taken_right_turns_included() {
 
 #[test]
 fn a_freeway_with_ramps_flooded_with_traffic_has_no_collisions() {
-    flood(&scenarios::ramps(100.0 / 3.6, 80.0 / 3.6), 200.0);
+    common::flood(&scenarios::ramps(100.0 / 3.6, 80.0 / 3.6), 200.0);
 }
 
 /// At a light 300 vehicles an hour into each entry, drivers varied, traffic on
@@ -808,7 +705,7 @@ fn ramps_traffic(flow: f64, seconds: f64) {
     for step in 1..=(seconds * 60.0) as u64 {
         sim.step_variable(1.0 / 60.0);
         if step % 10 == 0
-            && let Some(what) = uncovered(&sim)
+            && let Some(what) = common::uncovered(&sim)
         {
             panic!("{what} with no record there at {:.2} s", sim.time());
         }
