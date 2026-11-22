@@ -338,7 +338,9 @@ struct Way<'a> {
 /// can go ahead of one, clearing the conflict before that one could reach it,
 /// there is a gap, since those behind arrive later; if it can go behind one,
 /// reaching the conflict no sooner than that one, at its speed now, has
-/// cleared it, the next one decides; otherwise there is none. Either way the
+/// cleared it, the next one decides; otherwise there is none. It can go ahead
+/// only of one not yet in the junction's queue, and behind only one in it, so
+/// that it joins the queue where it means to go. Either way the
 /// margin is [`GAP_MARGIN`] plus the time headway of whichever then follows the
 /// other through the conflict, as the junction has it follow, so neither need
 /// brake. One at rest never clears, so nothing goes behind it.
@@ -445,9 +447,10 @@ fn clear(
         if distance >= 0.0 && reaches > way.clears + ahead_margin {
             return Ok(());
         }
-        if way.arrives < clears + behind_margin {
-            return Err(o.id);
-        }
+        // Not queued yet, it can't be gone behind either: going, this one
+        // would join the queue ahead of it, and the junction would have it
+        // give way after all. Once it is queued, this one may follow it.
+        return Err(o.id);
     }
     // Nobody on this lane: on to those leading into it that a path through
     // reaches the priority lane from.
