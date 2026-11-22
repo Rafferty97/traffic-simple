@@ -16,3 +16,12 @@ glam = "0.34.3"
 rand = { version = "0.10.3", default-features = false }
 # For freeze-frame snapshots. `float_roundtrip` so f64s read back exactly.
 serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
+
+# The UI runs from a dev build, and the simulation and its geometry are too slow
+# unoptimised: some optimisation for the workspace, keeping builds quick, and
+# full optimisation for dependencies, which rarely rebuild.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
