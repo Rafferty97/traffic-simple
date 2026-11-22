@@ -263,12 +263,16 @@ const GAP_MARGIN: f64 = 0.5;
 /// waiting drivers locked for minutes.
 const TIME_TO_IMPATIENCE: f64 = 30.0;
 
+/// The fraction of its comfortable deceleration a fully impatient driver
+/// reckons a priority vehicle will brake at to give way to it.
+const IMPATIENT_DECEL: f64 = 0.5;
+
 /// How impatient `vehicle` is, from 0 to 1: nothing at first, growing the
 /// longer it has waited at rest at its line, and faster the more assertive it
 /// is, as SUMO's `impatience` grows with waiting time. An impatient driver
 /// reckons a priority vehicle not yet committed will give way to it, braking
-/// at that fraction of its comfortable deceleration, rather than coming on as
-/// fast as it can: so it comes to cut in front of traffic, stopped or not,
+/// at that fraction of [`IMPATIENT_DECEL`] of its comfortable deceleration,
+/// rather than coming on as fast as it can: so it comes to cut in front of traffic, stopped or not,
 /// which breaks the ties where each of two waits on traffic stuck behind the
 /// other. The junction keeps it safe, and a vehicle that hasn't committed can
 /// always stop for it at comfortable deceleration.
@@ -508,10 +512,19 @@ fn clear(
         }
         let limit = network.lane(way.theirs).speed_limit();
         let desired = other.spec.desired_speed(limit);
-        // As fast as it can, or, to an impatient driver, giving way to it.
+        // As fast as it can, or, to an impatient driver, giving way to it: at
+        // full impatience braking at `IMPATIENT_DECEL` of its comfortable
+        // deceleration to stop its minimum gap short, as IDM, following, brakes
+        // harder than the constant deceleration that would just stop it.
         let i = way.impatience;
-        let accel = (1.0 - i) * other.spec.max_accel - i * other.spec.comfy_decel;
-        let reaches = reach_time(other.speed, accel, desired, distance);
+        let decel = IMPATIENT_DECEL * other.spec.comfy_decel;
+        let accel = (1.0 - i) * other.spec.max_accel - i * decel;
+        let reaches = reach_time(
+            other.speed,
+            accel,
+            desired,
+            distance - i * other.spec.min_gap,
+        );
         // Whichever follows the other through the conflict keeps its time
         // headway behind it there, as the junction makes it, so needn't brake.
         let ahead_margin = GAP_MARGIN + other.spec.time_headway;
