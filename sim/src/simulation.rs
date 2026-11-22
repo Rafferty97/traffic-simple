@@ -157,6 +157,10 @@ pub struct Simulation<D: DebugSink = NoopSink> {
     sink: D,
 }
 
+/// The speed below which a vehicle that isn't speeding up has come to rest, in
+/// m/s: a millimetre a second.
+const REST_SPEED: f64 = 1e-3;
+
 /// What the longitudinal update decided for a vehicle, from one of its records.
 #[derive(Clone, Copy, Debug)]
 enum AccelUpdate {
@@ -963,8 +967,16 @@ impl<D: DebugSink> Simulation<D> {
             sink.record(|| DebugEvent::Lookahead { vehicle: id, point: target });
 
             // Trapezoidal distance is exact for constant acceleration, unless the
-            // vehicle stopped during the step.
+            // vehicle stopped during the step. One crawling slower than
+            // `REST_SPEED` without speeding up has come to rest: IDM eases a
+            // vehicle up to a stop exponentially, leaving it creeping at a
+            // vanishing speed that never reaches zero.
             let speed = (vehicle.speed + vehicle.accel * dt).max(0.0);
+            let speed = if speed < REST_SPEED && vehicle.accel <= 0.0 {
+                0.0
+            } else {
+                speed
+            };
             let dist = 0.5 * (vehicle.speed + speed) * dt;
             vehicle.speed = speed;
             (vehicle.pos, vehicle.heading) =
