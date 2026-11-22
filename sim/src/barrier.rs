@@ -143,6 +143,11 @@ fn into_junction(network: &SimNetwork, path: &[LaneId], k: usize) -> Option<(Jun
     (network.first_of_connector(next) == path[k]).then_some((junction, k + 1))
 }
 
+/// How much further back than its gap to lines a vehicle at rest may be and
+/// still have come to rest at a line, in meters: finishing a stop leaves it a
+/// few centimetres further back (see `models::acceleration::stopping`).
+pub(crate) const AT_LINE: f64 = 0.5;
+
 /// The deceleration that amber times are set for a driver to stop at, in m/s²,
 /// as ITE's change interval has it.
 pub const AMBER_DECEL: f64 = 3.0;
