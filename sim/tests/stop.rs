@@ -3,8 +3,8 @@
 
 use glam::DVec2;
 use traffic_sim::{
-    Barrier, BarrierKind, Lane, LaneId, NoopSink, Placement, Route, SimNetwork, Simulation,
-    VehicleId,
+    Barrier, BarrierDecision, BarrierKind, DebugEvent, DebugSink, Lane, LaneId, NoopSink,
+    Placement, Route, SimNetwork, Simulation, VehicleId,
 };
 
 mod common;
@@ -21,19 +21,36 @@ fn p(x: f64, y: f64) -> DVec2 {
 /// and 5. Connector 3, from the south, starts with a stop line giving way to
 /// connector 2.
 fn stop() -> SimNetwork {
+    crossroads(false)
+}
+
+/// As [`stop`], or, with `lead_in`, with connector 3 cut 2 m in: a lead-in,
+/// outside the junction, carrying the stop line, and lane 6 on from it in the
+/// junction, as a skewed stop line cuts a connector.
+fn crossroads(lead_in: bool) -> SimNetwork {
     let lane = |points: &[DVec2]| Lane::new(points, 3.5, LIMIT).unwrap();
-    let mut net = SimNetwork::new(vec![
+    let cut = if lead_in { -8.0 } else { 10.0 };
+    let mut lanes = vec![
         lane(&[p(-100.0, 0.0), p(-10.0, 0.0)]),
         lane(&[p(0.0, -100.0), p(0.0, -10.0)]),
         lane(&[p(-10.0, 0.0), p(10.0, 0.0)]),
-        lane(&[p(0.0, -10.0), p(0.0, 10.0)]),
+        lane(&[p(0.0, -10.0), p(0.0, cut)]),
         lane(&[p(10.0, 0.0), p(100.0, 0.0)]),
         lane(&[p(0.0, 10.0), p(0.0, 100.0)]),
-    ]);
-    for (from, to) in [(0, 2), (1, 3), (2, 4), (3, 5)] {
+    ];
+    if lead_in {
+        lanes.push(lane(&[p(0.0, cut), p(0.0, 10.0)]));
+    }
+    let mut net = SimNetwork::new(lanes);
+    let links: &[(u32, u32)] = match lead_in {
+        true => &[(0, 2), (1, 3), (2, 4), (3, 6), (6, 5)],
+        false => &[(0, 2), (1, 3), (2, 4), (3, 5)],
+    };
+    for &(from, to) in links {
         net.connect(LaneId(from), LaneId(to));
     }
-    net.add_junction(&[LaneId(2), LaneId(3)]);
+    let entry = if lead_in { 6 } else { 3 };
+    net.add_junction(&[LaneId(2), LaneId(entry)]);
     let yields = Some(net.add_yields(&[LaneId(2)]));
     net.add_barrier(
         LaneId(3),
@@ -44,6 +61,16 @@ fn stop() -> SimNetwork {
 
 fn at(lane: u32, s: f64, speed: f64) -> Placement {
     Placement { lane: LaneId(lane), s, speed, route: Route::random(0) }
+}
+
+/// At rest, from the south, where a car stops for its line.
+fn at_line() -> Placement {
+    let spec = car();
+    at(
+        1,
+        90.0 - (spec.length - spec.rear_axle) - spec.line_gap,
+        0.0,
+    )
 }
 
 /// How far north the front of the car from the south is: past its line at
@@ -75,10 +102,50 @@ fn a_car_comes_to_rest_at_a_clear_stop_line_then_goes() {
 
 #[test]
 fn a_car_at_a_stop_line_waits_for_traffic_with_priority_then_goes() {
-    let mut sim = Simulation::new(stop(), NoopSink);
-    let yielding = sim.insert(car(), at(1, 80.0, 0.0));
-    // About 5 s away: too close to go ahead of, once the car has come to rest.
-    let priority = sim.insert(car(), at(0, 20.0, LIMIT));
+    waits_for_priority_then_goes(false);
+}
+
+#[test]
+fn a_car_at_a_stop_line_on_a_lead_in_waits_for_traffic_with_priority_then_goes() {
+    waits_for_priority_then_goes(true);
+}
+
+/// Each barrier decision of the last longitudinal update, and the vehicle it
+/// gives way to.
+#[derive(Default)]
+struct Decisions(Vec<(VehicleId, BarrierDecision, Option<VehicleId>)>);
+
+impl DebugSink for Decisions {
+    fn record(&mut self, event: impl FnOnce() -> DebugEvent) {
+        match event() {
+            DebugEvent::RecomputeAccels => self.0.clear(),
+            DebugEvent::Barrier { vehicle, decision, yields_to, .. } => {
+                self.0.push((vehicle, decision, yields_to))
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn a_stop_line_on_a_lead_in_gives_way_to_the_lanes_in_the_junction_beyond() {
+    let mut sim = Simulation::new(crossroads(true), Decisions::default());
+    let yielding = sim.insert(car(), at_line());
+    let priority = sim.insert(car(), at(0, 30.0, LIMIT));
+    // Long enough to have come to rest and decided again.
+    while sim.time() < 0.5 {
+        sim.step();
+    }
+    let &(_, decision, yields_to) = sim.sink().0.iter().find(|d| d.0 == yielding).unwrap();
+    assert!(matches!(decision, BarrierDecision::Hold(_)), "{decision:?}");
+    assert_eq!(yields_to, Some(priority));
+}
+
+fn waits_for_priority_then_goes(lead_in: bool) {
+    let mut sim = Simulation::new(crossroads(lead_in), NoopSink);
+    let yielding = sim.insert(car(), at_line());
+    // About 5 s away: too close to go ahead of.
+    let priority = sim.insert(car(), at(0, 30.0, LIMIT));
     let mut waited = true;
     let mut slowest = f64::INFINITY;
     while sim.time() < 30.0 {
@@ -86,8 +153,10 @@ fn a_car_at_a_stop_line_waits_for_traffic_with_priority_then_goes() {
         if let Some(v) = sim.get(priority) {
             slowest = slowest.min(v.speed());
         }
-        let across = sim.get(priority).is_none_or(|v| v.pos().x > 3.0);
-        if !across && sim.get(yielding).is_some() && front_y(&sim, yielding) > -10.0 {
+        // It may go behind the car with priority, but not reach their crossing
+        // before that car's rear has cleared it.
+        let across = sim.get(priority).is_none_or(|v| v.pos().x - v.spec().rear_axle > 1.75);
+        if !across && sim.get(yielding).is_some() && front_y(&sim, yielding) > -1.75 {
             waited = false;
         }
     }
@@ -103,9 +172,7 @@ fn a_car_at_a_stop_line_waits_for_traffic_with_priority_then_goes() {
 #[test]
 fn a_car_at_rest_at_a_stop_line_goes_through_a_wide_gap() {
     let mut sim = Simulation::new(stop(), NoopSink);
-    let spec = car();
-    let s = 90.0 - (spec.length - spec.rear_axle) - spec.line_gap;
-    let yielding = sim.insert(spec, at(1, s, 0.0));
+    let yielding = sim.insert(car(), at_line());
     // Far off: about 90 m from their crossing at 10 m/s, 9 s.
     let _far = sim.insert(car(), at(0, 5.0, 10.0));
     while sim.time() < 4.0 {

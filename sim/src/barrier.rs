@@ -130,6 +130,19 @@ pub(crate) fn held_by(
     false
 }
 
+/// The junction a barrier on `path[k]` leads into, if any, and the index on the
+/// path of its first lane there: `path[k]` itself, or, for a barrier on a
+/// lead-in before the junction (see [`SimNetwork::first_of_connector`]), the
+/// lane after it.
+fn into_junction(network: &SimNetwork, path: &[LaneId], k: usize) -> Option<(JunctionId, usize)> {
+    if let Some(junction) = network.lane(path[k]).junction() {
+        return Some((junction, k));
+    }
+    let &next = path.get(k + 1)?;
+    let junction = network.lane(next).junction()?;
+    (network.first_of_connector(next) == path[k]).then_some((junction, k + 1))
+}
+
 /// The deceleration that amber times are set for a driver to stop at, in m/s²,
 /// as ITE's change interval has it.
 pub const AMBER_DECEL: f64 = 3.0;
@@ -238,7 +251,7 @@ fn has_gap(
     let yields = network.yields(barrier);
     let all_way = barrier.kind == BarrierKind::AllWayStop;
     let (path, spec) = (&vehicle.path, &vehicle.spec);
-    let Some(junction) = network.lane(path[k]).junction() else {
+    let Some((junction, _)) = into_junction(network, path, k) else {
         return Ok(());
     };
     // The next barrier on its path, as its lane's index on the path and `s` there.
@@ -621,7 +634,7 @@ fn yields_inside(
     if yields.is_empty() {
         return None;
     }
-    let junction = network.lane(vehicle.path[k]).junction()?;
+    let (junction, _) = into_junction(network, &vehicle.path, k)?;
     let queue = &state.queues[junction.0 as usize];
     let committed = &queue.committed;
     if committed.iter().any(|e| e.id == id) {
@@ -664,15 +677,16 @@ fn yields_inside(
 fn room_beyond(state: &SimState, id: VehicleId, vehicle: &Vehicle, k: usize, s: f64) -> bool {
     let network = &state.network;
     let path = &vehicle.path;
-    if network.lane(path[k]).junction().is_none() {
+    let Some((junction, first)) = into_junction(network, path, k) else {
         return true;
-    }
+    };
     // The first lane of its path out of the junction.
-    let Some(exit) = (k..path.len()).find(|&j| network.lane(path[j]).junction().is_none()) else {
+    let Some(exit) = (first..path.len()).find(|&j| network.lane(path[j]).junction().is_none())
+    else {
         return true;
     };
     let exit_lane = path[exit];
-    let junction = network.lane(path[k]).junction();
+    let junction = Some(junction);
     // Whether a vehicle will wait inside the junction: its next barrier it
     // hasn't committed to, after this one for this vehicle, is in it.
     let waits_inside = |v: &Vehicle, after: usize| {
