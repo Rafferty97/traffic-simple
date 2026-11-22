@@ -5,11 +5,13 @@ use glam::DVec2;
 
 use crate::lane::{LaneError, LaneGeometry, LanePos, SAME_POINT};
 
-/// The most successors a lane can have.
-pub const MAX_SUCCESSORS: usize = 4;
+/// The most successors a lane can have: enough for a lane into a large
+/// intersection that goes straight on, turns into up to three lanes either
+/// way, and turns back. Inline, as the network is built once and read often.
+pub const MAX_SUCCESSORS: usize = 8;
 
-/// The most predecessors a lane can have. More than successors, since a lane
-/// leaving a junction collects connectors from several approaches.
+/// The most predecessors a lane can have: a lane leaving a junction collects
+/// connectors from several approaches.
 pub const MAX_PREDECESSORS: usize = 8;
 
 /// Identifies a lane: its index in [`SimNetwork`]'s lanes.
