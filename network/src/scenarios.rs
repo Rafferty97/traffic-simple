@@ -254,31 +254,46 @@ fn prioritise(net: &mut RoadNetwork, major: &[RoadId], minor: &[RoadId], sign: S
 /// `net`, a crossroads, with a fixed-time plan: its first road green for
 /// 30 s, every way, then its second.
 fn signalised(mut net: RoadNetwork) -> RoadNetwork {
-    net.intersections[0].control = signal_plan([0, 1, 2, 3].map(RoadId));
+    net.intersections[0].control = signal_plan([0, 1, 2, 3].map(RoadId), [30.0; 2]);
     net
 }
 
 /// A crossroads' fixed-time plan, its ways' roads counterclockwise: the first
-/// and third green for 30 s, every way, then the second and fourth.
-fn signal_plan(roads: [RoadId; 4]) -> Control {
+/// and third green for `durations[0]` seconds, every way, then the second and
+/// fourth for `durations[1]`.
+fn signal_plan(roads: [RoadId; 4], durations: [f64; 2]) -> Control {
     let every_way = |arms: [usize; 2]| {
         arms.iter()
             .flat_map(|&a| [Turn::Straight, Turn::Left, Turn::Right].map(|t| (roads[a], t)))
             .collect()
     };
     Control::Signals(vec![
-        SignalPhase { green: every_way([0, 2]), duration: 30.0 },
-        SignalPhase { green: every_way([1, 3]), duration: 30.0 },
+        SignalPhase { green: every_way([0, 2]), duration: durations[0] },
+        SignalPhase { green: every_way([1, 3]), duration: durations[1] },
     ])
+}
+
+/// The phases' durations of the `k`th signalised crossroads of a [`grid`]: each
+/// 30 s give or take up to 5 s, in whole seconds, the same for the same `k`.
+/// Their cycles differ, so neighbouring crossroads drift in and out of step
+/// rather than changing together.
+fn phase_durations(k: u64) -> [f64; 2] {
+    // SplitMix64's finaliser, as a hash of `k`.
+    let mut z = k.wrapping_add(1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    [z % 11, (z >> 32) % 11].map(|d| 25.0 + d as f64)
 }
 
 /// A grid of `columns` by `rows` crossroads, `spacing` meters apart, joined
 /// by two-way roads of `lanes` lanes each way, driving on the left, with a
 /// road [`GRID_ARM`] long out from each crossroads on its edge. The
 /// crossroads alternate as a chessboard does: signalised as
-/// [`signalised_crossroads`] is, starting from the south-west corner, and
-/// controlled by priority, the east–west road having it and the north–south
-/// one giving way. Each is connected as [`crossroads`] is, its stop lines set
+/// [`signalised_crossroads`] is, starting from the south-west corner, but with
+/// each phase lasting 25 to 35 s, varying from one to the next, so they don't
+/// change in step; and controlled by priority, the east–west road having it
+/// and the north–south one giving way. Each is connected as [`crossroads`] is, its stop lines set
 /// back and its run outs as long as a lone crossroads of the same roads needs.
 pub fn grid(
     columns: usize,
@@ -368,7 +383,7 @@ pub fn grid(
             };
             connect(&mut intersection, &ways.map(Some));
             intersection.control = match (i + j) % 2 {
-                0 => signal_plan(roads),
+                0 => signal_plan(roads, phase_durations(net.intersections.len() as u64)),
                 _ => Control::Priority {
                     major: vec![roads[0], roads[2]],
                     signs: vec![(roads[1], Sign::GiveWay), (roads[3], Sign::GiveWay)],
