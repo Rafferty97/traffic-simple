@@ -18,3 +18,7 @@ criterion = "0.8.2"
 [[bench]]
 name = "junctions"
 harness = false
+
+[[bench]]
+name = "city"
+harness = false
