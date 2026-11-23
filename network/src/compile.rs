@@ -11,9 +11,7 @@ use traffic_sim::{
 use crate::arms::{self, StopLine};
 use crate::reference::{self, Polyline};
 use crate::render;
-use crate::{
-    Compiled, Control, Direction, Intersection, LaneRef, Pose, RoadId, RoadNetwork, Sign, Turn,
-};
+use crate::{Compiled, Control, Direction, Intersection, LaneRef, RoadId, RoadNetwork, Sign, Turn};
 
 /// The sideways acceleration a connector's speed limit allows on its tightest
 /// bend, in m/s²: drivers accept more at the low speeds of a turn than at
@@ -903,8 +901,8 @@ fn build(b: &Built, speed_limit: f64, what: impl Fn() -> String) -> Result<Lane,
 }
 
 /// A connector along `start`, from its lane's end into the intersection,
-/// heading `dir` there; then `straight` on; then a cubic Bézier to `end`,
-/// heading `end_dir` there, its control points a third of the way across,
+/// heading `dir` there; then `straight` on; then a quintic Bézier to `end`,
+/// heading `end_dir` there, with no curvature at either end,
 /// sampled by the same tolerance as roads; then along `tail`. It is `width`
 /// wide, or by default as wide as the widest vehicle sweeps along it (see
 /// [`swept`]), plus the room one needs to pass another on each side. With it,
@@ -921,10 +919,23 @@ fn connect(
 ) -> (Built, Sweep) {
     let mouth = *start.last().expect("a connector starts somewhere");
     let p0 = mouth + straight * dir;
+    // A quintic, its first two control points on from its start along its
+    // direction and its last two back from its end along its, so it starts and
+    // ends with no curvature: as the cubic with its control points a third of
+    // the way across would be, raised to a quintic, its first and last
+    // control points and directions the same, but with the next ones moved onto
+    // its ends' lines. Gentler than that cubic at its sharpest, and a few
+    // percent longer.
     let reach = p0.distance(end) / 3.0;
-    let (c1, c2) = (p0 + reach * dir, end - reach * end_dir);
-    let pose = Pose { pos: p0, heading: dir.to_angle() };
-    let (_, curve) = reference::sample_bezier(pose, c1, c2, end);
+    let control = vec![
+        p0,
+        p0 + 0.6 * reach * dir,
+        p0 + 1.2 * reach * dir,
+        end - 1.2 * reach * end_dir,
+        end - 0.6 * reach * end_dir,
+        end,
+    ];
+    let (_, curve) = reference::sample_bezier(control);
     let mut points = start.to_vec();
     if straight > 0.0 {
         points.push(p0);
@@ -949,8 +960,12 @@ fn connect(
     let steps = |length: f64| {
         (1..=(length / OVERHANG_STEP).ceil() as usize).map(|i| i as f64 * OVERHANG_STEP)
     };
-    let behind: Vec<DVec2> = steps(spec.rear_axle).rev().map(|d| first - d * back).collect();
-    let ahead: Vec<DVec2> = steps(spec.length - spec.rear_axle).map(|d| last + d * on).collect();
+    // Its front axle on the path: from its front bumper reaching the start to
+    // its rear bumper leaving the end.
+    let front_overhang = spec.length - spec.rear_axle - spec.wheelbase();
+    let behind: Vec<DVec2> = steps(front_overhang).rev().map(|d| first - d * back).collect();
+    let ahead: Vec<DVec2> =
+        steps(spec.wheelbase() + spec.rear_axle).map(|d| last + d * on).collect();
     let extended: Vec<DVec2> = behind.iter().chain(&points).chain(&ahead).copied().collect();
     let s_extended: Vec<f64> = arc_lengths(&extended);
     let body = swept(&extended, &s_extended, &spec);
@@ -959,8 +974,8 @@ fn connect(
         Some(width) => vec![[0.5 * width; 2]; s.len()],
         None => own.iter().map(|h| h.map(|h| h + traffic_sim::PASSING_CLEARANCE)).collect(),
     };
-    // Allowing for steering: pure pursuit keeps a vehicle within TRACKING
-    // of the path its rear axle is swept along.
+    // Allowing for how its course rounds the path's corners, and the steps its
+    // rear axle trails in.
     let tracked = body.iter().map(|h| h.map(|h| h + TRACKING)).collect();
     let overhang = ahead.len();
     let sweep = Sweep {
@@ -977,11 +992,11 @@ struct Sweep {
     overhang: usize,
 }
 
-/// How far a vehicle's body strays from its ideal sweep, its rear axle on the
-/// path, as pure pursuit steers it, in meters: at most 6 cm on the crossroads
-/// scenarios' connectors, at their limits and at 2 m/s, where a turn finishing
-/// just into the road it goes into is still straightening.
-const TRACKING: f64 = 0.1;
+/// How far a vehicle's body may stray from its sweep, its front axle on the
+/// path, in meters: its front axle's course rounds the path's corners by
+/// millimetres, and its rear axle trails in steps of a step's travel rather
+/// than continuously.
+const TRACKING: f64 = 0.05;
 
 /// The longest segment of a connector, in meters: its width is linear along
 /// each, so a vehicle's sweep narrowing as it straightens needs them short.
@@ -1144,14 +1159,15 @@ fn check_sweeps(
 
 /// How far out to each side of `points`, at arc lengths `s`, a vehicle like
 /// `spec` sweeps along them, at each vertex, as road design's swept paths have
-/// it: with its rear axle at each vertex in turn, heading along the path, each
-/// corner is projected onto the nearest segment, the first and last running on
-/// as lines, widening both its ends to reach it. Never less than half its width. On a bend the outer front corner
-/// swings out, `√(f² + (R + w/2)²) − R` for a front `f` ahead of the rear axle
-/// and a radius `R`, and the inner rear corner cuts in a little; a turn's mouth,
+/// it: driven as the simulation drives it, its front axle along the path and
+/// its rear axle trailing, from straight along the path's first segment, at
+/// each vertex its front axle reaches each corner is projected onto the nearest
+/// segment, the first and last running on as lines, widening both its ends to
+/// reach it. Never less than half its width. On a bend the rear axle cuts
+/// inside the front's course, `R − √(R² − L²)` for a wheelbase `L` and a
+/// radius `R`, and the outer front corner swings out a little; a turn's mouth,
 /// which bends little, stays narrow. Then tapered, so it never widens faster
-/// than [`TAPER`] along it: a cubic bends from its very start, so the envelope
-/// would step out there.
+/// than [`TAPER`] along it.
 fn swept(points: &[DVec2], s: &[f64], spec: &traffic_sim::VehicleSpec) -> Vec<[f64; 2]> {
     let mut half = vec![[0.5 * spec.width; 2]; points.len()];
     let (front, rear, side) = (
@@ -1159,9 +1175,19 @@ fn swept(points: &[DVec2], s: &[f64], spec: &traffic_sim::VehicleSpec) -> Vec<[f
         spec.rear_axle,
         0.5 * spec.width,
     );
-    for (i, &axle) in points.iter().enumerate() {
-        let segment = i.min(points.len() - 2);
-        let dir = (points[segment + 1] - points[segment]).normalize();
+    let wheelbase = spec.wheelbase();
+    let mut dir = (points[1] - points[0]).normalize();
+    let mut axle = points[0] - wheelbase * dir;
+    for (i, &at) in points.iter().enumerate() {
+        // Its front axle on from the last vertex to this one, in short steps.
+        if i > 0 {
+            let from = points[i - 1];
+            let n = (from.distance(at) / TRAIL_STEP).ceil().max(1.0) as usize;
+            for k in 1..=n {
+                let front_axle = from.lerp(at, k as f64 / n as f64);
+                (axle, dir) = traffic_sim::trail(axle, dir, front_axle, wheelbase);
+            }
+        }
         let corners = [front, -rear]
             .map(|along| [side, -side].map(|across| axle + along * dir + across * dir.perp()));
         for corner in corners.into_iter().flatten() {
@@ -1199,6 +1225,10 @@ fn swept(points: &[DVec2], s: &[f64], spec: &traffic_sim::VehicleSpec) -> Vec<[f
     }
     half
 }
+
+/// The longest step a vehicle's front axle takes along a connector as its sweep
+/// is found, in meters: about a step's travel at a connector's speed.
+const TRAIL_STEP: f64 = 0.25;
 
 /// How fast a connector's swept width may change along it: 1 m sideways in 4 m.
 const TAPER: f64 = 0.25;

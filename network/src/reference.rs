@@ -7,8 +7,11 @@ use crate::{Piece, Pose, Profile};
 
 /// The most a sampled polyline strays from the curve it samples, in meters.
 const TOLERANCE: f64 = 0.01;
-/// The most a sampled polyline turns at one vertex, in radians: 3°.
-const MAX_TURN: f64 = 3.0 * std::f64::consts::PI / 180.0;
+/// The most a sampled polyline turns at one vertex, in radians: 15°, a backstop
+/// only. Vehicles' front axles round each vertex (see
+/// `SimNetwork::smooth_point_along`), so the polyline's own turns don't show;
+/// the tolerance sets the spacing.
+const MAX_TURN: f64 = 15.0 * std::f64::consts::PI / 180.0;
 /// Samples per Bézier for measuring its length.
 const BEZIER_TABLE: usize = 256;
 
@@ -25,10 +28,10 @@ enum Placed {
         curvature: f64,
         length: f64,
     },
-    /// Control points, and the length at each of [`BEZIER_TABLE`] + 1 even
-    /// steps in its parameter.
+    /// Control points, of any degree, and the length at each of
+    /// [`BEZIER_TABLE`] + 1 even steps in its parameter.
     Bezier {
-        p: [DVec2; 4],
+        p: Vec<DVec2>,
         lengths: Vec<f64>,
     },
 }
@@ -43,18 +46,20 @@ impl Placed {
             Piece::Arc { length, curvature } => {
                 Placed::Arc { start: from.pos, heading: from.heading, curvature, length }
             }
-            Piece::Bezier { c1, c2, end } => {
-                let p = [from.pos, c1, c2, end];
-                let mut lengths = vec![0.0];
-                let mut last = p[0];
-                for i in 1..=BEZIER_TABLE {
-                    let point = bezier(&p, i as f64 / BEZIER_TABLE as f64);
-                    lengths.push(lengths[i - 1] + point.distance(last));
-                    last = point;
-                }
-                Placed::Bezier { p, lengths }
-            }
+            Piece::Bezier { c1, c2, end } => Placed::bezier(vec![from.pos, c1, c2, end]),
         }
+    }
+
+    /// A Bézier with control points `p`, of any degree.
+    fn bezier(p: Vec<DVec2>) -> Self {
+        let mut lengths = vec![0.0];
+        let mut last = p[0];
+        for i in 1..=BEZIER_TABLE {
+            let point = bezier(&p, i as f64 / BEZIER_TABLE as f64);
+            lengths.push(lengths[i - 1] + point.distance(last));
+            last = point;
+        }
+        Placed::Bezier { p, lengths }
     }
 
     fn length(&self) -> f64 {
@@ -95,11 +100,14 @@ impl Placed {
             Placed::Line { .. } => 0.0,
             Placed::Arc { curvature, .. } => curvature.abs(),
             Placed::Bezier { ref p, .. } => {
-                let t = if at_end { 1.0 } else { 0.0 };
-                let d1 = bezier_tangent(p, t);
-                let u = 1.0 - t;
-                let d2 =
-                    6.0 * u * (p[2] - 2.0 * p[1] + p[0]) + 6.0 * t * (p[3] - 2.0 * p[2] + p[1]);
+                // The first and second differences of its control points there.
+                let n = p.len() - 1;
+                let [a, b, c] = match at_end {
+                    true => [p[n], p[n - 1], p[n - 2]],
+                    false => [p[0], p[1], p[2]],
+                };
+                let d1 = (b - a) * n as f64;
+                let d2 = (c - 2.0 * b + a) * (n * (n - 1)) as f64;
                 d1.perp_dot(d2).abs() / d1.length().powi(3)
             }
         }
@@ -149,33 +157,37 @@ fn end_step(k: f64) -> f64 {
     (2.0 * TOLERANCE / k).sqrt()
 }
 
-fn bezier(p: &[DVec2; 4], t: f64) -> DVec2 {
-    let u = 1.0 - t;
-    u * u * u * p[0] + 3.0 * u * u * t * p[1] + 3.0 * u * t * t * p[2] + t * t * t * p[3]
+/// The Bézier with control points `p`, of any degree, at `t`: by de Casteljau's
+/// algorithm.
+fn bezier(p: &[DVec2], t: f64) -> DVec2 {
+    let mut q = p.to_vec();
+    for k in (1..q.len()).rev() {
+        for i in 0..k {
+            q[i] = q[i].lerp(q[i + 1], t);
+        }
+    }
+    q[0]
 }
 
-fn bezier_tangent(p: &[DVec2; 4], t: f64) -> DVec2 {
-    let u = 1.0 - t;
-    let d = 3.0 * u * u * (p[1] - p[0]) + 6.0 * u * t * (p[2] - p[1]) + 3.0 * t * t * (p[3] - p[2]);
+/// The direction of the Bézier with control points `p` at `t`, unnormalized:
+/// the Bézier of their differences.
+fn bezier_tangent(p: &[DVec2], t: f64) -> DVec2 {
+    let d: Vec<DVec2> = p.windows(2).map(|w| w[1] - w[0]).collect();
+    let d = bezier(&d, t);
     // A control point on an end leaves no tangent there; look along the curve.
     if d.length_squared() > 1e-18 {
         d
     } else {
-        p[3] - p[0]
+        p[p.len() - 1] - p[0]
     }
 }
 
-/// A cubic Bézier from `start`, sampled as evenly as the tolerance and the turn
-/// per vertex allow, with no extra vertices at its ends: each vertex's distance
-/// along it, and the vertex. For curves no lane runs beside, such as a
-/// junction's connectors, which needn't end square.
-pub(crate) fn sample_bezier(
-    start: Pose,
-    c1: DVec2,
-    c2: DVec2,
-    end: DVec2,
-) -> (Vec<f64>, Vec<DVec2>) {
-    let placed = Placed::new(start, &Piece::Bezier { c1, c2, end });
+/// A Bézier with control points `p`, of any degree, sampled as evenly as the
+/// tolerance and the turn per vertex allow, with no extra vertices at its
+/// ends: each vertex's distance along it, and the vertex. For curves no lane
+/// runs beside, such as a junction's connectors, which needn't end square.
+pub(crate) fn sample_bezier(p: Vec<DVec2>) -> (Vec<f64>, Vec<DVec2>) {
+    let placed = Placed::bezier(p);
     let length = placed.length();
     let s: Vec<f64> = std::iter::once(0.0)
         .chain(placed.stations())

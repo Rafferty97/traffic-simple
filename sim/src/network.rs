@@ -463,6 +463,13 @@ pub struct SimNetwork {
     yields: Vec<Vec<LaneId>>,
 }
 
+/// The most a rounded corner of a vehicle's front axle's course reaches either
+/// side of its vertex, in meters (see [`SimNetwork::smooth_point_along`]):
+/// enough to round the polyline's kinks, short enough to keep a lane change's
+/// offset, and shorter than a wheelbase, so that the front axle is never in a
+/// corner needing a lane its path has left behind.
+pub(crate) const FILLET: f64 = 2.0;
+
 impl SimNetwork {
     /// Builds a network from its lanes, with no links. Lane `i` gets id `LaneId(i)`.
     pub fn new(lanes: Vec<Lane>) -> Self {
@@ -843,17 +850,82 @@ impl SimNetwork {
         &self.lanes[id.0 as usize]
     }
 
-    /// The point `s` meters along a path from the start of its first lane, `t`
-    /// meters left of the centerline. Past the end of the path, the last lane's
-    /// final segment is extended.
-    pub(crate) fn point_along(
+    /// The point `s` along `path`, `offset(s)` across it, with each corner of the
+    /// path's polyline rounded: within `d` of a vertex, half the shorter of the
+    /// segments either side but at most [`FILLET`], the course is the quadratic Bézier from `d` before
+    /// the vertex to `d` after, its control point the vertex, all at their own
+    /// offsets. Its direction doesn't jump at vertices, it needs no square roots,
+    /// and, symmetric about the vertex, it is parameterised all but evenly by
+    /// `s`. Where the path runs out, the corner isn't rounded.
+    pub(crate) fn smooth_point_along(
         &self,
-        path: impl IntoIterator<Item = LaneId>,
-        s: f64,
-        t: f64,
+        path: &[LaneId],
+        mut s: f64,
+        offset: impl Fn(f64) -> f64,
     ) -> DVec2 {
-        let (lane, pos) = self.lane_pos_along(path, s, t);
-        self.lane(lane).geometry().lane_to_world(pos)
+        // The lane `s` is on, and the path's length before it.
+        let mut k = 0;
+        let mut base = 0.0;
+        while k + 1 < path.len() {
+            let length = self.lane(path[k]).geometry().length();
+            if s < length {
+                break;
+            }
+            s -= length;
+            base += length;
+            k += 1;
+        }
+        let g = self.lane(path[k]).geometry();
+        let i = g.seg_index(s);
+        let (start, end) = g.segment_span(i);
+        let point = |lane: LaneId, seg: usize, at: f64, base: f64| {
+            self.lane(lane).geometry().segment_point(seg, at, offset(base + at))
+        };
+        // The segment before its start vertex, on this lane or the one before,
+        // and the one after its end vertex, on this lane or the one after: each a
+        // lane, its segment, that segment's span, and the path's length before
+        // that lane.
+        let before = if i > 0 {
+            Some((path[k], i - 1, g.segment_span(i - 1), base))
+        } else if k > 0 {
+            let p = self.lane(path[k - 1]).geometry();
+            let last = p.segment_count() - 1;
+            Some((path[k - 1], last, p.segment_span(last), base - p.length()))
+        } else {
+            None
+        };
+        let after = if i + 1 < g.segment_count() {
+            Some((path[k], i + 1, g.segment_span(i + 1), base))
+        } else if k + 1 < path.len() {
+            let n = self.lane(path[k + 1]).geometry();
+            Some((path[k + 1], 0, n.segment_span(0), base + g.length()))
+        } else {
+            None
+        };
+        // Rounding the corner at the vertex between `(a, at the end of its
+        // segment)` and `(b, at the start of its)`, if `s` is within it.
+        let fillet = |prev: (LaneId, usize, (f64, f64), f64),
+                      next: (LaneId, usize, (f64, f64), f64),
+                      from_vertex: f64| {
+            let (pl, pi, (ps, pe), pb) = prev;
+            let (nl, ni, (ns, ne), nb) = next;
+            let d = (0.5 * (pe - ps).min(ne - ns)).min(FILLET);
+            (from_vertex.abs() < d).then(|| {
+                let p0 = point(pl, pi, pe - d, pb);
+                let p1 = point(nl, ni, ns, nb);
+                let p2 = point(nl, ni, ns + d, nb);
+                let u = 0.5 * (from_vertex + d) / d;
+                let w = 1.0 - u;
+                w * w * p0 + 2.0 * u * w * p1 + u * u * p2
+            })
+        };
+        let here = (path[k], i, (start, end), base);
+        let rounded = match (s - start < end - s, before, after) {
+            (true, Some(prev), _) => fillet(prev, here, s - start),
+            (false, _, Some(next)) => fillet(here, next, s - end),
+            _ => None,
+        };
+        rounded.unwrap_or_else(|| point(path[k], i, s, base))
     }
 
     /// The point `s` along `path` and `t` across it, as [`SimNetwork::point_along`]

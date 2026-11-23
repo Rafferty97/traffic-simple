@@ -1433,8 +1433,8 @@ fn draw_debug(
         }
     }
 
-    if layers.on(Layer::Lookahead) {
-        for &(id, point) in sim.sink().lookaheads.iter().filter(|l| shown(l.0)) {
+    if layers.on(Layer::FrontAxle) {
+        for &(id, point) in sim.sink().front_axles.iter().filter(|l| shown(l.0)) {
             let Some(v) = sim.get(id) else { continue };
             let axle = drawn(id, v).axle_mid(v.spec().rear_axle);
             painter.line_segment(
@@ -1485,7 +1485,7 @@ enum Layer {
     LaneChanges,
     Leaders,
     PassChecks,
-    Lookahead,
+    FrontAxle,
     Barriers,
 }
 
@@ -1500,7 +1500,7 @@ impl Layer {
         Layer::LaneChanges,
         Layer::Leaders,
         Layer::PassChecks,
-        Layer::Lookahead,
+        Layer::FrontAxle,
         Layer::Barriers,
     ];
 
@@ -1561,10 +1561,10 @@ impl Layer {
                 ],
                 "Each barrier across its lane: a signal in its light's colour, a give-way line in white, a stop line in pink, an all-way stop line in violet, the start of a keep-clear zone in yellow",
             ),
-            Layer::Lookahead => (
-                "Lookahead",
+            Layer::FrontAxle => (
+                "Front axle",
                 &[LOOKAHEAD],
-                "Rear axle to the point pure pursuit is steering toward",
+                "Rear axle to the front axle, placed on its course, the rear trailing it",
             ),
         }
     }
@@ -1619,8 +1619,8 @@ impl Layers {
 struct DebugState {
     /// The last longitudinal update's terms: vehicle, what it reacted to, acceleration.
     accel_terms: Vec<(VehicleId, AccelSource, f64)>,
-    /// The last motion update's lookahead points.
-    lookaheads: Vec<(VehicleId, DVec2)>,
+    /// Where the last motion update put each front axle.
+    front_axles: Vec<(VehicleId, DVec2)>,
     /// Each vehicle's evaluations from its last lane-change decision.
     decisions: HashMap<VehicleId, Vec<LaneChangeEval>>,
     /// The last longitudinal update's checks for passing a diverging vehicle.
@@ -1650,8 +1650,8 @@ impl DebugSink for DebugState {
             DebugEvent::AccelTerm { vehicle, source, accel } => {
                 self.accel_terms.push((vehicle, source, accel))
             }
-            DebugEvent::RecomputeMotion => self.lookaheads.clear(),
-            DebugEvent::Lookahead { vehicle, point } => self.lookaheads.push((vehicle, point)),
+            DebugEvent::RecomputeMotion => self.front_axles.clear(),
+            DebugEvent::FrontAxle { vehicle, point } => self.front_axles.push((vehicle, point)),
             DebugEvent::RecomputeDecision { vehicle } => {
                 self.decisions.entry(vehicle).or_default().clear()
             }

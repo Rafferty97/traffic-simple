@@ -51,9 +51,10 @@ fn changes_lane_smoothly_and_leaves_the_old_lane() {
     let v = sim.get(id).unwrap();
     assert_eq!(v.lane(), LaneId(2));
     assert_eq!(v.old_side(), Some(Side::Left));
-    // Jumped to the new lane without moving: about one lane width to its left.
+    // Jumped to the new lane without moving: about one lane width to its left,
+    // and its rear axle a little more, trailing inside the bend.
     assert!(
-        (v.lane_pos().t - 3.5).abs() < 0.1,
+        (v.lane_pos().t - 3.5).abs() < 0.15,
         "offset {}",
         v.lane_pos().t
     );
@@ -81,17 +82,20 @@ fn changes_lane_smoothly_and_leaves_the_old_lane() {
 
     let v = sim.get(id).unwrap();
     assert!(v.lane_change().is_none(), "lane change never finished");
+    // Its rear axle trailing inside the bend, by about a tenth of a metre.
     assert!(
-        v.lane_pos().t.abs() < 0.05,
+        v.lane_pos().t.abs() < 0.12,
         "ended {} m off the centerline",
         v.lane_pos().t
     );
     // The rear leaves the old lane partway through the four-second change.
     let left = left_old_lane.expect("never left the old lane");
     assert!(left > 0.5 && left < 4.0, "left the old lane after {left} s");
-    // Smooth from the first frame: the cubic starts where pure pursuit was aiming.
+    // Smooth from the first frame: the quintic starts where the front axle is,
+    // heading its way, with no curvature of its own; the new lane's rounded
+    // corners leave a step of a few thousandths of a radian.
     assert!(
-        max_steer_rate < 0.15,
+        max_steer_rate < 0.2,
         "steering rate reached {max_steer_rate} rad/s"
     );
 }
@@ -589,4 +593,43 @@ fn changes_in_the_same_direction_never_pass() {
         "it should have waited behind, got {past:.1} m past"
     );
     assert!(closest > 0.3, "came within {closest} m");
+}
+
+/// A car changing lanes moves at its speed, not faster, however steep the
+/// change: on a straight road, slowly, so the change is as short as it can be.
+/// Before its course's slope was allowed for, its front axle went 23% faster.
+#[test]
+fn a_slow_lane_change_keeps_the_car_at_its_speed() {
+    let lane = |y: f64| {
+        let points = [glam::DVec2::new(0.0, y), glam::DVec2::new(2000.0, y)];
+        Lane::new(&points, 3.5, 2.0).unwrap()
+    };
+    let mut network = SimNetwork::new(vec![lane(3.5), lane(0.0)]);
+    network.set_adjacent(LaneId(0), LaneId(1), true, true);
+    let mut sim = Simulation::new(network, NoopSink);
+    let spec = traffic_sim::VehicleSpec { accel_noise: 0.0, ..car() };
+    let at = Placement {
+        lane: LaneId(1),
+        s: 100.0,
+        speed: 2.0,
+        route: Route::default(),
+    };
+    let id = sim.insert(spec, at);
+    for _ in 0..90 {
+        sim.step();
+    }
+    sim.change_lane(id, Side::Left).unwrap();
+    let mut worst = 0.0f64;
+    while sim.get(id).unwrap().lane_change().is_some() {
+        // Its front axle, where it is driven from: its rear axle, trailing,
+        // goes a little less far as the body turns, as a car's does.
+        let front = |v: &traffic_sim::Vehicle| v.pos() + v.spec().wheelbase() * v.dir();
+        let v = sim.get(id).unwrap();
+        let (before, speed) = (front(v), v.speed());
+        sim.step();
+        let v = sim.get(id).unwrap();
+        let expected = 0.5 * (speed + v.speed()) * traffic_sim::STEP;
+        worst = worst.max((front(v).distance(before) / expected - 1.0).abs());
+    }
+    assert!(worst < 0.01, "its speed strayed by {:.1}%", 100.0 * worst);
 }

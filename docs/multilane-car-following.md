@@ -120,8 +120,9 @@ after which these two always hold:
   rear overhang, width and steering lock, and well inside the passing check's clearance.
 - Once its body has stopped intersecting Z, it never intersects it again.
 
-The samples fall where the course can bend: at the vertices of V's path and of Z, and along the lane change's cubic as
-closely as keeps straight lines between them within rounding to the grid. Between them the body moves straight.
+The samples fall where the course can bend: at the vertices of V's path and of Z, and along the lane change's quintic
+as closely as keeps straight lines between them within rounding to the grid. At each, V's body is where it will be as
+it drives: its front axle along its course, its rear axle trailing, stepped half a metre at a time in between.
 
 Until that point, the record is converging, and after that point, it is diverging. That point is memoised on the
 converging record, as V's rear's position along Z, with the side it diverges toward, so the trace only runs once.

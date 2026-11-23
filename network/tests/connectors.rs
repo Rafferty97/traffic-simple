@@ -64,16 +64,13 @@ fn a_straight_connector_is_a_vehicle_wide_plus_room_to_pass_each_side() {
                 widths.iter().all(|w| (w[0] - half).abs() < 1e-3 && (w[1] - half).abs() < 1e-3)
             );
         } else {
-            // A turn widens on its outer side only, where its front swings out.
-            let outer = if turn == Turn::Left { 1 } else { 0 };
-            assert!(
-                widths.iter().all(|w| (w[1 - outer] - half).abs() < 0.05),
-                "{turn:?}: {widths:?}"
-            );
-            assert!(
-                widths.iter().any(|w| w[outer] > half + 0.3),
-                "{turn:?}: {widths:?}"
-            );
+            // A turn widens most on its inner side, where its rear axle cuts
+            // inside its front's course, and less on its outer side, where its
+            // front corner swings out.
+            let inner = if turn == Turn::Left { 0 } else { 1 };
+            let most = |e: usize| widths.iter().map(|w| w[e]).fold(0.0, f64::max);
+            assert!(most(inner) > half + 0.2, "{turn:?}: {widths:?}");
+            assert!(most(inner) > most(1 - inner), "{turn:?}: {widths:?}");
         }
     }
 }
@@ -143,10 +140,9 @@ fn far_side_turns_run_straight_on_before_turning_and_nothing_else_does() {
             let on_line = |p: DVec2| (p - points[0]).perp_dot(along).abs() < 1e-3;
             let straight = points.iter().take_while(|&&p| on_line(p)).last().unwrap();
             let length = straight.distance(points[0]);
-            assert!(
-                (length - (stretch + 5.0)).abs() < 2e-3,
-                "it runs on {length:.3} m"
-            );
+            // At least that far: the quintic after it leaves along the same line,
+            // within a millimetre of it for a while.
+            assert!(length > stretch + 5.0 - 2e-3, "it runs on {length:.3} m");
             assert!(run.length() > plain.length(), "it isn't any longer");
         } else {
             assert_eq!(run.to_mm_string(), plain.to_mm_string(), "{turn:?} changed");

@@ -396,7 +396,7 @@ impl Along {
     ///
     /// If its nose is already there, there is no earlier point to check from, so
     /// it is where it is `now` rather than where its course would put it, which
-    /// pure pursuit lags behind.
+    /// its rear axle, trailing its front, lags behind.
     #[allow(clippy::too_many_arguments)]
     fn reach(
         self,
@@ -600,7 +600,7 @@ pub fn find_leaders<B>(
     // would be.
     let now = match along {
         Along::Into(_) => along.pose(network, vehicle, axle_s, 0.0),
-        _ => (vehicle.pos, DVec2::from_angle(vehicle.heading)),
+        _ => (vehicle.pos, vehicle.dir),
     };
 
     // Start of the `k`th lane, along the lanes searched from the start of the first.
@@ -966,7 +966,7 @@ mod test {
         let lane = Lane::new(&[DVec2::ZERO, DVec2::new(100.0, 0.0)], 3.5, 14.0).unwrap();
         let network = SimNetwork::new(vec![lane]);
         let mut vehicle = car_at(&network, 0, 0.0);
-        let change = LaneChange::new(0.0, 3.5, 0.0, 0.0, 2.7);
+        let change = LaneChange::new(0.0, 3.5, 0.0, 0.0);
         vehicle.lane_change = Some(change);
         let along = Along::Path(0);
         let half = 0.5 * change.length;
@@ -1095,7 +1095,7 @@ mod test {
         // ahead along that heading, falls a little short, never past.
         let network = bend();
         let mut vehicle = car_at(&network, 1, 10.0);
-        vehicle.lane_change = Some(LaneChange::new(10.0, 3.5, 0.0, 0.0, 2.7));
+        vehicle.lane_change = Some(LaneChange::new(10.0, 3.5, 0.0, 0.0));
         let lane = network.lane(LaneId(1));
         let corner = lane.geometry().lane_to_world(lane.geometry().lane_pos(25.0, 0.0));
         let gap = 25.0 - (10.0 + NOSE);

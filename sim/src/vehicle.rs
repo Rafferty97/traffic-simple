@@ -139,13 +139,16 @@ pub struct Vehicle {
     pub(crate) spec: VehicleSpec,
     /// World position of the midpoint of the rear axle.
     pub(crate) pos: DVec2,
-    /// Heading in radians, counterclockwise from +x, in [0, 2π).
-    pub(crate) heading: f64,
+    /// The body's heading, as a unit vector from the rear axle toward the front.
+    pub(crate) dir: DVec2,
     pub(crate) speed: f64,
     /// Held between longitudinal updates.
     pub(crate) accel: f64,
     /// Curvature of the rear axle's path, in 1/m, positive to the left.
     pub(crate) curvature: f64,
+    /// How far along its path the front axle is, from the start of `path[0]`:
+    /// the front axle is placed on the path there, and the rear axle trails it.
+    pub(crate) front_s: f64,
     /// The lane the vehicle is following, then the lanes it will take next: as
     /// far ahead as its leader search, path tracking and lane change need to
     /// know where it is going, however short the lanes, unless it leaves the
@@ -231,7 +234,12 @@ impl Vehicle {
 
     /// Heading in radians, counterclockwise from +x.
     pub fn heading(&self) -> f64 {
-        self.heading
+        crate::math::wrap_angle(self.dir.to_angle())
+    }
+
+    /// The heading as a unit vector.
+    pub fn dir(&self) -> DVec2 {
+        self.dir
     }
 
     pub fn speed(&self) -> f64 {
@@ -308,19 +316,20 @@ impl Vehicle {
     /// The center of the body.
     pub fn center(&self) -> DVec2 {
         let offset = 0.5 * self.spec.length - self.spec.rear_axle;
-        self.pos + offset * DVec2::from_angle(self.heading)
+        self.pos + offset * self.dir
     }
 
     /// Distance from `point` to the body, or zero if it is inside.
     pub fn distance_to(&self, point: DVec2) -> f64 {
-        let local = DVec2::from_angle(-self.heading).rotate(point - self.center());
+        // Rotated by minus the heading, into the body's frame.
+        let local = DVec2::new(self.dir.x, -self.dir.y).rotate(point - self.center());
         let half = 0.5 * DVec2::new(self.spec.length, self.spec.width);
         (local.abs() - half).max(DVec2::ZERO).length()
     }
 
     /// The body's corners: rear left, rear right, front right, front left.
     pub fn corners(&self) -> [DVec2; 4] {
-        let dir = DVec2::from_angle(self.heading);
+        let dir = self.dir;
         let left = 0.5 * self.spec.width * dir.perp();
         let rear = self.pos - self.spec.rear_axle * dir;
         let front = rear + self.spec.length * dir;

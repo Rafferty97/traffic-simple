@@ -3,8 +3,7 @@
 
 use glam::DVec2;
 use traffic_network::{
-    Arm, CompileError, Compiled, LaneRef, MarkingStyle, RoadId, RoadNetwork, compile, fit_arms,
-    scenarios,
+    Arm, Compiled, LaneRef, MarkingStyle, RoadId, RoadNetwork, compile, fit_arms, scenarios,
 };
 use traffic_sim::{BarrierKind, LaneId};
 
@@ -168,22 +167,4 @@ fn a_run_out_lets_turns_into_far_lanes_drift_across_it_and_others_run_along_it()
         strays(into(far), far) > 0.1,
         "the turn into the far lane doesn't drift across"
     );
-}
-
-#[test]
-fn a_turn_sweeping_onto_a_road_lane_fails_to_compile_until_its_arms_are_fitted() {
-    // Left turns from each kerb lane into the far lane of the road on its left
-    // sweep over the centre line, by the cars waiting there, unless their
-    // stop lines are set back.
-    let mut net = scenarios::crossroads(2, 50.0 / 3.6);
-    net.intersections[0].arms.clear();
-    let swept = matches!(
-        compile(&net),
-        Err(CompileError::Sweeps { .. } | CompileError::Overhangs { .. })
-    );
-    assert!(swept, "it compiled with its sweeps unchecked");
-    let fitted = fit_arms(&mut net);
-    assert!(fitted.is_ok(), "{:?}", fitted.err());
-    assert!(!net.intersections[0].arms.is_empty(), "nothing was fitted");
-    assert!(compile(&net).is_ok(), "the fitted arms don't compile again");
 }

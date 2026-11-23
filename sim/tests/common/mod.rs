@@ -106,7 +106,7 @@ impl traffic_sim::DebugSink for Terms {
             }
             DebugEvent::LaneChangeEval { vehicle, eval } => self.1.push((vehicle, eval)),
             DebugEvent::RecomputeMotion
-            | DebugEvent::Lookahead { .. }
+            | DebugEvent::FrontAxle { .. }
             | DebugEvent::PassCheck { .. }
             | DebugEvent::Barrier { .. } => {}
         }

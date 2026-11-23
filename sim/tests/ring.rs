@@ -48,7 +48,16 @@ fn lone_car_laps_forever_without_a_leader() {
     });
     // At the speed limit for most of two minutes: about seven laps.
     assert!((sim.get(id).unwrap().speed() - SPEED_LIMIT).abs() < 0.1);
-    assert!(max_t < 0.1, "drifted {max_t} m off the centerline");
+    // Its rear axle trails inside the bend, as a car's rear wheels do: on a
+    // circle of radius r, at √(r² − L²) for wheelbase L.
+    let r = 230.0 / std::f64::consts::TAU;
+    let inside = r - (r * r - car().wheelbase().powi(2)).sqrt();
+    // Its front axle rounds each corner of the lane's polyline, inside it by up
+    // to the polyline's sagitta, a centimetre.
+    assert!(
+        (max_t - inside).abs() < 0.02,
+        "drifted {max_t} m off the centerline, not {inside}"
+    );
 }
 
 #[test]

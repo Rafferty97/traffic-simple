@@ -1354,7 +1354,7 @@ fn a_car_sees_a_diverging_car_its_leader_has_passed() {
     let lane_0 = sim.state.network.lane(LaneId(0));
     let on_0 = lane_0.geometry().world_to_lane_near(pos, lane_0.geometry().lane_pos(60.0, 0.0));
     let v = &mut sim.state.vehicles[c];
-    (v.pos, v.heading, v.lane_pos) = (pos, 0.0, on_0);
+    (v.pos, v.dir, v.lane_pos) = (pos, DVec2::X, on_0);
     sim.update_occupancy(0.0);
     let record = sim.state.occupants[1].iter().find(|o| o.id == c).unwrap();
     assert_eq!(record.lateral, Lateral::Diverging(Side::Left));

@@ -253,8 +253,10 @@ fn signalised_crossroads_flooded_with_traffic_have_no_collisions() {
 }
 
 #[test]
-#[ignore = "on the acute side, a left turn's body strays onto the lane beside the one it \
-            turns into by more than the sweep check's steering allowance"]
+#[ignore = "on the 60° crossroads, a car's rear cuts so deep into a 120° turn just past its \
+            stop line that its body swings back over the lead-in of the connector beside it, \
+            outside the junction, where no record or the junction's queue covers it: the sweep \
+            check needs to cover lead-ins as it does road lanes"]
 fn an_oblique_crossroads_flooded_with_traffic_has_no_collisions() {
     for angle in [60.0, 120.0] {
         let angle = f64::to_radians(angle);

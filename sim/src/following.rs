@@ -4,6 +4,7 @@
 
 use glam::DVec2;
 
+use crate::kinematics;
 use crate::lane::{LanePos, SAME_POINT};
 use crate::models::lateral;
 use crate::network::{LaneId, Side, SimNetwork};
@@ -26,13 +27,18 @@ pub type Overlaps = Vec<Vec<Overlap>>;
 /// converging until the vehicle next advances.
 const TRACE_SAMPLES: usize = 512;
 
+/// The longest step classification drives a course in, in meters: short enough
+/// that the rear axle trails the front as it will.
+const TRAIL_STEP: f64 = 0.5;
+
 /// How far, in meters, a body with `spec` may come back toward a lane it is
 /// leaving and still count as moving away from it: the swing of its tail as
 /// it turns, at most. Turning about a point `R` from its rear axle, its outer
 /// rear corner, `o` behind the axle and `w/2` out, is `√((R + w/2)² + o²)` from
-/// it, further than the side of its body: at full lock, about 10 cm for a car.
+/// it, further than the side of its body: at a lane change's tightest bend,
+/// from rest, about 10 cm for a car.
 fn swing(spec: &VehicleSpec) -> f64 {
-    let radius = 1.0 / lateral::max_curvature(spec.wheelbase());
+    let radius = lateral::REST_CHANGE_RADIUS;
     let side = radius + 0.5 * spec.width;
     side.hypot(spec.rear_axle) - side
 }
@@ -223,12 +229,27 @@ fn lateral(
     let Some(stations) = trace(network, vehicle, lane, window) else {
         return Lateral::CONVERGING;
     };
+    // Its course as it will drive it: its front axle along its path, at its
+    // lane change's offset, its rear axle trailing, in steps short enough to
+    // follow, each station `ahead` how far its front axle has gone.
+    let wheelbase = vehicle.spec.wheelbase();
+    let change = vehicle.lane_change;
+    let offset = |s: f64| change.map_or(0.0, |c| c.offset_at(s));
+    let (mut rear, mut dir, mut done) = (vehicle.pos, vehicle.dir, 0.0);
+    let mut drive = |ahead: f64| {
+        while done < ahead {
+            done = (done + TRAIL_STEP).min(ahead);
+            let front = network.smooth_point_along(&vehicle.path, vehicle.front_s + done, offset);
+            (rear, dir) = kinematics::trail(rear, dir, front, wheelbase);
+        }
+        body(&vehicle.spec, rear, dir)
+    };
     let mut samples = arrayvec::ArrayVec::<Sample, TRACE_SAMPLES>::new();
     for &ahead in &stations {
         let corners = if ahead == 0.0 {
             vehicle.corners()
         } else {
-            pose(ahead)
+            drive(ahead)
         };
         samples.push(sample(corners));
     }
@@ -276,10 +297,10 @@ fn lateral(
     }
 }
 
-/// Where, ahead of its rear axle along its path, classification samples a
+/// Where, ahead of its front axle along its path, classification samples a
 /// vehicle's course against `lane`, from 0 to `window`, in order: where the
 /// course or the lane bends or changes width, at their vertices, and along
-/// its lane change's cubic as closely as keeps the straight lines between
+/// its lane change's quintic as closely as keeps the straight lines between
 /// samples within [`SAME_POINT`] of it. `None` if that needs more than
 /// [`TRACE_SAMPLES`].
 fn trace(
@@ -298,7 +319,8 @@ fn trace(
     };
     push(0.0)?;
     push(window)?;
-    let axle = vehicle.lane_pos.s;
+    // Stations are how far its front axle goes, from where it is on its path.
+    let axle = vehicle.front_s;
     // Its path's vertices, and the lane's beside them.
     let other = network.lane(lane).geometry();
     let mut before = -axle;
@@ -319,15 +341,12 @@ fn trace(
             break;
         }
     }
-    // Its lane change: the cubic's second derivative is linear, so at its
-    // largest at an end, and straight lines `h` apart stray at most
-    // `h²·|t''| / 8` from it.
+    // Its lane change: straight lines `h` apart stray at most `h²·|t''| / 8`
+    // from the quintic, whose second derivative is at most about
+    // `(5.8·|offset| + 3.9·|length·slope|) / length²`.
     if let Some(c) = vehicle.lane_change {
-        let ends = [
-            6.0 * c.offset + 4.0 * c.length * c.slope,
-            6.0 * c.offset + 2.0 * c.length * c.slope,
-        ];
-        let bend = ends.iter().fold(0.0f64, |m, e| m.max(e.abs())) / (c.length * c.length);
+        let bend =
+            (6.0 * c.offset.abs() + 4.0 * (c.length * c.slope).abs()) / (c.length * c.length);
         if bend > 0.0 {
             let step = (8.0 * SAME_POINT / bend).sqrt();
             let n = (c.length / step).ceil() as usize;

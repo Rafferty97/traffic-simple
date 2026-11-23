@@ -12,11 +12,9 @@ use crate::lane_changing::{
     LaneSpeeds, check_gap, comfortable_stop, friction, halfway_from_rest, incentives, plan_change,
     wants_change,
 };
-use crate::math::wrap_angle;
 use crate::merge::{self, Merges};
 use crate::models::acceleration;
 use crate::models::lane_change::{self, Decision};
-use crate::models::lateral;
 use crate::models::routing::Route;
 use crate::models::signal::{self, Light, MovementLight, SignalState};
 use crate::network::{
@@ -381,10 +379,11 @@ impl<D: DebugSink> Simulation<D> {
         let mut vehicle = Vehicle {
             spec,
             pos: lane.geometry().lane_to_world(lane_pos),
-            heading: wrap_angle(lane.geometry().tangent_at(lane_pos).to_angle()),
+            dir: lane.geometry().tangent_at(lane_pos),
             speed: at.speed,
             accel: 0.0,
             curvature: 0.0,
+            front_s: at.s + spec.wheelbase(),
             path: vec![at.lane],
             lane_pos,
             route: at.route,
@@ -566,6 +565,8 @@ impl<D: DebugSink> Simulation<D> {
 
         let (lane_pos, change) = plan_change(&self.state.network, vehicle, neighbor.lane);
         let old_lane = vehicle.path[0];
+        // The front axle carries on from where it is, at the cubic's start.
+        vehicle.front_s = change.s0;
         // It keeps its place in the queues it is in: those of junctions no longer
         // on its path drop it once it is clear of them, and its new path may make
         // it arrive at others.
@@ -979,20 +980,35 @@ impl<D: DebugSink> Simulation<D> {
         for (id, vehicle) in vehicles.iter_mut() {
             let wheelbase = vehicle.spec.wheelbase();
 
-            let ahead = vehicle.lane_pos.s + lateral::lookahead_distance(vehicle.speed);
-            let offset = vehicle.lane_change.map_or(0.0, |change| change.offset_at(ahead));
-            let target = network.point_along(vehicle.path.iter().copied(), ahead, offset);
-            vehicle.curvature =
-                lateral::curvature_toward(vehicle.pos, vehicle.heading, wheelbase, target);
-            sink.record(|| DebugEvent::Lookahead { vehicle: id, point: target });
-
             // Trapezoidal distance is exact for constant acceleration, unless the
             // vehicle stopped during the step.
             let speed = (vehicle.speed + vehicle.accel * dt).max(0.0);
             let dist = 0.5 * (vehicle.speed + speed) * dt;
             vehicle.speed = speed;
-            (vehicle.pos, vehicle.heading) =
-                kinematics::advance(vehicle.pos, vehicle.heading, vehicle.curvature, dist);
+            // The front axle moves along its path, the rear axle trailing it.
+            // Changing lanes, its course runs across the lane as well as along
+            // it, so it goes less far along for the same distance travelled:
+            // by its slope there, exactly on a straight lane.
+            vehicle.front_s += match vehicle.lane_change {
+                Some(change) => {
+                    let slope = change.slope_at(vehicle.front_s);
+                    dist / (1.0 + slope * slope).sqrt()
+                }
+                None => dist,
+            };
+            let s = vehicle.front_s;
+            let change = vehicle.lane_change;
+            let offset = |s: f64| change.map_or(0.0, |change| change.offset_at(s));
+            let front = network.smooth_point_along(&vehicle.path, s, offset);
+            sink.record(|| DebugEvent::FrontAxle { vehicle: id, point: front });
+            let (rear, dir) = kinematics::trail(vehicle.pos, vehicle.dir, front, wheelbase);
+            // The curvature of its path, for the inspector: the turn, small, over
+            // the distance moved.
+            if dist > 0.0 {
+                vehicle.curvature = vehicle.dir.perp_dot(dir) / dist;
+            }
+            vehicle.pos = rear;
+            vehicle.dir = dir;
 
             let lane = network.lane(vehicle.path[0]);
             // The barriers its rear axle passes, from where it was along the
@@ -1019,6 +1035,7 @@ impl<D: DebugSink> Simulation<D> {
                 if let Some(change) = &mut vehicle.lane_change {
                     change.s0 -= length;
                 }
+                vehicle.front_s -= length;
                 // Lanes can be shorter than a step's travel, so it may advance
                 // again: it needs to know where it goes beyond this one.
                 let s = vehicle.lane_pos.s;

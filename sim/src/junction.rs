@@ -4,7 +4,6 @@
 //! is released, and the terms committed vehicles impose on those behind them.
 
 use arrayvec::ArrayVec;
-use glam::DVec2;
 use slotmap::SlotMap;
 
 use crate::barrier;
@@ -901,7 +900,7 @@ fn conflict_term(
     let geometry = network.lane(mine).geometry();
     let at = geometry.lane_pos(conflict.mine.start, 0.0);
     let (origin, along) = (geometry.lane_to_world(at), geometry.tangent_at(at));
-    let heading = DVec2::from_angle(leader.heading);
+    let heading = leader.dir;
     // Leaving its conflict the same general way too: a lane bends one way, by
     // less than half a turn, so it never swings back across in between.
     let exit = network.lane(theirs).geometry();

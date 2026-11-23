@@ -378,6 +378,28 @@ impl LaneGeometry {
         ]
     }
 
+    /// How many segments it has.
+    pub(crate) fn segment_count(&self) -> usize {
+        self.segs.len()
+    }
+
+    /// Where the `i`th segment starts and ends, in `s`.
+    pub(crate) fn segment_span(&self, i: usize) -> (f64, f64) {
+        let end = self.segs.get(i + 1).map_or(self.length, |next| next.cum_s);
+        (self.segs[i].cum_s, end)
+    }
+
+    /// The point `s` along the lane and `t` left of it, on the `i`th segment's
+    /// map, extended beyond it if `s` is.
+    pub(crate) fn segment_point(&self, i: usize, s: f64, t: f64) -> DVec2 {
+        self.segs[i].lane_to_world(s, t)
+    }
+
+    /// The last segment whose start is at or before `s`.
+    pub(crate) fn seg_index(&self, s: f64) -> usize {
+        self.seg_for_s(s)
+    }
+
     /// The last segment whose start is at or before `s`.
     fn seg_for_s(&self, s: f64) -> usize {
         self.segs.partition_point(|g| g.cum_s <= s).saturating_sub(1)

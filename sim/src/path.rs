@@ -3,19 +3,20 @@
 //! in `docs/DESIGN.md`).
 
 use crate::models::acceleration;
-use crate::models::lateral::{self, LaneChange};
+use crate::models::lateral::LaneChange;
 use crate::models::routing::Route;
 use crate::network::{LaneId, SimNetwork};
 use crate::vehicle::Vehicle;
 
 /// How far along its path, beyond its rear axle at `axle_s`, a vehicle
 /// needs to know where it is going: as far as its leader search looks from its
-/// front, its path tracker aims, and its lane change, `change`, runs.
+/// front, its front axle's course needs to round the next corner, and its lane
+/// change, `change`, runs.
 pub(crate) fn reach(vehicle: &Vehicle, axle_s: f64, change: Option<LaneChange>) -> f64 {
     let nose = vehicle.spec.length - vehicle.spec.rear_axle;
     let search = acceleration::horizon(&vehicle.spec, vehicle.speed) + nose;
-    // Path tracking, and planning a lane change, aim at the lookahead.
-    let tracking = lateral::lookahead_distance(vehicle.speed);
+    // Its front axle, a wheelbase ahead, rounds corners up to a fillet beyond.
+    let tracking = vehicle.spec.wheelbase() + crate::network::FILLET;
     let change = change.map_or(0.0, |c| c.end() - axle_s);
     search.max(tracking).max(change)
 }

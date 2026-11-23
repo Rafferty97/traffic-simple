@@ -22,6 +22,7 @@ mod vehicle;
 pub use barrier::{AMBER_DECEL, Decision as BarrierDecision};
 pub use debug::{AccelSource, DebugEvent, DebugSink, NoopSink, PassCheck};
 pub use junction::Entry;
+pub use kinematics::trail;
 pub use lane::{GRID, LaneError, LaneGeometry, LanePos, ParseLaneError, SAME_POINT};
 pub use models::acceleration::{SAFE_BRAKING, STOPPING_DECEL, STOPPING_SPEED};
 pub use models::lane_change::{

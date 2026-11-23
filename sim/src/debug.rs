@@ -28,10 +28,11 @@ pub enum DebugEvent {
     /// One term the longitudinal model considered for a vehicle. The vehicle's
     /// acceleration is the minimum of its terms.
     AccelTerm { vehicle: VehicleId, source: AccelSource, accel: f64 },
-    /// A motion update is starting: earlier [`DebugEvent::Lookahead`]s are stale.
+    /// A motion update is starting: earlier [`DebugEvent::FrontAxle`]s are stale.
     RecomputeMotion,
-    /// The point a vehicle's path tracker is steering toward.
-    Lookahead { vehicle: VehicleId, point: DVec2 },
+    /// Where a vehicle's front axle was placed on its course, its rear axle
+    /// trailing.
+    FrontAxle { vehicle: VehicleId, point: DVec2 },
     /// A vehicle's lane-change decision is being made: its earlier
     /// [`DebugEvent::LaneChangeEval`]s are stale.
     RecomputeDecision { vehicle: VehicleId },
