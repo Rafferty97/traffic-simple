@@ -1007,6 +1007,7 @@ impl eframe::App for App {
             (egui::Key::Num2, 2.0),
             (egui::Key::Num3, 5.0),
             (egui::Key::Num4, 20.0),
+            (egui::Key::Num5, 100.0),
         ] {
             if !typing && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key)) {
                 self.speed = speed;
