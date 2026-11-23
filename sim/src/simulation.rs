@@ -690,16 +690,16 @@ impl<D: DebugSink> Simulation<D> {
         let dt = self.state.config.dt;
         let every = self.state.config.macro_step;
 
-        self.update_signals(dt);
         if self.state.frame.is_multiple_of(every as u64) {
             let dt = (every as f64) * dt;
+            self.update_queues();
             self.update_lane_changes(dt);
             self.update_accels();
         }
 
         self.update_motion(dt);
         self.update_occupancy(dt);
-        self.update_queues();
+        self.update_signals(dt);
 
         self.state.frame += 1;
     }
@@ -1099,8 +1099,9 @@ impl<D: DebugSink> Simulation<D> {
         self.leavers.clear();
     }
 
-    /// Brings the junctions' queues up to date after a step's motion and
-    /// occupancy: vehicles whose path grew or that entered a junction arrive
+    /// Brings the junctions' queues up to date at the start of a macro step,
+    /// just before the decisions that read them, from the motion and occupancy
+    /// since the last: vehicles whose path grew or that entered a junction arrive
     /// where nothing holds them back (see [`arrive`]), committed vehicles clear
     /// of a junction leave its queue, those that can plainly stop are released
     /// (see [`may_release`]), and each lane approached is scanned for vehicles
