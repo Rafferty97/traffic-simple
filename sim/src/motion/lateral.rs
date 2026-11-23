@@ -2,8 +2,8 @@
 //! across a lane change, how sharp one may be, and how far one reaches. Part of
 //! the core: outside a lane change, vehicles follow their lanes' centrelines.
 
-use crate::lane::LanePos;
-use crate::network::{LaneId, Side, SimNetwork};
+use crate::network::geometry::LanePos;
+use crate::network::{ALIGNED, LaneId, Side, SimNetwork};
 use crate::vehicle::Vehicle;
 
 /// The tightest bend a lane change is planned with, as a radius, in meters, at
@@ -173,6 +173,47 @@ pub(crate) fn plan_change(
     let along_new = (on_new(s0 + 0.01, t0) - on_new(s0 - 0.01, t0)).normalize();
     let slope = along_new.perp_dot(heading) / along_new.dot(heading);
     (lane_pos, LaneChange::new(s0, t0, slope, vehicle.speed))
+}
+
+/// Whether a change to `side` that a vehicle started now would be over, its
+/// whole body in the new lane, before the lanes beside its path on that side
+/// run out. They run out where there is no neighbor, where the neighbor stops
+/// running beside it, as at a skewed stop line, and at a junction: where a
+/// lane of its path or the one beside it is in one, whatever neighbors the
+/// network gives them. So no change starts in a junction or runs into one,
+/// which would put the vehicle where the junction doesn't know it is, partway
+/// across its lanes. SUMO likewise allows no lane changes on a junction's
+/// internal lanes.
+pub(crate) fn room_to_change(network: &SimNetwork, vehicle: &Vehicle, side: Side) -> bool {
+    let needed = change_reach(network, vehicle);
+    let mut room = -vehicle.lane_pos.s;
+    let in_junction = |lane: LaneId| network.lane(lane).junction().is_some();
+    for (k, &lane) in vehicle.path.iter().enumerate() {
+        if room >= needed {
+            return true;
+        }
+        let beside = network.lane(lane).adj(side);
+        if in_junction(lane) || beside.is_none_or(|n| in_junction(n.lane)) {
+            return false;
+        }
+        let beside = beside.expect("checked");
+        // Beside it only from part way along: not yet, on the lane it is on, or
+        // not where the change would run onto it, on one after.
+        let starts_late = match k {
+            0 => vehicle.lane_pos.s < beside.from,
+            _ => beside.from > ALIGNED,
+        };
+        if starts_late {
+            return false;
+        }
+        let length = network.lane(lane).geometry().length();
+        room += beside.until;
+        if beside.until < length - ALIGNED {
+            return room >= needed;
+        }
+        room += length - beside.until;
+    }
+    room >= needed
 }
 
 #[cfg(test)]

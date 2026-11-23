@@ -9,10 +9,10 @@ use super::{
     Ask, D_SYNC, Decision, Outcome, State, aim, headway, index, make_room, resolve, step, unchecked,
 };
 use crate::debug::{AccelSource, DebugEvent, DebugSink};
-use crate::lane_changing::LaneSpeeds;
+use crate::following::{Ahead, Along, Found, find_leaders};
 use crate::models::acceleration;
 use crate::network::Side;
-use crate::occupancy::{Ahead, Along, Found, find_leaders};
+use crate::query::LaneSpeeds;
 use crate::simulation::SimState;
 use crate::vehicle::{Vehicle, VehicleId};
 
@@ -138,6 +138,7 @@ pub(crate) fn terms<D: DebugSink>(
                 state,
                 vehicle,
                 Along::Into(intent.side),
+                0.0,
                 |found| match found {
                     Found::Ahead(Ahead::Vehicle(leader), gap, _) if leader != id => {
                         let speed = state.vehicles[leader].speed;

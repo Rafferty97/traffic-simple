@@ -3,15 +3,14 @@
 
 use std::ops::ControlFlow;
 
-use crate::lane_changing::{
-    ANTICIPATION, LaneSpeeds, accel_along, comfortable_stop, room_to_change,
-};
-use crate::lateral::halfway;
+use crate::following::{Ahead, Along, Found, find_leaders};
 use crate::models::acceleration;
 use crate::models::lane_change;
 use crate::models::routing;
+use crate::motion::lateral::{halfway, halfway_from_rest, room_to_change};
 use crate::network::{LaneId, Side};
-use crate::occupancy::{self, Ahead, Along, Found, find_follower, find_leaders};
+use crate::query::find_follower;
+use crate::query::{ANTICIPATION, LaneSpeeds, accel_along};
 use crate::simulation::SimState;
 use crate::vehicle::{Vehicle, VehicleId, VehicleSpec};
 
@@ -59,7 +58,7 @@ pub(crate) fn incentives(
     };
     // From just past its own record, which the average leaves out.
     let own_s =
-        state.occupants[lane_id.0 as usize][occupancy::record_index(state, lane_id, id)].s();
+        state.occupants[lane_id.0 as usize][crate::query::record_index(state, lane_id, id)].s();
     let own = anticipated(lane_id, own_s);
     // Toward the side its route needs, and away from the other.
     let route = match routing::needed(network, vehicle, permitted) {
@@ -120,28 +119,43 @@ pub(crate) fn check_gap(
     // The new follower, behind it in the target lane: the lane is split at its
     // rear there, as its search there splits it.
     let target = network.lane(vehicle.path[0]).adj(side).expect("asked only where permitted");
-    let rear = occupancy::axle_beside(network, vehicle, target.lane) - vehicle.spec.rear_axle;
+    let rear = crate::query::axle_beside(network, vehicle, target.lane) - vehicle.spec.rear_axle;
     let new_follower =
         find_follower(state, through, target.lane, rear, id).map(|(follower, gap)| {
             let f = &vehicles[follower];
             acceleration::relaxed(&f.spec, f.speed, gap, vehicle.speed, headway)
         });
     // Halfway through before it would have to stop behind its leader.
-    let own = occupancy::record_index(state, vehicle.path[0], id);
+    let own = crate::query::record_index(state, vehicle.path[0], id);
     let mut stop = f64::INFINITY;
-    let _ = find_leaders(state, vehicle, Along::Path(own), |found| match found {
-        Found::Ahead(Ahead::Vehicle(leader), gap, _) if leader != id => {
-            stop = room_to_stop(&vehicle.spec, gap, &vehicles[leader]);
-            ControlFlow::Break(())
-        }
-        Found::Ahead(Ahead::PathEnd, gap, _) => {
-            stop = gap - vehicle.spec.min_gap;
-            ControlFlow::Break(())
-        }
-        _ => ControlFlow::Continue(()),
-    });
+    let reach = kept_room(state, id, vehicle).map_or(0.0, |h| vehicle.spec.min_gap + h);
+    let _ = find_leaders(
+        state,
+        vehicle,
+        Along::Path(own),
+        reach,
+        |found| match found {
+            Found::Ahead(Ahead::Vehicle(leader), gap, _) if leader != id => {
+                stop = room_to_stop(&vehicle.spec, gap, &vehicles[leader]);
+                ControlFlow::Break(())
+            }
+            Found::Ahead(Ahead::PathEnd, gap, _) => {
+                stop = gap - vehicle.spec.min_gap;
+                ControlFlow::Break(())
+            }
+            _ => ControlFlow::Continue(()),
+        },
+    );
     let room = stop >= halfway(network, vehicle);
     lane_change::Prospect { own_after, new_follower, room }
+}
+
+/// The room a vehicle that wants to change lanes keeps behind its leaders, so
+/// it isn't boxed in: as far as its rear axle needs to get halfway through a
+/// change from rest. Its leader search along its own lanes looks at least that
+/// far, past its minimum gap. `None` if it doesn't want to change.
+pub(crate) fn kept_room(state: &SimState, id: VehicleId, vehicle: &Vehicle) -> Option<f64> {
+    wants_change(state, id, vehicle).then(|| halfway_from_rest(&state.network, vehicle))
 }
 
 /// Whether a vehicle wants to change lanes: it is indicating, or has built up
@@ -154,5 +168,5 @@ pub(crate) fn wants_change(state: &SimState, id: VehicleId, vehicle: &Vehicle) -
 /// `leader`, `gap` ahead: to its minimum gap behind where the leader would
 /// stop, braking comfortably from now.
 fn room_to_stop(spec: &VehicleSpec, gap: f64, leader: &Vehicle) -> f64 {
-    gap - spec.min_gap + comfortable_stop(leader)
+    gap - spec.min_gap + leader.comfortable_stop()
 }

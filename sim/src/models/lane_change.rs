@@ -21,7 +21,7 @@
 mod measure;
 mod update;
 
-pub(crate) use measure::wants_change;
+pub(crate) use measure::kept_room;
 #[cfg(test)]
 pub(crate) use measure::{check_gap, incentives};
 pub(crate) use update::{decide, terms};

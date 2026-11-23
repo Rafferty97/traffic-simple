@@ -1,8 +1,8 @@
 use glam::DVec2;
 
-use crate::lane::LanePos;
-use crate::lateral::LaneChange;
 use crate::models::routing::Route;
+use crate::motion::lateral::LaneChange;
+use crate::network::geometry::LanePos;
 use crate::network::{LaneId, Side};
 
 slotmap::new_key_type! {
@@ -208,9 +208,14 @@ impl Vehicle {
         self.pos
     }
 
-    /// Heading in radians, counterclockwise from +x.
+    /// How far it goes braking to a stop comfortably from its speed now.
+    pub(crate) fn comfortable_stop(&self) -> f64 {
+        self.speed * self.speed / (2.0 * self.spec.comfy_decel)
+    }
+
+    /// Heading in radians, counterclockwise from +x, from 0 to 2π.
     pub fn heading(&self) -> f64 {
-        crate::math::wrap_angle(self.dir.to_angle())
+        self.dir.to_angle().rem_euclid(std::f64::consts::TAU)
     }
 
     /// The heading as a unit vector.

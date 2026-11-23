@@ -12,7 +12,6 @@
 //! means to go; a replacement must keep to that.
 
 use crate::barrier::{Decision, held_by_light, holds_before, into_junction, nth};
-use crate::lane_changing::comfortable_stop;
 use crate::models::acceleration::{hold, reach_time};
 use crate::models::signal::Light;
 use crate::network::{Barrier, BarrierKind, Conflict, JunctionId, LaneId, SimNetwork};
@@ -434,7 +433,7 @@ fn first_to_arrive(
 /// to is that line.
 fn head_at(state: &SimState, id: VehicleId, lane: LaneId, line: Barrier) -> Option<&Vehicle> {
     let network = &state.network;
-    let heading = |o: &crate::occupancy::Occupant| {
+    let heading = |o: &crate::following::Occupant| {
         let v = &state.vehicles[o.id];
         let next = nth(network, v, v.committed as usize);
         (o.id != id && !o.is_ghost() && next.is_some_and(|(l, b)| l == lane && b.s == line.s))
@@ -452,9 +451,9 @@ fn head_at(state: &SimState, id: VehicleId, lane: LaneId, line: Barrier) -> Opti
 /// Whether `vehicle`, with record `o` on a lane leading to a conflict, blocks
 /// that lane, waiting: at rest in the lane, with a barrier it hasn't committed
 /// to on the lane it follows or the next.
-fn waits_in_lane(network: &SimNetwork, vehicle: &Vehicle, o: &crate::occupancy::Occupant) -> bool {
+fn waits_in_lane(network: &SimNetwork, vehicle: &Vehicle, o: &crate::following::Occupant) -> bool {
     let next = nth(network, vehicle, vehicle.committed as usize);
-    o.lateral == crate::occupancy::Lateral::InLane
+    o.lateral == crate::following::Lateral::InLane
         && vehicle.speed == 0.0
         && next.is_some_and(|(lane, _)| vehicle.path.iter().take(2).any(|&l| l == lane))
 }
@@ -549,7 +548,7 @@ fn room_past(
                 if beyond >= needed {
                     return true;
                 }
-                if beyond + comfortable_stop(other) < needed {
+                if beyond + other.comfortable_stop() < needed {
                     return false;
                 }
             }
@@ -613,6 +612,6 @@ fn room_beyond(state: &SimState, id: VehicleId, vehicle: &Vehicle, k: usize, s: 
         .find(|o| !o.is_ghost() && o.id != id);
     match rearmost {
         None => true,
-        Some(o) => o.s() + comfortable_stop(&state.vehicles[o.id]) >= needed,
+        Some(o) => o.s() + state.vehicles[o.id].comfortable_stop() >= needed,
     }
 }

@@ -47,7 +47,16 @@ One Rust workspace. The simulation crate depends on nothing else in the workspac
 
 `sim` defines `SimNetwork` and `network` produces it, so the dependency graph is one-way and the core never sees authoring concepts like multi-lane roads.
 
-Inside `sim`, the core has a module for each part of the design: `lane` (geometry), `lateral` (a lane change's course: lateral motion is core, and outside a lane change vehicles follow their lanes' centrelines), `network` (`SimNetwork`), `occupancy` and `following` (records, the leader and follower searches, and classification), `junction` (the backstop), `merge`, `barrier` (barriers, commitment, passing and release), `lane_changing` (what the lane-change model may ask of the network: where a change may run, and how fast each lane's traffic goes) and `path`. The models are apart from it, each replaced by editing it: `acceleration`, the longitudinal model, which the core asks for terms throughout, so a module boundary that will never be dispatched at runtime; `lane_change`, LMRS, its measurements, decisions and acceleration terms; `gap_acceptance`, when the head at a barrier commits, from gaps, room beyond and arrival order; `routing`, choices at forks and the lane changes a route needs; and `signal`. `simulation` holds the state, the update pipeline and the public API.
+Inside `sim`, the core is grouped by what each part does:
+
+- `simulation`: the `Simulation` and its public API; `simulation::step`, the whole update pipeline in one file, each phase reading the state, working out what every vehicle decides and applying it; `simulation::accel`, how one vehicle's acceleration is put together from its terms; and `simulation::state`, the state and what is derived from it.
+- `network`: the static world, `SimNetwork`, its lanes and their links, the barriers and signal plans controlling them, its junctions and their conflicts, and lane geometry.
+- `motion`: moving one vehicle along its course: the front axle along its path and the rear axle trailing it, a lane change's course (lateral motion is core, and outside a lane change vehicles follow their lanes' centrelines), and how far ahead its path reaches.
+- `following`: multi-lane car following, as [Multi-lane car following](multilane-car-following.md) has it, a submodule for each part: the occupancy records, joining lanes, the overlaps found when the simulation is built, classifying records, the leader search and the pass check.
+- `query`: the other searches of the traffic, for the models and the core: searching back for a follower, each lane's speeds ahead, and a vehicle's acceleration along other lanes.
+- `barrier` (commitment, passing and release), `junction` (the backstop) and `merge`: the core's mechanisms for ordering vehicles.
+
+The models are apart from it, each replaced by editing it: `acceleration`, the longitudinal model, which the core asks for terms throughout, so a module boundary that will never be dispatched at runtime; `lane_change`, LMRS, its measurements, decisions and acceleration terms; `gap_acceptance`, when the head at a barrier commits, from gaps, room beyond and arrival order; `routing`, choices at forks and the lane changes a route needs; and `signal`.
 
 ## Network pipeline
 

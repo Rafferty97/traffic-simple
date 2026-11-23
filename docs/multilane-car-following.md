@@ -2,6 +2,7 @@
 
 This document describes the traffic simulator's approach to ensuring collision-free car following in a multi-lane environment
 with lane changes and lanes that can merge and diverge.
+It lives in the `sim` crate's `following` module, a submodule for each section below.
 
 ## Scope and assumptions
 

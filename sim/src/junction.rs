@@ -8,10 +8,10 @@ use slotmap::SlotMap;
 
 use crate::barrier;
 use crate::debug::{AccelSource, DebugEvent, DebugSink};
+use crate::following::Occupant;
 use crate::models::acceleration;
 use crate::models::signal::MovementLight;
 use crate::network::{Conflict, JunctionId, LaneId, SimNetwork};
-use crate::occupancy::Occupant;
 use crate::simulation::SimState;
 use crate::vehicle::{Vehicle, VehicleId};
 

@@ -7,10 +7,10 @@
 use arrayvec::ArrayVec;
 use slotmap::SlotMap;
 
+use crate::following::Occupant;
 use crate::following::Overlaps;
 use crate::models::acceleration;
 use crate::network::{LaneId, SimNetwork};
-use crate::occupancy::Occupant;
 use crate::vehicle::{Vehicle, VehicleId};
 
 /// Which merge each lane belongs to, if any, and each merge's lanes: derived
@@ -155,7 +155,7 @@ struct Way {
 /// first, by the distance from its rear: its order.
 ///
 /// From each of the merge's lanes it walks back through the lanes leading in,
-/// as far as a path reaches, [`PATH_TIME`](crate::path::PATH_TIME) at the
+/// as far as a path reaches, [`PATH_TIME`](crate::motion::path::PATH_TIME) at the
 /// speed limits. Each lane's occupants are in order already, so it marches
 /// back along all of them at once, as the merge step of a merge sort does,
 /// taking the nearest each time, from those following the lane whose path
@@ -195,7 +195,7 @@ pub fn order(
             l.geometry().length(),
             time + l.geometry().length() / l.speed_limit(),
         );
-        if time > crate::path::PATH_TIME {
+        if time > crate::motion::path::PATH_TIME {
             continue;
         }
         for &p in l.predecessors() {

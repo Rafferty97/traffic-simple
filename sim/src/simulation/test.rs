@@ -4,9 +4,11 @@
 use glam::DVec2;
 
 use super::*;
-use crate::debug::DebugEvent;
+use crate::barrier;
+use crate::debug::{AccelSource, DebugEvent};
+use crate::merge;
 use crate::models::lane_change::{LaneChangeEval, Outcome, check_gap, incentives};
-use crate::network::{Barrier, Lane};
+use crate::network::{Barrier, BarrierKind, Lane};
 
 /// The length of a step in the unit tests' standard simulation: 30 Hz.
 pub(crate) const STEP: f64 = 1.0 / 30.0;
@@ -96,8 +98,9 @@ fn search<B>(
     f: impl FnMut(Found) -> ControlFlow<B>,
 ) -> ControlFlow<B> {
     let v = &sim.state.vehicles[id];
-    let own = occupancy::record_index(&sim.state, v.path[0], id);
-    find_leaders(&sim.state, v, Along::Path(own), f)
+    let own = crate::query::record_index(&sim.state, v.path[0], id);
+    let reach = lane_change::kept_room(&sim.state, id, v).map_or(0.0, |h| v.spec.min_gap + h);
+    find_leaders(&sim.state, v, Along::Path(own), reach, f)
 }
 
 /// The nearest vehicle `id` reacts to, stopping the search there.
@@ -1529,7 +1532,7 @@ fn short_sections(length: f64, count: usize) -> SimNetwork {
 /// Whether a vehicle's path reaches as far as its leader search looks.
 fn covers_horizon(sim: &Simulation<impl DebugSink>, id: VehicleId) -> bool {
     let v = &sim.state.vehicles[id];
-    crate::path::reach_beyond_front(&sim.state.network, v)
+    crate::motion::path::reach_beyond_front(&sim.state.network, v)
         >= acceleration::horizon(&v.spec, v.speed)
 }
 

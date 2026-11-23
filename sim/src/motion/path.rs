@@ -2,9 +2,9 @@
 //! its path by the lanes its route chooses (see "Vehicle state" and "Routing"
 //! in `docs/DESIGN.md`).
 
-use crate::lateral::LaneChange;
 use crate::models::acceleration;
 use crate::models::routing::Route;
+use crate::motion::lateral::LaneChange;
 use crate::network::{LaneId, SimNetwork};
 use crate::vehicle::Vehicle;
 
@@ -79,7 +79,7 @@ pub(crate) fn extend_path(
 /// How far beyond each lane's end, in meters, the paths through it reach, by
 /// lane: an upper bound, so a lane no path reaches some way beyond can't lead
 /// anyone there. It bounds the follower search (see
-/// [`crate::occupancy::find_follower`]).
+/// [`crate::query::find_follower`]).
 ///
 /// Paths only grow by [`extend_path`], after which [`raise_through`] raises it;
 /// a path shrinking or its vehicle leaving leaves it too high, which is safe,
