@@ -188,10 +188,10 @@ pub(crate) fn arrive(
         }
         let into = |k: usize| {
             let lane = vehicle.path[k];
-            network.lane(lane).junction() == Some(j) && conflict_start(network, lane).is_some()
+            network.lane(lane).junction() == Some(j) && network.conflict_start(lane).is_some()
         };
         if let Some(k) = (0..vehicle.path.len()).find(|&k| into(k)) {
-            let start = conflict_start(network, vehicle.path[k]).unwrap_or(0.0);
+            let start = network.conflict_start(vehicle.path[k]).unwrap_or(0.0);
             if barrier::holds_before(network, vehicle, k, start) {
                 return;
             }
@@ -268,7 +268,7 @@ fn mark_way(
     junction: JunctionId,
 ) {
     let into = |&lane: &LaneId| {
-        network.lane(lane).junction() == Some(junction) && conflict_start(network, lane).is_some()
+        network.lane(lane).junction() == Some(junction) && network.conflict_start(lane).is_some()
     };
     let Some(k) = path.iter().position(into) else {
         return;
@@ -328,7 +328,7 @@ const SCAN_DEPTH: usize = 32;
 /// to stop behind its leader only roughly: one closing fast on a slow leader
 /// could otherwise commit first.
 fn commit_along(scan: &mut Scan, lane: LaneId, committed: &mut Vec<Entry>) {
-    let Some(start) = conflict_start(scan.network, lane) else {
+    let Some(start) = scan.network.conflict_start(lane) else {
         return;
     };
     let mut way = ArrayVec::<LaneId, SCAN_DEPTH>::new();
@@ -420,7 +420,7 @@ fn stops_on(
             // A red or amber light holds it short of the conflict, so it will
             // surely stop there: the junction's terms can't matter to it, nor to
             // those behind it.
-            let at = conflict_start(scan.network, target).unwrap_or(0.0);
+            let at = scan.network.conflict_start(target).unwrap_or(0.0);
             if barrier::held_by(scan.network, scan.lights, vehicle, k, at) {
                 return true;
             }
@@ -630,7 +630,7 @@ pub(crate) fn hold_term(
     let mut start = -front;
     for &lane in &vehicle.path {
         if network.lane(lane).junction() == Some(junction)
-            && let Some(conflict) = conflict_start(network, lane)
+            && let Some(conflict) = network.conflict_start(lane)
         {
             let gap = start + conflict;
             let term = acceleration::interaction(&vehicle.spec, vehicle.speed, gap, 0.0);
@@ -680,15 +680,6 @@ fn stopping_distance(vehicle: &Vehicle) -> f64 {
     vehicle.speed * vehicle.speed / (2.0 * acceleration::SAFE_BRAKING)
 }
 
-/// Where a lane's first conflict with the rest of its junction starts along it,
-/// if it has one.
-fn conflict_start(network: &SimNetwork, lane: LaneId) -> Option<f64> {
-    let j = network.lane(lane).junction()?;
-    let lanes = network.junction(j).lanes();
-    let conflicts = lanes.iter().filter_map(|&theirs| network.conflict_between(lane, theirs));
-    conflicts.map(|c| c.mine.start).reduce(f64::min)
-}
-
 /// How far a vehicle's front is from where it commits to a junction, negative
 /// once past it, if its path has such a point there: the start of the first
 /// of the junction's lanes on its path that is to be kept clear, or the start
@@ -703,7 +694,7 @@ fn commit_distance(network: &SimNetwork, junction: JunctionId, vehicle: &Vehicle
             if l.keep_clear() {
                 return Some(start);
             }
-            if let Some(conflict) = conflict_start(network, lane) {
+            if let Some(conflict) = network.conflict_start(lane) {
                 return Some(start + conflict);
             }
         }

@@ -233,6 +233,8 @@ impl<D: DebugSink> Simulation<D> {
             "{:?}",
             state.config
         );
+        // What a saved network leaves out, worked out again.
+        state.network.derive_conflict_starts();
         // A freeze frame from before its network had signals starts them afresh.
         let signals = state.network.signals().count();
         if state.signals.len() != signals || state.lights.len() != state.network.movement_count() {

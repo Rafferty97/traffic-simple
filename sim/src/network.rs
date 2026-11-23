@@ -390,12 +390,29 @@ pub struct Junction {
     /// entries, the row the lane it is seen from. Each pair is stored both ways
     /// round.
     conflicts: Vec<Option<Conflict>>,
+    /// Where each of its lanes' first conflict with the rest of it starts along
+    /// it, if it has one, by its index in `lanes`: derived from `conflicts`, and
+    /// so not saved but worked out again on restoring.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    starts: Vec<Option<f64>>,
 }
 
 impl Junction {
     /// Its lanes.
     pub fn lanes(&self) -> &[LaneId] {
         &self.lanes
+    }
+
+    /// Works out where each of its lanes' first conflict starts, from its
+    /// conflicts.
+    fn derive_starts(&mut self) {
+        let n = self.lanes.len();
+        self.starts = (0..n)
+            .map(|i| {
+                let row = &self.conflicts[i * n..(i + 1) * n];
+                row.iter().flatten().map(|c| c.mine.start).reduce(f64::min)
+            })
+            .collect();
     }
 }
 
@@ -696,8 +713,25 @@ impl SimNetwork {
                 conflicts[j * n + i] = Some(Conflict { kind, mine: theirs, theirs: mine });
             }
         }
-        self.junctions.push(Junction { lanes: lanes.to_vec(), conflicts });
+        let mut junction = Junction { lanes: lanes.to_vec(), conflicts, starts: Vec::new() };
+        junction.derive_starts();
+        self.junctions.push(junction);
         id
+    }
+
+    /// Works out again what each junction derives from its conflicts, which a
+    /// saved network leaves out.
+    pub(crate) fn derive_conflict_starts(&mut self) {
+        for junction in &mut self.junctions {
+            junction.derive_starts();
+        }
+    }
+
+    /// Where a lane's first conflict with the rest of its junction starts along
+    /// it, if it is in one and has one.
+    pub fn conflict_start(&self, lane: LaneId) -> Option<f64> {
+        let (id, i) = self.lane(lane).junction?;
+        self.junction(id).starts[i as usize]
     }
 
     /// How two lanes conflict, if they do, and the stretch of each in which they
