@@ -396,7 +396,7 @@ fn stops_on(
             }
             return true;
         }
-        if vehicle.path.contains(&target) {
+        if let Some(k) = vehicle.path.iter().position(|&l| l == target) {
             if must_commit(scan.network, scan.junction, vehicle) {
                 // Held out of the queue, short of its conflicts, so nobody
                 // behind it commits before it either.
@@ -420,7 +420,6 @@ fn stops_on(
             // A red or amber light holds it short of the conflict, so it will
             // surely stop there: the junction's terms can't matter to it, nor to
             // those behind it.
-            let k = vehicle.path.iter().position(|&l| l == target).unwrap_or(0);
             let at = conflict_start(scan.network, target).unwrap_or(0.0);
             if barrier::held_by(scan.network, scan.lights, vehicle, k, at) {
                 return true;
