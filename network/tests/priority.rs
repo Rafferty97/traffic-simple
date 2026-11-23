@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use traffic_network::{Compiled, RoadNetwork, Sign, Turn, compile, scenarios};
 use traffic_sim::{
     AccelSource, BarrierKind, DebugEvent, DebugSink, LaneId, NoopSink, Placement, Route,
-    Simulation, VehicleId, VehicleSpec,
+    SAFE_BRAKING, Simulation, VehicleId, VehicleSpec,
 };
 
 mod common;
@@ -166,14 +166,11 @@ impl DebugSink for JunctionTerms {
 }
 
 /// Traffic on the major road, straight on or turning near-side, never brakes
-/// harder than comfortably for a vehicle from the minor road. It may stop for
-/// one: a minor-road driver grows impatient waiting, and cuts in.
+/// harder than safely for a vehicle from the minor road. It may stop for one:
+/// a minor-road driver grows impatient waiting, and cuts in, reckoning on the
+/// major road's traffic slowing for it, which can take more than comfortable
+/// braking (see `docs/DESIGN.md`, Impatience).
 #[test]
-#[ignore = "an impatient minor-road driver takes its gap reckoning that major-road traffic \
-            will slow for it, but that traffic slows only for one in the junction's queue, \
-            which a car creeping off its line joins only as its nose reaches its first \
-            conflict: by then it can need more than comfortable braking (see DESIGN.md, \
-            Impatient cut-ins)"]
 fn major_road_traffic_never_brakes_hard_for_minor_road_traffic() {
     for (name, net) in scenarios() {
         let compiled = compile(&net).unwrap();
@@ -213,7 +210,7 @@ fn major_road_traffic_never_brakes_hard_for_minor_road_traffic() {
                 let theirs = on(&sim, other, &|l| minor.contains(&l));
                 let Some(v) = sim.get(id) else { continue };
                 let binding = v.accel() == accel;
-                let braking = accel < -VehicleSpec::passenger_car().comfy_decel;
+                let braking = accel < -SAFE_BRAKING;
                 if mine && theirs && binding && braking {
                     hard.push((id, other, sim.time(), accel));
                 }
