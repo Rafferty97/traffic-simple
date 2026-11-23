@@ -47,7 +47,7 @@ One Rust workspace. The simulation crate depends on nothing else in the workspac
 
 `sim` defines `SimNetwork` and `network` produces it, so the dependency graph is one-way and the core never sees authoring concepts like multi-lane roads.
 
-Inside `sim`, each part of the design has its own module: `lane` (geometry), `network` (`SimNetwork`), `occupancy` and `following` (records, the leader and follower searches, and classification), `junction` (the backstop), `merge`, `barrier` (barriers, commitment and gap acceptance), `lane_changing` (what the simulation measures for the lane-change model), `path`, and the models, each replaced by editing it: `acceleration`, `lane_change`, `lateral`, `routing` and `signal` (**Planned**). `simulation` holds the state, the update pipeline and the public API.
+Inside `sim`, the core has a module for each part of the design: `lane` (geometry), `lateral` (a lane change's course: lateral motion is core, and outside a lane change vehicles follow their lanes' centrelines), `network` (`SimNetwork`), `occupancy` and `following` (records, the leader and follower searches, and classification), `junction` (the backstop), `merge`, `barrier` (barriers, commitment, passing and release), `lane_changing` (what the lane-change model may ask of the network: where a change may run, and how fast each lane's traffic goes) and `path`. The models are apart from it, each replaced by editing it: `acceleration`; `lane_change`, LMRS, its measurements, decisions and acceleration terms; `gap_acceptance`, when the head at a barrier commits, from gaps, room beyond and arrival order; `routing`, choices at forks and the lane changes a route needs; and `signal`. `simulation` holds the state, the update pipeline and the public API.
 
 ## Network pipeline
 
@@ -204,7 +204,7 @@ How vehicles keep apart while they change lanes, merge and diverge, and when one
 - **Two vehicles into one gap:** a ghost ahead counts as a leader in a vehicle's own gap check, but the follower search passes ghosts over, so of two indicating into the same gap, the one behind waits.
 - **Across section boundaries:** when the vehicle advances, its ghost moves to the neighbour of its new lane, or, with none it may change into, the intent is cancelled.
 
-**Module boundary:** the decision making lives in the lane-change model; the rest of the simulation sees only each vehicle's indicator and an opaque per-vehicle state. The simulation measures each driver's incentives and hands them to the model (`aim`), the model moves the desire and says whether it wants a gap checked (`step`), the simulation checks it by searching the network, and the model says what to do (`resolve`): nothing, indicate, cancel or change. Making room works the same way. This is SUMO's split between its lane changer and its lane-change models.
+**Module boundary:** the whole of LMRS lives in the lane-change model; the rest of the simulation sees only each vehicle's indicator and an opaque per-vehicle state. At each lane-change update the model measures each driver's incentives through the core's searches, moves the desire (`aim`) and decides whether to check a gap (`step`), checks it by searching the network, and says what to do (`resolve`): nothing, indicate, cancel or change, which the simulation carries out. At each longitudinal update it adds its terms, synchronisation and making room, to each driver's acceleration. This is SUMO's split between its lane changer and its lane-change models.
 
 ## Conflicts, merging and junctions
 
@@ -296,7 +296,7 @@ At a give-way or stop barrier, the head goes only if no vehicle with priority ov
 
 ## Routing
 
-Each vehicle carries a `Route`, given at insertion, which chooses the next lane when its path is extended past a lane with several successors; the choice is then part of its path. Route models are separate, in `models::routing`, each replaced by editing it.
+Each vehicle carries a `Route`, given at insertion, which chooses the next lane when its path is extended past a lane with several successors; the choice is then part of its path. Route models are separate, in `models::routing`, each replaced by editing it, and say what lane changes a route needs, which the lane-change model turns into desire.
 
 - **Random:** a SplitMix64 generator seeded at insertion, drawn from only at forks, so the same seed takes the same way, and snapshots and replays reproduce it. It chooses only among its own lane's successors that its class may use.
 - **Destination** (**Planned**): toward a destination, a set of lanes registered with the simulation. Each destination has a route table for each vehicle class sent there, derived when it is first needed outside a step, at registering or inserting, and rebuilt on restore:

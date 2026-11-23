@@ -1,5 +1,10 @@
 //! A vehicle's course across its lanes: the quintic its front axle follows
-//! across a lane change, and how sharp one may be.
+//! across a lane change, how sharp one may be, and how far one reaches. Part of
+//! the core: outside a lane change, vehicles follow their lanes' centrelines.
+
+use crate::lane::LanePos;
+use crate::network::{LaneId, Side, SimNetwork};
+use crate::vehicle::Vehicle;
 
 /// The tightest bend a lane change is planned with, as a radius, in meters, at
 /// [`CHANGE_SPEED`] and above: so the shortest change across a 3.5 m lane is
@@ -90,6 +95,84 @@ pub fn min_change_length(offset: f64, speed: f64) -> f64 {
     let ease = (speed / CHANGE_SPEED).clamp(0.0, 1.0);
     let radius = REST_CHANGE_RADIUS + ease * (CHANGE_RADIUS - REST_CHANGE_RADIUS);
     (6.0 * offset.abs() * radius).sqrt()
+}
+
+/// How far a vehicle's rear axle must go to be halfway through a lane change
+/// started now: the change starts at its front axle, a wheelbase ahead, and
+/// runs its length.
+pub(crate) fn halfway(network: &SimNetwork, vehicle: &Vehicle) -> f64 {
+    let width = lane_width(network, vehicle);
+    vehicle.spec.wheelbase() + 0.5 * change_length(vehicle.speed, width)
+}
+
+/// As [`halfway`], for a change started from rest: as sharp as it can steer.
+/// The room a vehicle that wants to change lanes keeps so it isn't boxed in:
+/// at speed, its leader's stopping distance covers it.
+pub(crate) fn halfway_from_rest(network: &SimNetwork, vehicle: &Vehicle) -> f64 {
+    let width = lane_width(network, vehicle);
+    vehicle.spec.wheelbase() + 0.5 * min_change_length(width, 0.0)
+}
+
+/// How far beyond its rear axle a lane change a vehicle started now reaches
+/// before its whole body is in the new lane: the change starts at its front
+/// axle, a wheelbase ahead, and the body trails the axle.
+pub(crate) fn change_reach(network: &SimNetwork, vehicle: &Vehicle) -> f64 {
+    vehicle.spec.wheelbase()
+        + change_length(vehicle.speed, lane_width(network, vehicle))
+        + vehicle.spec.length
+}
+
+/// The width of the lane a vehicle follows, where it is: about how far across
+/// a change into the lane beside it goes.
+pub(crate) fn lane_width(network: &SimNetwork, vehicle: &Vehicle) -> f64 {
+    let geometry = network.lane(vehicle.path[0]).geometry();
+    geometry.half_width(vehicle.lane_pos, Side::Left)
+        + geometry.half_width(vehicle.lane_pos, Side::Right)
+}
+
+/// How a vehicle not already changing lanes would change into `target`, a lane
+/// beside the one it is on: its rear axle's position on `target`, and the
+/// quintic its path would follow onto `target`'s centerline, as
+/// [`crate::Simulation::change_lane`] carries it out.
+///
+/// The quintic starts where the front axle is on the vehicle's current path,
+/// with that path's offset and slope relative to `target`, so the target point
+/// carries on smoothly instead of jumping.
+pub(crate) fn plan_change(
+    network: &SimNetwork,
+    vehicle: &Vehicle,
+    target: LaneId,
+) -> (LanePos, LaneChange) {
+    let current = network.lane(vehicle.path[0]);
+    let lane = network.lane(target);
+    // Adjacent lanes start and end together, so the same fraction is a good hint.
+    let hint = lane.geometry().lane_pos(
+        vehicle.lane_pos.s / current.geometry().length() * lane.geometry().length(),
+        0.0,
+    );
+    let lane_pos = lane.geometry().world_to_lane_near(vehicle.pos, hint);
+    // From the front axle, where it is on its path's spline, and the way the
+    // spline runs there, so the front axle's course doesn't kink.
+    let along = |s: f64| network.smooth_point_along(&vehicle.path, s, |_| 0.0);
+    let aim = along(vehicle.front_s);
+    let heading = (along(vehicle.front_s + 0.01) - along(vehicle.front_s - 0.01)).normalize();
+    // Where on the new lane, and how far across it, its rounded course runs
+    // through the front axle: from the polyline's answer, nudged along and
+    // across by what is left over, twice, as the corners' rounding is small.
+    let start = lane.geometry().world_to_lane_near(aim, lane_pos);
+    let on_new = |s: f64, t: f64| network.smooth_point_along(&[target], s, |_| t);
+    let (mut s0, mut t0) = (start.s, start.t);
+    for _ in 0..2 {
+        let tangent = lane.geometry().tangent_at(lane.geometry().lane_pos(s0, t0));
+        let miss = aim - on_new(s0, t0);
+        s0 += miss.dot(tangent);
+        t0 += miss.dot(tangent.perp());
+    }
+    // How its offset must change to head where the front axle heads: against the
+    // new lane's rounded course there.
+    let along_new = (on_new(s0 + 0.01, t0) - on_new(s0 - 0.01, t0)).normalize();
+    let slope = along_new.perp_dot(heading) / along_new.dot(heading);
+    (lane_pos, LaneChange::new(s0, t0, slope, vehicle.speed))
 }
 
 #[cfg(test)]

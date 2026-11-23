@@ -10,6 +10,7 @@ mod junction;
 mod kinematics;
 mod lane;
 mod lane_changing;
+mod lateral;
 mod math;
 mod merge;
 mod models;
@@ -24,11 +25,11 @@ pub use debug::{AccelSource, DebugEvent, DebugSink, NoopSink, PassCheck};
 pub use junction::Entry;
 pub use kinematics::trail;
 pub use lane::{GRID, LaneError, LaneGeometry, LanePos, ParseLaneError, SAME_POINT};
+pub use lateral::LaneChange;
 pub use models::acceleration::{SAFE_BRAKING, STOPPING_DECEL, STOPPING_SPEED};
 pub use models::lane_change::{
     D_COOP, D_FREE, D_SYNC, Incentives, LaneChangeEval, MIN_INDICATING, Outcome,
 };
-pub use models::lateral::LaneChange;
 pub use models::routing::Route;
 pub use models::signal::{Light, MovementLight};
 pub use network::{

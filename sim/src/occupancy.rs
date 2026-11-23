@@ -19,8 +19,8 @@ use slotmap::SlotMap;
 
 use crate::debug::PassCheck;
 use crate::lane::LanePos;
+use crate::lateral::LaneChange;
 use crate::models::acceleration;
-use crate::models::lateral::LaneChange;
 use crate::network::{LaneId, Side, SimNetwork};
 use crate::simulation::SimState;
 use crate::vehicle::{Vehicle, VehicleId};
@@ -460,7 +460,7 @@ pub enum Ahead {
     /// ahead of its rear axle on its path. Searching its own path, every one it
     /// has committed to is found, and every one beyond them that no leader
     /// shields, so it is the head on its way to it; what it does there is the
-    /// caller's choice (see [`crate::barrier::decide`]).
+    /// caller's choice (see [`crate::models::gap_acceptance::decide`]).
     Barrier { lane: LaneId, index: u16, rank: u16 },
 }
 
@@ -566,10 +566,11 @@ pub fn find_leaders<B>(
     let own_age = own.map(|own| own.age);
     let horizon = acceleration::horizon(&vehicle.spec, vehicle.speed);
     // Wanting to change lanes, along its own lanes it looks as far as it keeps
-    // room to get halfway through a change (see `lane_changing::halfway`).
+    // room to get halfway through a change (see `lateral::halfway`).
     let horizon = match along {
-        Along::Path(_) if crate::lane_changing::wants_change(vehicle) => horizon
-            .max(vehicle.spec.min_gap + crate::lane_changing::halfway_from_rest(network, vehicle)),
+        Along::Path(_) if crate::models::lane_change::wants_change(vehicle) => {
+            horizon.max(vehicle.spec.min_gap + crate::lateral::halfway_from_rest(network, vehicle))
+        }
         _ => horizon,
     };
     let horizon = match (along, vehicle.lane_change) {

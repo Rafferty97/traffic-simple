@@ -1,8 +1,10 @@
 //! The routing model: which lane a vehicle takes next, where the lane it is
-//! extending its path from has several successors. Replaced by editing this
-//! module.
+//! extending its path from has several successors, and the lane changes its
+//! route needs, which the lane-change model turns into desire. Replaced by
+//! editing this module.
 
-use crate::network::LaneId;
+use crate::network::{LaneId, Leaving, Neighbor, Side, SimNetwork};
+use crate::vehicle::Vehicle;
 
 /// How a vehicle chooses its way through the network.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,6 +40,35 @@ impl Default for Route {
     fn default() -> Self {
         Route::random(0)
     }
+}
+
+/// Lane changes a vehicle's route needs from where it is: `changes` of them
+/// toward `side`, the first by `distance` ahead of its rear axle.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Needed {
+    pub side: Side,
+    pub changes: u32,
+    pub distance: f64,
+}
+
+/// The lane changes `vehicle`'s route needs, if any, given the neighbours it
+/// may change to on each side, `permitted`. On a lane that ends by merging,
+/// left early (see [`Leaving::Early`]), one toward the neighbour that goes on,
+/// by its end; random routes need nothing more, every lane leading somewhere.
+pub(crate) fn needed(
+    network: &SimNetwork,
+    vehicle: &Vehicle,
+    permitted: impl Fn(Side) -> Option<Neighbor>,
+) -> Option<Needed> {
+    let lane = network.lane(vehicle.path[0]);
+    if lane.leaving() != Some(Leaving::Early) {
+        return None;
+    }
+    let goes_on =
+        |side: Side| permitted(side).is_some_and(|n| network.lane(n.lane).leaving().is_none());
+    let side = [Side::Left, Side::Right].into_iter().find(|&side| goes_on(side))?;
+    let distance = lane.geometry().length() - vehicle.lane_pos.s;
+    Some(Needed { side, changes: 1, distance })
 }
 
 /// The next number from a SplitMix64 generator, advancing its state: small,

@@ -5,7 +5,7 @@ use glam::DVec2;
 
 use super::*;
 use crate::debug::DebugEvent;
-use crate::models::lane_change::{LaneChangeEval, Outcome};
+use crate::models::lane_change::{LaneChangeEval, Outcome, check_gap, incentives};
 use crate::network::{Barrier, Lane};
 
 const LIMIT: f64 = 14.0;

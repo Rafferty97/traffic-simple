@@ -6,7 +6,7 @@ use glam::DVec2;
 
 use crate::kinematics;
 use crate::lane::{LanePos, SAME_POINT};
-use crate::models::lateral;
+use crate::lateral;
 use crate::network::{LaneId, Side, SimNetwork};
 use crate::occupancy::{Along, Lateral, Occupant, body};
 use crate::vehicle::{Vehicle, VehicleSpec};

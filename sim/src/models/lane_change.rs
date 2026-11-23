@@ -10,10 +10,21 @@
 //! updates before the next. With enough desire it indicates and synchronises
 //! with the target lane, and with more, followers there make room for it.
 //!
-//! The decision making lives here; the rest of the simulation sees only each
-//! vehicle's indicator and an opaque [`State`]. The simulation measures the
-//! incentives and, when asked, the gap, by searching the network, and carries
-//! out what [`resolve`] returns: indicating, cancelling, or changing lanes.
+//! The whole model lives here; the rest of the simulation sees only each
+//! vehicle's indicator and an opaque [`State`]. At each lane-change update,
+//! [`decide`] measures each driver's incentives and, when asked, the gap, by
+//! searching the network through the core's queries (`measure`), and returns
+//! what each decided for the simulation to carry out: indicating, cancelling,
+//! or changing lanes. At each longitudinal update, [`terms`] adds
+//! synchronisation and making room to a driver's acceleration.
+
+mod measure;
+mod update;
+
+pub(crate) use measure::wants_change;
+#[cfg(test)]
+pub(crate) use measure::{check_gap, incentives};
+pub(crate) use update::{decide, terms};
 
 use crate::models::acceleration::SAFE_BRAKING;
 use crate::network::Side;

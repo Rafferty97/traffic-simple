@@ -1,8 +1,8 @@
 use glam::DVec2;
 
 use crate::lane::LanePos;
+use crate::lateral::LaneChange;
 use crate::models::lane_change;
-use crate::models::lateral::LaneChange;
 use crate::models::routing::Route;
 use crate::network::{LaneId, Side};
 

@@ -2,8 +2,8 @@
 //! its path by the lanes its route chooses (see "Vehicle state" and "Routing"
 //! in `docs/DESIGN.md`).
 
+use crate::lateral::LaneChange;
 use crate::models::acceleration;
-use crate::models::lateral::LaneChange;
 use crate::models::routing::Route;
 use crate::network::{LaneId, SimNetwork};
 use crate::vehicle::Vehicle;

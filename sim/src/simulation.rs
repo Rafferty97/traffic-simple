@@ -8,12 +8,11 @@ use crate::debug::{AccelSource, DebugEvent, DebugSink, NoopSink};
 use crate::following::{self, Overlaps};
 use crate::junction::{self, Entry, Queue, arrive, junction_term};
 use crate::kinematics;
-use crate::lane_changing::{
-    LaneSpeeds, check_gap, comfortable_stop, friction, halfway_from_rest, incentives, plan_change,
-    wants_change,
-};
+use crate::lane_changing::{LaneSpeeds, comfortable_stop, friction};
+use crate::lateral::{halfway_from_rest, plan_change};
 use crate::merge::{self, Merges};
 use crate::models::acceleration;
+use crate::models::gap_acceptance;
 use crate::models::lane_change::{self, Decision};
 use crate::models::routing::Route;
 use crate::models::signal::{self, Light, MovementLight, SignalState};
@@ -705,98 +704,24 @@ impl<D: DebugSink> Simulation<D> {
         self.update_queues();
     }
 
-    /// Lane changes, for every vehicle (see [`lane_change`]), `dt` seconds after
-    /// the last: each driver's desires from its incentives, cheaply, and a
-    /// check of the gap for those whose desire has reached their threshold, up
-    /// to [`Config::max_gap_checks`] at once, the rest waiting for the next
-    /// time. Decisions are computed from a read-only view of the state, then
-    /// applied in order.
+    /// Lane changes, for every vehicle, `dt` seconds after the last: the
+    /// lane-change model decides from a read-only view of the state (see
+    /// [`lane_change::decide`]), and its decisions are applied in order.
     fn update_lane_changes(&mut self, dt: f64) {
         let Self { state, derived, lane_decisions, asks, lane_speeds, sink, .. } = self;
-        let time = state.time;
         // Exact again for the follower searches the gap checks make.
         let paths = state.vehicles.values().map(|v| v.path.as_slice());
         recompute_through(&state.network, &mut derived.through, paths);
         LaneSpeeds::refresh(lane_speeds, state);
-        lane_decisions.clear();
-        asks.clear();
-        for (id, vehicle) in &state.vehicles {
-            // Partway through a change, or still straddling, it doesn't decide.
-            if vehicle.lane_change.is_some() || vehicle.old_side.is_some() {
-                continue;
-            }
-            let mut lc = vehicle.lc;
-            let incentives = incentives(state, lane_speeds, id, vehicle);
-            lane_change::aim(&mut lc, incentives);
-            // Nothing to weigh up: nowhere to change to, and nothing to fade.
-            if lc.idle() && vehicle.intent.is_none() {
-                continue;
-            }
-            let ask = lane_change::step(&mut lc, vehicle.intent, &vehicle.spec, time, dt);
-            // How it weighed up each side it didn't ask about, for the debug view.
-            sink.record(|| DebugEvent::RecomputeDecision { vehicle: id });
-            for side in [Side::Left, Side::Right] {
-                let Some(incentive) = incentives[lane_change::index(side)] else {
-                    continue;
-                };
-                let outcome = match ask {
-                    lane_change::Ask::Check(asked) if asked == side => continue,
-                    lane_change::Ask::Check(_) => lane_change::Outcome::OtherSide,
-                    lane_change::Ask::Cancel => lane_change::Outcome::Cancel,
-                    lane_change::Ask::Nothing if vehicle.intent.is_some() => {
-                        lane_change::Outcome::Wait
-                    }
-                    lane_change::Ask::Nothing => lane_change::Outcome::NotWorthIt,
-                };
-                let eval = lane_change::unchecked(side, incentive, lc.desire(side), outcome);
-                sink.record(|| DebugEvent::LaneChangeEval { vehicle: id, eval });
-            }
-            let decision = match ask {
-                lane_change::Ask::Cancel => Decision::Cancel,
-                lane_change::Ask::Check(side) => {
-                    asks.push((lane_decisions.len(), side));
-                    Decision::Nothing
-                }
-                lane_change::Ask::Nothing => Decision::Nothing,
-            };
-            lane_decisions.push((id, lc, decision));
-        }
-        // The gaps, up to the limit: drivers' own cooldowns spread them out, so
-        // this is only a backstop.
-        let checks = asks.len().min(state.config.max_gap_checks);
-        for &(slot, side) in &asks[..checks] {
-            let (id, mut lc, _) = lane_decisions[slot];
-            let vehicle = &state.vehicles[id];
-            // Measured again, for the debug view: checks are few.
-            let incentive = incentives(state, lane_speeds, id, vehicle)[lane_change::index(side)]
-                .unwrap_or_default();
-            let desire = lc.desire(side);
-            let prospect = check_gap(state, &derived.through, id, vehicle, side, desire);
-            let (decision, eval) = lane_change::resolve(
-                &mut lc,
-                vehicle.intent,
-                &vehicle.spec,
-                side,
-                incentive,
-                prospect,
-                dt,
-            );
-            sink.record(|| DebugEvent::LaneChangeEval { vehicle: id, eval });
-            lane_decisions[slot] = (id, lc, decision);
-        }
-        // Those beyond the limit wait for the next time.
-        for &(slot, side) in &asks[checks..] {
-            let (id, lc, _) = lane_decisions[slot];
-            sink.record(|| {
-                let vehicle = &state.vehicles[id];
-                let incentive = incentives(state, lane_speeds, id, vehicle)
-                    [lane_change::index(side)]
-                .unwrap_or_default();
-                let waiting = lane_change::Outcome::Waiting;
-                let eval = lane_change::unchecked(side, incentive, lc.desire(side), waiting);
-                DebugEvent::LaneChangeEval { vehicle: id, eval }
-            });
-        }
+        lane_change::decide(
+            state,
+            &derived.through,
+            lane_speeds,
+            sink,
+            dt,
+            lane_decisions,
+            asks,
+        );
 
         for i in 0..self.lane_decisions.len() {
             let (id, state, decision) = self.lane_decisions[i];
@@ -1246,7 +1171,8 @@ fn longitudinal<D: DebugSink>(
     let mut first = true;
     // Wanting to change lanes, it keeps room to get halfway through a change
     // from rest.
-    let halfway = wants_change(vehicle).then(|| halfway_from_rest(&state.network, vehicle));
+    let halfway =
+        lane_change::wants_change(vehicle).then(|| halfway_from_rest(&state.network, vehicle));
     // How many barriers ahead it is committed to, in order: those it is released
     // from drop out, with all after them, and once one holds it, or one beyond is
     // found out of turn behind one shielded, the rest wait.
@@ -1269,7 +1195,7 @@ fn longitudinal<D: DebugSink>(
             }
             let k = vehicle.path.iter().position(|&l| l == lane).unwrap_or(0);
             let (decision, yields_to) =
-                barrier::decide(state, through, id, vehicle, k, barrier, gap);
+                gap_acceptance::decide(state, through, id, vehicle, k, barrier, gap);
             // At rest at a give-way, stop or all-way stop line, or a red light it
             // may turn on, as the head on its way to it: it has arrived there.
             // Not at rest further back, behind a vehicle headed elsewhere.
@@ -1334,57 +1260,10 @@ fn longitudinal<D: DebugSink>(
         }
     });
 
-    // Making room for a vehicle indicating into its lane ahead, as the lane-change
-    // model chooses, by what following its ghost would take.
-    // LMRS's cooperation: only for a driver whose desire is strong enough.
-    let ghost = ghost.map(|(owner, gap)| {
-        let o = &state.vehicles[owner];
-        let desire = o.intent.map_or(0.0, |i| o.lc.desire(i.side));
-        let term = acceleration::interaction(&vehicle.spec, vehicle.speed, gap, o.speed);
-        (owner, gap, desire, term)
-    });
-    let yielding = lane_change::make_room(
-        &vehicle.lc,
-        &vehicle.spec,
-        ghost.map(|(owner, _, desire, term)| (owner, desire, term)),
-    );
-    if let Some((owner, gap, _, term)) = ghost.filter(|_| yielding.is_some()) {
-        let source = AccelSource::Yield { id: owner, gap };
-        sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
-        rest = rest.min(term);
-    }
-    // LMRS's synchronisation: indicating with desire enough, it adjusts its
-    // speed to the leader it would have in the target lane, no harder than
-    // comfortably, with its headway shortened by its desire.
-    if let Some(intent) = vehicle.intent {
-        let desire = vehicle.lc.desire(intent.side);
-        if desire >= lane_change::D_SYNC {
-            let headway = lane_change::headway(desire);
-            let _ = find_leaders(
-                state,
-                vehicle,
-                Along::Into(intent.side),
-                |found| match found {
-                    Found::Ahead(Ahead::Vehicle(leader), gap, _) if leader != id => {
-                        let speed = state.vehicles[leader].speed;
-                        let term = acceleration::relaxed(
-                            &vehicle.spec,
-                            vehicle.speed,
-                            gap,
-                            speed,
-                            headway,
-                        )
-                        .max(-vehicle.spec.comfy_decel);
-                        let source = AccelSource::Sync { id: leader, gap };
-                        sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
-                        rest = rest.min(term);
-                        ControlFlow::Break(())
-                    }
-                    _ => ControlFlow::Continue(()),
-                },
-            );
-        }
-    }
+    // The lane-change model's terms: making room for the ghost, and
+    // synchronising with the target lane.
+    let (term, yielding) = lane_change::terms(state, sink, id, vehicle, ghost);
+    rest = rest.min(term);
     let binding = binding.map(|b| Binding { rest, ..b });
     let accel = binding.map_or(rest, |b| b.term.min(rest));
     AccelUpdate::Own { id, accel, yielding, binding, committed, arrived }
@@ -1557,7 +1436,7 @@ fn old_side<D: DebugSink>(
 /// line, returns the term it imposes. Ghosts aren't leaders here: the nearest is
 /// weighed up for making room. With `halfway`, the distance its rear axle needs
 /// to get halfway through a lane change it wants to make, it keeps that much
-/// room behind a leader before it would have to stop (see [`room_to_stop`]),
+/// room behind a leader before it would have to stop (as the lane-change model weighs room to finish),
 /// so it isn't boxed in: as VISSIM's minimum clearance for changing lanes from
 /// a standstill, and the room drivers are taught to leave in a queue.
 fn react<D: DebugSink>(
