@@ -398,6 +398,7 @@ The hardest problems are junction geometry and dense merging. Both have defeated
 - **Going behind a slowing vehicle:** the gap check takes a priority vehicle's speed now, though it may slow for a turn ahead, so it can expect one to clear sooner than it will, and the junction then holds the yielding vehicle back for it.
 - **Critical gaps:** from rest at a give-way line onto a 50 km/h road with one lane each way, a car takes lags down to about 7.4 s straight across, 7.6 s turning near-side and 9.3 s turning far-side, merging with the far side's traffic, where the Highway Capacity Manual has about 6.5, 6.2 and 7.1 s, the car with priority braking at most 1.3 m/s² for it: a second or two cautious. The `critical_gaps` example in `network` measures them.
 - **Merge capacity:** relaxed headways let a merged lane carry about 2,600 veh/h, above the 2,000–2,400 of real lanes.
+- **Replay tests** (future work): the UI's replay format, and its reader in `ui/src/replay/read.rs`, are a hack for tests. Tests should build the minimal situation they check programmatically, as the rest of the suite does, not replay an ad hoc log; the replay round-trip test and the capture-to-test workflow should go once nothing relies on them.
 
 ## Milestones
 

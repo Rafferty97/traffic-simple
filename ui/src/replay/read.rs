@@ -1,13 +1,13 @@
 //! Replays a log saved by the UI's Capture button, reproducing the captured
 //! simulation exactly. The simulation is deterministic, so the same calls in the
 //! same order give the same state, bit for bit. The format is described in
-//! `ui/src/replay.rs`, which writes it. Needs the `serde` feature, for the
-//! network.
+//! [`super`], which writes it.
 //!
-//! To turn a capture into a test, copy it into `sim/tests/captures/` and:
+//! To turn a capture into a test, copy it into `ui/src/replay/captures/` and,
+//! in a test here:
 //!
 //! ```ignore
-//! let replay = replay(include_str!("captures/capture-123.replay"), Terms::default());
+//! let replay = replay(include_str!("replay/captures/capture-123.replay"), Terms::default());
 //! let mut sim = replay.sim;
 //! let selected = replay.selected.unwrap();
 //! // …step on from the captured moment and assert what should happen.
@@ -20,7 +20,9 @@ use traffic_sim::{
 /// A replayed simulation at the moment it was captured.
 pub struct Replay<D: DebugSink> {
     pub sim: Simulation<D>,
-    /// Every vehicle inserted, in order: the log's names for them.
+    /// Every vehicle inserted, in order: the log's names for them, for tests
+    /// made from captures to find their vehicles by.
+    #[allow(dead_code)]
     pub ids: Vec<VehicleId>,
     /// The vehicle selected in the UI when it was captured.
     pub selected: Option<VehicleId>,

@@ -3,20 +3,6 @@
 mod glyphs;
 mod replay;
 
-/// The simulation's test helpers, for checking that replays read back exactly.
-#[cfg(test)]
-#[path = "../../sim/tests/common/mod.rs"]
-// Its freeze-frame loader is behind `sim`'s `serde` feature, which this crate
-// doesn't have, so it is left out here.
-#[allow(unexpected_cfgs)]
-mod common;
-
-/// The simulation's replay reader, for checking that replays read back exactly.
-#[cfg(test)]
-#[path = "../../sim/tests/common/replay.rs"]
-#[allow(dead_code)]
-mod replay_reader;
-
 use std::collections::HashMap;
 use std::f64::consts::TAU;
 use std::path::PathBuf;

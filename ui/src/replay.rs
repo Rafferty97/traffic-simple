@@ -1,7 +1,7 @@
 //! Records every call that changes the simulation, so a session can be saved and
 //! replayed exactly: the simulation is deterministic, so the same calls in the
-//! same order reproduce the same state, bit for bit. `sim/tests/common/replay.rs`
-//! reads the format back.
+//! same order reproduce the same state, bit for bit. [`read`] reads the format
+//! back, for tests.
 //!
 //! The format is one call per line. Vehicles are named by their index in the
 //! order they were inserted, counting only insertions that succeeded, and floats
@@ -20,6 +20,9 @@
 //! cap 4 5.555555555555555
 //! change_lane 7 left refused
 //! ```
+
+#[cfg(test)]
+mod read;
 
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -152,11 +155,11 @@ impl<D: DebugSink> Recorded<D> {
 mod test {
     use rand::rngs::Xoshiro256PlusPlus;
     use rand::{RngExt, SeedableRng};
+    use traffic_network::{compile, scenarios};
     use traffic_sim::{LaneId, NoopSink};
 
+    use super::read::replay;
     use super::*;
-    use crate::common::{car, ring_road};
-    use crate::replay_reader::replay;
 
     /// Every vehicle's state and every lane's records, as raw bits.
     fn state<D: DebugSink>(sim: &Simulation<D>) -> Vec<u64> {
@@ -186,7 +189,7 @@ mod test {
     #[test]
     fn a_capture_replays_exactly() {
         let speed_limit = 50.0 / 3.6;
-        let network = ring_road(600.0, 3, speed_limit);
+        let network = compile(&scenarios::ring(600.0, 3, speed_limit)).unwrap().sim;
         let mut sim = Recorded::new(Simulation::new(network, NoopSink));
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(7);
         let mut ids = Vec::new();
@@ -194,7 +197,8 @@ mod test {
             sim.step_variable(0.005 + 0.03 * rng.random::<f64>());
             let roll = rng.random::<f64>();
             if roll < 0.05 {
-                let spec = VehicleSpec { speed_factor: 0.8 + 0.4 * rng.random::<f64>(), ..car() };
+                let speed_factor = 0.8 + 0.4 * rng.random::<f64>();
+                let spec = VehicleSpec { speed_factor, ..VehicleSpec::passenger_car() };
                 let s = 600.0 * rng.random::<f64>();
                 let at = Placement {
                     lane: LaneId(2),

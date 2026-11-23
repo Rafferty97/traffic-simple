@@ -3,8 +3,6 @@
 
 #[cfg(feature = "serde")]
 pub mod frame;
-#[cfg(feature = "serde")]
-pub mod replay;
 
 use std::f64::consts::TAU;
 
