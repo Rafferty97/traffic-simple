@@ -4,8 +4,8 @@ use glam::DVec2;
 use std::collections::HashMap;
 
 use traffic_sim::{
-    AccelSource, DebugEvent, DebugSink, Lane, LaneId, MIN_INDICATING, Placement, Route,
-    SAFE_BRAKING, SimNetwork, Simulation, VehicleId,
+    AccelSource, DebugEvent, Lane, LaneId, MIN_INDICATING, Placement, Route, SAFE_BRAKING,
+    SimNetwork, VehicleId,
 };
 
 mod common;
@@ -14,7 +14,7 @@ use common::{Terms, car};
 use common::DT;
 const SPEED_LIMIT: f64 = 14.0;
 
-type Sim = Simulation<Terms>;
+type Sim = common::Watched<Terms>;
 
 /// Two straight 500 m lanes, lane 0 on the left of lane 1, with changes allowed
 /// both ways.
@@ -22,14 +22,14 @@ fn two_lanes() -> Sim {
     two_lanes_with(Terms::default())
 }
 
-fn two_lanes_with<D: DebugSink>(sink: D) -> Simulation<D> {
+fn two_lanes_with<C: common::Collect>(sink: C) -> common::Watched<C> {
     let lane = |y: f64| {
         let points = [DVec2::new(0.0, y), DVec2::new(500.0, y)];
         Lane::new(&points, 3.5, SPEED_LIMIT).unwrap()
     };
     let mut network = SimNetwork::new(vec![lane(3.5), lane(0.0)]);
     network.set_adjacent(LaneId(0), LaneId(1), true, true);
-    common::sim(network, sink)
+    common::watched(network, sink)
 }
 
 fn place(lane: u32, s: f64, speed: f64) -> Placement {
@@ -131,9 +131,9 @@ fn ghosts_brake_nobody() {
 #[derive(Default)]
 struct Decisions(HashMap<VehicleId, usize>);
 
-impl DebugSink for Decisions {
-    fn record(&mut self, event: impl FnOnce() -> DebugEvent) {
-        if let DebugEvent::RecomputeDecision { vehicle } = event() {
+impl common::Collect for Decisions {
+    fn collect(&mut self, event: DebugEvent) {
+        if let DebugEvent::RecomputeDecision { vehicle } = event {
             *self.0.entry(vehicle).or_default() += 1;
         }
     }

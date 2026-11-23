@@ -1,8 +1,8 @@
 //! Lane changes on a three-lane ring, commanded directly with `change_lane`.
 
 use traffic_sim::{
-    Lane, LaneChangeError, LaneId, Lateral, NoopSink, Placement, Route, SAFE_BRAKING, Side,
-    SimNetwork, Simulation, VehicleId,
+    Lane, LaneChangeError, LaneId, Lateral, Placement, Route, SAFE_BRAKING, Side, SimNetwork,
+    Simulation, VehicleId,
 };
 
 mod common;
@@ -29,7 +29,7 @@ fn lanes_of(sim: &Simulation, id: VehicleId) -> Vec<u32> {
 
 /// A lone car on the middle lane of a three-lane ring, up to speed.
 fn cruising() -> (Simulation, VehicleId) {
-    let mut sim = common::sim(ring_road(230.0, 3, SPEED_LIMIT), NoopSink);
+    let mut sim = common::sim(ring_road(230.0, 3, SPEED_LIMIT));
     let id = sim.insert(
         car(),
         Placement {
@@ -114,7 +114,9 @@ fn refuses_impossible_changes() {
         sim.change_lane(id, Side::Left),
         Err(LaneChangeError::NoNeighbor)
     );
+    // Removed as the next step starts.
     sim.remove(id);
+    sim.step();
     assert_eq!(
         sim.change_lane(id, Side::Right),
         Err(LaneChangeError::NoVehicle)
@@ -130,7 +132,7 @@ fn respects_one_way_permissions() {
     // Lane 0 is on the left of lane 1; changing right is allowed, left isn't.
     let mut network = SimNetwork::new(vec![lane(3.5), lane(0.0)]);
     network.set_adjacent(LaneId(0), LaneId(1), true, false);
-    let mut sim = common::sim(network, NoopSink);
+    let mut sim = common::sim(network);
     let a = sim.insert(
         car(),
         Placement {
@@ -159,7 +161,7 @@ fn respects_one_way_permissions() {
 #[test]
 fn a_change_across_the_seam_keeps_followers_on_the_old_side_informed() {
     // Start the change just before the seam, so the car advances while straddling.
-    let mut sim = common::sim(ring_road(230.0, 3, SPEED_LIMIT), NoopSink);
+    let mut sim = common::sim(ring_road(230.0, 3, SPEED_LIMIT));
     let length = sim.network().lane(LaneId(1)).geometry().length();
     let id = sim.insert(
         car(),
@@ -226,7 +228,7 @@ fn changing_out_of_a_queue_keeps_clear_of_the_old_leader() {
     // Lane 0 is on the left of lane 1.
     let mut network = SimNetwork::new(vec![lane(3.5), lane(0.0)]);
     network.set_adjacent(LaneId(0), LaneId(1), true, true);
-    let mut sim = common::sim(network, NoopSink);
+    let mut sim = common::sim(network);
 
     // A held car with another stopped 2 m behind it: the leader's rear is 1 m
     // behind its rear axle, and the follower's front 3.6 m ahead of its own.
@@ -286,7 +288,7 @@ fn followers_pass_a_car_mostly_out_of_their_lane() {
     // Lane 0 is on the left of lane 1.
     let mut network = SimNetwork::new(vec![lane(5.0), lane(0.0)]);
     network.set_adjacent(LaneId(0), LaneId(1), true, true);
-    let mut sim = common::sim(network, NoopSink);
+    let mut sim = common::sim(network);
     // A slow driver, so it stops soon after being held, still straddling.
     let slow = traffic_sim::VehicleSpec { speed_factor: 0.15, ..car() };
     let id = sim.insert(
@@ -344,7 +346,7 @@ fn followers_pass_where_they_will_be_not_where_they_are() {
     // Only into lane 1 from lane 2, so the fast car can't escape back out before
     // it reaches the held car: this is about how it brakes for it.
     network.set_adjacent(LaneId(1), LaneId(2), false, true);
-    let mut sim = common::sim(network, NoopSink);
+    let mut sim = common::sim(network);
 
     // A slow car changes left out of lane 1 and is held while its trailing (right
     // rear) corner is 1.2 m left of lane 1's centerline: too little room for a
@@ -421,7 +423,7 @@ fn change_away_from_a_held_car(gap: f64, speed: f64) -> (f64, f64, bool) {
     // Lane 0 is on the left of lane 1.
     let mut network = SimNetwork::new(vec![lane(3.5), lane(0.0)]);
     network.set_adjacent(LaneId(0), LaneId(1), true, true);
-    let mut sim = common::sim(network, NoopSink);
+    let mut sim = common::sim(network);
     let held = sim.insert(
         car(),
         Placement {
@@ -482,7 +484,7 @@ fn a_car_changing_in_behind_a_slower_one_follows_it() {
     // Changes are only permitted rightward, so the slower car stays in lane 1
     // rather than moving over to let the faster one by.
     network.set_adjacent(LaneId(0), LaneId(1), true, false);
-    let mut sim = common::sim(network, NoopSink);
+    let mut sim = common::sim(network);
     // A slower car in lane 1, and a faster one in lane 0 that changes in about a
     // metre behind it. Still a whole lane to the side as it starts, it would
     // stay alongside the slower car while moving across, so it must follow it.
@@ -528,7 +530,7 @@ fn held_partway_out_of_lane_1() -> (Simulation, VehicleId) {
     let mut network = SimNetwork::new(vec![lane(7.0), lane(3.5), lane(0.0)]);
     network.set_adjacent(LaneId(0), LaneId(1), true, true);
     network.set_adjacent(LaneId(1), LaneId(2), true, true);
-    let mut sim = common::sim(network, NoopSink);
+    let mut sim = common::sim(network);
     let slow = traffic_sim::VehicleSpec { speed_factor: 0.15, ..car() };
     let ahead = sim.insert(
         slow,
@@ -606,7 +608,7 @@ fn a_slow_lane_change_keeps_the_car_at_its_speed() {
     };
     let mut network = SimNetwork::new(vec![lane(3.5), lane(0.0)]);
     network.set_adjacent(LaneId(0), LaneId(1), true, true);
-    let mut sim = common::sim(network, NoopSink);
+    let mut sim = common::sim(network);
     let spec = traffic_sim::VehicleSpec { accel_noise: 0.0, ..car() };
     let at = Placement {
         lane: LaneId(1),

@@ -2,8 +2,8 @@
 //! looking at, for the UI to open paused.
 
 use traffic_sim::{
-    BarrierKind, LaneId, Light, MovementId, NoopSink, Placement, Route, SimState, Simulation,
-    VehicleId, VehicleSpec,
+    BarrierKind, LaneId, Light, MovementId, Placement, Route, SimState, Simulation, VehicleId,
+    VehicleSpec,
 };
 
 use crate::{Compiled, RenderGeometry, Turn, compile, scenarios};
@@ -69,7 +69,7 @@ fn turner_cycle_with_x() -> (Frame, VehicleId) {
     let approach = net.lane(t_first).predecessors()[0];
     let approach_length = net.lane(approach).geometry().length();
     let Compiled { sim: network, render, .. } = compiled;
-    let mut sim = Simulation::new(network, NoopSink);
+    let mut sim = Simulation::new(network);
     let car = VehicleSpec::passenger_car();
     let run_until = |sim: &mut Simulation, done: &dyn Fn(&Simulation) -> bool| {
         while sim.time() < 120.0 {
@@ -134,7 +134,7 @@ mod test {
     fn the_junction_holds_the_car_out_until_the_turner_goes_then_both_get_through() {
         let (frame, x) = turner_cycle_with_x();
         let t = frame.selected.expect("T is selected");
-        let mut sim = Simulation::restore(frame.state, NoopSink);
+        let mut sim = Simulation::restore(frame.state);
         // T is queued for its first stretch only; X isn't queued, but held.
         let queue = sim.queue(JunctionId(0)).to_vec();
         assert!(

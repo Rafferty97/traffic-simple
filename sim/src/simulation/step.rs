@@ -6,7 +6,7 @@
 use super::accel::{AccelUpdate, junction_terms, longitudinal, merge_terms, old_side, straddling};
 use super::{Derived, SimState, Simulation};
 use crate::barrier;
-use crate::debug::{AccelSource, DebugEvent, DebugSink};
+use crate::debug::{AccelSource, DebugEvent, DebugSink, NoopSink};
 use crate::following;
 use crate::junction;
 use crate::models::acceleration;
@@ -18,11 +18,21 @@ use crate::network::{JunctionId, LaneId};
 use crate::query::LaneSpeeds;
 use crate::vehicle::OldFollower;
 
-impl<D: DebugSink> Simulation<D> {
+impl Simulation {
     /// Advances the simulation by `dt` seconds of wall time, a frame's: as many
     /// whole steps as fit, with what is left over carried to the next call.
     /// Returns how many steps it took.
     pub fn step_variable(&mut self, dt: f64) -> u32 {
+        self.step_variable_with(dt, &mut NoopSink)
+    }
+
+    /// As [`Simulation::step_variable`], appending what each step's algorithms
+    /// did to `events`, in order (see [`Simulation::step_debug`]).
+    pub fn step_variable_debug(&mut self, dt: f64, events: &mut Vec<DebugEvent>) -> u32 {
+        self.step_variable_with(dt, events)
+    }
+
+    fn step_variable_with<S: DebugSink>(&mut self, dt: f64, sink: &mut S) -> u32 {
         self.state.residual += dt;
         let step = self.state.config.dt;
         let mut taken = 0;
@@ -30,7 +40,7 @@ impl<D: DebugSink> Simulation<D> {
         // take exactly one.
         while self.state.residual >= step - 1e-9 * step {
             self.state.residual -= step;
-            self.step();
+            self.step_with(sink);
             taken += 1;
         }
         self.state.residual = self.state.residual.max(0.0);
@@ -46,17 +56,32 @@ impl<D: DebugSink> Simulation<D> {
 
     /// Advances the simulation by one step, [`Config::dt`](super::Config::dt) seconds.
     pub fn step(&mut self) {
+        self.step_with(&mut NoopSink);
+    }
+
+    /// As [`Simulation::step`], appending what its algorithms did to `events`,
+    /// in order, for a debug view. Events come in groups, each starting with
+    /// its reset (see [`DebugEvent`]), so applying them in order to what earlier
+    /// steps returned always leaves what each group's last update used.
+    pub fn step_debug(&mut self, events: &mut Vec<DebugEvent>) {
+        self.step_with(events);
+    }
+
+    /// One step, recording to `sink`: the whole pipeline, in order.
+    pub(super) fn step_with<S: DebugSink>(&mut self, sink: &mut S) {
         let dt = self.state.config.dt;
         let every = self.state.config.macro_step;
+
+        self.apply_removals(sink);
 
         if self.state.frame.is_multiple_of(every as u64) {
             let dt = (every as f64) * dt;
             self.update_queues();
-            self.update_lane_changes(dt);
-            self.update_accels();
+            self.update_lane_changes(dt, sink);
+            self.update_accels(sink);
         }
 
-        self.update_motion(dt);
+        self.update_motion(dt, sink);
         self.update_occupancy(dt);
         self.update_signals(dt);
 
@@ -72,8 +97,8 @@ impl<D: DebugSink> Simulation<D> {
     /// Lane changes, for every vehicle, `dt` seconds after the last: the
     /// lane-change model decides from a read-only view of the state (see
     /// [`lane_change::decide`]), and its decisions are applied in order.
-    pub(super) fn update_lane_changes(&mut self, dt: f64) {
-        let Self { state, derived, lane_decisions, asks, lane_speeds, sink, .. } = self;
+    pub(super) fn update_lane_changes<S: DebugSink>(&mut self, dt: f64, sink: &mut S) {
+        let Self { state, derived, lane_decisions, asks, lane_speeds, .. } = self;
         // Exact again for the follower searches the gap checks make.
         let paths = state.vehicles.values().map(|v| v.path.as_slice());
         recompute_through(&state.network, &mut derived.through, paths);
@@ -109,8 +134,8 @@ impl<D: DebugSink> Simulation<D> {
     /// their record on the lane they follow, so each one's search there starts at
     /// its own record rather than looking for it. SUMO plans each lane's vehicles
     /// from the front back in the same way.
-    pub(super) fn update_accels(&mut self) {
-        let Self { state, derived, decisions, sink, lane_speeds, .. } = self;
+    pub(super) fn update_accels<S: DebugSink>(&mut self, sink: &mut S) {
+        let Self { state, derived, decisions, lane_speeds, .. } = self;
         let SimState { network, vehicles, occupants, .. } = &*state;
         sink.record(|| DebugEvent::RecomputeAccels);
         decisions.clear();
@@ -207,7 +232,7 @@ impl<D: DebugSink> Simulation<D> {
             let vehicle = &mut self.state.vehicles[id];
             let term = acceleration::capped(vehicle.speed, max_speed);
             let source = AccelSource::Cap { max_speed };
-            self.sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
+            sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
             vehicle.accel = vehicle.accel.min(term);
         }
         self.held.clear();
@@ -246,7 +271,7 @@ impl<D: DebugSink> Simulation<D> {
                 driver.stopping = acceleration::stopping(driver.stopping, speed, accel);
                 if let Some(term) = driver.stopping.then_some(-acceleration::STOPPING_DECEL) {
                     let source = AccelSource::FinishingStop;
-                    self.sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
+                    sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
                     vehicle.accel = vehicle.accel.min(term);
                 }
             }
@@ -256,17 +281,15 @@ impl<D: DebugSink> Simulation<D> {
     /// Path tracking and integration: steers, moves, then advances each vehicle
     /// onto its next lane once its rear axle passes the end of its current one.
     /// A vehicle whose rear axle passes the end of a lane with no successors has
-    /// left the network and is removed.
+    /// left the network and is removed at the end, as [`Simulation::remove`] does.
     ///
     /// During a lane change, the target path is offset from the centerline along
     /// the change's cubic, and the change ends where the cubic does.
-    pub(super) fn update_motion(&mut self, dt: f64) {
+    pub(super) fn update_motion<S: DebugSink>(&mut self, dt: f64, sink: &mut S) {
         let Self {
-            state: SimState { network, vehicles, occupants, routes, drivers, .. },
+            state: SimState { network, vehicles, occupants, routes, drivers, removals, .. },
             derived: Derived { overlaps, merges, through },
-            leavers,
             arrivals,
-            sink,
             ..
         } = self;
         sink.record(|| DebugEvent::RecomputeMotion);
@@ -348,20 +371,16 @@ impl<D: DebugSink> Simulation<D> {
             // Past the end with nowhere to advance to: it has left the network.
             let lane = network.lane(vehicle.path[0]);
             if vehicle.lane_pos.s >= lane.geometry().length() && lane.successors().is_empty() {
-                leavers.push(id);
+                removals.push(id);
             }
 
             if vehicle.lane_change.is_some_and(|change| vehicle.lane_pos.s >= change.end()) {
                 vehicle.lane_change = None;
             }
         }
-        // Through `remove`, so ghosts and any other records go too.
-        let leavers = std::mem::take(&mut self.leavers);
-        for &id in &leavers {
-            self.remove(id);
-        }
-        self.leavers = leavers;
-        self.leavers.clear();
+        // As a removal queued through the API would be, so ghosts and any
+        // other records go too.
+        self.apply_removals(sink);
     }
 
     /// Brings the junctions' queues up to date at the start of a macro step,

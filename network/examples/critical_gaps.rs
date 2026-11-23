@@ -8,15 +8,15 @@
 //! `cargo run --release -p traffic-network --example critical_gaps`
 
 use traffic_network::{Sign, Turn, compile, scenarios};
-use traffic_sim::{LaneId, NoopSink, Placement, Route, Simulation, VehicleId, VehicleSpec};
+use traffic_sim::{LaneId, Placement, Route, Simulation, VehicleId, VehicleSpec};
 
 /// The length of a step, in seconds: 30 Hz.
 const DT: f64 = 1.0 / 30.0;
 
 /// A simulation of `network` stepping at 30 Hz, with the slower updates at 10 Hz.
-fn sim<D: traffic_sim::DebugSink>(network: traffic_sim::SimNetwork, sink: D) -> Simulation<D> {
+fn sim(network: traffic_sim::SimNetwork) -> Simulation {
     let config = traffic_sim::Config { dt: DT, macro_step: 3 };
-    Simulation::with_config(network, config, sink)
+    Simulation::with_config(network, config)
 }
 
 fn main() {
@@ -41,7 +41,7 @@ fn main() {
         let mut accepted = None;
         for tenths in (20..140).rev() {
             let lag = f64::from(tenths) / 10.0;
-            let mut sim = sim(compiled.sim.clone(), NoopSink);
+            let mut sim = sim(compiled.sim.clone());
             let length = sim.network().lane(south).geometry().length();
             let s = length - (spec.length - spec.rear_axle) - spec.line_gap;
             let minor = insert_going(&mut sim, south, s, connector);

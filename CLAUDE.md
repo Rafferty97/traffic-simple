@@ -17,7 +17,7 @@ A Rust traffic simulation aiming for city and freeway traffic that _looks_ reali
 - Don't add speculative abstractions. "Swappable" means a clean module boundary, not traits or dynamic dispatch, unless the design says otherwise.
 - No trait objects or allocation in per-frame hot paths.
 - Prefer to write code in the hot paths that is conducive to autovectorisation or that could be accelerated by explicit SIMD in the future.
-- Debug output goes through the generic `DebugSink` parameter using closures (`sink.record(|| …)`), so it costs nothing with the no-op sink.
+- Debug output goes through the crate-private `DebugSink` parameter the update pipeline passes down, using closures (`sink.record(|| …)`), so it costs nothing with the no-op sink that `step` uses; `step_debug` collects the events for callers.
 - Commit your work as you go, with a preference for small, focussed commits, so long as the design is settled and the implementation has been approved and well tested. Sometimes things will be implemented speculatively or as part of an experimentation phase, in which case the code should be left uncommitted and either removed or cleaned up before moving on.
 
 ## Workspace

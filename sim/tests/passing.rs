@@ -3,7 +3,7 @@
 //! `occupancy`.
 
 use traffic_sim::{
-    DebugEvent, DebugSink, Lane, LaneId, PassCheck, Placement, Route, Side, SimNetwork, VehicleId,
+    DebugEvent, Lane, LaneId, PassCheck, Placement, Route, Side, SimNetwork, VehicleId,
 };
 
 mod common;
@@ -16,9 +16,9 @@ const SPEED_LIMIT: f64 = 14.0;
 #[derive(Default)]
 struct Checks(Vec<(VehicleId, PassCheck)>);
 
-impl DebugSink for Checks {
-    fn record(&mut self, event: impl FnOnce() -> DebugEvent) {
-        if let DebugEvent::PassCheck { vehicle, check } = event() {
+impl common::Collect for Checks {
+    fn collect(&mut self, event: DebugEvent) {
+        if let DebugEvent::PassCheck { vehicle, check } = event {
             self.0.push((vehicle, check));
         }
     }
@@ -35,7 +35,7 @@ fn checks_against_a_held_car(ahead: f64) -> usize {
     // Lane 0 is on the left of lane 1.
     let mut network = SimNetwork::new(vec![lane(3.5), lane(0.0)]);
     network.set_adjacent(LaneId(0), LaneId(1), true, true);
-    let mut sim = common::sim(network, Checks::default());
+    let mut sim = common::watched(network, Checks::default());
     let changer = sim.insert(
         car(),
         Placement {

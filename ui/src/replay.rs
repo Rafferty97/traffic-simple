@@ -29,42 +29,44 @@ use std::fmt::Write;
 use std::ops::Deref;
 
 use traffic_sim::{
-    DebugSink, InsertError, LaneChangeError, Placement, Route, Side, Simulation, Vehicle,
-    VehicleId, VehicleSpec,
+    DebugEvent, InsertError, LaneChangeError, Placement, Route, Side, Simulation, VehicleId,
+    VehicleSpec,
 };
 
 /// A simulation that logs every call that changes it.
 ///
 /// It derefs to the simulation for reading, but never hands out `&mut`, so a
 /// change that isn't logged doesn't compile.
-pub struct Recorded<D: DebugSink> {
-    sim: Simulation<D>,
+pub struct Recorded {
+    sim: Simulation,
     log: String,
     /// Each inserted vehicle's index in insertion order, which is how the log names it.
     index: HashMap<VehicleId, usize>,
 }
 
-impl<D: DebugSink> Deref for Recorded<D> {
-    type Target = Simulation<D>;
+impl Deref for Recorded {
+    type Target = Simulation;
 
-    fn deref(&self) -> &Simulation<D> {
+    fn deref(&self) -> &Simulation {
         &self.sim
     }
 }
 
-impl<D: DebugSink> Recorded<D> {
+impl Recorded {
     /// Starts recording a new simulation, from its network.
-    pub fn new(sim: Simulation<D>) -> Self {
+    pub fn new(sim: Simulation) -> Self {
         let network = serde_json::to_string(sim.network()).expect("a network serializes");
         let log = format!("# traffic-sim replay v3\nnetwork {network}\n");
         Self { sim, log, index: HashMap::new() }
     }
 
-    /// Advances by a frame's `dt`, as [`Simulation::step_variable`], logged as
-    /// `step`, and returns how many fixed steps it took.
-    pub fn step_variable(&mut self, dt: f64) -> u32 {
+    /// Advances by a frame's `dt`, as [`Simulation::step_variable_debug`],
+    /// appending what each step's algorithms did to `events`, logged as `step`,
+    /// and returns how many fixed steps it took. A replay steps without them, as
+    /// [`Simulation::step_variable`], to the same state.
+    pub fn step_variable_debug(&mut self, dt: f64, events: &mut Vec<DebugEvent>) -> u32 {
         writeln!(self.log, "step {dt:?}").unwrap();
-        self.sim.step_variable(dt)
+        self.sim.step_variable_debug(dt, events)
     }
 
     pub fn try_insert(
@@ -113,7 +115,7 @@ impl<D: DebugSink> Recorded<D> {
         result
     }
 
-    pub fn remove(&mut self, id: VehicleId) -> Option<Vehicle> {
+    pub fn remove(&mut self, id: VehicleId) -> bool {
         writeln!(self.log, "remove {}", self.index[&id]).unwrap();
         self.sim.remove(id)
     }
@@ -156,13 +158,13 @@ mod test {
     use rand::rngs::Xoshiro256PlusPlus;
     use rand::{RngExt, SeedableRng};
     use traffic_network::{compile, scenarios};
-    use traffic_sim::{LaneId, NoopSink};
+    use traffic_sim::LaneId;
 
     use super::read::replay;
     use super::*;
 
     /// Every vehicle's state and every lane's records, as raw bits.
-    fn state<D: DebugSink>(sim: &Simulation<D>) -> Vec<u64> {
+    fn state(sim: &Simulation) -> Vec<u64> {
         let mut out = vec![sim.time().to_bits()];
         for (_, v) in sim.vehicles() {
             out.extend(
@@ -190,11 +192,14 @@ mod test {
     fn a_capture_replays_exactly() {
         let speed_limit = 50.0 / 3.6;
         let network = compile(&scenarios::ring(600.0, 3, speed_limit)).unwrap().sim;
-        let mut sim = Recorded::new(Simulation::new(network, NoopSink));
+        let mut sim = Recorded::new(Simulation::new(network));
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(7);
         let mut ids = Vec::new();
+        let mut events = Vec::new();
         while sim.time() < 90.0 {
-            sim.step_variable(0.005 + 0.03 * rng.random::<f64>());
+            // Debug steps, which the replay matches with plain ones.
+            sim.step_variable_debug(0.005 + 0.03 * rng.random::<f64>(), &mut events);
+            events.clear();
             let roll = rng.random::<f64>();
             if roll < 0.05 {
                 let speed_factor = 0.8 + 0.4 * rng.random::<f64>();
@@ -220,7 +225,7 @@ mod test {
             }
         }
         let selected = sim.vehicles().next().map(|(id, _)| id);
-        let replayed = replay(&sim.capture(selected), NoopSink);
+        let replayed = replay(&sim.capture(selected));
         assert!(sim.vehicles().count() > 10, "the run should be busy");
         assert!(state(&sim) == state(&replayed.sim), "replay diverged");
         assert_eq!(replayed.selected, selected);

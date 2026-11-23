@@ -11,7 +11,7 @@ use std::ops::ControlFlow;
 use glam::DVec2;
 use slotmap::{Key, SecondaryMap, SlotMap};
 
-use crate::debug::{DebugEvent, DebugSink, NoopSink};
+use crate::debug::{DebugEvent, DebugSink};
 use crate::following::{self, Ahead, Along, Found, Lateral, Occupant, find_leaders};
 use crate::junction::{Entry, Queue, arrive};
 use crate::models::acceleration;
@@ -26,7 +26,7 @@ use crate::query::{LaneSpeeds, speed_of};
 use crate::vehicle::{Intent, OldFollower, Placement, Vehicle, VehicleId, VehicleSpec};
 
 /// The traffic simulation.
-pub struct Simulation<D: DebugSink = NoopSink> {
+pub struct Simulation {
     state: SimState,
     derived: Derived,
     /// Scratch space for the longitudinal update's decisions, reused between
@@ -35,8 +35,6 @@ pub struct Simulation<D: DebugSink = NoopSink> {
     /// Scratch space for the longitudinal update: each vehicle held up by a
     /// leader, by that leader, before the leader keeps the one it holds up most.
     held: Vec<(VehicleId, OldFollower)>,
-    /// Scratch space for vehicles leaving the network, reused between steps.
-    leavers: Vec<VehicleId>,
     /// Scratch space for vehicles whose path grew or that entered a junction in
     /// a step, which may arrive at junctions; reused between steps.
     arrivals: Vec<VehicleId>,
@@ -54,7 +52,6 @@ pub struct Simulation<D: DebugSink = NoopSink> {
     asks: Vec<(usize, Side)>,
     /// Scratch space: each lane's speeds, for averages over stretches ahead.
     lane_speeds: Vec<LaneSpeeds>,
-    sink: D,
 }
 
 /// Why [`Simulation::try_insert`] refused.
@@ -77,15 +74,15 @@ pub enum LaneChangeError {
     NotPermitted,
 }
 
-impl<D: DebugSink> Simulation<D> {
+impl Simulation {
     /// Creates a simulation of `network` with default configuration.
-    pub fn new(network: SimNetwork, sink: D) -> Self {
+    pub fn new(network: SimNetwork) -> Self {
         let config = Config { dt: 1.0 / 30.0, macro_step: 3 };
-        Self::with_config(network, config, sink)
+        Self::with_config(network, config)
     }
 
     /// Creates a simulation of `network`.
-    pub fn with_config(network: SimNetwork, config: Config, sink: D) -> Self {
+    pub fn with_config(network: SimNetwork, config: Config) -> Self {
         let lane_count = network.lanes().count();
         let junction_count = network.junctions().count();
         let state = SimState {
@@ -97,13 +94,14 @@ impl<D: DebugSink> Simulation<D> {
             occupants: vec![Vec::new(); lane_count],
             queues: vec![Queue::default(); junction_count],
             caps: Vec::new(),
+            removals: Vec::new(),
             config,
             frame: 0,
             residual: 0.0,
             signals: Vec::new(),
             lights: Vec::new(),
         };
-        Self::restore(state, sink)
+        Self::restore(state)
     }
 
     /// The current state of the simulation, which can be serialized and restored.
@@ -111,9 +109,8 @@ impl<D: DebugSink> Simulation<D> {
         &self.state
     }
 
-    /// A simulation exactly as it was in `state`, with `sink` for its debug events.
-    /// The sink starts empty, so its events refill as each update runs.
-    pub fn restore(mut state: SimState, sink: D) -> Self {
+    /// A simulation exactly as it was in `state`.
+    pub fn restore(mut state: SimState) -> Self {
         assert!(
             state.config.dt > 0.0 && state.config.macro_step > 0,
             "{:?}",
@@ -132,7 +129,6 @@ impl<D: DebugSink> Simulation<D> {
             // Scratch space, cleared before every use.
             decisions: Vec::new(),
             held: Vec::new(),
-            leavers: Vec::new(),
             arrivals: Vec::new(),
             scan_empty: Vec::new(),
             scan_kept: Vec::new(),
@@ -140,7 +136,6 @@ impl<D: DebugSink> Simulation<D> {
             lane_decisions: Vec::new(),
             asks: Vec::new(),
             lane_speeds: Vec::new(),
-            sink,
         }
     }
 
@@ -157,16 +152,6 @@ impl<D: DebugSink> Simulation<D> {
     /// Simulated time since the simulation was created, in seconds.
     pub fn time(&self) -> f64 {
         self.state.time()
-    }
-
-    /// An immutable reference to the debug sink.
-    pub fn sink(&self) -> &D {
-        &self.sink
-    }
-
-    /// A mutable reference to the debug sink.
-    pub fn sink_mut(&mut self) -> &mut D {
-        &mut self.sink
     }
 
     /// Inserts a vehicle on the centerline of a lane, facing along it, without
@@ -316,8 +301,34 @@ impl<D: DebugSink> Simulation<D> {
         id
     }
 
-    /// Removes a vehicle. Scans every lane's occupants, so it is not for hot paths.
-    pub fn remove(&mut self, id: VehicleId) -> Option<Vehicle> {
+    /// Queues a vehicle for removal, which the next step carries out first, as
+    /// it removes vehicles that leave the network. Until then it is still in
+    /// the simulation. Returns whether there is such a vehicle.
+    pub fn remove(&mut self, id: VehicleId) -> bool {
+        let exists = self.state.vehicles.contains_key(id);
+        if exists && !self.state.removals.contains(&id) {
+            self.state.removals.push(id);
+        }
+        exists
+    }
+
+    /// Removes the vehicles queued for removal (see [`Simulation::remove`]),
+    /// each with a [`DebugEvent::VehicleRemoved`].
+    fn apply_removals<S: DebugSink>(&mut self, sink: &mut S) {
+        let mut removals = std::mem::take(&mut self.state.removals);
+        for &id in &removals {
+            self.remove_now(id, sink);
+        }
+        removals.clear();
+        self.state.removals = removals;
+    }
+
+    /// Removes a vehicle now, and every record of it. Scans every lane's
+    /// occupants, so it is not for hot paths.
+    fn remove_now<S: DebugSink>(&mut self, id: VehicleId, sink: &mut S) {
+        if !self.state.vehicles.contains_key(id) {
+            return;
+        }
         for list in &mut self.state.occupants {
             list.retain(|o| o.id != id);
         }
@@ -330,8 +341,8 @@ impl<D: DebugSink> Simulation<D> {
         self.state.drivers.remove(id);
         self.state.lane_changers.remove(id);
         self.state.routes.remove(id);
-        self.sink.record(|| DebugEvent::VehicleRemoved { vehicle: id });
-        self.state.vehicles.remove(id)
+        sink.record(|| DebugEvent::VehicleRemoved { vehicle: id });
+        self.state.vehicles.remove(id);
     }
 
     /// Whether a vehicle is finishing a stop, or staying at rest until it can

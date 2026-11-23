@@ -2,7 +2,7 @@
 //! light backs past it and leaves it empty.
 
 use traffic_network::{MarkingStyle, compile, scenarios};
-use traffic_sim::{BarrierKind, LaneId, NoopSink, Placement, Route, VehicleSpec};
+use traffic_sim::{BarrierKind, LaneId, Placement, Route, VehicleSpec};
 
 mod common;
 
@@ -66,7 +66,7 @@ fn the_queue_at_a_red_light_leaves_a_keep_clear_zone_empty() {
             (l, b.s, b.s + length)
         })
         .collect();
-    let mut sim = common::sim(compiled.sim, NoopSink);
+    let mut sim = common::sim(compiled.sim);
     let car = VehicleSpec::passenger_car();
     let (mut queued_past, mut in_zone) = (0, Vec::new());
     for step in 0..common::steps(300.0) {

@@ -59,6 +59,10 @@ pub struct SimState {
     /// Vehicles with a speed imposed on them, and the most each may go, in m/s: 0
     /// holds one to a stop. Few, so a list beats a field on every vehicle.
     pub(crate) caps: Vec<(VehicleId, f64)>,
+    /// Vehicles to remove: those that left the network in a step's motion,
+    /// removed at its end, and those [`Simulation::remove`](super::Simulation::remove)
+    /// queued, removed first thing in the next step.
+    pub(crate) removals: Vec<VehicleId>,
     /// How it steps.
     pub(crate) config: Config,
     /// Number of simulation steps that have occured since the simulation began.

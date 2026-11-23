@@ -16,9 +16,9 @@ use traffic_network::{
     Arrow, MarkingStyle, RenderGeometry, RoadNetwork, Sign, Strip, compile, scenarios,
 };
 use traffic_sim::{
-    AccelSource, BarrierDecision, BarrierKind, ConflictKind, DebugEvent, DebugSink,
-    LaneChangeError, LaneChangeEval, LaneId, Leaving, Light, PassCheck, Placement, Route, Side,
-    Simulation, Vehicle, VehicleId, VehicleSpec,
+    AccelSource, BarrierDecision, BarrierKind, ConflictKind, DebugEvent, LaneChangeError,
+    LaneChangeEval, LaneId, Leaving, Light, PassCheck, Placement, Route, Side, Simulation, Vehicle,
+    VehicleId, VehicleSpec,
 };
 
 /// The inner lane's circumference: about 160 m across, roomy enough for
@@ -72,10 +72,10 @@ fn named(source: AccelSource) -> Option<VehicleId> {
 
 /// The vehicles `id` gives way to at its barriers and its acceleration terms
 /// name, each with its colour, in that order.
-fn related(sim: &Simulation<DebugState>, id: VehicleId) -> Vec<(VehicleId, Color32)> {
+fn related(debug: &DebugState, id: VehicleId) -> Vec<(VehicleId, Color32)> {
     let mut out: Vec<(VehicleId, Color32)> = Vec::new();
-    let barriers = sim.sink().barriers.iter().filter(|b| b.0 == id).map(|b| b.5);
-    let terms = sim.sink().terms(id).map(|(source, _)| named(source));
+    let barriers = debug.barriers.iter().filter(|b| b.0 == id).map(|b| b.5);
+    let terms = debug.terms(id).map(|(source, _)| named(source));
     for other in barriers.chain(terms) {
         if let Some(other) = other
             && other != id
@@ -302,7 +302,12 @@ enum View {
 }
 
 struct App {
-    sim: Recorded<DebugState>,
+    sim: Recorded,
+    /// What the debug view shows of the simulation's algorithms, from the
+    /// events its debug steps return.
+    debug: DebugState,
+    /// The last frame's debug events, before they are applied: kept to reuse.
+    events: Vec<DebugEvent>,
     /// What to draw for the network.
     render: RenderGeometry,
     scenario: Scenario,
@@ -421,7 +426,7 @@ impl Default for Harness {
 
 impl Harness {
     /// Runs after each simulation step of `dt` simulated seconds.
-    fn step(&mut self, sim: &mut Recorded<DebugState>, selected: Option<VehicleId>, dt: f64) {
+    fn step(&mut self, sim: &mut Recorded, selected: Option<VehicleId>, dt: f64) {
         if self.still {
             return;
         }
@@ -434,7 +439,7 @@ impl Harness {
     /// While the count is off target, spawns or despawns at up to
     /// [`CHANGE_RATE`], each at a random lane and point, or a random vehicle
     /// other than the `selected` one.
-    fn keep_count(&mut self, sim: &mut Recorded<DebugState>, selected: Option<VehicleId>, dt: f64) {
+    fn keep_count(&mut self, sim: &mut Recorded, selected: Option<VehicleId>, dt: f64) {
         let count = sim.vehicles().count();
         if count == self.target {
             self.credit = 0.0;
@@ -464,7 +469,7 @@ impl Harness {
     }
 
     /// Spawns at the flow, each into a random entry lane, near its start.
-    fn keep_flowing(&mut self, sim: &mut Recorded<DebugState>, dt: f64) {
+    fn keep_flowing(&mut self, sim: &mut Recorded, dt: f64) {
         let entries: Vec<LaneId> = sim
             .network()
             .lanes()
@@ -485,7 +490,7 @@ impl Harness {
 
     /// Tries to spawn a driver at `s` on `lane`, at its desired speed, taking
     /// one from the credit if it fits.
-    fn spawn(&mut self, sim: &mut Recorded<DebugState>, lane: LaneId, s: f64) {
+    fn spawn(&mut self, sim: &mut Recorded, lane: LaneId, s: f64) {
         // Drivers vary in how hard they'll brake to let someone in, in how much
         // they weigh others when changing lanes, and in how readily they change:
         // mostly cautious, about one in ten above 0.7.
@@ -542,6 +547,8 @@ impl App {
         let (sim, render, _) = new_sim(scenario);
         let mut app = Self {
             sim,
+            debug: DebugState::default(),
+            events: Vec::new(),
             render,
             scenario,
             view: View::Pretty,
@@ -565,6 +572,7 @@ impl App {
     fn load(&mut self, scenario: Scenario) {
         let selected;
         (self.sim, self.render, selected) = new_sim(scenario);
+        self.debug = DebugState::default();
         self.scenario = scenario;
         self.selected = selected;
         // A freeze frame opens paused, to look at before stepping on.
@@ -589,7 +597,10 @@ impl App {
     fn step(&mut self, dt: f64) {
         let before: HashMap<_, _> = self.sim.vehicles().map(|(id, v)| (id, v.corners())).collect();
         let started = std::time::Instant::now();
-        let steps = self.sim.step_variable(dt);
+        let steps = self.sim.step_variable_debug(dt, &mut self.events);
+        for event in self.events.drain(..) {
+            self.debug.apply(event);
+        }
         if steps > 0 {
             self.step_times.push(steps, started.elapsed().as_secs_f64());
             self.poses.before = before;
@@ -774,7 +785,7 @@ impl App {
 
         ui.separator();
         ui.label("Lane-change desire (LMRS)");
-        let evals = self.sim.sink().decisions.get(&id).cloned().unwrap_or_default();
+        let evals = self.debug.decisions.get(&id).cloned().unwrap_or_default();
         {
             for eval in &evals {
                 let side = match eval.side {
@@ -816,11 +827,11 @@ impl App {
 
         ui.separator();
         ui.label(format!("Committed to {} barriers ahead", v.committed()));
-        let related = related(&self.sim, id);
+        let related = related(&self.debug, id);
         let colour_of = |other: VehicleId| {
             related.iter().find(|&&(v, _)| v == other).map_or(SELECTED, |&(_, c)| c)
         };
-        let decisions = self.sim.sink().barriers.iter().filter(|b| b.0 == id);
+        let decisions = self.debug.barriers.iter().filter(|b| b.0 == id);
         for &(_, lane, index, gap, decision, yields_to) in decisions {
             let what = match decision {
                 BarrierDecision::Commit => "commits".to_string(),
@@ -845,7 +856,7 @@ impl App {
 
         ui.separator();
         ui.label("Acceleration terms (minimum binds)");
-        let terms: Vec<_> = self.sim.sink().terms(id).collect();
+        let terms: Vec<_> = self.debug.terms(id).collect();
         for &(source, accel) in &terms {
             // Its description, either side of the vehicle it names, if any.
             let (before, after): (String, String) = match source {
@@ -1046,7 +1057,7 @@ impl eframe::App for App {
             };
             ui.painter().rect_filled(ui.max_rect(), 0.0, background);
             let scene = egui::Scene::new().zoom_range(0.1..=200.0).scroll_zooms(true);
-            let related = self.selected.map(|id| related(&self.sim, id)).unwrap_or_default();
+            let related = self.selected.map(|id| related(&self.debug, id)).unwrap_or_default();
             let response = scene
                 .show(ui, &mut self.scene_rect, |ui| match self.view {
                     View::Pretty => draw_pretty(
@@ -1060,6 +1071,7 @@ impl eframe::App for App {
                     View::Debug => draw_debug(
                         ui.painter(),
                         &self.sim,
+                        &self.debug,
                         self.selected,
                         &related,
                         &self.layers,
@@ -1080,7 +1092,7 @@ impl eframe::App for App {
 
 fn draw_pretty(
     painter: &egui::Painter,
-    sim: &Simulation<DebugState>,
+    sim: &Simulation,
     render: &RenderGeometry,
     selected: Option<VehicleId>,
     related: &[(VehicleId, Color32)],
@@ -1136,12 +1148,7 @@ const INDICATOR_RADIUS: f32 = 0.28;
 /// Blinking indicators on the side a vehicle is indicating to, or changing
 /// toward, at about 1.5 Hz, on its body as drawn, `corners`: rear left, rear
 /// right, front right, front left.
-fn draw_indicators(
-    painter: &egui::Painter,
-    sim: &Simulation<DebugState>,
-    v: &Vehicle,
-    corners: [DVec2; 4],
-) {
+fn draw_indicators(painter: &egui::Painter, sim: &Simulation, v: &Vehicle, corners: [DVec2; 4]) {
     let side = v
         .intent()
         .map(|i| i.side)
@@ -1167,7 +1174,8 @@ fn draw_indicators(
 
 fn draw_debug(
     painter: &egui::Painter,
-    sim: &Simulation<DebugState>,
+    sim: &Simulation,
+    debug: &DebugState,
     selected: Option<VehicleId>,
     related: &[(VehicleId, Color32)],
     layers: &Layers,
@@ -1335,7 +1343,7 @@ fn draw_debug(
 
     // From the front bumper to the leader's rear bumper.
     if layers.on(Layer::Leaders) {
-        for &(id, source, accel) in sim.sink().accel_terms.iter().filter(|t| shown(t.0)) {
+        for &(id, source, accel) in debug.accel_terms.iter().filter(|t| shown(t.0)) {
             let AccelSource::Leader { id: leader, .. } = source else {
                 continue;
             };
@@ -1360,7 +1368,7 @@ fn draw_debug(
     // Dashed, from the front bumper to the rear bumper of the vehicle before it in
     // a merge's order, which it keeps behind as if on its own lane.
     if layers.on(Layer::Leaders) {
-        for &(id, source, accel) in sim.sink().accel_terms.iter().filter(|t| shown(t.0)) {
+        for &(id, source, accel) in debug.accel_terms.iter().filter(|t| shown(t.0)) {
             let AccelSource::Merge { id: leader, .. } = source else {
                 continue;
             };
@@ -1389,7 +1397,7 @@ fn draw_debug(
     // front reaches the other vehicle's rear, that vehicle's nearer rear corner,
     // and the gap between them across the follower's heading.
     if layers.on(Layer::PassChecks) {
-        for &(id, check) in sim.sink().pass_checks.iter().filter(|c| shown(c.0)) {
+        for &(id, check) in debug.pass_checks.iter().filter(|c| shown(c.0)) {
             let Some(v) = sim.get(id) else { continue };
             let (u, n) = (check.tangent, check.tangent.perp());
             let (back, ahead) = (-v.spec().rear_axle, v.spec().length - v.spec().rear_axle);
@@ -1423,7 +1431,7 @@ fn draw_debug(
     }
 
     if layers.on(Layer::FrontAxle) {
-        for &(id, point) in sim.sink().front_axles.iter().filter(|l| shown(l.0)) {
+        for &(id, point) in debug.front_axles.iter().filter(|l| shown(l.0)) {
             let Some(v) = sim.get(id) else { continue };
             let axle = drawn(id, v).axle_mid(v.spec().rear_axle);
             painter.line_segment(
@@ -1628,9 +1636,11 @@ struct DebugState {
     )>,
 }
 
-impl DebugSink for DebugState {
-    fn record(&mut self, event: impl FnOnce() -> DebugEvent) {
-        match event() {
+impl DebugState {
+    /// Brings what it shows up to date with an event from a debug step: each
+    /// group's reset clears what that group recorded before.
+    fn apply(&mut self, event: DebugEvent) {
+        match event {
             DebugEvent::RecomputeAccels => {
                 self.accel_terms.clear();
                 self.pass_checks.clear();
@@ -1730,7 +1740,7 @@ fn fan_mesh(points: &[DVec2], color: Color32) -> Shape {
 /// drew them: the ways through the junction open now. A connector split where
 /// it waits for a gap, a far-side turn's, goes on in white from its give-way
 /// line: open, but giving way; and so does one that may turn on red, while red.
-fn draw_lights(painter: &egui::Painter, sim: &Simulation<DebugState>) {
+fn draw_lights(painter: &egui::Painter, sim: &Simulation) {
     let network = sim.network();
     let line = |lane: &traffic_sim::Lane, from: f64, colour: Color32| {
         let geometry = lane.geometry();
@@ -1855,14 +1865,14 @@ fn to_scene(p: DVec2) -> Pos2 {
 /// harness fills it.
 /// The simulation for `scenario`, what to draw for its network, and the
 /// vehicle to select: built afresh, or, for a freeze frame, restored.
-fn new_sim(scenario: Scenario) -> (Recorded<DebugState>, RenderGeometry, Option<VehicleId>) {
+fn new_sim(scenario: Scenario) -> (Recorded, RenderGeometry, Option<VehicleId>) {
     if scenario == Scenario::TurnerCycle {
         let frame = traffic_network::frames::turner_cycle();
-        let sim = Recorded::new(Simulation::restore(frame.state, DebugState::default()));
+        let sim = Recorded::new(Simulation::restore(frame.state));
         return (sim, frame.render, frame.selected);
     }
     let compiled = compile(&scenario.network()).expect("every scenario compiles");
-    let sim = Recorded::new(Simulation::new(compiled.sim, DebugState::default()));
+    let sim = Recorded::new(Simulation::new(compiled.sim));
     (sim, compiled.render, None)
 }
 

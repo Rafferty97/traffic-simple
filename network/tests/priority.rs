@@ -6,8 +6,8 @@ use std::collections::HashMap;
 
 use traffic_network::{Compiled, RoadNetwork, Sign, Turn, compile, scenarios};
 use traffic_sim::{
-    AccelSource, BarrierKind, DebugEvent, DebugSink, LaneId, NoopSink, Placement, Route,
-    SAFE_BRAKING, Simulation, VehicleId, VehicleSpec,
+    AccelSource, BarrierKind, DebugEvent, LaneId, Placement, Route, SAFE_BRAKING, Simulation,
+    VehicleId, VehicleSpec,
 };
 
 mod common;
@@ -109,7 +109,7 @@ fn priority_intersections_keep_traffic_flowing_every_way() {
     for (name, net) in scenarios() {
         let compiled = compile(&net).unwrap();
         let connectors = compiled.connectors[0].clone();
-        let mut sim = common::sim(compiled.sim, NoopSink);
+        let mut sim = common::sim(compiled.sim);
         let entries = entries(&sim);
         let mut used = vec![false; connectors.len()];
         let (mut spawned, mut left_before) = (0, 0);
@@ -140,7 +140,7 @@ fn priority_intersections_keep_traffic_flowing_every_way() {
     }
 }
 
-fn entries<D: DebugSink>(sim: &Simulation<D>) -> Vec<LaneId> {
+fn entries(sim: &Simulation) -> Vec<LaneId> {
     sim.network()
         .lanes()
         .filter(|(_, lane)| lane.predecessors().is_empty())
@@ -153,9 +153,9 @@ fn entries<D: DebugSink>(sim: &Simulation<D>) -> Vec<LaneId> {
 #[derive(Default)]
 struct JunctionTerms(Vec<(VehicleId, VehicleId, f64)>);
 
-impl DebugSink for JunctionTerms {
-    fn record(&mut self, event: impl FnOnce() -> DebugEvent) {
-        match event() {
+impl common::Collect for JunctionTerms {
+    fn collect(&mut self, event: DebugEvent) {
+        match event {
             DebugEvent::RecomputeAccels => self.0.clear(),
             DebugEvent::AccelTerm { vehicle, source: AccelSource::Junction { id, .. }, accel } => {
                 self.0.push((vehicle, id, accel))
@@ -188,12 +188,13 @@ fn major_road_traffic_never_brakes_hard_for_minor_road_traffic() {
                 false => minor.push(connector),
             }
         }
-        let mut sim = common::sim(compiled.sim, JunctionTerms::default());
+        let mut sim = common::watched(compiled.sim, JunctionTerms::default());
         let entries = entries(&sim);
-        let on =
-            |sim: &Simulation<JunctionTerms>, id: VehicleId, lanes: &dyn Fn(LaneId) -> bool| {
-                sim.get(id).is_some_and(|v| v.path().iter().any(|&l| lanes(l)))
-            };
+        let on = |sim: &common::Watched<JunctionTerms>,
+                  id: VehicleId,
+                  lanes: &dyn Fn(LaneId) -> bool| {
+            sim.get(id).is_some_and(|v| v.path().iter().any(|&l| lanes(l)))
+        };
         let mut hard = Vec::new();
         for step in 0..common::steps(300.0) {
             if step % common::steps(0.5) == 0 {
@@ -233,7 +234,7 @@ fn major_road_traffic_never_brakes_hard_for_minor_road_traffic() {
 fn at_a_stop_sign_every_car_comes_to_rest_at_the_line_before_it_goes() {
     for (name, net) in scenarios().into_iter().filter(|(n, _)| n.ends_with("Stop")) {
         let compiled = compile(&net).unwrap();
-        let mut sim = common::sim(compiled.sim, NoopSink);
+        let mut sim = common::sim(compiled.sim);
         let entries = entries(&sim);
         // Each vehicle's front's distance to a stop line that is its next
         // barrier, as of the step before, and whether it has come to rest at it.

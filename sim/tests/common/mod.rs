@@ -8,7 +8,7 @@ use std::f64::consts::TAU;
 
 use glam::DVec2;
 use traffic_sim::{
-    Config, DebugSink, Lane, LaneId, Placement, Route, SimNetwork, Simulation, VehicleSpec,
+    Config, DebugEvent, Lane, LaneId, Placement, Route, SimNetwork, Simulation, VehicleSpec,
 };
 
 /// The length of a step in the tests' standard simulation, in seconds: 30 Hz.
@@ -19,8 +19,70 @@ pub const DT: f64 = 1.0 / 30.0;
 pub const CONFIG: Config = Config { dt: DT, macro_step: 3 };
 
 /// A simulation of `network` stepping by [`CONFIG`].
-pub fn sim<D: DebugSink>(network: SimNetwork, sink: D) -> Simulation<D> {
-    Simulation::with_config(network, CONFIG, sink)
+pub fn sim(network: SimNetwork) -> Simulation {
+    Simulation::with_config(network, CONFIG)
+}
+
+/// What a test collects from a simulation's debug events, as they come.
+pub trait Collect {
+    fn collect(&mut self, event: DebugEvent);
+}
+
+/// A simulation stepped with its debug events, each handed to `sink` as it
+/// comes. It derefs to the simulation, so it reads and changes like one.
+pub struct Watched<C> {
+    sim: Simulation,
+    sink: C,
+    events: Vec<DebugEvent>,
+}
+
+impl<C: Collect> Watched<C> {
+    pub fn new(sim: Simulation, sink: C) -> Self {
+        Self { sim, sink, events: Vec::new() }
+    }
+
+    /// One step, as [`Simulation::step`], collecting its events.
+    pub fn step(&mut self) {
+        self.sim.step_debug(&mut self.events);
+        self.drain();
+    }
+
+    /// As [`Simulation::step_variable`], collecting its events.
+    pub fn step_variable(&mut self, dt: f64) -> u32 {
+        let steps = self.sim.step_variable_debug(dt, &mut self.events);
+        self.drain();
+        steps
+    }
+
+    /// What it has collected.
+    pub fn sink(&self) -> &C {
+        &self.sink
+    }
+
+    fn drain(&mut self) {
+        for event in self.events.drain(..) {
+            self.sink.collect(event);
+        }
+    }
+}
+
+impl<C> std::ops::Deref for Watched<C> {
+    type Target = Simulation;
+
+    fn deref(&self) -> &Simulation {
+        &self.sim
+    }
+}
+
+impl<C> std::ops::DerefMut for Watched<C> {
+    fn deref_mut(&mut self) -> &mut Simulation {
+        &mut self.sim
+    }
+}
+
+/// A simulation of `network` stepping by [`CONFIG`], watched by `sink`.
+pub fn watched<C: Collect>(network: SimNetwork, sink: C) -> Watched<C> {
+    Watched::new(sim(network), sink)
 }
 
 /// How many standard steps take `seconds`.
@@ -86,12 +148,12 @@ pub fn ring_road(circumference: f64, lanes: usize, speed_limit: f64) -> SimNetwo
 }
 
 /// Inserts `count` cars at rest, evenly spaced around lane 0 of a ring.
-pub fn fill_ring<D: traffic_sim::DebugSink>(sim: &mut Simulation<D>, count: usize) {
+pub fn fill_ring(sim: &mut Simulation, count: usize) {
     fill_lane(sim, LaneId(0), count);
 }
 
 /// Inserts `count` cars at rest, evenly spaced along a lane.
-pub fn fill_lane<D: traffic_sim::DebugSink>(sim: &mut Simulation<D>, lane: LaneId, count: usize) {
+pub fn fill_lane(sim: &mut Simulation, lane: LaneId, count: usize) {
     let length = sim.network().lane(lane).geometry().length();
     for i in 0..count {
         let s = length * i as f64 / count as f64;
@@ -102,7 +164,7 @@ pub fn fill_lane<D: traffic_sim::DebugSink>(sim: &mut Simulation<D>, lane: LaneI
     }
 }
 
-/// A sink that keeps the last longitudinal update's acceleration terms (`.0`)
+/// A collector that keeps the last longitudinal update's acceleration terms (`.0`)
 /// and each vehicle's last lane-change evaluations (`.1`).
 #[derive(Default)]
 pub struct Terms(
@@ -110,10 +172,9 @@ pub struct Terms(
     pub Vec<(traffic_sim::VehicleId, traffic_sim::LaneChangeEval)>,
 );
 
-impl traffic_sim::DebugSink for Terms {
-    fn record(&mut self, event: impl FnOnce() -> traffic_sim::DebugEvent) {
-        use traffic_sim::DebugEvent;
-        match event() {
+impl Collect for Terms {
+    fn collect(&mut self, event: DebugEvent) {
+        match event {
             DebugEvent::RecomputeAccels => self.0.clear(),
             DebugEvent::AccelTerm { vehicle, source, accel } => {
                 self.0.push((vehicle, source, accel))
@@ -163,9 +224,6 @@ pub fn overlap(a: [glam::DVec2; 4], b: [glam::DVec2; 4]) -> bool {
 /// The vehicles in a junction's queue, an entry for each stretch it was handed
 /// over for.
 #[allow(dead_code)]
-pub fn queued<D: traffic_sim::DebugSink>(
-    sim: &Simulation<D>,
-    junction: traffic_sim::JunctionId,
-) -> Vec<traffic_sim::VehicleId> {
+pub fn queued(sim: &Simulation, junction: traffic_sim::JunctionId) -> Vec<traffic_sim::VehicleId> {
     sim.queue(junction).iter().map(|e| e.id).collect()
 }

@@ -3,8 +3,8 @@
 
 use glam::DVec2;
 use traffic_sim::{
-    ConflictKind, JunctionId, Lane, LaneId, NoopSink, Placement, Route, SAFE_BRAKING, Side,
-    SimNetwork, Simulation, VehicleId,
+    ConflictKind, JunctionId, Lane, LaneId, Placement, Route, SAFE_BRAKING, Side, SimNetwork,
+    Simulation, VehicleId,
 };
 
 mod common;
@@ -149,7 +149,7 @@ fn a_lane_belongs_to_at_most_one_junction() {
 #[test]
 fn the_second_to_commit_waits_for_the_first_to_clear_the_crossing() {
     let (net, junction) = crossroads();
-    let mut sim = common::sim(net, NoopSink);
+    let mut sim = common::sim(net);
     // Level with each other, 30 m out, at the same speed.
     let a = sim.insert(car(), at(0, 60.0, 10.0));
     let b = sim.insert(car(), at(1, 60.0, 10.0));
@@ -186,7 +186,7 @@ fn the_second_to_commit_waits_for_the_first_to_clear_the_crossing() {
 #[test]
 fn streams_from_both_sides_of_a_crossing_get_through_without_touching() {
     let (net, _) = crossroads();
-    let mut sim = common::sim(net, NoopSink);
+    let mut sim = common::sim(net);
     for i in 0..4 {
         sim.insert(car(), at(0, 70.0 - 12.0 * i as f64, 8.0));
         sim.insert(car(), at(1, 75.0 - 12.0 * i as f64, 8.0));
@@ -197,7 +197,7 @@ fn streams_from_both_sides_of_a_crossing_get_through_without_touching() {
 #[test]
 fn streams_from_both_lanes_of_a_merge_take_turns_without_touching() {
     let (net, _) = merge();
-    let mut sim = common::sim(net, NoopSink);
+    let mut sim = common::sim(net);
     for i in 0..5 {
         sim.insert(car(), at(0, 90.0 - 15.0 * i as f64, 10.0));
         sim.insert(car(), at(1, 85.0 - 15.0 * i as f64, 10.0));
@@ -227,7 +227,7 @@ fn slowest(sim: &mut Simulation, id: VehicleId, seconds: f64) -> f64 {
 #[test]
 fn a_vehicle_crossing_behind_another_times_its_arrival_rather_than_stopping() {
     let (net, _) = crossroads();
-    let mut sim = common::sim(net, NoopSink);
+    let mut sim = common::sim(net);
     // The first will have cleared the crossing just before the second reaches
     // it, so the second, following its progress, needn't slow for it.
     sim.insert(car(), at(1, 65.0, 10.0));
@@ -239,7 +239,7 @@ fn a_vehicle_crossing_behind_another_times_its_arrival_rather_than_stopping() {
 #[test]
 fn a_vehicle_merging_behind_another_follows_it_through_the_merge() {
     let (net, _) = merge();
-    let mut sim = common::sim(net, NoopSink);
+    let mut sim = common::sim(net);
     // The first is ahead, going the same way, so the second follows it through
     // the merge, rather than waiting for it to be through.
     sim.insert(car(), at(1, 85.0, 10.0));
@@ -251,7 +251,7 @@ fn a_vehicle_merging_behind_another_follows_it_through_the_merge() {
 #[test]
 fn a_fast_follower_commits_only_after_the_slow_vehicle_ahead_of_it() {
     let (net, junction) = crossroads();
-    let mut sim = common::sim(net, NoopSink);
+    let mut sim = common::sim(net);
     // The follower closes fast on its slow leader, 10 m short of the crossing:
     // it needs 24.5 m to stop at safe braking, but is under 24 m from the
     // crossing, while the leader could still stop.
@@ -293,7 +293,7 @@ fn commit_order(sim: &Simulation, junction: JunctionId, order: &mut Vec<VehicleI
 #[test]
 fn a_vehicle_that_cuts_in_ahead_commits_first() {
     let (net, junction) = merge();
-    let mut sim = common::sim(net, NoopSink);
+    let mut sim = common::sim(net);
     // Both arrive as they are inserted, but the one on lane 1 is ahead, and
     // changes into lane 0.
     let behind = sim.insert(car(), at(0, 85.0, 5.0));
@@ -312,7 +312,7 @@ fn a_vehicle_that_cuts_in_ahead_commits_first() {
 #[test]
 fn a_vehicle_not_yet_committed_stops_gently_for_a_committed_one_in_its_way() {
     let (net, junction) = crossroads();
-    let mut sim = common::sim(net, NoopSink);
+    let mut sim = common::sim(net);
     // Its front past the start of the overlap, 8.25 m along lane 3, so it
     // commits, and held there.
     let blocker = sim.insert(car(), at(3, 6.0, 0.0));
@@ -340,7 +340,7 @@ fn a_vehicle_not_yet_committed_stops_gently_for_a_committed_one_in_its_way() {
 #[test]
 fn a_committed_vehicle_held_up_short_of_its_conflict_is_released() {
     let (net, junction) = merge();
-    let mut sim = common::sim(net, NoopSink);
+    let mut sim = common::sim(net);
     // At 14 m/s, 24.4 m short of the merge, it can no longer stop at safe
     // braking, so it commits. Then a slower car cuts in ahead of it, and it
     // brakes hard behind that one, until it could stop a car length short of
@@ -382,7 +382,7 @@ fn it_arrives_at_the_next_junction_only_once_it_has_entered_the_one_before() {
     }
     let first = net.add_junction(&[LaneId(1), LaneId(5)]);
     let second = net.add_junction(&[LaneId(3), LaneId(6)]);
-    let mut sim = common::sim(net, NoopSink);
+    let mut sim = common::sim(net);
     // Both junctions are on its path from the start.
     let id = sim.insert(car(), at(0, 70.0, 14.0));
     assert_eq!(sim.approaching(first), [LaneId(0), LaneId(1)]);

@@ -4,8 +4,7 @@
 
 use glam::DVec2;
 use traffic_sim::{
-    Barrier, BarrierKind, Lane, LaneId, NoopSink, Placement, Route, SimNetwork, Simulation,
-    VehicleId,
+    Barrier, BarrierKind, Lane, LaneId, Placement, Route, SimNetwork, Simulation, VehicleId,
 };
 
 mod common;
@@ -132,7 +131,7 @@ impl Departures {
 
 #[test]
 fn two_cars_going_opposite_ways_go_together() {
-    let mut sim = common::sim(all_way_stop(), NoopSink);
+    let mut sim = common::sim(all_way_stop());
     let a = arrive(&mut sim, WEST);
     let b = arrive(&mut sim, EAST);
     let mut departures = Departures::new(&[a, b]);
@@ -147,7 +146,7 @@ fn two_cars_going_opposite_ways_go_together() {
 
 #[test]
 fn the_second_of_two_crossing_waits_then_goes_behind_the_first_without_stopping() {
-    let mut sim = common::sim(all_way_stop(), NoopSink);
+    let mut sim = common::sim(all_way_stop());
     let first = arrive(&mut sim, WEST);
     while sim.time() < 0.5 {
         sim.step();
@@ -211,7 +210,7 @@ fn the_second_of_two_crossing_waits_then_goes_behind_the_first_without_stopping(
 
 #[test]
 fn a_car_waits_its_turn_behind_an_earlier_one_it_would_hold_up() {
-    let mut sim = common::sim(all_way_stop(), NoopSink);
+    let mut sim = common::sim(all_way_stop());
     // A, then B, crossing A's way, then C, opposite A, so not crossing it, but
     // crossing B's: all at rest at their lines before B can go.
     let a = arrive(&mut sim, WEST);

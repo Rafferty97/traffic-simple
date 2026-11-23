@@ -3,10 +3,7 @@
 
 use rand::rngs::Xoshiro256PlusPlus;
 use rand::{RngExt, SeedableRng};
-use traffic_sim::{
-    DebugSink, Lateral, NoopSink, Placement, Route, Side, SimState, Simulation, VehicleId,
-    VehicleSpec,
-};
+use traffic_sim::{Lateral, Placement, Route, Side, SimState, Simulation, VehicleId, VehicleSpec};
 
 mod common;
 use common::{car, frame, ring_road};
@@ -14,7 +11,7 @@ use common::{car, frame, ring_road};
 const SPEED_LIMIT: f64 = 50.0 / 3.6;
 
 /// Every vehicle's state and every lane's records, as raw bits.
-fn state<D: DebugSink>(sim: &Simulation<D>) -> Vec<u64> {
+fn state(sim: &Simulation) -> Vec<u64> {
     let mut out = vec![sim.time().to_bits()];
     for (id, v) in sim.vehicles() {
         out.extend(format!("{id:?}").bytes().map(u64::from));
@@ -53,7 +50,7 @@ fn state<D: DebugSink>(sim: &Simulation<D>) -> Vec<u64> {
 /// the vehicle store has freed slots, lane changes are under way and some
 /// vehicles are indicating.
 fn busy() -> Simulation {
-    let mut sim = common::sim(ring_road(600.0, 3, SPEED_LIMIT), NoopSink);
+    let mut sim = common::sim(ring_road(600.0, 3, SPEED_LIMIT));
     let mut rng = Xoshiro256PlusPlus::seed_from_u64(3);
     while sim.time() < 60.0 {
         sim.step_variable(0.005 + 0.03 * rng.random::<f64>());
@@ -79,7 +76,7 @@ fn busy() -> Simulation {
 
 /// Steps `sim` for 30 s with seeded frame lengths, holds, releases, lane changes
 /// and removals, but no insertions, returning its state after every frame.
-fn continue_for_30_s<D: DebugSink>(sim: &mut Simulation<D>) -> Vec<u64> {
+fn continue_for_30_s(sim: &mut Simulation) -> Vec<u64> {
     let mut rng = Xoshiro256PlusPlus::seed_from_u64(9);
     let mut out = Vec::new();
     let end = sim.time() + 30.0;
@@ -107,7 +104,7 @@ fn a_restored_snapshot_continues_exactly_like_the_original() {
     let mut original = busy();
     let json = serde_json::to_string(original.state()).unwrap();
     let snapshot: SimState = serde_json::from_str(&json).unwrap();
-    let mut restored = Simulation::restore(snapshot, NoopSink);
+    let mut restored = Simulation::restore(snapshot);
     assert!(original.vehicles().count() > 20, "the run should be busy");
     assert!(state(&original) == state(&restored), "restored differently");
     let (a, b) = (
@@ -125,8 +122,7 @@ fn a_freeze_frame_loads_with_its_selection() {
     let sim = busy();
     let selected = sim.vehicles().nth(3).map(|(id, _)| id);
     let json = serde_json::json!({ "selected": selected, "snapshot": sim.state() });
-    let (loaded, loaded_selected) =
-        frame::load(&serde_json::to_string_pretty(&json).unwrap(), NoopSink);
+    let (loaded, loaded_selected) = frame::load(&serde_json::to_string_pretty(&json).unwrap());
     assert_eq!(loaded_selected, selected);
     assert!(state(&loaded) == state(&sim), "loaded differently");
 }

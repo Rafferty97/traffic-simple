@@ -3,8 +3,7 @@
 
 use traffic_network::{Compiled, RoadId, Turn, compile, scenarios};
 use traffic_sim::{
-    BarrierKind, LaneId, Light, MovementId, NoopSink, Placement, Route, Simulation, VehicleId,
-    VehicleSpec,
+    BarrierKind, LaneId, Light, MovementId, Placement, Route, Simulation, VehicleId, VehicleSpec,
 };
 
 mod common;
@@ -95,7 +94,7 @@ fn on_red_a_near_side_turner_stops_then_goes_and_straight_traffic_waits() {
     let compiled = compile(&scenarios::signalised_crossroads_turn_on_red(1, LIMIT)).unwrap();
     let (left, movement) = connector(&compiled, 1, Turn::Left);
     let (straight, _) = connector(&compiled, 3, Turn::Straight);
-    let mut sim = common::sim(compiled.sim, NoopSink);
+    let mut sim = common::sim(compiled.sim);
     sim.step();
     assert_eq!(sim.light(movement).light, Light::Red);
     // Coming up to its line at the limit, so it must stop there first.
@@ -127,7 +126,7 @@ fn on_red_a_near_side_turner_gives_way_to_the_traffic_it_merges_with() {
     // east, on its green.
     let (left, _) = connector(&compiled, 1, Turn::Left);
     let (through, green) = connector(&compiled, 2, Turn::Straight);
-    let mut sim = common::sim(compiled.sim, NoopSink);
+    let mut sim = common::sim(compiled.sim);
     while sim.light(green).light != Light::Green {
         sim.step();
     }
@@ -174,7 +173,7 @@ fn a_busy_crossroads_turning_on_red_keeps_flowing_and_turners_go_on_red() {
             kind => panic!("{c:?} starts with a {kind:?}"),
         })
         .collect();
-    let mut sim = common::sim(compiled.sim, NoopSink);
+    let mut sim = common::sim(compiled.sim);
     let entries: Vec<LaneId> = sim
         .network()
         .lanes()

@@ -6,15 +6,15 @@ use std::hint::black_box;
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use traffic_network::{RoadNetwork, compile, scenarios};
-use traffic_sim::{LaneId, NoopSink, Placement, Route, Simulation, VehicleSpec};
+use traffic_sim::{LaneId, Placement, Route, Simulation, VehicleSpec};
 
 /// The length of a step, in seconds: 30 Hz.
 const DT: f64 = 1.0 / 30.0;
 
 /// A simulation of `network` stepping at 30 Hz, with the slower updates at 10 Hz.
-fn sim<D: traffic_sim::DebugSink>(network: traffic_sim::SimNetwork, sink: D) -> Simulation<D> {
+fn sim(network: traffic_sim::SimNetwork) -> Simulation {
     let config = traffic_sim::Config { dt: DT, macro_step: 3 };
-    Simulation::with_config(network, config, sink)
+    Simulation::with_config(network, config)
 }
 
 const SPEED: f64 = 50.0 / 3.6;
@@ -43,11 +43,7 @@ fn build(c: &mut Criterion) {
     });
     // The lanes' overlaps, merges and the rest derived as a simulation is built.
     group.bench_function("simulation_16x16", |b| {
-        b.iter_batched(
-            || compile(&net).unwrap().sim,
-            |network| sim(network, NoopSink),
-            BatchSize::LargeInput,
-        )
+        b.iter_batched(|| compile(&net).unwrap().sim, sim, BatchSize::LargeInput)
     });
     group.finish();
 }
@@ -63,7 +59,7 @@ struct Flooded {
 
 impl Flooded {
     fn new(net: &RoadNetwork, every: u64) -> Self {
-        let sim = sim(compile(net).unwrap().sim, NoopSink);
+        let sim = sim(compile(net).unwrap().sim);
         let entries = sim
             .network()
             .lanes()
@@ -97,7 +93,7 @@ struct Kept {
 
 impl Kept {
     fn new(net: &RoadNetwork, target: usize) -> Self {
-        let sim = sim(compile(net).unwrap().sim, NoopSink);
+        let sim = sim(compile(net).unwrap().sim);
         let roads = sim
             .network()
             .lanes()

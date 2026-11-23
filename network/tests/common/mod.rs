@@ -2,7 +2,7 @@
 
 #![allow(dead_code)]
 
-use traffic_sim::{Config, ConflictKind, DebugSink, LaneId, SimNetwork, Simulation};
+use traffic_sim::{Config, ConflictKind, DebugEvent, LaneId, SimNetwork, Simulation};
 
 /// The length of a step in the tests' standard simulation, in seconds: 30 Hz.
 pub const DT: f64 = 1.0 / 30.0;
@@ -12,8 +12,70 @@ pub const DT: f64 = 1.0 / 30.0;
 pub const CONFIG: Config = Config { dt: DT, macro_step: 3 };
 
 /// A simulation of `network` stepping by [`CONFIG`].
-pub fn sim<D: DebugSink>(network: SimNetwork, sink: D) -> Simulation<D> {
-    Simulation::with_config(network, CONFIG, sink)
+pub fn sim(network: SimNetwork) -> Simulation {
+    Simulation::with_config(network, CONFIG)
+}
+
+/// What a test collects from a simulation's debug events, as they come.
+pub trait Collect {
+    fn collect(&mut self, event: DebugEvent);
+}
+
+/// A simulation stepped with its debug events, each handed to `sink` as it
+/// comes. It derefs to the simulation, so it reads and changes like one.
+pub struct Watched<C> {
+    sim: Simulation,
+    sink: C,
+    events: Vec<DebugEvent>,
+}
+
+impl<C: Collect> Watched<C> {
+    pub fn new(sim: Simulation, sink: C) -> Self {
+        Self { sim, sink, events: Vec::new() }
+    }
+
+    /// One step, as [`Simulation::step`], collecting its events.
+    pub fn step(&mut self) {
+        self.sim.step_debug(&mut self.events);
+        self.drain();
+    }
+
+    /// As [`Simulation::step_variable`], collecting its events.
+    pub fn step_variable(&mut self, dt: f64) -> u32 {
+        let steps = self.sim.step_variable_debug(dt, &mut self.events);
+        self.drain();
+        steps
+    }
+
+    /// What it has collected.
+    pub fn sink(&self) -> &C {
+        &self.sink
+    }
+
+    fn drain(&mut self) {
+        for event in self.events.drain(..) {
+            self.sink.collect(event);
+        }
+    }
+}
+
+impl<C> std::ops::Deref for Watched<C> {
+    type Target = Simulation;
+
+    fn deref(&self) -> &Simulation {
+        &self.sim
+    }
+}
+
+impl<C> std::ops::DerefMut for Watched<C> {
+    fn deref_mut(&mut self) -> &mut Simulation {
+        &mut self.sim
+    }
+}
+
+/// A simulation of `network` stepping by [`CONFIG`], watched by `sink`.
+pub fn watched<C: Collect>(network: SimNetwork, sink: C) -> Watched<C> {
+    Watched::new(sim(network), sink)
 }
 
 /// How many standard steps take `seconds`.
@@ -38,7 +100,7 @@ const ENTERED: f64 = 0.5;
 ///
 /// The fourth, that the queue closes no cycle, shows as a lockup.
 #[allow(dead_code)]
-pub fn queue_violation<D: DebugSink>(sim: &Simulation<D>) -> Option<String> {
+pub fn queue_violation(sim: &Simulation) -> Option<String> {
     let net = sim.network();
     for (junction, _) in net.junctions() {
         let queue = sim.queue(junction);
@@ -146,7 +208,7 @@ pub fn overlap(a: [glam::DVec2; 4], b: [glam::DVec2; 4]) -> bool {
 /// record on, if any, other than lanes on its path and those its nose pokes
 /// into past the end of a lane it is on: each vehicle has a record on every lane
 /// it intersects (see `docs/multilane-car-following.md`).
-pub fn uncovered<D: traffic_sim::DebugSink>(sim: &traffic_sim::Simulation<D>) -> Option<String> {
+pub fn uncovered(sim: &traffic_sim::Simulation) -> Option<String> {
     use traffic_sim::Side;
     const INSIDE: f64 = 0.05;
     let net = sim.network();
@@ -181,12 +243,12 @@ pub fn uncovered<D: traffic_sim::DebugSink>(sim: &traffic_sim::Simulation<D>) ->
 /// and that every vehicle has a record on each lane its body is in.
 #[allow(dead_code)]
 pub fn flood(net: &traffic_network::RoadNetwork, seconds: f64) {
-    use traffic_sim::{LaneId, NoopSink, Placement, Route, Simulation, VehicleSpec};
+    use traffic_sim::{LaneId, Placement, Route, Simulation, VehicleSpec};
     let car = VehicleSpec::passenger_car();
 
     {
         let compiled = traffic_network::compile(net).unwrap();
-        let mut sim = Simulation::new(compiled.sim, NoopSink);
+        let mut sim = Simulation::new(compiled.sim);
         let entries: Vec<LaneId> = sim
             .network()
             .lanes()

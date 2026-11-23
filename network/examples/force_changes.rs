@@ -1,7 +1,7 @@
 //! Experiment: forces lane changes on random vehicles in busy traffic, in a
 //! debug build, to catch broken occupancy invariants.
 use traffic_network::{compile, scenarios};
-use traffic_sim::{LaneId, NoopSink, Placement, Route, Side, Simulation, VehicleSpec};
+use traffic_sim::{LaneId, Placement, Route, Side, Simulation, VehicleSpec};
 
 fn main() {
     let mut state = 7u64;
@@ -17,7 +17,7 @@ fn main() {
         _ => scenarios::ramps(100.0 / 3.6, 80.0 / 3.6),
     };
     let compiled = compile(&net).unwrap();
-    let mut sim = Simulation::new(compiled.sim, NoopSink);
+    let mut sim = Simulation::new(compiled.sim);
     let entries: Vec<LaneId> = sim
         .network()
         .lanes()

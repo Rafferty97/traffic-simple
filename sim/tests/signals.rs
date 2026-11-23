@@ -3,8 +3,8 @@
 
 use glam::DVec2;
 use traffic_sim::{
-    Barrier, BarrierKind, Lane, LaneId, Light, Movement, MovementId, NoopSink, Phase, Placement,
-    Route, SignalPlan, SimNetwork, Simulation, VehicleId,
+    Barrier, BarrierKind, Lane, LaneId, Light, Movement, MovementId, Phase, Placement, Route,
+    SignalPlan, SimNetwork, Simulation, VehicleId,
 };
 
 mod common;
@@ -79,7 +79,7 @@ fn run_until(sim: &mut Simulation, time: f64) {
 #[test]
 fn a_red_light_holds_its_queue_a_line_gap_short() {
     let (net, _) = crossroads();
-    let mut sim = common::sim(net, NoopSink);
+    let mut sim = common::sim(net);
     // Coming from the south, red for the first 25 s.
     let ids: Vec<_> =
         (0..4).map(|i| sim.insert(car(), at(1, 70.0 - 12.0 * i as f64, 10.0))).collect();
@@ -99,7 +99,7 @@ fn a_red_light_holds_its_queue_a_line_gap_short() {
 #[test]
 fn vehicles_cross_only_on_green_or_amber() {
     let (net, movements) = crossroads();
-    let mut sim = common::sim(net, NoopSink);
+    let mut sim = common::sim(net);
     let mut crossed = Vec::new();
     let mut fronts = std::collections::HashMap::new();
     for step in 0..(120.0 / DT) as u64 {
@@ -144,7 +144,7 @@ fn drivers_of_every_speed_cross_only_on_green_or_amber_with_ites_amber() {
         std::mem::swap(&mut fresh, &mut net);
         net
     };
-    let mut sim = common::sim(net, NoopSink);
+    let mut sim = common::sim(net);
     let mut fronts = std::collections::HashMap::new();
     let mut on_red = Vec::new();
     for step in 0..(300.0 / DT) as u64 {
@@ -177,7 +177,7 @@ fn drivers_of_every_speed_cross_only_on_green_or_amber_with_ites_amber() {
 #[test]
 fn on_amber_it_goes_if_it_committed_on_green_and_stops_if_it_can() {
     let (net, movements) = crossroads();
-    let mut sim = common::sim(net, NoopSink);
+    let mut sim = common::sim(net);
     // Movement 0, from the west, turns amber 22 s in.
     run_until(&mut sim, 20.5);
     assert_eq!(sim.light(movements[0]).light, Light::Green);
@@ -203,7 +203,7 @@ fn on_amber_it_goes_if_it_committed_on_green_and_stops_if_it_can() {
 #[test]
 fn on_green_the_whole_queue_goes_each_seeing_the_line_once_its_leader_commits() {
     let (net, movements) = crossroads();
-    let mut sim = common::sim(net, NoopSink);
+    let mut sim = common::sim(net);
     // From the south: red until 26 s, green from 28 s to 48 s.
     let ids: Vec<_> =
         (0..4).map(|i| sim.insert(car(), at(1, 70.0 - 12.0 * i as f64, 10.0))).collect();
@@ -225,7 +225,7 @@ fn on_green_the_whole_queue_goes_each_seeing_the_line_once_its_leader_commits() 
 #[test]
 fn a_green_light_with_no_room_beyond_holds_it_until_there_is() {
     let (net, movements) = crossroads();
-    let mut sim = common::sim(net, NoopSink);
+    let mut sim = common::sim(net);
     // Held just past the junction, where the next car from the west would go.
     let blocker = sim.insert(car(), at(4, 3.0, 0.0));
     sim.hold(blocker);
@@ -269,7 +269,7 @@ fn give_way() -> SimNetwork {
 
 #[test]
 fn a_give_way_line_waits_for_traffic_with_priority_then_goes() {
-    let mut sim = common::sim(give_way(), NoopSink);
+    let mut sim = common::sim(give_way());
     // The line, along the connector from the south, which starts 10 m south.
     let line = sim.network().lane(LaneId(3)).barriers()[0].s - 10.0;
     // At rest short of its line, with a car with priority coming 4 s away.
@@ -300,7 +300,7 @@ fn a_give_way_line_waits_for_traffic_with_priority_then_goes() {
 
 #[test]
 fn a_give_way_line_goes_through_a_wide_gap() {
-    let mut sim = common::sim(give_way(), NoopSink);
+    let mut sim = common::sim(give_way());
     let yielding = sim.insert(car(), at(3, 0.0, 0.0));
     // Far off: about 85 m away at 14 m/s, 6 s.
     let _far = sim.insert(car(), at(0, 5.0, LIMIT));
@@ -318,7 +318,7 @@ fn a_give_way_line_waits_for_traffic_with_priority_at_rest_at_a_green_light() {
     });
     let kind = BarrierKind::Signal { movement: first, on_red: None };
     net.add_barrier(LaneId(2), Barrier::new(0.0, kind));
-    let mut sim = common::sim(net, NoopSink);
+    let mut sim = common::sim(net);
     sim.step();
     assert_eq!(sim.light(first).light, Light::Green);
     let line = sim.network().lane(LaneId(3)).barriers()[0].s - 10.0;
@@ -353,7 +353,7 @@ fn crossroads_with_amber(amber: f64) -> (SimNetwork, [MovementId; 2]) {
 #[test]
 fn a_committed_car_stopped_short_of_its_line_is_released_on_red_and_waits() {
     let (net, movements) = crossroads();
-    let mut sim = common::sim(net, NoopSink);
+    let mut sim = common::sim(net);
     // At 14 m/s, 40 m short of its line at 16 s: committed, as it can't stop
     // comfortably, then held to a stop well short of the line.
     run_until(&mut sim, 16.0);
@@ -389,7 +389,7 @@ fn a_committed_car_stopped_short_of_its_line_is_released_on_red_and_waits() {
 fn on_red_a_committed_car_goes_on_if_it_cant_stop_safely_and_stops_if_it_can() {
     // A short amber, so committed cars are still short of the line on red.
     let (net, movements) = crossroads_with_amber(1.0);
-    let mut sim = common::sim(net, NoopSink);
+    let mut sim = common::sim(net);
     // Amber at 22 s, red at 23 s. At 14 m/s, `near` is 20 m short at 22 s and so
     // 6 m short on red, too near to stop at 4 m/s²; `far` is 47 m short, so
     // 33 m short on red, with room. Both committed on green, unable to stop
@@ -416,7 +416,7 @@ fn on_red_a_committed_car_goes_on_if_it_cant_stop_safely_and_stops_if_it_can() {
 fn drivers_stop_short_of_a_line_by_a_gap_drawn_for_it() {
     use traffic_sim::VehicleSpec;
     let (net, _) = crossroads();
-    let mut sim = common::sim(net, NoopSink);
+    let mut sim = common::sim(net);
     // From the south, red for the first 26 s: each car the head of its own run.
     let mut gaps = Vec::new();
     for i in 0..6 {
@@ -448,7 +448,7 @@ fn drivers_stop_short_of_a_line_by_a_gap_drawn_for_it() {
 
 #[test]
 fn a_give_way_line_never_lets_a_car_go_behind_one_at_rest_in_its_way() {
-    let mut sim = common::sim(give_way(), NoopSink);
+    let mut sim = common::sim(give_way());
     let crossing = sim.network().conflict_between(LaneId(2), LaneId(3)).unwrap().mine.clone();
     // A car with priority, stopped in the crossing, and held there: it never
     // clears, so there's no going behind it.

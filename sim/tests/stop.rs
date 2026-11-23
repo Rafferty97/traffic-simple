@@ -3,8 +3,7 @@
 
 use glam::DVec2;
 use traffic_sim::{
-    Barrier, BarrierKind, Lane, LaneId, NoopSink, Placement, Route, SimNetwork, Simulation,
-    VehicleId,
+    Barrier, BarrierKind, Lane, LaneId, Placement, Route, SimNetwork, Simulation, VehicleId,
 };
 
 mod common;
@@ -67,7 +66,7 @@ fn front_y(sim: &Simulation, id: VehicleId) -> f64 {
 
 #[test]
 fn a_car_comes_to_rest_at_a_clear_stop_line_then_goes() {
-    let mut sim = common::sim(stop(), NoopSink);
+    let mut sim = common::sim(stop());
     let car_id = sim.insert(car(), at(1, 20.0, LIMIT));
     let mut came_to_rest = false;
     let mut crossed = None;
@@ -86,7 +85,7 @@ fn a_car_comes_to_rest_at_a_clear_stop_line_then_goes() {
 
 #[test]
 fn a_car_at_a_stop_line_waits_for_traffic_with_priority_then_goes() {
-    let mut sim = common::sim(stop(), NoopSink);
+    let mut sim = common::sim(stop());
     let yielding = sim.insert(car(), at_line());
     // About 5 s away: too close to go ahead of.
     let priority = sim.insert(car(), at(0, 30.0, LIMIT));
@@ -115,7 +114,7 @@ fn a_car_at_a_stop_line_waits_for_traffic_with_priority_then_goes() {
 
 #[test]
 fn a_car_at_rest_at_a_stop_line_goes_through_a_wide_gap() {
-    let mut sim = common::sim(stop(), NoopSink);
+    let mut sim = common::sim(stop());
     let yielding = sim.insert(car(), at_line());
     // Far off: about 90 m from their crossing at 10 m/s, 9 s.
     let _far = sim.insert(car(), at(0, 5.0, 10.0));
@@ -130,7 +129,7 @@ fn a_car_at_rest_at_a_stop_line_goes_through_a_wide_gap() {
 
 #[test]
 fn a_car_arriving_at_a_stop_line_records_when_it_came_to_rest() {
-    let mut sim = common::sim(stop(), NoopSink);
+    let mut sim = common::sim(stop());
     let car_id = sim.insert(car(), at(1, 60.0, LIMIT));
     // A car with priority keeps it waiting after it comes to rest.
     let _priority = sim.insert(car(), at(0, 0.0, 6.0));
@@ -153,7 +152,7 @@ fn a_car_arriving_at_a_stop_line_records_when_it_came_to_rest() {
 /// with priority that has stopped short of the junction.
 #[test]
 fn a_car_kept_waiting_in_time_goes_ahead_of_a_stopped_car_with_priority() {
-    let mut sim = common::sim(stop(), NoopSink);
+    let mut sim = common::sim(stop());
     let yielding = sim.insert(car(), at_line());
     // At rest 5 m short of the junction, held there.
     let spec = car();

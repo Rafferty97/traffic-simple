@@ -16,7 +16,7 @@ use crate::vehicle::VehicleId;
 ///
 /// Lane-change decisions are staggered across vehicles, so their reset is per
 /// vehicle, and [`DebugEvent::VehicleRemoved`] says when to drop a vehicle's.
-pub trait DebugSink {
+pub(crate) trait DebugSink {
     fn record(&mut self, event: impl FnOnce() -> DebugEvent);
 }
 
@@ -120,11 +120,19 @@ pub enum AccelSource {
     Barrier { lane: LaneId, index: u16, gap: f64 },
 }
 
-/// A sink that discards everything.
+/// A sink that discards everything: the simulation's own, outside a debug step.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct NoopSink;
+pub(crate) struct NoopSink;
 
 impl DebugSink for NoopSink {
     #[inline(always)]
     fn record(&mut self, _event: impl FnOnce() -> DebugEvent) {}
+}
+
+/// The sink a debug step collects into, for its caller.
+impl DebugSink for Vec<DebugEvent> {
+    #[inline]
+    fn record(&mut self, event: impl FnOnce() -> DebugEvent) {
+        self.push(event());
+    }
 }

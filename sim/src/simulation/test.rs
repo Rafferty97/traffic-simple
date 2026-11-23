@@ -5,7 +5,7 @@ use glam::DVec2;
 
 use super::*;
 use crate::barrier;
-use crate::debug::{AccelSource, DebugEvent};
+use crate::debug::{AccelSource, DebugEvent, DebugSink, NoopSink};
 use crate::merge;
 use crate::models::lane_change::{LaneChangeEval, Outcome, check_gap, incentives};
 use crate::network::{Barrier, BarrierKind, Lane};
@@ -67,13 +67,13 @@ fn road(sections: &[(f64, f64)], lanes: u32) -> SimNetwork {
 }
 
 /// A simulation of `network` stepping by [`CONFIG`].
-pub(crate) fn new_sim<D: DebugSink>(network: SimNetwork, sink: D) -> Simulation<D> {
-    Simulation::with_config(network, CONFIG, sink)
+pub(crate) fn new_sim(network: SimNetwork) -> Simulation {
+    Simulation::with_config(network, CONFIG)
 }
 
 /// Two lanes side by side, 500 m long.
 fn two_lanes() -> Simulation {
-    new_sim(road(&[(0.0, 500.0)], 2), NoopSink)
+    new_sim(road(&[(0.0, 500.0)], 2))
 }
 
 fn at(lane: u32, s: f64, speed: f64) -> Placement {
@@ -249,7 +249,7 @@ fn the_follower_search_counts_a_vehicle_moving_out_of_the_lane() {
 #[test]
 fn the_follower_search_continues_onto_the_lanes_leading_in() {
     // Two sections of two lanes: lane 0 leads into lane 2.
-    let mut sim = new_sim(road(&[(0.0, 100.0), (100.0, 200.0)], 2), NoopSink);
+    let mut sim = new_sim(road(&[(0.0, 100.0), (100.0, 200.0)], 2));
     let behind = sim.insert(car(), at(0, 80.0, LIMIT));
     let (found, gap) = follower(&sim, 2, 10.0, VehicleId::null()).unwrap();
     assert_eq!(found, behind);
@@ -278,7 +278,7 @@ fn the_follower_search_wraps_round_a_loop() {
     let lane = Lane::new(&[DVec2::ZERO, DVec2::new(1000.0, 0.0)], WIDTH, LIMIT).unwrap();
     let mut network = SimNetwork::new(vec![lane]);
     network.connect(LaneId(0), LaneId(0));
-    let mut sim = new_sim(network, NoopSink);
+    let mut sim = new_sim(network);
     let behind = sim.insert(car(), at(0, 970.0, LIMIT));
     let (found, gap) = follower(&sim, 0, 50.0, VehicleId::null()).unwrap();
     assert_eq!(found, behind);
@@ -298,7 +298,7 @@ fn on_lanes_leading_in_only_vehicles_headed_this_way_count() {
     ]);
     network.connect(LaneId(0), LaneId(2));
     network.connect(LaneId(0), LaneId(1));
-    let mut sim = new_sim(network, NoopSink);
+    let mut sim = new_sim(network);
     // It turns onto lane 2, so it isn't lane 1's follower.
     let turning = sim.insert(car(), at(0, 80.0, LIMIT));
     let path = &mut sim.state.vehicles[turning].path;
@@ -400,7 +400,7 @@ fn two_lanes_into_a_junction() -> Simulation {
         network.connect(LaneId(from), LaneId(to));
     }
     network.add_junction(&[LaneId(2), LaneId(3)]);
-    new_sim(network, NoopSink)
+    new_sim(network)
 }
 
 /// A taper: lane 0, from 0 to 100 m, and lane 1 starting beside it and
@@ -423,7 +423,7 @@ fn a_taper() -> Simulation {
         network.connect(LaneId(from), LaneId(to));
     }
     network.validate().unwrap();
-    new_sim(network, NoopSink)
+    new_sim(network)
 }
 
 // Merges.
@@ -459,7 +459,7 @@ fn lanes_that_start_to_overlap_are_a_merge_and_branches_of_a_fork_are_not() {
     ]);
     network.connect(LaneId(0), LaneId(1));
     network.connect(LaneId(0), LaneId(2));
-    let sim = new_sim(network, NoopSink);
+    let sim = new_sim(network);
     assert!(!sim.derived.overlaps[1].is_empty(), "the branches overlap");
     assert_eq!(sim.derived.merges.len(), 0);
 }
@@ -596,7 +596,7 @@ fn queues_in_both_lanes_before_a_merge_go_through_it_by_turns() {
 #[test]
 fn a_record_ages_carries_its_age_on_and_starts_afresh_on_a_change_or_a_merge() {
     // Along a road of two sections: carried over.
-    let mut sim = new_sim(road(&[(0.0, 100.0), (100.0, 200.0)], 2), NoopSink);
+    let mut sim = new_sim(road(&[(0.0, 100.0), (100.0, 200.0)], 2));
     let id = sim.insert(car(), at(0, 80.0, 10.0));
     let age = |sim: &Simulation, lane: u32| {
         sim.state.occupants[lane as usize]
@@ -755,7 +755,7 @@ fn wanting_to_change_lanes_it_keeps_room_behind_a_stopped_leader() {
         if indicating {
             sim.indicate(id, Side::Left);
         }
-        sim.update_accels();
+        sim.update_accels(&mut NoopSink);
         sim.state.vehicles[id].accel
     };
     assert!(accel(false) > 0.0, "{}", accel(false));
@@ -850,7 +850,7 @@ fn its_old_follower_gains_when_it_leaves() {
     // Close behind it on lane 1, held back by it now, as the longitudinal update
     // records.
     let behind = sim.insert(car(), at(1, 290.0, 5.0));
-    sim.update_accels();
+    sim.update_accels(&mut NoopSink);
     assert_eq!(
         sim.state.lane_changers[id].old_follower.map(|f| f.id),
         Some(behind)
@@ -867,7 +867,7 @@ fn a_car_it_doesnt_hold_up_isnt_its_old_follower() {
     let mut sim = two_lanes();
     let id = sim.insert(car(), at(1, 300.0, 5.0));
     sim.insert(car(), at(1, 240.0, 5.0));
-    sim.update_accels();
+    sim.update_accels(&mut NoopSink);
     assert!(sim.state.lane_changers[id].old_follower.is_none());
 }
 
@@ -878,13 +878,13 @@ fn a_car_its_speed_cap_holds_back_isnt_held_up_by_the_car_ahead() {
     let mut sim = two_lanes();
     let id = sim.insert(car(), at(1, 300.0, 5.0));
     let behind = sim.insert(car(), at(1, 290.0, 5.0));
-    sim.update_accels();
+    sim.update_accels(&mut NoopSink);
     assert_eq!(
         sim.state.lane_changers[id].old_follower.map(|f| f.id),
         Some(behind)
     );
     sim.hold(behind);
-    sim.update_accels();
+    sim.update_accels(&mut NoopSink);
     assert!(sim.state.lane_changers[id].old_follower.is_none());
 }
 
@@ -934,12 +934,12 @@ fn it_doesnt_decide_partway_through_a_change() {
 // at constant speed, so no decision or longitudinal update interferes.
 
 /// Steps `id` along at its speed until its rear axle crosses into `lane`.
-fn advance_onto<D: DebugSink>(sim: &mut Simulation<D>, id: VehicleId, lane: u32) {
+fn advance_onto(sim: &mut Simulation, id: VehicleId, lane: u32) {
     for _ in 0..600 {
         if sim.state.vehicles[id].path[0] == LaneId(lane) {
             return;
         }
-        sim.update_motion(1.0 / 60.0);
+        sim.update_motion(1.0 / 60.0, &mut NoopSink);
         sim.update_occupancy(0.0);
     }
     panic!("never reached lane {lane}");
@@ -958,7 +958,7 @@ fn at_a_fork_it_joins_every_branch_and_leaves_those_it_doesnt_take() {
     ]);
     network.connect(LaneId(0), LaneId(1));
     network.connect(LaneId(0), LaneId(2));
-    let mut sim = new_sim(network, NoopSink);
+    let mut sim = new_sim(network);
     let id = sim.insert(car(), at(0, 90.0, 10.0));
     // Straight on, though lane 2, on the left, is its first successor.
     let path = &mut sim.state.vehicles[id].path;
@@ -974,7 +974,7 @@ fn at_a_fork_it_joins_every_branch_and_leaves_those_it_doesnt_take() {
     );
     // Clear of lane 2 once the branches have parted, it leaves it.
     for _ in 0..600 {
-        sim.update_motion(1.0 / 60.0);
+        sim.update_motion(1.0 / 60.0, &mut NoopSink);
         sim.update_occupancy(0.0);
         if records(&sim, id).iter().all(|r| r.0 != 2) {
             break;
@@ -987,7 +987,7 @@ fn at_a_fork_it_joins_every_branch_and_leaves_those_it_doesnt_take() {
 
 /// Lanes holding a record of `id`, whether each is its ghost, and how it
 /// relates to the lane, converging records whatever their turn.
-fn records<D: DebugSink>(sim: &Simulation<D>, id: VehicleId) -> Vec<(u32, bool, Lateral)> {
+fn records(sim: &Simulation, id: VehicleId) -> Vec<(u32, bool, Lateral)> {
     let lanes = sim.state.occupants.iter().enumerate();
     lanes
         .flat_map(|(i, list)| {
@@ -1011,7 +1011,7 @@ fn two_sections() -> SimNetwork {
 
 #[test]
 fn an_indicating_car_takes_its_ghost_into_the_next_section() {
-    let mut sim = new_sim(two_sections(), NoopSink);
+    let mut sim = new_sim(two_sections());
     let id = sim.insert(car(), at(1, 97.0, 5.0));
     sim.indicate(id, Side::Left);
     assert!(records(&sim, id).contains(&(0, true, Lateral::Ghost)));
@@ -1046,7 +1046,7 @@ fn an_intent_ends_where_the_next_section_has_no_neighbour_there() {
     network.set_adjacent(LaneId(0), LaneId(1), true, true);
     network.connect(LaneId(0), LaneId(2));
     network.validate().unwrap();
-    let mut sim = new_sim(network, NoopSink);
+    let mut sim = new_sim(network);
     let id = sim.insert(car(), at(0, 97.0, 5.0));
     sim.indicate(id, Side::Right);
     advance_onto(&mut sim, id, 2);
@@ -1076,7 +1076,8 @@ impl DebugSink for Leaders {
 
 #[test]
 fn a_straddling_car_carries_its_old_side_into_the_next_section() {
-    let mut sim = new_sim(two_sections(), Leaders::default());
+    let mut sim = new_sim(two_sections());
+    let mut sink = Leaders::default();
     let id = sim.insert(car(), at(1, 96.0, 5.0));
     sim.change_lane(id, Side::Left).unwrap();
     // Held on the old side's next lane, within reach of the change.
@@ -1096,8 +1097,8 @@ fn a_straddling_car_carries_its_old_side_into_the_next_section() {
     );
     assert_eq!(sim.state.vehicles[id].old_side, Some(Side::Right));
     // Its old-side search runs on along the next section, to the held car.
-    sim.update_accels();
-    assert!(sim.sink.0.contains(&(id, held)), "leaders {:?}", sim.sink.0);
+    sim.update_accels(&mut sink);
+    assert!(sink.0.contains(&(id, held)), "leaders {:?}", sink.0);
 }
 
 #[test]
@@ -1114,13 +1115,13 @@ fn at_a_lane_drop_the_old_side_clears_only_when_the_last_old_lane_record_goes() 
     let mut network = SimNetwork::new(lanes);
     network.set_adjacent(LaneId(0), LaneId(1), true, true);
     network.connect(LaneId(0), LaneId(2));
-    let mut sim = new_sim(network, NoopSink);
+    let mut sim = new_sim(network);
     let id = sim.insert(car(), at(1, 97.0, 5.0));
     sim.change_lane(id, Side::Left).unwrap();
     // Through the boundary and on: it straddles while it has any record on a
     // lane it has left, and only then.
     for _ in 0..120 {
-        sim.update_motion(1.0 / 60.0);
+        sim.update_motion(1.0 / 60.0, &mut NoopSink);
         sim.update_occupancy(0.0);
         let v = &sim.state.vehicles[id];
         let leaving = records(&sim, id).iter().any(|r| !r.1 && LaneId(r.0) != v.path[0]);
@@ -1194,7 +1195,7 @@ fn it_wont_indicate_into_an_unsafe_gap_short_of_synchronising() {
 fn a_change_starts_its_desire_afresh() {
     let mut sim = two_lanes();
     let id = indicating_behind_a_stopped_car(&mut sim);
-    sim.update_lane_changes(sim.state.macro_step_dt());
+    sim.update_lane_changes(sim.state.macro_step_dt(), &mut NoopSink);
     assert_eq!(
         sim.state.vehicles[id].path[0],
         LaneId(0),
@@ -1214,7 +1215,7 @@ fn synchronising_it_adjusts_its_speed_to_the_target_lanes_leader() {
         sim.insert(car(), at(0, 315.0, 4.0));
         sim.indicate(id, Side::Left);
         sim.state.lane_changers[id].lc.set_desire([desire, 0.0]);
-        sim.update_accels();
+        sim.update_accels(&mut NoopSink);
         sim.state.vehicles[id].accel
     };
     assert!(accel(WANTING) > 0.0, "{}", accel(WANTING));
@@ -1231,7 +1232,7 @@ fn two_lanes_with(lanes: impl Fn(Lane) -> Lane) -> Simulation {
     };
     let mut network = SimNetwork::new(vec![lane(0.0), lane(-WIDTH)]);
     network.set_adjacent(LaneId(0), LaneId(1), true, true);
-    new_sim(network, NoopSink)
+    new_sim(network)
 }
 
 #[test]
@@ -1259,7 +1260,7 @@ fn a_lane_left_early_makes_drivers_want_to_leave_it_more_near_its_end() {
         ])
     };
     network.set_adjacent(LaneId(0), LaneId(1), true, true);
-    let mut sim = new_sim(network, NoopSink);
+    let mut sim = new_sim(network);
     let far = sim.insert(car(), at(1, 50.0, 10.0));
     let near = sim.insert(car(), at(1, 450.0, 10.0));
     let route = |id| decide_now(&sim, id).1[0].incentives.route;
@@ -1292,7 +1293,7 @@ fn behind_an_indicator(behind: f64, courtesy: f64) -> (Simulation, VehicleId, Ve
 #[test]
 fn a_courteous_follower_makes_room_for_an_indicating_car() {
     let (mut sim, indicating, follower) = behind_an_indicator(15.0, 2.0);
-    sim.update_accels();
+    sim.update_accels(&mut NoopSink);
     assert_eq!(
         sim.state.lane_changers[follower].lc.yielding(),
         Some(indicating)
@@ -1307,7 +1308,7 @@ fn a_courteous_follower_makes_room_for_an_indicating_car() {
 fn followers_make_room_only_for_a_driver_wanting_it_enough_to_cooperate() {
     let (mut sim, indicating, follower) = behind_an_indicator(15.0, 2.0);
     sim.state.lane_changers[indicating].lc.set_desire([WANTING, 0.0]);
-    sim.update_accels();
+    sim.update_accels(&mut NoopSink);
     assert_eq!(sim.state.lane_changers[follower].lc.yielding(), None);
 }
 
@@ -1315,11 +1316,11 @@ fn followers_make_room_only_for_a_driver_wanting_it_enough_to_cooperate() {
 fn a_follower_drives_on_if_making_room_would_take_more_than_its_courtesy() {
     // Making room would take braking harder than 0.2 m/s².
     let (mut sim, _, follower) = behind_an_indicator(15.0, 0.2);
-    sim.update_accels();
+    sim.update_accels(&mut NoopSink);
     assert_eq!(sim.state.lane_changers[follower].lc.yielding(), None);
     // One with no courtesy never does, however easy.
     let (mut sim, _, follower) = behind_an_indicator(80.0, 0.0);
-    sim.update_accels();
+    sim.update_accels(&mut NoopSink);
     assert_eq!(sim.state.lane_changers[follower].lc.yielding(), None);
 }
 
@@ -1329,14 +1330,14 @@ fn a_follower_keeps_making_room_once_it_has_chosen_to() {
     // courtesy alone wouldn't stretch to it.
     let (mut sim, indicating, follower) = behind_an_indicator(15.0, 0.2);
     sim.state.lane_changers[follower].lc.set_yielding(Some(indicating));
-    sim.update_accels();
+    sim.update_accels(&mut NoopSink);
     assert_eq!(
         sim.state.lane_changers[follower].lc.yielding(),
         Some(indicating)
     );
     // Once the indicator is gone, there is nothing to make room for.
     sim.cancel_intent(indicating);
-    sim.update_accels();
+    sim.update_accels(&mut NoopSink);
     assert_eq!(sim.state.lane_changers[follower].lc.yielding(), None);
 }
 
@@ -1406,7 +1407,7 @@ fn a_leader_turning_off_doesnt_hide_the_queue_beyond() {
     let mut network = SimNetwork::new(lanes);
     network.connect(LaneId(0), LaneId(2));
     network.connect(LaneId(0), LaneId(1));
-    let mut sim = new_sim(network, NoopSink);
+    let mut sim = new_sim(network);
     let queued = sim.insert(car(), at(1, 5.0, 0.0));
     sim.hold(queued);
     let b = sim.insert(car(), at(0, 80.0, 10.0));
@@ -1437,7 +1438,7 @@ fn the_search_stops_at_the_second_car_in_the_lane() {
 fn a_leader_going_the_same_way_shields_the_lanes_beyond() {
     // B carries on from lane 0 onto lane 1, as A will: what is on lane 1
     // reaches A through B.
-    let mut sim = new_sim(road(&[(0.0, 100.0), (100.0, 200.0)], 1), NoopSink);
+    let mut sim = new_sim(road(&[(0.0, 100.0), (100.0, 200.0)], 1));
     let a = sim.insert(car(), at(0, 50.0, 10.0));
     let b = sim.insert(car(), at(0, 80.0, 10.0));
     let stopped = sim.insert(car(), at(1, 20.0, 0.0));
@@ -1494,12 +1495,13 @@ impl DebugSink for Terms {
 fn path_end_term(sections: usize, known: usize) -> Option<(f64, f64)> {
     let sections: Vec<_> =
         (0..sections).map(|k| (20.0 * k as f64, 20.0 * (k + 1) as f64)).collect();
-    let mut sim = new_sim(road(&sections, 1), Terms::default());
+    let mut sim = new_sim(road(&sections, 1));
+    let mut sink = Terms::default();
     let id = sim.insert(car(), at(0, 5.0, 10.0));
     // As a routing model would leave it, not knowing where it goes next.
     sim.state.vehicles[id].path.truncate(known);
-    sim.update_accels();
-    sim.sink.0.iter().find_map(|&(_, source, accel)| match source {
+    sim.update_accels(&mut sink);
+    sink.0.iter().find_map(|&(_, source, accel)| match source {
         AccelSource::PathEnd { gap } => Some((gap, accel)),
         _ => None,
     })
@@ -1530,7 +1532,7 @@ fn short_sections(length: f64, count: usize) -> SimNetwork {
 }
 
 /// Whether a vehicle's path reaches as far as its leader search looks.
-fn covers_horizon(sim: &Simulation<impl DebugSink>, id: VehicleId) -> bool {
+fn covers_horizon(sim: &Simulation, id: VehicleId) -> bool {
     let v = &sim.state.vehicles[id];
     crate::motion::path::reach_beyond_front(&sim.state.network, v)
         >= acceleration::horizon(&v.spec, v.speed)
@@ -1540,7 +1542,8 @@ fn covers_horizon(sim: &Simulation<impl DebugSink>, id: VehicleId) -> bool {
 fn a_path_reaches_past_the_horizon_however_short_the_lanes() {
     // 2 m lanes: a car held stopped 30 lanes on, its rear 55.4 m ahead, is in
     // view, and there is no end of the path short of the horizon.
-    let mut sim = new_sim(short_sections(2.0, 200), Terms::default());
+    let mut sim = new_sim(short_sections(2.0, 200));
+    let mut sink = Terms::default();
     let id = sim.insert(car(), at(0, 1.0, LIMIT));
     let stopped = sim.insert(car(), at(30, 1.0, 0.0));
     sim.hold(stopped);
@@ -1550,8 +1553,8 @@ fn a_path_reaches_past_the_horizon_however_short_the_lanes() {
         "{}",
         sim.state.vehicles[id].path.len()
     );
-    sim.update_accels();
-    let terms: Vec<_> = sim.sink.0.iter().filter(|t| t.0 == id).map(|t| t.1).collect();
+    sim.update_accels(&mut sink);
+    let terms: Vec<_> = sink.0.iter().filter(|t| t.0 == id).map(|t| t.1).collect();
     assert!(
         terms
             .iter()
@@ -1564,7 +1567,7 @@ fn a_path_reaches_past_the_horizon_however_short_the_lanes() {
     );
     // Driving on, it keeps knowing as far ahead.
     for _ in 0..60 {
-        sim.update_motion(1.0 / 60.0);
+        sim.update_motion(1.0 / 60.0, &mut NoopSink);
         sim.update_occupancy(0.0);
         assert!(covers_horizon(&sim, id));
     }
@@ -1573,9 +1576,9 @@ fn a_path_reaches_past_the_horizon_however_short_the_lanes() {
 #[test]
 fn a_vehicle_crosses_several_short_lanes_in_one_step() {
     // 0.1 m lanes, at 14 m/s: about 0.23 m a step.
-    let mut sim = new_sim(short_sections(0.1, 2000), NoopSink);
+    let mut sim = new_sim(short_sections(0.1, 2000));
     let id = sim.insert(car(), at(0, 0.05, LIMIT));
-    sim.update_motion(1.0 / 60.0);
+    sim.update_motion(1.0 / 60.0, &mut NoopSink);
     let v = &sim.state.vehicles[id];
     assert_eq!(v.path[0], LaneId(2), "rear axle at {:?}", v.lane_pos);
     assert!((0.0..0.1).contains(&v.lane_pos.s), "{:?}", v.lane_pos);
@@ -1585,7 +1588,7 @@ fn a_vehicle_crosses_several_short_lanes_in_one_step() {
 #[test]
 fn the_follower_search_goes_back_as_far_as_paths_reach() {
     // 5 m lanes: the follower's front is 41.4 m back, eight lanes before.
-    let mut sim = new_sim(short_sections(5.0, 40), NoopSink);
+    let mut sim = new_sim(short_sections(5.0, 40));
     let behind = sim.insert(car(), at(0, 1.0, LIMIT));
     let (found, gap) = follower(&sim, 9, 1.0, VehicleId::null()).unwrap();
     assert_eq!(found, behind);
@@ -1608,7 +1611,7 @@ fn a_car_at_rest_short_of_a_stop_line_is_released_unless_queued_past_it() {
     let yields = Some(network.add_yields(&[LaneId(2)]));
     let line = Barrier { yields, ..Barrier::new(0.0, BarrierKind::Stop) };
     network.add_barrier(LaneId(1), line);
-    let mut sim = new_sim(network, NoopSink);
+    let mut sim = new_sim(network);
     let id = sim.insert(car(), at(0, 80.0, 0.0));
     let vehicle = &sim.state.vehicles[id];
     assert!(barrier::released(

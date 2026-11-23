@@ -6,20 +6,20 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use traffic_network::{RoadNetwork, compile, scenarios};
-use traffic_sim::{LaneId, NoopSink, Placement, Route, Simulation, VehicleSpec};
+use traffic_sim::{LaneId, Placement, Route, Simulation, VehicleSpec};
 
 /// The length of a step, in seconds: 30 Hz.
 const DT: f64 = 1.0 / 30.0;
 
 /// A simulation of `network` stepping at 30 Hz, with the slower updates at 10 Hz.
-fn sim<D: traffic_sim::DebugSink>(network: traffic_sim::SimNetwork, sink: D) -> Simulation<D> {
+fn sim(network: traffic_sim::SimNetwork) -> Simulation {
     let config = traffic_sim::Config { dt: DT, macro_step: 3 };
-    Simulation::with_config(network, config, sink)
+    Simulation::with_config(network, config)
 }
 
 /// A simulation of `net`, and its entry lanes.
 fn build(net: &RoadNetwork) -> (Simulation, Vec<LaneId>) {
-    let sim = sim(compile(net).unwrap().sim, NoopSink);
+    let sim = sim(compile(net).unwrap().sim);
     let entries = sim
         .network()
         .lanes()

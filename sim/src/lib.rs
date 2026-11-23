@@ -16,7 +16,7 @@ mod simulation;
 mod vehicle;
 
 pub use barrier::{AMBER_DECEL, Decision as BarrierDecision};
-pub use debug::{AccelSource, DebugEvent, DebugSink, NoopSink, PassCheck};
+pub use debug::{AccelSource, DebugEvent, PassCheck};
 pub use following::{Lateral, Occupant, PASSING_CLEARANCE};
 pub use junction::Entry;
 pub use models::acceleration::{SAFE_BRAKING, STOPPING_DECEL, STOPPING_SPEED};

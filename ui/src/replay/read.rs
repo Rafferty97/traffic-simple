@@ -7,19 +7,17 @@
 //! in a test here:
 //!
 //! ```ignore
-//! let replay = replay(include_str!("replay/captures/capture-123.replay"), Terms::default());
+//! let replay = replay(include_str!("replay/captures/capture-123.replay"));
 //! let mut sim = replay.sim;
 //! let selected = replay.selected.unwrap();
 //! // …step on from the captured moment and assert what should happen.
 //! ```
 
-use traffic_sim::{
-    DebugSink, LaneId, Placement, Route, Side, SimNetwork, Simulation, VehicleId, VehicleSpec,
-};
+use traffic_sim::{LaneId, Placement, Route, Side, SimNetwork, Simulation, VehicleId, VehicleSpec};
 
 /// A replayed simulation at the moment it was captured.
-pub struct Replay<D: DebugSink> {
-    pub sim: Simulation<D>,
+pub struct Replay {
+    pub sim: Simulation,
     /// Every vehicle inserted, in order: the log's names for them, for tests
     /// made from captures to find their vehicles by.
     #[allow(dead_code)]
@@ -28,17 +26,17 @@ pub struct Replay<D: DebugSink> {
     pub selected: Option<VehicleId>,
 }
 
-/// Replays `log` into a new simulation with `sink`. Panics on a malformed line,
+/// Replays `log` into a new simulation. Panics on a malformed line,
 /// or if a call's outcome differs from the one logged, which means the replay
 /// has diverged from the original run.
-pub fn replay<D: DebugSink>(log: &str, sink: D) -> Replay<D> {
+pub fn replay(log: &str) -> Replay {
     let mut lines = log.lines().enumerate().filter(|(_, l)| !l.trim().is_empty());
     let mut next = || lines.find(|(_, l)| !l.starts_with('#'));
 
     let (_, header) = next().expect("empty replay");
     let json = header.strip_prefix("network ").expect("a replay starts with its network");
     let network: SimNetwork = serde_json::from_str(json).expect("the network is JSON");
-    let mut sim = Simulation::new(network, sink);
+    let mut sim = Simulation::new(network);
     let mut ids = Vec::new();
 
     while let Some((number, line)) = next() {
@@ -96,7 +94,7 @@ pub fn replay<D: DebugSink>(log: &str, sink: D) -> Replay<D> {
             }
             "remove" => {
                 let id = vehicle();
-                sim.remove(id).unwrap_or_else(|| panic!("malformed {}", at()));
+                assert!(sim.remove(id), "malformed {}", at());
             }
             "hold" => {
                 let id = vehicle();

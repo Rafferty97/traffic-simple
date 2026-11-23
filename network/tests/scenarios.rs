@@ -211,10 +211,10 @@ fn all_way_stops_flooded_with_traffic_have_no_collisions() {
 /// so they take their turns, and vehicles leave every minute.
 #[test]
 fn all_way_stops_keep_traffic_flowing() {
-    use traffic_sim::{LaneId, NoopSink, Placement, Route, VehicleSpec};
+    use traffic_sim::{LaneId, Placement, Route, VehicleSpec};
     for lanes in 1..=2 {
         let compiled = compile(&scenarios::all_way_stop_crossroads(lanes, 50.0 / 3.6)).unwrap();
-        let mut sim = common::sim(compiled.sim, NoopSink);
+        let mut sim = common::sim(compiled.sim);
         let entries: Vec<LaneId> = sim
             .network()
             .lanes()
@@ -338,7 +338,7 @@ fn a_signalised_crossroads_holds_each_connector_at_its_movements_light() {
 #[test]
 fn at_signals_nobody_crosses_a_line_on_red_and_traffic_keeps_flowing() {
     use std::collections::HashMap;
-    use traffic_sim::{BarrierKind, LaneId, Light, NoopSink, Placement, Route, VehicleSpec};
+    use traffic_sim::{BarrierKind, LaneId, Light, Placement, Route, VehicleSpec};
     // Drivers varied as the UI varies them, on two lanes each way, so they
     // change lanes and turn on the way in.
     let mut state = 7u64;
@@ -350,7 +350,7 @@ fn at_signals_nobody_crosses_a_line_on_red_and_traffic_keeps_flowing() {
         ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
     };
     let compiled = compile(&scenarios::signalised_crossroads(2, 50.0 / 3.6)).unwrap();
-    let mut sim = common::sim(compiled.sim, NoopSink);
+    let mut sim = common::sim(compiled.sim);
     let entries: Vec<LaneId> = sim
         .network()
         .lanes()
@@ -424,15 +424,15 @@ fn at_signals_straight_traffic_never_stops_or_brakes_hard_for_right_turners_on_i
     use std::collections::HashMap;
     use traffic_network::Turn;
     use traffic_sim::{
-        AccelSource, BarrierKind, DebugEvent, DebugSink, LaneId, Light, MovementId, Placement,
-        Route, Simulation, VehicleId, VehicleSpec,
+        AccelSource, BarrierKind, DebugEvent, LaneId, Light, MovementId, Placement, Route,
+        VehicleId, VehicleSpec,
     };
     /// Each vehicle's junction terms from the last longitudinal update.
     #[derive(Default)]
     struct Terms(Vec<(VehicleId, VehicleId, f64)>);
-    impl DebugSink for Terms {
-        fn record(&mut self, event: impl FnOnce() -> DebugEvent) {
-            match event() {
+    impl common::Collect for Terms {
+        fn collect(&mut self, event: DebugEvent) {
+            match event {
                 DebugEvent::RecomputeAccels => self.0.clear(),
                 DebugEvent::AccelTerm {
                     vehicle,
@@ -452,14 +452,14 @@ fn at_signals_straight_traffic_never_stops_or_brakes_hard_for_right_turners_on_i
         };
         way.insert(c, (turn, movement));
     }
-    let mut sim = common::sim(compiled.sim, Terms::default());
+    let mut sim = common::watched(compiled.sim, Terms::default());
     let entries: Vec<LaneId> = sim
         .network()
         .lanes()
         .filter(|(_, lane)| lane.predecessors().is_empty())
         .map(|(id, _)| id)
         .collect();
-    let way_of = |sim: &Simulation<Terms>, id: VehicleId| {
+    let way_of = |sim: &common::Watched<Terms>, id: VehicleId| {
         sim.get(id).and_then(|v| v.path().iter().find_map(|l| way.get(l).copied()))
     };
     let mut hard = Vec::new();
@@ -507,7 +507,7 @@ fn at_signals_a_right_turner_at_its_line_turns_on_its_next_green() {
     use std::collections::HashMap;
     use traffic_network::Turn;
     use traffic_sim::{
-        BarrierKind, LaneId, Light, MovementId, NoopSink, Placement, Route, VehicleId, VehicleSpec,
+        BarrierKind, LaneId, Light, MovementId, Placement, Route, VehicleId, VehicleSpec,
     };
     let compiled = compile(&scenarios::signalised_crossroads(2, 50.0 / 3.6)).unwrap();
     // Each right turn's connector, with its movement.
@@ -520,7 +520,7 @@ fn at_signals_a_right_turner_at_its_line_turns_on_its_next_green() {
             kind => panic!("{c:?} starts with a {kind:?}"),
         })
         .collect();
-    let mut sim = common::sim(compiled.sim, NoopSink);
+    let mut sim = common::sim(compiled.sim);
     let entries: Vec<LaneId> = sim
         .network()
         .lanes()
@@ -608,10 +608,10 @@ fn at_signals_a_right_turner_at_its_line_turns_on_its_next_green() {
 
 #[test]
 fn at_signals_every_way_is_taken_right_turns_included() {
-    use traffic_sim::{LaneId, NoopSink, Placement, Route, VehicleSpec};
+    use traffic_sim::{LaneId, Placement, Route, VehicleSpec};
     let compiled = compile(&scenarios::signalised_crossroads(1, 50.0 / 3.6)).unwrap();
     let connectors = compiled.connectors[0].clone();
-    let mut sim = common::sim(compiled.sim, NoopSink);
+    let mut sim = common::sim(compiled.sim);
     let entries: Vec<LaneId> = sim
         .network()
         .lanes()
@@ -678,7 +678,7 @@ fn a_freeway_with_ramps_keeps_a_record_on_every_lane_a_body_is_in() {
 /// drivers varied, asserting that traffic keeps leaving and that every body has
 /// a record on each lane it is in.
 fn ramps_traffic(flow: f64, seconds: f64) {
-    use traffic_sim::{LaneId, NoopSink, Placement, Route, VehicleSpec};
+    use traffic_sim::{LaneId, Placement, Route, VehicleSpec};
     // SplitMix64, for drivers that vary but are the same every run.
     let mut state = 1u64;
     let mut uniform = || {
@@ -689,7 +689,7 @@ fn ramps_traffic(flow: f64, seconds: f64) {
         ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
     };
     let compiled = compile(&scenarios::ramps(100.0 / 3.6, 80.0 / 3.6)).unwrap();
-    let mut sim = common::sim(compiled.sim, NoopSink);
+    let mut sim = common::sim(compiled.sim);
     let entries: Vec<LaneId> = sim
         .network()
         .lanes()
@@ -751,7 +751,7 @@ fn ramps_traffic(flow: f64, seconds: f64) {
 #[test]
 fn at_signals_a_car_waits_behind_its_line_for_a_turner_in_its_way() {
     use traffic_network::Turn;
-    use traffic_sim::{NoopSink, Placement, Route, Simulation, VehicleSpec};
+    use traffic_sim::{Placement, Route, Simulation, VehicleSpec};
     // Two lanes each way: the inner one goes straight on or right.
     let compiled = compile(&scenarios::signalised_crossroads(2, 50.0 / 3.6)).unwrap();
     let from = compiled.road_lanes[0][0];
@@ -766,7 +766,7 @@ fn at_signals_a_car_waits_behind_its_line_for_a_turner_in_its_way() {
     // Where the turner waits for a gap: at the end of its first lane, where the
     // second, with its give-way line, starts.
     let waits = compiled.sim.lane(right).geometry().length();
-    let mut sim = common::sim(compiled.sim, NoopSink);
+    let mut sim = common::sim(compiled.sim);
     let car = VehicleSpec::passenger_car();
     // A turner held at its waiting line inside, on the road's first green.
     let s = waits - (car.length - car.rear_axle) - 1.0;

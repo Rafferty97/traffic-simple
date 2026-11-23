@@ -62,7 +62,7 @@ struct Stats {
 }
 
 fn run_scenario(spawn_rate: f64, despawn_rate: f64, minutes: f64) -> Stats {
-    let mut sim = common::sim(
+    let mut sim = common::watched(
         ring_road(RING_CIRCUMFERENCE, 3, SPEED_LIMIT),
         Terms::default(),
     );

@@ -3,8 +3,7 @@
 
 use glam::DVec2;
 use traffic_sim::{
-    Barrier, BarrierKind, Lane, LaneId, NoopSink, Placement, Route, SimNetwork, Simulation,
-    VehicleId,
+    Barrier, BarrierKind, Lane, LaneId, Placement, Route, SimNetwork, Simulation, VehicleId,
 };
 
 mod common;
@@ -40,7 +39,7 @@ fn front(sim: &Simulation, id: VehicleId) -> f64 {
 /// A car held at rest with its rear `beyond` past the zone's far end, and cars
 /// coming up behind it from `from`, every 2 s at the limit.
 fn queue(beyond: f64, cars: usize, seconds: f64) -> (Simulation, Vec<VehicleId>) {
-    let mut sim = common::sim(road(), NoopSink);
+    let mut sim = common::sim(road());
     let spec = car();
     let held = sim.insert(spec, at(START + LENGTH + beyond + spec.rear_axle, 0.0));
     sim.hold(held);
@@ -89,7 +88,7 @@ fn with_room_for_one_beyond_one_goes_through_and_the_next_waits() {
 
 #[test]
 fn a_car_stopped_short_of_the_zone_goes_once_the_queue_beyond_moves_on() {
-    let mut sim = common::sim(road(), NoopSink);
+    let mut sim = common::sim(road());
     let spec = car();
     let held = sim.insert(spec, at(START + LENGTH + 1.0 + spec.rear_axle, 0.0));
     sim.hold(held);
@@ -110,7 +109,7 @@ fn a_car_stopped_short_of_the_zone_goes_once_the_queue_beyond_moves_on() {
 
 #[test]
 fn a_keep_clear_zone_doesnt_slow_traffic_flowing_freely_through_it() {
-    let mut sim = common::sim(road(), NoopSink);
+    let mut sim = common::sim(road());
     let mut slowest = f64::INFINITY;
     let mut inserted = 0;
     while sim.time() < 40.0 {

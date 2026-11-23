@@ -7,17 +7,16 @@ use std::time::{Duration, Instant};
 use glam::DVec2;
 use traffic_network::{Direction, Piece, Pose, Road, RoadLane, RoadNetwork, compile, scenarios};
 use traffic_sim::{
-    DebugEvent, DebugSink, Keep, LaneId, NoopSink, Placement, Route, Side, Simulation, VehicleId,
-    VehicleSpec,
+    DebugEvent, Keep, LaneId, Placement, Route, Side, Simulation, VehicleId, VehicleSpec,
 };
 
 /// The length of a step, in seconds: 30 Hz.
 const DT: f64 = 1.0 / 30.0;
 
 /// A simulation of `network` stepping at 30 Hz, with the slower updates at 10 Hz.
-fn sim<D: traffic_sim::DebugSink>(network: traffic_sim::SimNetwork, sink: D) -> Simulation<D> {
+fn sim(network: traffic_sim::SimNetwork) -> Simulation {
     let config = traffic_sim::Config { dt: DT, macro_step: 3 };
-    Simulation::with_config(network, config, sink)
+    Simulation::with_config(network, config)
 }
 
 /// SplitMix64, so the probe needs no dependencies.
@@ -41,10 +40,23 @@ struct Counts {
     passed: u64,
     /// Each vehicle's terms from the last longitudinal update.
     terms: std::collections::HashMap<VehicleId, Vec<(traffic_sim::AccelSource, f64)>>,
+    /// A step's events, before they are counted.
+    events: Vec<DebugEvent>,
 }
-impl DebugSink for Counts {
-    fn record(&mut self, event: impl FnOnce() -> DebugEvent) {
-        match event() {
+
+impl Counts {
+    /// Steps `sim` a frame, counting what its algorithms did.
+    fn step(&mut self, sim: &mut Simulation) {
+        let mut events = std::mem::take(&mut self.events);
+        sim.step_variable_debug(DT, &mut events);
+        for event in events.drain(..) {
+            self.collect(event);
+        }
+        self.events = events;
+    }
+
+    fn collect(&mut self, event: DebugEvent) {
+        match event {
             DebugEvent::PassCheck { check, .. } => {
                 self.checks += 1;
                 self.passed += check.passed as u64;
@@ -87,7 +99,7 @@ struct Harness {
 }
 
 impl Harness {
-    fn step<D: DebugSink>(&mut self, sim: &mut Simulation<D>) {
+    fn step(&mut self, sim: &mut Simulation) {
         match self.demand {
             Demand::Count(target) => {
                 if sim.vehicles().count() >= target {
@@ -113,7 +125,7 @@ impl Harness {
         }
     }
 
-    fn spawn<D: DebugSink>(&mut self, sim: &mut Simulation<D>, lane: LaneId, s: f64) {
+    fn spawn(&mut self, sim: &mut Simulation, lane: LaneId, s: f64) {
         let spec = car(&mut self.rng);
         let limit = sim.network().lane(lane).speed_limit();
         let at = Placement {
@@ -166,7 +178,7 @@ struct Stats {
 }
 
 /// Counts bodies inside lanes they have no record on (invariant 1), every call.
-fn check_records<D: DebugSink>(sim: &Simulation<D>, stats: &mut Stats) {
+fn check_records(sim: &Simulation, stats: &mut Stats) {
     const INSIDE: f64 = 0.05;
     let net = sim.network();
     for (id, v) in sim.vehicles() {
@@ -222,16 +234,16 @@ fn check_records<D: DebugSink>(sim: &Simulation<D>, stats: &mut Stats) {
     }
 }
 
-fn run<D: DebugSink>(
+fn run(
     net: &RoadNetwork,
     demand: Demand,
     seed: u64,
     minutes: f64,
-    sink: D,
+    mut counts: Option<Counts>,
     measure: bool,
-) -> (Stats, Duration, Simulation<D>) {
+) -> (Stats, Duration, Option<Counts>) {
     let compiled = compile(net).expect("compiles");
-    let mut sim = sim(compiled.sim, sink);
+    let mut sim = sim(compiled.sim);
     let entries = sim
         .network()
         .lanes()
@@ -245,7 +257,10 @@ fn run<D: DebugSink>(
     for _ in 0..(minutes * 60.0 / DT) as usize {
         let before = sim.vehicles().count();
         let t = Instant::now();
-        sim.step_variable(DT);
+        match &mut counts {
+            Some(counts) => counts.step(&mut sim),
+            None => drop(sim.step_variable(DT)),
+        }
         time += t.elapsed();
         let after = sim.vehicles().count();
         stats.exits += before.saturating_sub(after) as u64;
@@ -291,14 +306,15 @@ fn run<D: DebugSink>(
             prev.insert(id, changing);
         }
     }
-    (stats, time, sim)
+    (stats, time, counts)
 }
 
 /// What binds vehicles braking harder than 6 m/s², by kind of term and lane.
 fn why(net: &RoadNetwork, demand: Demand, seed: u64, minutes: f64) {
     use traffic_sim::AccelSource as S;
     let compiled = compile(net).expect("compiles");
-    let mut sim = sim(compiled.sim, Counts::default());
+    let mut sim = sim(compiled.sim);
+    let mut counts = Counts::default();
     let entries = sim
         .network()
         .lanes()
@@ -308,13 +324,13 @@ fn why(net: &RoadNetwork, demand: Demand, seed: u64, minutes: f64) {
     let mut harness = Harness { demand, credit: 0.0, rng: Rng(seed), entries };
     let mut why: std::collections::BTreeMap<String, u64> = Default::default();
     for _ in 0..(minutes * 60.0 / DT) as usize {
-        sim.step_variable(DT);
+        counts.step(&mut sim);
         harness.step(&mut sim);
         for (id, v) in sim.vehicles() {
             if v.accel() >= -6.0 {
                 continue;
             }
-            let terms = sim.sink().terms.get(&id);
+            let terms = counts.terms.get(&id);
             let binding = terms.and_then(|t| t.iter().find(|(_, a)| *a == v.accel()));
             let kind = match binding.map(|b| b.0) {
                 Some(S::Leader { gap, .. }) => {
@@ -415,7 +431,7 @@ fn targeted(
     let compiled = compile(&freeway3()).unwrap();
     let ids = compiled.road_lanes[0].clone();
     let (l, m, r) = (ids[0], ids[1], ids[2]);
-    let mut sim = sim(compiled.sim, NoopSink);
+    let mut sim = sim(compiled.sim);
     let mut rng = Rng(1);
     let spec = || VehicleSpec { speed_factor: 1.0, ..car(&mut Rng(7)) };
     let _ = &mut rng;
@@ -528,7 +544,7 @@ fn at_the_drop(va: f64, vb: f64, d: f64, x: f64, tb: Option<f64>) -> (bool, u64)
     let compiled = compile(&scenarios::ramps(100.0 / 3.6, 80.0 / 3.6)).unwrap();
     let parallel = compiled.road_lanes[1].clone();
     let (accel, left) = (parallel[0], parallel[1]);
-    let mut sim = sim(compiled.sim, NoopSink);
+    let mut sim = sim(compiled.sim);
     let spec = VehicleSpec { speed_factor: 1.0, ..car(&mut Rng(7)) };
     let b = sim.insert(
         spec,
@@ -621,7 +637,8 @@ fn grid2() {
 fn merge_probe(flow: f64, minutes: f64, seed: u64) {
     use std::collections::BTreeMap;
     let compiled = compile(&scenarios::ramps(100.0 / 3.6, 80.0 / 3.6)).expect("compiles");
-    let mut sim = sim(compiled.sim, Counts::default());
+    let mut sim = sim(compiled.sim);
+    let mut counts = Counts::default();
     let entries = sim
         .network()
         .lanes()
@@ -649,7 +666,7 @@ fn merge_probe(flow: f64, minutes: f64, seed: u64) {
     let mut stalled = 0u64;
     let warm = 60.0;
     for _ in 0..(minutes * 60.0 / DT) as usize {
-        sim.step_variable(DT);
+        counts.step(&mut sim);
         harness.step(&mut sim);
         if sim.time() < warm {
             for (id, v) in sim.vehicles() {
@@ -672,7 +689,7 @@ fn merge_probe(flow: f64, minutes: f64, seed: u64) {
             }
             if (lane.0 == 2 || lane.0 == 3) && v.lane_pos().s > length - 40.0 {
                 use traffic_sim::AccelSource as S;
-                let terms = sim.sink().terms.get(&id);
+                let terms = counts.terms.get(&id);
                 let b = terms.and_then(|t| t.iter().find(|(_, a)| *a == v.accel()));
                 let kind = match b.map(|b| b.0) {
                     Some(S::Leader { id: l, headway, .. }) => {
@@ -719,7 +736,7 @@ fn merge_probe(flow: f64, minutes: f64, seed: u64) {
     if std::env::var("TRACE").is_ok() {
         use traffic_sim::AccelSource as S;
         for frame in 0..(4.0 / DT) as usize {
-            sim.step_variable(DT);
+            counts.step(&mut sim);
             harness.step(&mut sim);
             if frame % 60 != 0 {
                 continue;
@@ -744,7 +761,7 @@ fn merge_probe(flow: f64, minutes: f64, seed: u64) {
             rows.sort_by(|a, b| a.0.total_cmp(&b.0));
             for o in sim.occupants(LaneId(3)).iter().rev().take(8) {
                 let v = sim.get(o.id).unwrap();
-                let terms = sim.sink().terms.get(&o.id);
+                let terms = counts.terms.get(&o.id);
                 let b = terms
                     .and_then(|t| t.iter().find(|(_, a)| *a == v.accel()))
                     .map(|b| format!("{:?}", b.0));
@@ -764,7 +781,7 @@ fn merge_probe(flow: f64, minutes: f64, seed: u64) {
             }
             rows.clear();
             for (d, id, lane, v) in rows {
-                let terms = sim.sink().terms.get(&id);
+                let terms = counts.terms.get(&id);
                 let b = terms.and_then(|t| t.iter().find(|(_, a)| *a == v.accel()));
                 let why = match b.map(|b| b.0) {
                     Some(S::Leader { id, gap, headway }) => {
@@ -908,10 +925,11 @@ fn main() {
     );
     for (name, net, demand) in &cases {
         for seed in 1..=3 {
-            let (stats, _, sim) = run(net, *demand, seed, minutes, Counts::default(), true);
-            let (_, time, _) = run(net, *demand, seed, minutes, NoopSink, false);
+            let (stats, _, counts) =
+                run(net, *demand, seed, minutes, Some(Counts::default()), true);
+            let (_, time, _) = run(net, *demand, seed, minutes, None, false);
             let steps = minutes * 60.0 / DT;
-            let c = sim.sink();
+            let c = counts.expect("counted");
             println!(
                 "{:<20} {:>4} {:>7} {:>6} {:>8} {:>7.2} {:>6} {:>6} {:>9} {:>7.1}% {:>8.4}",
                 name,
