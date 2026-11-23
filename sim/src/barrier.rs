@@ -12,7 +12,7 @@ use crate::models::acceleration;
 use crate::models::signal::{Light, MovementLight};
 use crate::network::{Barrier, BarrierKind, JunctionId, Lane, LaneId, SimNetwork};
 use crate::simulation::SimState;
-use crate::vehicle::{Vehicle, VehicleId, VehicleSpec};
+use crate::vehicle::{Vehicle, VehicleId};
 
 /// How many of `lane`'s barriers lie after `from` and at or before `to`, along it.
 pub(crate) fn between(lane: &Lane, from: f64, to: f64) -> usize {
@@ -239,20 +239,4 @@ pub(crate) fn released(
             | BarrierKind::AllWayStop
             | BarrierKind::KeepClear { .. } => speed == 0.0 && !queued_past(),
         }
-}
-
-/// Draws how far short of the next barrier it heads for `vehicle` will stop,
-/// from its own generator, uniformly within its spec's spread of its mean.
-pub(crate) fn draw_line_gap(vehicle: &mut Vehicle) {
-    let draw = crate::models::routing::splitmix64(&mut vehicle.noise_rng);
-    let unit = (draw >> 11) as f64 / (1u64 << 53) as f64;
-    let spec = &vehicle.spec;
-    vehicle.line_gap = (spec.line_gap + spec.line_gap_spread * (2.0 * unit - 1.0)).max(0.0);
-}
-
-/// The term holding a vehicle `gap` short of a line: a stationary leader there,
-/// with its gap to lines, `line_gap`, as the minimum gap.
-pub(crate) fn hold(spec: &VehicleSpec, line_gap: f64, speed: f64, gap: f64) -> f64 {
-    let at_line = VehicleSpec { min_gap: line_gap, ..*spec };
-    acceleration::interaction(&at_line, speed, gap, 0.0)
 }

@@ -71,7 +71,7 @@ pub(crate) fn incentives(
         }
         None => [0.0; 2],
     };
-    let courtesy = vehicle.old_follower.and_then(|held| {
+    let courtesy = state.lane_changers[id].old_follower.and_then(|held| {
         let follower = vehicles.get(held.id)?;
         let gain = (held.without - follower.accel).max(0.0);
         Some(vehicle.spec.politeness * gain / vehicle.spec.comfy_decel)
@@ -146,8 +146,8 @@ pub(crate) fn check_gap(
 
 /// Whether a vehicle wants to change lanes: it is indicating, or has built up
 /// enough advantage for a side to keep indicating to it.
-pub(crate) fn wants_change(vehicle: &Vehicle) -> bool {
-    vehicle.intent.is_some() || vehicle.lc.wants_change(vehicle.spec.assertiveness)
+pub(crate) fn wants_change(state: &SimState, id: VehicleId, vehicle: &Vehicle) -> bool {
+    vehicle.intent.is_some() || state.lane_changers[id].lc.wants_change(vehicle.spec.assertiveness)
 }
 
 /// How far a vehicle with `spec` could go before it had to stop behind

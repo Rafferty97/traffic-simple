@@ -63,6 +63,16 @@ pub const COOLDOWN: f64 = 0.2;
 /// `lcSpeedGain` makes a driver more eager.
 pub const ASSERTIVE: f64 = 0.5;
 
+/// What this model keeps for each driver, beside its vehicle.
+#[derive(Clone, Copy, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub(crate) struct Driver {
+    pub lc: State,
+    /// The vehicle behind it that it holds up most, as of the last
+    /// longitudinal update: its old follower, if it changed lanes.
+    pub old_follower: Option<crate::vehicle::OldFollower>,
+}
+
 /// A driver's lane-change state, owned by this model.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

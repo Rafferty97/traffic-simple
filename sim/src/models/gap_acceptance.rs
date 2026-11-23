@@ -11,9 +11,9 @@
 //! and behind only those queued, so that a vehicle joins the queue where it
 //! means to go; a replacement must keep to that.
 
-use crate::barrier::{Decision, held_by_light, hold, holds_before, into_junction, nth};
+use crate::barrier::{Decision, held_by_light, holds_before, into_junction, nth};
 use crate::lane_changing::comfortable_stop;
-use crate::models::acceleration::reach_time;
+use crate::models::acceleration::{hold, reach_time};
 use crate::models::signal::Light;
 use crate::network::{Barrier, BarrierKind, Conflict, JunctionId, LaneId, SimNetwork};
 use crate::simulation::SimState;
@@ -35,7 +35,8 @@ pub(crate) fn decide(
     let spec = &vehicle.spec;
     let speed = vehicle.speed;
     // Whether it can stop where it would like, a line gap short, at `decel`.
-    let can_stop = |decel: f64| speed * speed / (2.0 * decel) <= gap - vehicle.line_gap;
+    let line_gap = state.drivers[id].line_gap;
+    let can_stop = |decel: f64| speed * speed / (2.0 * decel) <= gap - line_gap;
     let yields_to = std::cell::Cell::new(None);
     let room = || {
         room_beyond(state, id, vehicle, k, barrier.s)
@@ -93,7 +94,7 @@ pub(crate) fn decide(
     match commit {
         true => (Decision::Commit, None),
         false => (
-            Decision::Hold(hold(spec, vehicle.line_gap, speed, gap)),
+            Decision::Hold(hold(spec, line_gap, speed, gap)),
             yields_to.get(),
         ),
     }
@@ -320,7 +321,7 @@ fn clear(
                 return false;
             }
             let length = network.lane(way.theirs).geometry().length();
-            let rear_at_rest = length - other.line_gap - other.spec.length;
+            let rear_at_rest = length - state.drivers[o.id].line_gap - other.spec.length;
             rear_at_rest < way.conflict.theirs.end
         };
         let clears = if other.speed > 0.0 && !stops_in_it() {

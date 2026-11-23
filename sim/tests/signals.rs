@@ -424,7 +424,7 @@ fn drivers_stop_short_of_a_line_by_a_gap_drawn_for_it() {
         // Each its own driver, its generator seeded as its route is.
         let place = Placement { route: Route::random(i), ..at(1, 80.0, 2.0) };
         let id = sim.insert(VehicleSpec::passenger_car(), place);
-        let drawn = sim.get(id).unwrap().line_gap();
+        let drawn = sim.line_gap(id).unwrap();
         let spec = VehicleSpec::passenger_car();
         assert!(
             (drawn - spec.line_gap).abs() <= spec.line_gap_spread,

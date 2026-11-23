@@ -39,7 +39,7 @@ pub(crate) fn decide<D: DebugSink>(
         if vehicle.lane_change.is_some() || vehicle.old_side.is_some() {
             continue;
         }
-        let mut lc = vehicle.lc;
+        let mut lc = state.lane_changers[id].lc;
         let incentives = incentives(state, speeds, id, vehicle);
         aim(&mut lc, incentives);
         // Nothing to weigh up: nowhere to change to, and nothing to fade.
@@ -112,12 +112,13 @@ pub(crate) fn terms<D: DebugSink>(
     // LMRS's cooperation: only for a driver whose desire is strong enough.
     let ghost = ghost.map(|(owner, gap)| {
         let o = &state.vehicles[owner];
-        let desire = o.intent.map_or(0.0, |i| o.lc.desire(i.side));
+        let lc = &state.lane_changers[owner].lc;
+        let desire = o.intent.map_or(0.0, |i| lc.desire(i.side));
         let term = acceleration::interaction(&vehicle.spec, vehicle.speed, gap, o.speed);
         (owner, gap, desire, term)
     });
     let yielding = make_room(
-        &vehicle.lc,
+        &state.lane_changers[id].lc,
         &vehicle.spec,
         ghost.map(|(owner, _, desire, term)| (owner, desire, term)),
     );
@@ -130,7 +131,7 @@ pub(crate) fn terms<D: DebugSink>(
     // speed to the leader it would have in the target lane, no harder than
     // comfortably, with its headway shortened by its desire.
     if let Some(intent) = vehicle.intent {
-        let desire = vehicle.lc.desire(intent.side);
+        let desire = state.lane_changers[id].lc.desire(intent.side);
         if desire >= D_SYNC {
             let headway = headway(desire);
             let _ = find_leaders(

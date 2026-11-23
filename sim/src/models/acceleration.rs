@@ -20,6 +20,53 @@ pub const MAX_BRAKING: f64 = 9.0;
 /// inserted ahead of it. MOBIL's `b_safe`; 4 m/s² is Treiber's default.
 pub const SAFE_BRAKING: f64 = 4.0;
 
+/// A driver's own state under the longitudinal model, kept beside its vehicle.
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub(crate) struct Driver {
+    /// Its acceleration noise now, added to its free-road term, in m/s² (see
+    /// [`VehicleSpec::accel_noise`]).
+    pub noise: f64,
+    /// The state of its own generator, for that noise and its gaps to lines.
+    pub rng: u64,
+    /// How far short of the barrier it is heading for it will stop, in meters,
+    /// drawn afresh for each (see [`draw_line_gap`]).
+    pub line_gap: f64,
+    /// Whether it is finishing a stop, braking at least firmly enough to come
+    /// to rest promptly, or staying at rest, until it can move off properly
+    /// (see [`stopping`]).
+    pub stopping: bool,
+}
+
+impl Driver {
+    /// A driver whose generator starts at `seed`, its gap to lines drawn.
+    pub fn new(spec: &VehicleSpec, seed: u64) -> Self {
+        let mut driver = Self {
+            noise: 0.0,
+            rng: seed,
+            line_gap: spec.line_gap,
+            stopping: false,
+        };
+        draw_line_gap(&mut driver, spec);
+        driver
+    }
+}
+
+/// Draws how far short of the next barrier it heads for a driver will stop,
+/// from its own generator, uniformly within its spec's spread of its mean.
+pub(crate) fn draw_line_gap(driver: &mut Driver, spec: &VehicleSpec) {
+    let draw = crate::models::routing::splitmix64(&mut driver.rng);
+    let unit = (draw >> 11) as f64 / (1u64 << 53) as f64;
+    driver.line_gap = (spec.line_gap + spec.line_gap_spread * (2.0 * unit - 1.0)).max(0.0);
+}
+
+/// The term holding a vehicle `gap` short of a line: a stationary leader there,
+/// with its gap to lines, `line_gap`, as the minimum gap.
+pub(crate) fn hold(spec: &VehicleSpec, line_gap: f64, speed: f64, gap: f64) -> f64 {
+    let at_line = VehicleSpec { min_gap: line_gap, ..*spec };
+    interaction(&at_line, speed, gap, 0.0)
+}
+
 /// Free-road term: `a · (1 − (v / v0)^δ)` up to the desired speed. Above it,
 /// as Treiber's Improved IDM (IIDM) has it, `−b · (1 − (v0 / v)^(a·δ / b))`:
 /// it slows toward the desired speed at no more than its comfortable

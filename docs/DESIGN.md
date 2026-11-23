@@ -47,7 +47,7 @@ One Rust workspace. The simulation crate depends on nothing else in the workspac
 
 `sim` defines `SimNetwork` and `network` produces it, so the dependency graph is one-way and the core never sees authoring concepts like multi-lane roads.
 
-Inside `sim`, the core has a module for each part of the design: `lane` (geometry), `lateral` (a lane change's course: lateral motion is core, and outside a lane change vehicles follow their lanes' centrelines), `network` (`SimNetwork`), `occupancy` and `following` (records, the leader and follower searches, and classification), `junction` (the backstop), `merge`, `barrier` (barriers, commitment, passing and release), `lane_changing` (what the lane-change model may ask of the network: where a change may run, and how fast each lane's traffic goes) and `path`. The models are apart from it, each replaced by editing it: `acceleration`; `lane_change`, LMRS, its measurements, decisions and acceleration terms; `gap_acceptance`, when the head at a barrier commits, from gaps, room beyond and arrival order; `routing`, choices at forks and the lane changes a route needs; and `signal`. `simulation` holds the state, the update pipeline and the public API.
+Inside `sim`, the core has a module for each part of the design: `lane` (geometry), `lateral` (a lane change's course: lateral motion is core, and outside a lane change vehicles follow their lanes' centrelines), `network` (`SimNetwork`), `occupancy` and `following` (records, the leader and follower searches, and classification), `junction` (the backstop), `merge`, `barrier` (barriers, commitment, passing and release), `lane_changing` (what the lane-change model may ask of the network: where a change may run, and how fast each lane's traffic goes) and `path`. The models are apart from it, each replaced by editing it: `acceleration`, the longitudinal model, which the core asks for terms throughout, so a module boundary that will never be dispatched at runtime; `lane_change`, LMRS, its measurements, decisions and acceleration terms; `gap_acceptance`, when the head at a barrier commits, from gaps, room beyond and arrival order; `routing`, choices at forks and the lane changes a route needs; and `signal`. `simulation` holds the state, the update pipeline and the public API.
 
 ## Network pipeline
 
@@ -102,23 +102,25 @@ The simulation has no roads, only lanes. Lanes may overlap, merge, diverge or cr
 
 ## Simulation state and data layout
 
-All vehicles live in one global `SlotMap`, an array of structs. Each lane keeps a list of occupant records sorted by s, and a vehicle appears in every lane it occupies. If profiling shows frame-rate work is memory-bound, the hot fields could split into a struct of arrays (**Suggestion**).
+All vehicles live in one global `SlotMap`, an array of structs, holding what the core needs. Each model keeps its own per-vehicle state apart, in a `SecondaryMap` of its own keyed by vehicle, so a model's state is its own and the boundary between it and the core is in the data too: the longitudinal model's, the lane-change model's and the routes. Against keeping it all on the vehicle, that costs about 2% a step on the busy three-lane ring, where every vehicle weighs up lane changes, and nothing measurable on the city grid. Each lane keeps a list of occupant records sorted by s, and a vehicle appears in every lane it occupies. If profiling shows frame-rate work is memory-bound, the hot fields could split into a struct of arrays (**Suggestion**).
 
-The state is one struct, `SimState`, holding everything that can't be rebuilt from the rest: the network, the vehicles, the occupant lists, the junction queues, speed caps, the step count, time and config, each signal controller's state, and (**Planned**) the destinations registered. It is exactly what a freeze frame saves. What can be rebuilt is derived from it when a simulation is built or restored, and kept apart: the overlaps between lanes, the merges, how far beyond each lane the paths through it reach (see Searching back), and (**Planned**) each destination's route table.
+The state is one struct, `SimState`, holding everything that can't be rebuilt from the rest: the network, the vehicles, each model's per-vehicle state, the occupant lists, the junction queues, speed caps, the step count, time and config, each signal controller's state, and (**Planned**) the destinations registered. It is exactly what a freeze frame saves. What can be rebuilt is derived from it when a simulation is built or restored, and kept apart: the overlaps between lanes, the merges, how far beyond each lane the paths through it reach (see Searching back), and (**Planned**) each destination's route table.
 
 **Vehicle state**
 
 - World pose: the rear axle's position and the heading as a unit vector, so moving needs no trigonometry; how far along its path its front axle is; speed; and the curvature of its path, for the inspector
 - Acceleration, held between longitudinal updates
 - Path: the lane it follows and the lanes it will take next, as far as its leader search, path tracking and lane change look, and as far as it would go in 15 s at each lane's speed limit, however short the lanes. The time is at the limits, not its speed, so a slow vehicle in a queue still knows where it is going, and merges and junctions ahead know of it; its leader search stays within its horizon however far the path reaches. A path ending inside a junction is extended until it is out of it, so a vehicle in a junction's queue always knows its way through. It is a `Vec`.
-- Route: how it chooses its way at forks, with any state that needs (see Routing)
-- Whether it is finishing a stop (see Finishing a stop), a `bool`
-- Commitment: how many of the barriers ahead of its rear axle on its path it has committed to crossing, a `u8`; how far short of the barrier it is heading for it will stop, drawn for each; and (**Planned**) the step at which it came to rest at a stop line, if it has (see Barriers and signals)
+- Commitment: how many of the barriers ahead of its rear axle on its path it has committed to crossing, a `u8`, and the step at which it came to rest at a stop line, if it has (see Barriers and signals)
 - Indicator: the side it is indicating to and since when
-- Lane-change state, owned by the lane-change model, and the old side and lane change in progress
-- Old follower: the vehicle behind that it holds up most, as of the last longitudinal update, with that vehicle's acceleration from every other term, for the courtesy incentive
-- Acceleration noise and its own random generator's state
+- The old side and lane change in progress
 - Class and static attributes (`VehicleSpec`): dimensions and driver parameters, with a preset for each class (see Vehicle classes)
+
+Each model's, beside it:
+
+- **Longitudinal model:** its acceleration noise; whether it is finishing a stop (see Finishing a stop); how far short of the barrier it is heading for it will stop, drawn for each; and its own random generator's state, for the noise and those gaps
+- **Lane-change model:** its desire, cooldown and the ghost it makes room for, and its old follower: the vehicle behind that it holds up most, as of the last longitudinal update, with that vehicle's acceleration from every other term, for the courtesy incentive
+- **Routing:** its route, how it chooses its way at forks, with any state that needs (see Routing)
 
 **Per-lane occupancy**
 

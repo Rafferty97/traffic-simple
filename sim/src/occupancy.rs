@@ -568,7 +568,9 @@ pub fn find_leaders<B>(
     // Wanting to change lanes, along its own lanes it looks as far as it keeps
     // room to get halfway through a change (see `lateral::halfway`).
     let horizon = match along {
-        Along::Path(_) if crate::models::lane_change::wants_change(vehicle) => {
+        Along::Path(own)
+            if crate::models::lane_change::wants_change(state, list(first)[own].id, vehicle) =>
+        {
             horizon.max(vehicle.spec.min_gap + crate::lateral::halfway_from_rest(network, vehicle))
         }
         _ => horizon,

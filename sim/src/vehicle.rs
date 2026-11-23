@@ -2,7 +2,6 @@ use glam::DVec2;
 
 use crate::lane::LanePos;
 use crate::lateral::LaneChange;
-use crate::models::lane_change;
 use crate::models::routing::Route;
 use crate::network::{LaneId, Side};
 
@@ -156,8 +155,6 @@ pub struct Vehicle {
     pub(crate) path: Vec<LaneId>,
     /// The rear axle's position on `path[0]`.
     pub(crate) lane_pos: LanePos,
-    /// How it chooses the lanes it adds to `path`, with any state that needs.
-    pub(crate) route: Route,
     /// After a lane change, the side its old lane is on, until the vehicle has
     /// left the old lane. The old lanes are the neighbors of `path` on this side.
     pub(crate) old_side: Option<Side>,
@@ -167,31 +164,10 @@ pub struct Vehicle {
     /// other vehicles see. Only the simulation sets it, carrying out what the
     /// lane-change model decides.
     pub(crate) intent: Option<Intent>,
-    /// The lane-change model's own state, opaque to the rest of the simulation.
-    pub(crate) lc: lane_change::State,
-    /// The vehicle behind it that it holds up most, as of the last longitudinal
-    /// update: its old follower, if it changed lanes.
-    pub(crate) old_follower: Option<OldFollower>,
-    /// Its acceleration noise now, added to its free-road term, in m/s² (see
-    /// [`VehicleSpec::accel_noise`]).
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub(crate) noise: f64,
-    /// The state of its own generator for that noise.
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub(crate) noise_rng: u64,
     /// How many of the barriers ahead of its rear axle on its path it has
     /// committed to crossing (see `docs/DESIGN.md`, Barriers and signals).
     #[cfg_attr(feature = "serde", serde(default))]
     pub(crate) committed: u8,
-    /// Whether it is finishing a stop, braking at least firmly enough to come
-    /// to rest promptly, or staying at rest, until it can move off properly
-    /// (see `models::acceleration::stopping`).
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub(crate) stopping: bool,
-    /// How far short of the barrier it is heading for it will stop, in meters,
-    /// drawn afresh for each (see [`VehicleSpec::line_gap`]).
-    #[cfg_attr(feature = "serde", serde(default = "default_line_gap"))]
-    pub(crate) line_gap: f64,
     /// The step at which it came to rest at the all-way stop line it is heading
     /// for, as the head on its way there: when it arrived, for the order the
     /// junction's lines go in.
@@ -265,11 +241,6 @@ impl Vehicle {
         &self.path
     }
 
-    /// How it chooses its way at forks, as it is now.
-    pub fn route(&self) -> Route {
-        self.route
-    }
-
     /// The rear axle's position on [`Vehicle::lane`].
     pub fn lane_pos(&self) -> LanePos {
         self.lane_pos
@@ -285,22 +256,10 @@ impl Vehicle {
         self.lane_change
     }
 
-    /// The lane change the vehicle is indicating, if any.
     /// How many of the barriers ahead of its rear axle on its path it has
     /// committed to crossing.
     pub fn committed(&self) -> u8 {
         self.committed
-    }
-
-    /// Whether it is finishing a stop, or staying at rest until it can move
-    /// off properly.
-    pub fn stopping(&self) -> bool {
-        self.stopping
-    }
-
-    /// How far short of the barrier it is heading for it will stop, in meters.
-    pub fn line_gap(&self) -> f64 {
-        self.line_gap
     }
 
     /// The step at which it came to rest at the all-way stop line it is heading
@@ -309,6 +268,7 @@ impl Vehicle {
         self.stopped_at
     }
 
+    /// The lane change the vehicle is indicating, if any.
     pub fn intent(&self) -> Option<Intent> {
         self.intent
     }

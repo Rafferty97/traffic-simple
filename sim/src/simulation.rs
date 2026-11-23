@@ -1,7 +1,7 @@
 use std::ops::ControlFlow;
 
 use glam::DVec2;
-use slotmap::{Key, SlotMap};
+use slotmap::{Key, SecondaryMap, SlotMap};
 
 use crate::barrier;
 use crate::debug::{AccelSource, DebugEvent, DebugSink, NoopSink};
@@ -56,6 +56,13 @@ pub struct Config {
 pub struct SimState {
     pub(crate) network: SimNetwork,
     pub(crate) vehicles: SlotMap<VehicleId, Vehicle>,
+    /// Each vehicle's state under the longitudinal model.
+    pub(crate) drivers: SecondaryMap<VehicleId, acceleration::Driver>,
+    /// Each vehicle's state under the lane-change model.
+    pub(crate) lane_changers: SecondaryMap<VehicleId, lane_change::Driver>,
+    /// How each vehicle chooses the lanes it adds to its path, with any state
+    /// that needs.
+    pub(crate) routes: SecondaryMap<VehicleId, Route>,
     /// Each lane's occupants sorted by `s`, indexed by lane.
     pub(crate) occupants: Vec<Vec<Occupant>>,
     /// Each junction's queue, by junction.
@@ -228,6 +235,9 @@ impl<D: DebugSink> Simulation<D> {
         let state = SimState {
             network,
             vehicles: SlotMap::with_key(),
+            drivers: SecondaryMap::new(),
+            lane_changers: SecondaryMap::new(),
+            routes: SecondaryMap::new(),
             occupants: vec![Vec::new(); lane_count],
             queues: vec![Queue::default(); junction_count],
             caps: Vec::new(),
@@ -308,8 +318,8 @@ impl<D: DebugSink> Simulation<D> {
     ///
     /// It starts with zero acceleration, which it holds until the next longitudinal model update.
     pub fn insert(&mut self, spec: VehicleSpec, at: Placement) -> VehicleId {
-        let vehicle = self.build_vehicle(spec, at);
-        self.register(vehicle)
+        let built = self.build_vehicle(spec, at);
+        self.register(built)
     }
 
     /// Inserts a vehicle as [`Simulation::insert`] does, but only where there is
@@ -325,7 +335,7 @@ impl<D: DebugSink> Simulation<D> {
         spec: VehicleSpec,
         at: Placement,
     ) -> Result<VehicleId, InsertError> {
-        let mut vehicle = self.build_vehicle(spec, at);
+        let (mut vehicle, route, driver) = self.build_vehicle(spec, at);
         // Leader and follower split the lane at its rear, so any vehicle alongside
         // is one or the other, with no gap, and refuses the insertion.
         let rear = vehicle.lane_pos.s - spec.rear_axle;
@@ -369,11 +379,15 @@ impl<D: DebugSink> Simulation<D> {
             }
         }
 
-        Ok(self.register(vehicle))
+        Ok(self.register((vehicle, route, driver)))
     }
 
     /// A vehicle placed on a lane's centerline, facing along it, not yet in the simulation.
-    fn build_vehicle(&self, spec: VehicleSpec, at: Placement) -> Vehicle {
+    fn build_vehicle(
+        &self,
+        spec: VehicleSpec,
+        at: Placement,
+    ) -> (Vehicle, Route, acceleration::Driver) {
         let lane = self.state.network.lane(at.lane);
         let lane_pos = lane.geometry().lane_pos(at.s, 0.0);
         let mut vehicle = Vehicle {
@@ -386,39 +400,35 @@ impl<D: DebugSink> Simulation<D> {
             front_s: at.s + spec.wheelbase(),
             path: vec![at.lane],
             lane_pos,
-            route: at.route,
             old_side: None,
             lane_change: None,
             intent: None,
-            lc: lane_change::State::default(),
-            old_follower: None,
-            noise: 0.0,
-            // Its own, from its route's seed and where it starts, so drivers
-            // don't wander in step.
-            noise_rng: match at.route {
-                Route::Random { state } => {
-                    state ^ (at.s.to_bits()).rotate_left(17) ^ u64::from(at.lane.0)
-                }
-            },
             committed: 0,
-            stopping: false,
-            line_gap: spec.line_gap,
             stopped_at: None,
         };
-        barrier::draw_line_gap(&mut vehicle);
+        // Its own generator, from its route's seed and where it starts, so
+        // drivers don't wander in step.
+        let seed = match at.route {
+            Route::Random { state } => {
+                state ^ (at.s.to_bits()).rotate_left(17) ^ u64::from(at.lane.0)
+            }
+        };
+        let driver = acceleration::Driver::new(&spec, seed);
         let needed = reach(&vehicle, at.s, None);
+        let mut route = at.route;
         extend_path(
             &self.state.network,
             &mut vehicle.path,
-            &mut vehicle.route,
+            &mut route,
             at.s,
             needed,
         );
-        vehicle
+        (vehicle, route, driver)
     }
 
     /// Adds a built vehicle to the simulation and to its lane's occupants.
-    fn register(&mut self, vehicle: Vehicle) -> VehicleId {
+    fn register(&mut self, built: (Vehicle, Route, acceleration::Driver)) -> VehicleId {
+        let (vehicle, route, driver) = built;
         raise_through(
             &self.state.network,
             &mut self.derived.through,
@@ -427,6 +437,9 @@ impl<D: DebugSink> Simulation<D> {
         let lane_id = vehicle.path[0];
         let lane_pos = vehicle.lane_pos;
         let id = self.state.vehicles.insert(vehicle);
+        self.state.drivers.insert(id, driver);
+        self.state.lane_changers.insert(id, lane_change::Driver::default());
+        self.state.routes.insert(id, route);
         let occupant = Occupant::new(
             &self.state.network,
             lane_id,
@@ -458,8 +471,28 @@ impl<D: DebugSink> Simulation<D> {
             queue.held.retain(|&q| q != id);
         }
         self.state.caps.retain(|&(c, _)| c != id);
+        self.state.drivers.remove(id);
+        self.state.lane_changers.remove(id);
+        self.state.routes.remove(id);
         self.sink.record(|| DebugEvent::VehicleRemoved { vehicle: id });
         self.state.vehicles.remove(id)
+    }
+
+    /// Whether a vehicle is finishing a stop, or staying at rest until it can
+    /// move off properly.
+    pub fn stopping(&self, id: VehicleId) -> bool {
+        self.state.drivers.get(id).is_some_and(|d| d.stopping)
+    }
+
+    /// How far short of the barrier it is heading for a vehicle will stop, in
+    /// meters.
+    pub fn line_gap(&self, id: VehicleId) -> Option<f64> {
+        self.state.drivers.get(id).map(|d| d.line_gap)
+    }
+
+    /// How a vehicle chooses its way at forks, as it is now.
+    pub fn route(&self, id: VehicleId) -> Option<Route> {
+        self.state.routes.get(id).copied()
     }
 
     pub fn get(&self, id: VehicleId) -> Option<&Vehicle> {
@@ -579,12 +612,13 @@ impl<D: DebugSink> Simulation<D> {
         // Its barriers ahead are now others.
         vehicle.committed = 0;
         vehicle.stopped_at = None;
-        barrier::draw_line_gap(vehicle);
+        acceleration::draw_line_gap(&mut self.state.drivers[id], &vehicle.spec);
         let needed = reach(vehicle, lane_pos.s, Some(change));
+        let route = &mut self.state.routes[id];
         extend_path(
             &self.state.network,
             &mut vehicle.path,
-            &mut vehicle.route,
+            route,
             lane_pos.s,
             needed,
         );
@@ -731,7 +765,7 @@ impl<D: DebugSink> Simulation<D> {
 
         for i in 0..self.lane_decisions.len() {
             let (id, state, decision) = self.lane_decisions[i];
-            self.state.vehicles[id].lc = state;
+            self.state.lane_changers[id].lc = state;
             match decision {
                 Decision::Nothing => {}
                 Decision::Indicate(side) => self.indicate(id, side),
@@ -808,6 +842,7 @@ impl<D: DebugSink> Simulation<D> {
                 let commits = committed.saturating_sub(self.state.vehicles[id].committed);
                 let released = committed < self.state.vehicles[id].committed;
                 let vehicle = &mut self.state.vehicles[id];
+                let driver = &mut self.state.drivers[id];
                 // Heading for another barrier now, it draws how far short it stops;
                 // past one it arrived at, it has yet to arrive at the next.
                 if vehicle.committed != committed {
@@ -815,7 +850,7 @@ impl<D: DebugSink> Simulation<D> {
                         vehicle.stopped_at = None;
                     }
                     vehicle.committed = committed;
-                    barrier::draw_line_gap(vehicle);
+                    acceleration::draw_line_gap(driver, &vehicle.spec);
                 }
                 if arrived {
                     vehicle.stopped_at = Some(self.state.frame);
@@ -826,11 +861,12 @@ impl<D: DebugSink> Simulation<D> {
                     self.arrivals.push(id);
                 }
                 let spread = vehicle.spec.accel_noise;
-                vehicle.noise =
-                    acceleration::noise(vehicle.noise, spread, noise_step, &mut vehicle.noise_rng);
+                driver.noise =
+                    acceleration::noise(driver.noise, spread, noise_step, &mut driver.rng);
                 vehicle.accel = f64::INFINITY;
-                vehicle.lc.set_yielding(yielding);
-                vehicle.old_follower = None;
+                let changer = &mut self.state.lane_changers[id];
+                changer.lc.set_yielding(yielding);
+                changer.old_follower = None;
             }
         }
         for update in &self.decisions {
@@ -866,13 +902,13 @@ impl<D: DebugSink> Simulation<D> {
             }
         }
         // Each leader keeps the one it holds up most: the most it would gain.
-        let vehicles = &mut self.state.vehicles;
+        let SimState { vehicles, drivers, lane_changers, .. } = &mut self.state;
         for &(leader, follower) in &self.held {
             let gain = |f: &OldFollower| f.without - vehicles[f.id].accel;
-            let better =
-                vehicles[leader].old_follower.is_none_or(|kept| gain(&follower) > gain(&kept));
+            let changer = &mut lane_changers[leader];
+            let better = changer.old_follower.is_none_or(|kept| gain(&follower) > gain(&kept));
             if better {
-                vehicles[leader].old_follower = Some(follower);
+                changer.old_follower = Some(follower);
             }
         }
         // Slow and slowing, it finishes its stop, or stays put until it can
@@ -880,9 +916,10 @@ impl<D: DebugSink> Simulation<D> {
         for update in &self.decisions {
             if let AccelUpdate::Own { id, .. } = *update {
                 let vehicle = &mut vehicles[id];
+                let driver = &mut drivers[id];
                 let (speed, accel) = (vehicle.speed, vehicle.accel);
-                vehicle.stopping = acceleration::stopping(vehicle.stopping, speed, accel);
-                if let Some(term) = vehicle.stopping.then_some(-acceleration::STOPPING_DECEL) {
+                driver.stopping = acceleration::stopping(driver.stopping, speed, accel);
+                if let Some(term) = driver.stopping.then_some(-acceleration::STOPPING_DECEL) {
                     let source = AccelSource::FinishingStop;
                     self.sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
                     vehicle.accel = vehicle.accel.min(term);
@@ -900,7 +937,7 @@ impl<D: DebugSink> Simulation<D> {
     /// the change's cubic, and the change ends where the cubic does.
     fn update_motion(&mut self, dt: f64) {
         let Self {
-            state: SimState { network, vehicles, occupants, .. },
+            state: SimState { network, vehicles, occupants, routes, drivers, .. },
             derived: Derived { overlaps, merges, through },
             leavers,
             arrivals,
@@ -972,7 +1009,7 @@ impl<D: DebugSink> Simulation<D> {
                 let s = vehicle.lane_pos.s;
                 let needed = reach(vehicle, s, vehicle.lane_change);
                 let lanes = vehicle.path.len();
-                extend_path(network, &mut vehicle.path, &mut vehicle.route, s, needed);
+                extend_path(network, &mut vehicle.path, &mut routes[id], s, needed);
                 arrives |= vehicle.path.len() > lanes;
                 // It joins the lane it now follows, and every lane overlapping
                 // it, such as the other branches where lanes part and the other
@@ -1062,7 +1099,7 @@ impl<D: DebugSink> Simulation<D> {
                 passed += barrier::between(network.lane(vehicle.path[0]), from, vehicle.lane_pos.s);
                 vehicle.committed = vehicle.committed.saturating_sub(passed.min(255) as u8);
                 if passed > 0 {
-                    barrier::draw_line_gap(vehicle);
+                    acceleration::draw_line_gap(&mut drivers[id], &vehicle.spec);
                     vehicle.stopped_at = None;
                 }
             }
@@ -1071,7 +1108,7 @@ impl<D: DebugSink> Simulation<D> {
             let s = vehicle.lane_pos.s;
             let needed = reach(vehicle, s, vehicle.lane_change);
             let lanes = vehicle.path.len();
-            extend_path(network, &mut vehicle.path, &mut vehicle.route, s, needed);
+            extend_path(network, &mut vehicle.path, &mut routes[id], s, needed);
             arrives |= vehicle.path.len() > lanes;
             if arrives {
                 raise_through(network, through, &vehicle.path);
@@ -1166,7 +1203,8 @@ fn longitudinal<D: DebugSink>(
     let desired_speed = vehicle.spec.desired_speed(state.network.lane(lane).speed_limit());
     let desired_speed = desired_speed.min(friction(state, speeds, vehicle));
     // Drivers don't hold a speed exactly: their noise wanders it.
-    let free = acceleration::free_road(&vehicle.spec, vehicle.speed, desired_speed) + vehicle.noise;
+    let free = acceleration::free_road(&vehicle.spec, vehicle.speed, desired_speed)
+        + state.drivers[id].noise;
     let source = AccelSource::FreeRoad { desired_speed };
     sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: free });
     // The lowest of every term but the binding leader's, and that leader.
@@ -1178,8 +1216,8 @@ fn longitudinal<D: DebugSink>(
     let mut first = true;
     // Wanting to change lanes, it keeps room to get halfway through a change
     // from rest.
-    let halfway =
-        lane_change::wants_change(vehicle).then(|| halfway_from_rest(&state.network, vehicle));
+    let halfway = lane_change::wants_change(state, id, vehicle)
+        .then(|| halfway_from_rest(&state.network, vehicle));
     // How many barriers ahead it is committed to, in order: those it is released
     // from drop out, with all after them, and once one holds it, or one beyond is
     // found out of turn behind one shielded, the rest wait.
@@ -1215,7 +1253,7 @@ fn longitudinal<D: DebugSink>(
             };
             if stops
                 && vehicle.speed == 0.0
-                && gap <= vehicle.line_gap + barrier::AT_LINE
+                && gap <= state.drivers[id].line_gap + barrier::AT_LINE
                 && vehicle.stopped_at.is_none()
             {
                 arrived = true;

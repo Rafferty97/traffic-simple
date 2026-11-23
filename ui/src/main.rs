@@ -765,7 +765,10 @@ impl App {
                 format!("{:.1} km/h ({:.2} m/s)", v.speed() * 3.6, v.speed()),
             );
             row("accel", format!("{:+.2} m/s²", v.accel()));
-            row("stopping", if v.stopping() { "yes" } else { "no" }.into());
+            row(
+                "stopping",
+                if self.sim.stopping(id) { "yes" } else { "no" }.into(),
+            );
             row("curvature", format!("{:+.4} /m", v.curvature()));
         });
 
