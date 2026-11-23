@@ -341,8 +341,8 @@ struct App {
     step_times: StepTimes,
 }
 
-/// How many fixed steps the step time is averaged over: half a second of
-/// simulated time at 60 steps a second.
+/// How many fixed steps the step time is averaged over: a second of simulated
+/// time at 30 steps a second.
 const STEPS_AVERAGED: usize = 30;
 
 /// The time each of the last [`STEPS_AVERAGED`] fixed steps of the simulation
@@ -650,7 +650,7 @@ impl App {
                 self.paused = !self.paused;
             }
             if ui.add_enabled(self.paused, egui::Button::new("Step")).clicked() {
-                self.step(1.0 / 60.0);
+                self.step(self.sim.config().step);
             }
             for (speed, label) in [
                 (0.1, "0.1×"),
@@ -665,13 +665,15 @@ impl App {
                 ui.selectable_value(&mut self.speed, speed, label);
             }
             ui.separator();
-            // The average time a fixed step takes, and its share of the 1/60 s
-            // it simulates.
+            // The average time a fixed step takes, and its share of the time it
+            // simulates.
             if let Some(average) = self.step_times.average() {
+                let step = self.sim.config().step;
                 ui.monospace(format!(
-                    "step {:.2} ms ({:.0}% of 1/60 s)",
+                    "step {:.2} ms ({:.0}% of 1/{:.0} s)",
                     average * 1000.0,
-                    average * 60.0 * 100.0
+                    average / step * 100.0,
+                    1.0 / step
                 ))
                 .on_hover_text(
                     "The last 30 fixed steps' average time to simulate, with the UI's \

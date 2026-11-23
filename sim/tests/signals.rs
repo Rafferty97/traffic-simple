@@ -10,7 +10,7 @@ use traffic_sim::{
 mod common;
 use common::car;
 
-const DT: f64 = 1.0 / 60.0;
+const DT: f64 = traffic_sim::STEP;
 const LIMIT: f64 = 14.0;
 
 fn p(x: f64, y: f64) -> DVec2 {
@@ -103,7 +103,7 @@ fn vehicles_cross_only_on_green_or_amber() {
     let mut crossed = Vec::new();
     let mut fronts = std::collections::HashMap::new();
     for step in 0..(120.0 / DT) as u64 {
-        if step % 150 == 0 {
+        if step % (2.5 / DT).round() as u64 == 0 {
             for lane in [0, 1] {
                 let _ = sim.try_insert(car(), at(lane, 5.0, LIMIT));
             }
@@ -148,9 +148,10 @@ fn drivers_of_every_speed_cross_only_on_green_or_amber_with_ites_amber() {
     let mut fronts = std::collections::HashMap::new();
     let mut on_red = Vec::new();
     for step in 0..(300.0 / DT) as u64 {
-        if step % 100 == 0 {
+        let every = (5.0 / 3.0 / DT).round() as u64;
+        if step % every == 0 {
             for lane in [0, 1] {
-                let factor = [0.9, 1.0, 1.1, 1.2, 1.3][(step / 100) as usize % 5];
+                let factor = [0.9, 1.0, 1.1, 1.2, 1.3][(step / every) as usize % 5];
                 let spec = VehicleSpec { speed_factor: factor, ..VehicleSpec::passenger_car() };
                 let _ = sim.try_insert(spec, at(lane, 5.0, LIMIT * factor));
             }

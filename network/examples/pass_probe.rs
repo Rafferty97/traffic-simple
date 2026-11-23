@@ -11,7 +11,7 @@ use traffic_sim::{
     VehicleSpec,
 };
 
-const DT: f64 = 1.0 / 60.0;
+const DT: f64 = traffic_sim::STEP;
 
 /// SplitMix64, so the probe needs no dependencies.
 struct Rng(u64);

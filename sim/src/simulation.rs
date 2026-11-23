@@ -34,8 +34,8 @@ use crate::vehicle::{Intent, OldFollower, Placement, Vehicle, VehicleId, Vehicle
 pub struct Config {
     /// The length of a step, in seconds.
     pub step: f64,
-    /// How many steps between longitudinal model updates: every third, at 20 Hz
-    /// with 60 Hz steps.
+    /// How many steps between longitudinal model updates: every third, at 10 Hz
+    /// with 30 Hz steps.
     pub accel_every: u32,
     /// The most gaps for lane changes checked at once, a backstop: drivers'
     /// checks are spread out by their own cooldowns, and any beyond this wait
@@ -49,9 +49,14 @@ fn max_gap_checks() -> usize {
     Config::default().max_gap_checks
 }
 
+/// How many steps a second the simulation takes by default.
+pub const STEPS_PER_SECOND: u32 = 30;
+/// The length of a step by default, in seconds.
+pub const STEP: f64 = 1.0 / STEPS_PER_SECOND as f64;
+
 impl Default for Config {
     fn default() -> Self {
-        Self { step: 1.0 / 60.0, accel_every: 3, max_gap_checks: 64 }
+        Self { step: STEP, accel_every: 3, max_gap_checks: 64 }
     }
 }
 
@@ -771,6 +776,7 @@ impl<D: DebugSink> Simulation<D> {
                 side,
                 incentive,
                 prospect,
+                dt,
             );
             sink.record(|| DebugEvent::LaneChangeEval { vehicle: id, eval });
             lane_decisions[slot] = (id, lc, decision);

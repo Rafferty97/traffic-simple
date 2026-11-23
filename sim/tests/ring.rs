@@ -7,7 +7,7 @@ use common::{Terms, car, fill_lane, fill_ring, ring, ring_road};
 
 type Sim = Simulation<Terms>;
 
-const DT: f64 = 1.0 / 60.0;
+const DT: f64 = traffic_sim::STEP;
 const SPEED_LIMIT: f64 = 14.0;
 
 fn run(sim: &mut Sim, seconds: f64, mut each: impl FnMut(&Sim)) {

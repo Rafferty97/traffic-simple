@@ -183,9 +183,9 @@ fn a_busy_crossroads_turning_on_red_keeps_flowing_and_turners_go_on_red() {
         .collect();
     let mut seen: Vec<VehicleId> = Vec::new();
     let (mut on_red, mut spawned, mut left_before) = (0, 0, 0);
-    for step in 1..=(300 * 60) as u64 {
-        if step % 45 == 0 {
-            let lane = entries[(step / 45 * 7) as usize % entries.len()];
+    for step in 1..=common::steps(300.0) {
+        if step % common::steps(0.75) == 0 {
+            let lane = entries[(step / common::steps(0.75) * 7) as usize % entries.len()];
             let at = Placement { lane, s: 5.0, speed: LIMIT, route: Route::random(step) };
             if sim.try_insert(VehicleSpec::passenger_car(), at).is_ok() {
                 spawned += 1;
@@ -200,7 +200,7 @@ fn a_busy_crossroads_turning_on_red_keeps_flowing_and_turners_go_on_red() {
                 }
             }
         }
-        if step % 3600 == 0 && step > 3600 {
+        if step % common::steps(60.0) == 0 && step > common::steps(60.0) {
             let left = spawned - sim.vehicles().count();
             assert!(
                 left > left_before + 5,

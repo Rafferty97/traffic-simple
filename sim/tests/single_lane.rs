@@ -7,7 +7,7 @@ mod common;
 use common::car;
 
 const SPEED_LIMIT: f64 = 14.0;
-const DT: f64 = 1.0 / 60.0;
+const DT: f64 = traffic_sim::STEP;
 
 /// 100 m straight, then `turn` radians of bend at 5 m chords, then 100 m straight.
 fn lane(turn: f64) -> Lane {

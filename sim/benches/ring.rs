@@ -9,7 +9,7 @@ use traffic_sim::{NoopSink, Simulation};
 #[path = "../tests/common/mod.rs"]
 mod common;
 
-const DT: f64 = 1.0 / 60.0;
+const DT: f64 = traffic_sim::STEP;
 const METERS_PER_CAR: f64 = 230.0 / 22.0;
 
 fn ring_step(c: &mut Criterion) {

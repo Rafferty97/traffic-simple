@@ -8,7 +8,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use traffic_network::{RoadNetwork, compile, scenarios};
 use traffic_sim::{LaneId, NoopSink, Placement, Route, Simulation, VehicleSpec};
 
-const DT: f64 = 1.0 / 60.0;
+const DT: f64 = traffic_sim::STEP;
 
 /// A simulation of `net`, and its entry lanes.
 fn build(net: &RoadNetwork) -> (Simulation, Vec<LaneId>) {
@@ -20,6 +20,11 @@ fn build(net: &RoadNetwork) -> (Simulation, Vec<LaneId>) {
         .map(|(id, _)| id)
         .collect();
     (sim, entries)
+}
+
+/// How many steps take `seconds`.
+fn steps(seconds: f64) -> u64 {
+    (seconds / DT).round() as u64
 }
 
 /// One step, after trying a car every `every` steps at the entries in turn.
@@ -38,13 +43,21 @@ fn junctions(c: &mut Criterion) {
     let mut group = c.benchmark_group("junction_step");
     let cases = [
         // More than it can take, so queues build up on every way in.
-        ("crossroads_2", scenarios::crossroads(2, 50.0 / 3.6), 20),
+        (
+            "crossroads_2",
+            scenarios::crossroads(2, 50.0 / 3.6),
+            steps(1.0 / 3.0),
+        ),
         (
             "signals_2",
             scenarios::signalised_crossroads(2, 50.0 / 3.6),
-            20,
+            steps(1.0 / 3.0),
         ),
-        ("ramps", scenarios::ramps(100.0 / 3.6, 60.0 / 3.6), 30),
+        (
+            "ramps",
+            scenarios::ramps(100.0 / 3.6, 60.0 / 3.6),
+            steps(0.5),
+        ),
     ];
     for (name, net, every) in cases {
         let (mut sim, entries) = build(&net);

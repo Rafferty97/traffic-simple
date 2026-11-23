@@ -1,5 +1,11 @@
 //! Checks shared by the network's tests.
 
+/// How many steps of the simulation's default length take `seconds`.
+#[allow(dead_code)]
+pub fn steps(seconds: f64) -> u64 {
+    (seconds * f64::from(traffic_sim::STEPS_PER_SECOND)).round() as u64
+}
+
 use traffic_sim::{ConflictKind, DebugSink, LaneId, Simulation};
 
 /// How far a vehicle's front may be into a conflict it shouldn't have entered,

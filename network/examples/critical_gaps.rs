@@ -109,7 +109,7 @@ fn race(
 ) -> (bool, f64) {
     let mut first = None;
     let mut hardest = 0.0f64;
-    for _ in 0..20 * 60 {
+    for _ in 0..20 * traffic_sim::STEPS_PER_SECOND {
         sim.step();
         if let Some(v) = sim.get(major) {
             hardest = hardest.min(v.accel());

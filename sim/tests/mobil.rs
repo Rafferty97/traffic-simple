@@ -11,7 +11,7 @@ use traffic_sim::{
 mod common;
 use common::{Terms, car};
 
-const DT: f64 = 1.0 / 60.0;
+const DT: f64 = traffic_sim::STEP;
 const SPEED_LIMIT: f64 = 14.0;
 
 type Sim = Simulation<Terms>;
@@ -140,7 +140,7 @@ impl DebugSink for Decisions {
 }
 
 #[test]
-fn every_vehicle_measures_its_lane_change_incentives_twenty_times_a_second() {
+fn every_vehicle_measures_its_lane_change_incentives_ten_times_a_second() {
     let mut sim = two_lanes_with(Decisions::default());
     let ids: Vec<VehicleId> =
         (0..7).map(|i| sim.insert(car(), place(i % 2, 50.0 * i as f64, 0.0))).collect();
@@ -151,7 +151,7 @@ fn every_vehicle_measures_its_lane_change_incentives_twenty_times_a_second() {
         let count = sim.sink().0[&id];
         // With the longitudinal model, every third step: its desire follows
         // them every step, and it checks gaps only once it wants to.
-        assert_eq!(count, 200, "{id:?} measured {count} times in 10 s");
+        assert_eq!(count, 100, "{id:?} measured {count} times in 10 s");
     }
 }
 

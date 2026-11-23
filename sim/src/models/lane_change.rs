@@ -43,11 +43,10 @@ pub const ROUTE_TIME: f64 = 43.0;
 pub const DESIRE_TIME: f64 = 1.0;
 /// The least time a driver indicates before changing lanes, in seconds.
 pub const MIN_INDICATING: f64 = 0.5;
-/// How many updates a driver waits after a gap it checked was refused, before
-/// it checks again, at a politeness of 0: 0.2 s at 20 Hz. More polite drivers
-/// wait longer, and more assertive ones less, so drivers' checks don't fall in
-/// step.
-pub const COOLDOWN: f64 = 4.0;
+/// How long a driver waits after a gap it checked was refused, before it checks
+/// again, at a politeness of 0, in seconds. More polite drivers wait longer,
+/// and more assertive ones less, so drivers' checks don't fall in step.
+pub const COOLDOWN: f64 = 0.2;
 /// How much an assertive driver lowers its thresholds: at an assertiveness of
 /// 1, to this share less, so it changes for smaller gains, as SUMO's
 /// `lcSpeedGain` makes a driver more eager.
@@ -378,6 +377,7 @@ pub fn resolve(
     side: Side,
     incentives: Incentives,
     prospect: Prospect,
+    dt: f64,
 ) -> (Decision, LaneChangeEval) {
     let desire = state.desire[index(side)];
     let accepted = accepted_braking(spec, desire);
@@ -395,7 +395,7 @@ pub fn resolve(
         Decision::Change(_) => {
             *state = State { yielding: state.yielding, ..State::default() };
         }
-        Decision::Nothing => state.cooldown = cooldown(spec),
+        Decision::Nothing => state.cooldown = cooldown(spec, dt),
         _ => {}
     }
     let eval = LaneChangeEval {
@@ -412,12 +412,12 @@ pub fn resolve(
     (decision, eval)
 }
 
-/// How many steps a driver waits after a refused gap: [`COOLDOWN`], longer for
-/// a more polite driver and shorter for a more assertive one, so drivers don't
-/// check in step.
-pub fn cooldown(spec: &VehicleSpec) -> u16 {
+/// How many updates, `dt` seconds apart, a driver waits after a refused gap:
+/// [`COOLDOWN`], longer for a more polite driver and shorter for a more
+/// assertive one, so drivers don't check in step. At least one.
+pub fn cooldown(spec: &VehicleSpec, dt: f64) -> u16 {
     let scale = 1.0 + spec.politeness - 0.5 * spec.assertiveness;
-    (COOLDOWN * scale).round().clamp(1.0, f64::from(u16::MAX)) as u16
+    (COOLDOWN * scale / dt).round().clamp(1.0, f64::from(u16::MAX)) as u16
 }
 
 /// Whom a follower makes room for, if anyone: a vehicle indicating into its lane
@@ -447,6 +447,9 @@ pub fn make_room(
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// The time between updates: 10 Hz.
+    const DT: f64 = 0.1;
 
     fn spec() -> VehicleSpec {
         VehicleSpec {
@@ -540,26 +543,27 @@ mod test {
             Side::Left,
             Incentives::default(),
             refused,
+            DT,
         );
         assert_eq!(
             (decision, eval.outcome),
             (Decision::Nothing, Outcome::Unsafe)
         );
         let wait = state.cooldown();
-        assert_eq!(wait, cooldown(&spec()));
+        assert_eq!(wait, cooldown(&spec(), DT));
         let wants = Some(Incentives { speed: 0.5, ..Incentives::default() });
         aim(&mut state, [wants, None]);
         for _ in 0..wait {
-            let ask = step(&mut state, None, &spec(), 0.0, 1.0 / 60.0);
+            let ask = step(&mut state, None, &spec(), 0.0, DT);
             assert_eq!(ask, Ask::Nothing);
         }
-        let ask = step(&mut state, None, &spec(), 0.0, 1.0 / 60.0);
+        let ask = step(&mut state, None, &spec(), 0.0, DT);
         assert_eq!(ask, Ask::Check(Side::Left));
         // Politer drivers wait longer, more assertive ones less.
         let polite = VehicleSpec { politeness: 0.5, ..spec() };
         let assertive = VehicleSpec { assertiveness: 1.0, ..spec() };
-        assert!(cooldown(&polite) > cooldown(&spec()));
-        assert!(cooldown(&assertive) < cooldown(&spec()));
+        assert!(cooldown(&polite, DT) > cooldown(&spec(), DT));
+        assert!(cooldown(&assertive, DT) < cooldown(&spec(), DT));
     }
 
     #[test]
@@ -573,6 +577,7 @@ mod test {
             Side::Left,
             Incentives::default(),
             unsafe_gap,
+            DT,
         );
         assert_eq!(decision, Decision::Indicate(Side::Left));
         let no_room = Prospect { own_after: 0.0, new_follower: None, room: false };
@@ -585,6 +590,7 @@ mod test {
             Side::Left,
             Incentives::default(),
             no_room,
+            DT,
         );
         assert_eq!(decision, Decision::Nothing);
         let mut state = State { desire: [D_COOP, 0.0], ..State::default() };
@@ -595,6 +601,7 @@ mod test {
             Side::Left,
             Incentives::default(),
             no_room,
+            DT,
         );
         assert_eq!(decision, Decision::Change(Side::Left));
     }

@@ -222,9 +222,9 @@ fn all_way_stops_keep_traffic_flowing() {
             .map(|(id, _)| id)
             .collect();
         let (mut spawned, mut left_before) = (0, 0);
-        for step in 1..=(600 * 60) as u64 {
-            if step % 40 == 0 {
-                let lane = entries[(step / 40 * 7) as usize % entries.len()];
+        for step in 1..=common::steps(600.0) {
+            if step % common::steps(2.0 / 3.0) == 0 {
+                let lane = entries[(step / common::steps(2.0 / 3.0) * 7) as usize % entries.len()];
                 let speed = sim.network().lane(lane).speed_limit();
                 let at = Placement { lane, s: 5.0, speed, route: Route::random(step) };
                 if sim.try_insert(VehicleSpec::passenger_car(), at).is_ok() {
@@ -232,7 +232,7 @@ fn all_way_stops_keep_traffic_flowing() {
                 }
             }
             sim.step();
-            if step % 3600 == 0 && step > 3600 {
+            if step % common::steps(60.0) == 0 && step > common::steps(60.0) {
                 let left = spawned - sim.vehicles().count();
                 assert!(
                     left > left_before + 5,
@@ -365,9 +365,9 @@ fn at_signals_nobody_crosses_a_line_on_red_and_traffic_keeps_flowing() {
     let mut on_red = Vec::new();
     let (mut spawned, mut left_before) = (0, 0);
     // Ten minutes: long enough to lock up, if anything does.
-    for step in 0..(600.0 * 60.0) as u64 {
-        if step % 30 == 0 {
-            let lane = entries[(step / 30) as usize % entries.len()];
+    for step in 0..common::steps(600.0) {
+        if step % common::steps(0.5) == 0 {
+            let lane = entries[(step / common::steps(0.5)) as usize % entries.len()];
             let car = VehicleSpec {
                 speed_factor: 0.85 + 0.4 * uniform(),
                 assertiveness: uniform().powi(3),
@@ -385,7 +385,7 @@ fn at_signals_nobody_crosses_a_line_on_red_and_traffic_keeps_flowing() {
         }
         sim.step();
         // Traffic keeps flowing: vehicles leave every minute after the first.
-        if step % 3600 == 0 && step > 3600 {
+        if step % common::steps(60.0) == 0 && step > common::steps(60.0) {
             let left = spawned - sim.vehicles().count();
             assert!(
                 left > left_before + 5,
@@ -467,9 +467,9 @@ fn at_signals_straight_traffic_never_stops_or_brakes_hard_for_right_turners_on_i
         sim.get(id).and_then(|v| v.path().iter().find_map(|l| way.get(l).copied()))
     };
     let mut hard = Vec::new();
-    for step in 0..(300.0 * 60.0) as u64 {
-        if step % 30 == 0 {
-            let lane = entries[(step / 30) as usize % entries.len()];
+    for step in 0..common::steps(300.0) {
+        if step % common::steps(0.5) == 0 {
+            let lane = entries[(step / common::steps(0.5)) as usize % entries.len()];
             let speed = sim.network().lane(lane).speed_limit();
             let at = Placement { lane, s: 5.0, speed, route: Route::random(step) };
             let _ = sim.try_insert(VehicleSpec::passenger_car(), at);
@@ -543,9 +543,9 @@ fn at_signals_a_right_turner_at_its_line_turns_on_its_next_green() {
     let mut lights: Vec<Light> = movements.iter().map(|&m| sim.light(m).light).collect();
     let mut turned = 0;
     // Busy, with plenty coming the other way.
-    for step in 0..(600.0 * 60.0) as u64 {
-        if step % 45 == 0 {
-            let lane = entries[(step / 45) as usize % entries.len()];
+    for step in 0..common::steps(600.0) {
+        if step % common::steps(0.75) == 0 {
+            let lane = entries[(step / common::steps(0.75)) as usize % entries.len()];
             let speed = sim.network().lane(lane).speed_limit();
             let at = Placement { lane, s: 5.0, speed, route: Route::random(step) };
             let _ = sim.try_insert(VehicleSpec::passenger_car(), at);
@@ -627,9 +627,9 @@ fn at_signals_every_way_is_taken_right_turns_included() {
     let (mut spawned, mut left_before) = (0, 0);
     // A car every 3 s at the entries in turn, within what the junction takes even
     // with right turners waiting in each single lane for gaps.
-    for step in 0..(300.0 * 60.0) as u64 {
-        if step % 180 == 0 {
-            let lane = entries[(step / 180) as usize % entries.len()];
+    for step in 0..common::steps(300.0) {
+        if step % common::steps(3.0) == 0 {
+            let lane = entries[(step / common::steps(3.0)) as usize % entries.len()];
             let speed = sim.network().lane(lane).speed_limit();
             let at = Placement { lane, s: 5.0, speed, route: Route::random(step) };
             if sim.try_insert(VehicleSpec::passenger_car(), at).is_ok() {
@@ -641,7 +641,7 @@ fn at_signals_every_way_is_taken_right_turns_included() {
             used[c] |= !sim.occupants(lane).is_empty();
         }
         // Vehicles keep leaving, every minute after the first.
-        if step % 3600 == 0 && step > 3600 {
+        if step % common::steps(60.0) == 0 && step > common::steps(60.0) {
             let left = spawned - sim.vehicles().count();
             assert!(
                 left > left_before + 5,

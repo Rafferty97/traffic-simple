@@ -10,7 +10,7 @@ use traffic_sim::{
 mod common;
 use common::car;
 
-const DT: f64 = 1.0 / 60.0;
+const DT: f64 = traffic_sim::STEP;
 const SPEED_LIMIT: f64 = 14.0;
 
 /// Keeps every passing check made.

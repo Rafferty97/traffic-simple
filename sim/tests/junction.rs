@@ -10,7 +10,7 @@ use traffic_sim::{
 mod common;
 use common::{car, overlap, queued};
 
-const DT: f64 = 1.0 / 60.0;
+const DT: f64 = traffic_sim::STEP;
 const WIDTH: f64 = 3.5;
 
 fn lane(points: &[DVec2]) -> Lane {

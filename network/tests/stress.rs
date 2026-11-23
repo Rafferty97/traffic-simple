@@ -17,7 +17,7 @@ mod common;
 /// locked up, in seconds: longer than any red light.
 const STILL: f64 = 40.0;
 
-/// Runs `net` for 15 minutes, a vehicle tried every `every` steps at a random
+/// Runs `net` for 15 minutes, a vehicle tried every `every` seconds at a random
 /// entry, its driver and route from `seed`: how many times it gridlocked, or
 /// what went wrong.
 ///
@@ -26,7 +26,7 @@ const STILL: f64 = 40.0;
 /// junction by has had a vehicle stopped too near its start to leave room for
 /// it. That is gridlock, a queue backed up from beyond, and counts as one; the
 /// junction is then watched afresh.
-fn run(net: &RoadNetwork, seed: u64, every: u64) -> Result<usize, String> {
+fn run(net: &RoadNetwork, seed: u64, every: f64) -> Result<usize, String> {
     let compiled = compile(net).unwrap();
     let mut sim = Simulation::new(compiled.sim, NoopSink);
     let entries: Vec<LaneId> = sim
@@ -49,7 +49,8 @@ fn run(net: &RoadNetwork, seed: u64, every: u64) -> Result<usize, String> {
     // and whether a queue has backed up into it from beyond meanwhile.
     let mut still = vec![0u64; sim.network().junctions().count()];
     let mut backed = vec![false; still.len()];
-    for step in 0..(15 * 60 * 60) as u64 {
+    let (every, check) = (common::steps(every), common::steps(0.1));
+    for step in 0..common::steps(15.0 * 60.0) {
         if step % every == 0 {
             let lane = entries[(uniform() * entries.len() as f64) as usize];
             let car = VehicleSpec {
@@ -66,7 +67,7 @@ fn run(net: &RoadNetwork, seed: u64, every: u64) -> Result<usize, String> {
             let _ = sim.try_insert(car, at);
         }
         sim.step();
-        if step % 6 != 0 {
+        if step % check != 0 {
             continue;
         }
         if let Some(what) = common::queue_violation(&sim) {
@@ -87,9 +88,9 @@ fn run(net: &RoadNetwork, seed: u64, every: u64) -> Result<usize, String> {
                 (still[j], backed[j]) = (0, false);
                 continue;
             }
-            still[j] += 6;
+            still[j] += check;
             backed[j] = backed[j] || backed_up(&sim, j);
-            if still[j] as f64 / 60.0 > STILL {
+            if common::steps(STILL) < still[j] {
                 if !backed[j] {
                     return Err(format!("junction {j} locked up at {:.0} s", sim.time()));
                 }
@@ -130,15 +131,15 @@ fn backed_up(sim: &Simulation, j: usize) -> bool {
         })
 }
 
-/// Runs each of `nets` over 20 seeds, a vehicle tried every 20 and every 40
-/// steps, asserting that none went wrong.
+/// Runs each of `nets` over 20 seeds, a vehicle tried every third and every
+/// two thirds of a second, asserting that none went wrong.
 fn stress(nets: &[(&str, RoadNetwork)]) {
-    stress_every(nets, &[20, 40]);
+    stress_every(nets, &[1.0 / 3.0, 2.0 / 3.0]);
 }
 
-/// As [`stress`], a vehicle tried every so many steps as `every` says, and
+/// As [`stress`], a vehicle tried every so many seconds as `every` says, and
 /// printing how many runs of each network gridlocked.
-fn stress_every(nets: &[(&str, RoadNetwork)], every: &[u64]) {
+fn stress_every(nets: &[(&str, RoadNetwork)], every: &[f64]) {
     let mut failures = Vec::new();
     for (name, net) in nets {
         for &every in every {
@@ -147,12 +148,12 @@ fn stress_every(nets: &[(&str, RoadNetwork)], every: &[u64]) {
                 match run(net, seed, every) {
                     Ok(gridlocks) => gridlocked += usize::from(gridlocks > 0),
                     Err(what) => {
-                        failures.push(format!("{name}, seed {seed}, every {every}: {what}"))
+                        failures.push(format!("{name}, seed {seed}, every {every:.2} s: {what}"))
                     }
                 }
             }
             if gridlocked > 0 {
-                println!("{name}, every {every}: {gridlocked} of 20 runs gridlocked");
+                println!("{name}, every {every:.2} s: {gridlocked} of 20 runs gridlocked");
             }
         }
     }
@@ -256,6 +257,6 @@ fn busy_grids_never_lock_up() {
             ("grid, 1 lane", scenarios::grid(4, 4, 1, 100.0, SPEED)),
             ("grid, 2 lanes", scenarios::grid(4, 4, 2, 100.0, SPEED)),
         ],
-        &[20, 40, 80],
+        &[1.0 / 3.0, 2.0 / 3.0, 4.0 / 3.0],
     );
 }

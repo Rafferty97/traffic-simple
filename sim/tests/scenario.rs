@@ -13,7 +13,7 @@ use traffic_sim::{LaneId, Placement, Route, Side, Simulation, VehicleId, Vehicle
 mod common;
 use common::{Terms, ring_road};
 
-const DT: f64 = 1.0 / 60.0;
+const DT: f64 = traffic_sim::STEP;
 /// The UI's ring: the inner lane's circumference, in meters.
 const RING_CIRCUMFERENCE: f64 = 1000.0;
 const SPEED_LIMIT: f64 = 50.0 / 3.6;

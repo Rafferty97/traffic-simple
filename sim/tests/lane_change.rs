@@ -8,7 +8,7 @@ use traffic_sim::{
 mod common;
 use common::{car, ring_road};
 
-const DT: f64 = 1.0 / 60.0;
+const DT: f64 = traffic_sim::STEP;
 const SPEED_LIMIT: f64 = 14.0;
 
 fn run(sim: &mut Simulation, seconds: f64, mut each: impl FnMut(&Simulation)) {

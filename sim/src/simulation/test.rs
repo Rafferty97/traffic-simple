@@ -134,8 +134,15 @@ fn decision(
                     lc.desire(side),
                 );
                 let spec = &vehicle.spec;
-                let (d, eval) =
-                    lane_change::resolve(&mut lc, vehicle.intent, spec, side, incentive, prospect);
+                let (d, eval) = lane_change::resolve(
+                    &mut lc,
+                    vehicle.intent,
+                    spec,
+                    side,
+                    incentive,
+                    prospect,
+                    dt,
+                );
                 decision = d;
                 eval
             }
@@ -476,7 +483,7 @@ fn the_order_is_by_distance_to_the_merge_point_and_one_pulling_ahead_goes_first(
     assert_eq!(merge_order(&sim), [a, b]);
     // Faster, b pulls ahead within a few frames, and goes first at once.
     while rear(&sim, b) <= rear(&sim, a) {
-        sim.step_variable(1.0 / 60.0);
+        sim.step();
     }
     sim.step_variable(0.05);
     assert_eq!(merge_order(&sim), [b, a]);
@@ -491,7 +498,7 @@ fn straddling_into_a_merge_it_has_one_record_on_the_lane_it_follows() {
     let id = sim.insert(car(), at(4, 92.0, 10.0));
     sim.change_lane(id, Side::Left).unwrap();
     while sim.state.vehicles[id].path[0] == LaneId(3) {
-        sim.step_variable(1.0 / 60.0);
+        sim.step();
     }
     assert_eq!(
         sim.state.vehicles[id].old_side,
@@ -520,8 +527,8 @@ fn side_by_side_before_a_merge_one_drops_back_gently_and_they_merge_apart() {
     let a = sim.insert(car(), at(3, 10.0, 15.0));
     let b = sim.insert(car(), at(4, 10.0, 15.0));
     let (mut least, mut gap) = (f64::INFINITY, f64::INFINITY);
-    for _ in 0..(10.0 * 60.0) as u32 {
-        sim.step_variable(1.0 / 60.0);
+    for _ in 0..(10.0 / crate::STEP) as u32 {
+        sim.step();
         for id in [a, b] {
             least = least.min(sim.state.vehicles[id].accel);
         }
@@ -554,8 +561,8 @@ fn queues_in_both_lanes_before_a_merge_go_through_it_by_turns() {
         matches!(lane, Some(LaneId(3) | LaneId(4)))
     };
     let mut entered = Vec::new();
-    for _ in 0..(60.0 * 60.0) as u32 {
-        sim.step_variable(1.0 / 60.0);
+    for _ in 0..(60.0 / crate::STEP) as u32 {
+        sim.step();
         for (k, &id) in ids.iter().enumerate() {
             if !entered.contains(&k) && !waiting(&sim, id) {
                 entered.push(k);
@@ -584,7 +591,7 @@ fn a_record_ages_carries_its_age_on_and_starts_afresh_on_a_change_or_a_merge() {
     let before = age(&sim, 0).unwrap();
     assert!(before > acceleration::SETTLED, "{before}");
     while sim.state.vehicles[id].path[0] == LaneId(0) {
-        sim.step_variable(1.0 / 60.0);
+        sim.step();
     }
     assert!(age(&sim, 2).unwrap() > before, "carried over");
     // Changing lanes: afresh.
@@ -1156,7 +1163,8 @@ fn it_wont_indicate_into_an_unsafe_gap_short_of_synchronising() {
     assert_eq!(action, Decision::Nothing);
     assert_eq!(evals[0].outcome, Outcome::Unsafe);
     // It waits a few steps before checking again.
-    assert_eq!(state.cooldown(), lane_change::cooldown(&car()));
+    let dt = sim.state.config.step * f64::from(sim.state.config.accel_every);
+    assert_eq!(state.cooldown(), lane_change::cooldown(&car(), dt));
     // Wanting it enough to synchronise, it indicates all the same, asking
     // for room.
     sim.state.vehicles[id].lc.set_desire([lane_change::D_SYNC + 0.05, 0.0]);

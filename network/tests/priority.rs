@@ -113,9 +113,9 @@ fn priority_intersections_keep_traffic_flowing_every_way() {
         let entries = entries(&sim);
         let mut used = vec![false; connectors.len()];
         let (mut spawned, mut left_before) = (0, 0);
-        for step in 1..=(300 * 60) as u64 {
-            if step % 300 == 0 {
-                let lane = entries[(step / 300 * 7) as usize % entries.len()];
+        for step in 1..=common::steps(300.0) {
+            if step % common::steps(5.0) == 0 {
+                let lane = entries[(step / common::steps(5.0) * 7) as usize % entries.len()];
                 let at = Placement { lane, s: 5.0, speed: LIMIT, route: Route::random(step) };
                 if sim.try_insert(VehicleSpec::passenger_car(), at).is_ok() {
                     spawned += 1;
@@ -125,7 +125,7 @@ fn priority_intersections_keep_traffic_flowing_every_way() {
             for (c, &lane) in connectors.iter().enumerate() {
                 used[c] |= !sim.occupants(lane).is_empty();
             }
-            if step % 3600 == 0 && step > 3600 {
+            if step % common::steps(60.0) == 0 && step > common::steps(60.0) {
                 let left = spawned - sim.vehicles().count();
                 assert!(
                     left > left_before + 3,
@@ -193,9 +193,9 @@ fn major_road_traffic_never_brakes_hard_for_minor_road_traffic() {
                 sim.get(id).is_some_and(|v| v.path().iter().any(|&l| lanes(l)))
             };
         let mut hard = Vec::new();
-        for step in 0..(300 * 60) as u64 {
-            if step % 30 == 0 {
-                let lane = entries[(step / 30 * 7) as usize % entries.len()];
+        for step in 0..common::steps(300.0) {
+            if step % common::steps(0.5) == 0 {
+                let lane = entries[(step / common::steps(0.5) * 7) as usize % entries.len()];
                 let at = Placement { lane, s: 5.0, speed: LIMIT, route: Route::random(step) };
                 let _ = sim.try_insert(VehicleSpec::passenger_car(), at);
             }
@@ -237,9 +237,9 @@ fn at_a_stop_sign_every_car_comes_to_rest_at_the_line_before_it_goes() {
         // barrier, as of the step before, and whether it has come to rest at it.
         let mut before: HashMap<VehicleId, (f64, bool)> = HashMap::new();
         let mut stopped = 0;
-        for step in 0..(300 * 60) as u64 {
-            if step % 300 == 0 {
-                let lane = entries[(step / 300 * 7) as usize % entries.len()];
+        for step in 0..common::steps(300.0) {
+            if step % common::steps(5.0) == 0 {
+                let lane = entries[(step / common::steps(5.0) * 7) as usize % entries.len()];
                 let at = Placement { lane, s: 5.0, speed: LIMIT, route: Route::random(step) };
                 let _ = sim.try_insert(VehicleSpec::passenger_car(), at);
             }

@@ -192,14 +192,13 @@ fn a_car_arriving_at_a_stop_line_records_when_it_came_to_rest() {
     let _priority = sim.insert(car(), at(0, 0.0, 6.0));
     let mut recorded = false;
     while sim.time() < 12.0 && !recorded {
+        // Judged from where it was before the step: it may move off in the same
+        // step, if its line is a little further on than it stopped.
+        let speed = sim.get(car_id).unwrap().speed();
         sim.step();
         let v = sim.get(car_id).unwrap();
         if let Some(step) = v.stopped_at() {
-            assert_eq!(
-                v.speed(),
-                0.0,
-                "it came to rest when recorded at step {step}"
-            );
+            assert_eq!(speed, 0.0, "it came to rest when recorded at step {step}");
             recorded = true;
         }
     }

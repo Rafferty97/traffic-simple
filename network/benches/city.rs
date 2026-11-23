@@ -8,7 +8,7 @@ use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use traffic_network::{RoadNetwork, compile, scenarios};
 use traffic_sim::{LaneId, NoopSink, Placement, Route, Simulation, VehicleSpec};
 
-const DT: f64 = 1.0 / 60.0;
+const DT: f64 = traffic_sim::STEP;
 const SPEED: f64 = 50.0 / 3.6;
 
 /// The small grid: 4 by 4 crossroads 100 m apart, as the stress test has it.
@@ -126,7 +126,7 @@ fn step(c: &mut Criterion) {
     let mut group = c.benchmark_group("city_step");
     // More than it can take, so queues back up from one crossroads into the
     // next.
-    let mut flooded = Flooded::new(&small(), 20);
+    let mut flooded = Flooded::new(&small(), (1.0 / 3.0 / DT).round() as u64);
     for _ in 0..(120.0 / DT) as usize {
         flooded.step();
     }

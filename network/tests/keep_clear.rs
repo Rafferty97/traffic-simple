@@ -69,15 +69,15 @@ fn the_queue_at_a_red_light_leaves_a_keep_clear_zone_empty() {
     let mut sim = Simulation::new(compiled.sim, NoopSink);
     let car = VehicleSpec::passenger_car();
     let (mut queued_past, mut in_zone) = (0, Vec::new());
-    for step in 0..(300 * 60) as u64 {
+    for step in 0..common::steps(300.0) {
         // A car every second from the west, each lane in turn.
-        if step % 60 == 0 {
-            let lane = west[(step / 60) as usize % 2];
+        if step % common::steps(1.0) == 0 {
+            let lane = west[(step / common::steps(1.0)) as usize % 2];
             let at = Placement { lane, s: 5.0, speed: LIMIT, route: Route::random(step) };
             let _ = sim.try_insert(car, at);
         }
         sim.step();
-        if step % 6 != 0 {
+        if step % common::steps(0.1) != 0 {
             continue;
         }
         for (id, v) in sim.vehicles() {
