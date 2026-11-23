@@ -1484,10 +1484,12 @@ fn junction_terms<D: DebugSink>(
         if accel < f64::INFINITY {
             decisions.push(AccelUpdate::Junction { id, accel });
         }
-    } // Those it holds out of its queue, short of their first conflicts.
+    }
+    // Those it holds out of its queue, short of their next conflicts.
     for &id in &queue.held {
+        let vehicle = &state.vehicles[id];
         if let Some((accel, gap)) =
-            junction::hold_term(&state.network, junction, &state.vehicles[id])
+            junction::hold_term(&state.network, junction, committed, id, vehicle)
         {
             let source = AccelSource::JunctionHold { gap };
             sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel });

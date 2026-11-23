@@ -112,7 +112,8 @@ impl LaneSpeeds {
 
 /// What makes a driver want to change lanes to each side, measured cheaply,
 /// every step (see [`lane_change::Incentives`]): `None` for a side it may not
-/// change to there.
+/// change to there, or couldn't finish a change to before the lanes beside its
+/// path run out (see [`room_to_change`]), so no gap is checked for one.
 ///
 /// - Speed: how fast traffic goes in the lane beside it ahead, against its own
 ///   lane, over the next [`ANTICIPATION`] seconds at the limit, each no faster
@@ -133,7 +134,13 @@ pub(crate) fn incentives(
     let SimState { network, vehicles, .. } = state;
     let lane_id = vehicle.path[0];
     let lane = network.lane(lane_id);
-    let permitted = |side: Side| lane.adj(side).filter(|n| n.can_change);
+    // A side it may change to, and could finish a change to before the lanes
+    // beside its path run out, or reach a junction: once it couldn't, it can't
+    // again until they do, so a driver gives up wanting to.
+    let permitted = |side: Side| {
+        lane.adj(side)
+            .filter(|n| n.can_change && room_to_change(network, vehicle, side))
+    };
     if permitted(Side::Left).is_none() && permitted(Side::Right).is_none() {
         return [None, None];
     }
@@ -212,15 +219,6 @@ pub(crate) fn check_gap(
     let cap = cap.map_or(f64::INFINITY, |&(_, max_speed)| {
         acceleration::capped(vehicle.speed, max_speed)
     });
-    // No change runs out of lanes beside its path, or into a junction: none
-    // that would can go ahead, whatever the gap.
-    if !room_to_change(network, vehicle, side) {
-        return lane_change::Prospect {
-            own_after: f64::NEG_INFINITY,
-            new_follower: None,
-            room: false,
-        };
-    }
     let own_after = accel_along(state, id, vehicle, Along::Into(side), true, headway).min(cap);
     // The new follower, behind it in the target lane: the lane is split at its
     // rear there, as its search there splits it.

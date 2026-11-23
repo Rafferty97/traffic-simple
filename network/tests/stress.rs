@@ -165,6 +165,22 @@ fn stress_every(nets: &[(&str, RoadNetwork)], every: &[f64]) {
 
 const SPEED: f64 = 50.0 / 3.6;
 
+/// Two runs that once locked up, quick enough to run with the other tests: on
+/// the 75° crossroads, a turner taking its gap was queued for the rest of its
+/// turn without the junction checking it closed no cycle, and on the 60°, a car
+/// committed to the junction held itself back to change into the lane beside,
+/// which it no longer could, behind one the junction held.
+#[test]
+fn the_oblique_crossroads_runs_that_once_locked_up_dont() {
+    let runs = [(75.0, 4, 2.0 / 3.0), (60.0, 13, 1.0 / 3.0)];
+    for (angle, seed, every) in runs {
+        let net = scenarios::signalised_oblique_crossroads(2, SPEED, f64::to_radians(angle));
+        if let Err(what) = run(&net, seed, every) {
+            panic!("{angle}°, seed {seed}: {what}");
+        }
+    }
+}
+
 #[test]
 #[ignore = "slow: a few minutes in release"]
 fn busy_signalised_crossroads_never_lock_up() {
