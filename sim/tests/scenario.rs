@@ -8,12 +8,12 @@ use std::f64::consts::TAU;
 
 use rand::rngs::Xoshiro256PlusPlus;
 use rand::{RngExt, SeedableRng};
-use traffic_sim::{LaneId, Placement, Route, Side, Simulation, VehicleId, VehicleSpec};
+use traffic_sim::{LaneId, Placement, Route, Side, VehicleId, VehicleSpec};
 
 mod common;
 use common::{Terms, ring_road};
 
-const DT: f64 = traffic_sim::STEP;
+use common::DT;
 /// The UI's ring: the inner lane's circumference, in meters.
 const RING_CIRCUMFERENCE: f64 = 1000.0;
 const SPEED_LIMIT: f64 = 50.0 / 3.6;
@@ -62,7 +62,7 @@ struct Stats {
 }
 
 fn run_scenario(spawn_rate: f64, despawn_rate: f64, minutes: f64) -> Stats {
-    let mut sim = Simulation::new(
+    let mut sim = common::sim(
         ring_road(RING_CIRCUMFERENCE, 3, SPEED_LIMIT),
         Terms::default(),
     );

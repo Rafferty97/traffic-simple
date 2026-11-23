@@ -10,6 +10,15 @@
 use traffic_network::{Sign, Turn, compile, scenarios};
 use traffic_sim::{LaneId, NoopSink, Placement, Route, Simulation, VehicleId, VehicleSpec};
 
+/// The length of a step, in seconds: 30 Hz.
+const DT: f64 = 1.0 / 30.0;
+
+/// A simulation of `network` stepping at 30 Hz, with the slower updates at 10 Hz.
+fn sim<D: traffic_sim::DebugSink>(network: traffic_sim::SimNetwork, sink: D) -> Simulation<D> {
+    let config = traffic_sim::Config { dt: DT, macro_step: 3 };
+    Simulation::with_config(network, config, sink)
+}
+
 fn main() {
     let limit = 50.0 / 3.6;
     let net = scenarios::priority_crossroads([1, 1], limit, Sign::GiveWay);
@@ -32,7 +41,7 @@ fn main() {
         let mut accepted = None;
         for tenths in (20..140).rev() {
             let lag = f64::from(tenths) / 10.0;
-            let mut sim = Simulation::new(compiled.sim.clone(), NoopSink);
+            let mut sim = sim(compiled.sim.clone(), NoopSink);
             let length = sim.network().lane(south).geometry().length();
             let s = length - (spec.length - spec.rear_axle) - spec.line_gap;
             let minor = insert_going(&mut sim, south, s, connector);
@@ -109,7 +118,7 @@ fn race(
 ) -> (bool, f64) {
     let mut first = None;
     let mut hardest = 0.0f64;
-    for _ in 0..20 * traffic_sim::STEPS_PER_SECOND {
+    for _ in 0..(20.0 / DT) as u32 {
         sim.step();
         if let Some(v) = sim.get(major) {
             hardest = hardest.min(v.accel());

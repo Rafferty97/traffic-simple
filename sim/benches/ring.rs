@@ -4,19 +4,19 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use traffic_sim::{NoopSink, Simulation};
+use traffic_sim::NoopSink;
 
 #[path = "../tests/common/mod.rs"]
 mod common;
 
-const DT: f64 = traffic_sim::STEP;
+use common::DT;
 const METERS_PER_CAR: f64 = 230.0 / 22.0;
 
 fn ring_step(c: &mut Criterion) {
     let mut group = c.benchmark_group("ring_step");
     for cars in [100, 1_000, 10_000] {
         let network = common::ring(cars as f64 * METERS_PER_CAR, 50.0 / 3.6);
-        let mut sim = Simulation::new(network, NoopSink);
+        let mut sim = common::sim(network, NoopSink);
         common::fill_ring(&mut sim, cars);
         // Settle into moving traffic before measuring.
         for _ in 0..(20.0 / DT) as usize {

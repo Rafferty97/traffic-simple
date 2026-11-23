@@ -109,7 +109,7 @@ fn priority_intersections_keep_traffic_flowing_every_way() {
     for (name, net) in scenarios() {
         let compiled = compile(&net).unwrap();
         let connectors = compiled.connectors[0].clone();
-        let mut sim = Simulation::new(compiled.sim, NoopSink);
+        let mut sim = common::sim(compiled.sim, NoopSink);
         let entries = entries(&sim);
         let mut used = vec![false; connectors.len()];
         let (mut spawned, mut left_before) = (0, 0);
@@ -188,7 +188,7 @@ fn major_road_traffic_never_brakes_hard_for_minor_road_traffic() {
                 false => minor.push(connector),
             }
         }
-        let mut sim = Simulation::new(compiled.sim, JunctionTerms::default());
+        let mut sim = common::sim(compiled.sim, JunctionTerms::default());
         let entries = entries(&sim);
         let on =
             |sim: &Simulation<JunctionTerms>, id: VehicleId, lanes: &dyn Fn(LaneId) -> bool| {
@@ -233,7 +233,7 @@ fn major_road_traffic_never_brakes_hard_for_minor_road_traffic() {
 fn at_a_stop_sign_every_car_comes_to_rest_at_the_line_before_it_goes() {
     for (name, net) in scenarios().into_iter().filter(|(n, _)| n.ends_with("Stop")) {
         let compiled = compile(&net).unwrap();
-        let mut sim = Simulation::new(compiled.sim, NoopSink);
+        let mut sim = common::sim(compiled.sim, NoopSink);
         let entries = entries(&sim);
         // Each vehicle's front's distance to a stop line that is its next
         // barrier, as of the step before, and whether it has come to rest at it.

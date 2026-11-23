@@ -8,11 +8,18 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use traffic_network::{RoadNetwork, compile, scenarios};
 use traffic_sim::{LaneId, NoopSink, Placement, Route, Simulation, VehicleSpec};
 
-const DT: f64 = traffic_sim::STEP;
+/// The length of a step, in seconds: 30 Hz.
+const DT: f64 = 1.0 / 30.0;
+
+/// A simulation of `network` stepping at 30 Hz, with the slower updates at 10 Hz.
+fn sim<D: traffic_sim::DebugSink>(network: traffic_sim::SimNetwork, sink: D) -> Simulation<D> {
+    let config = traffic_sim::Config { dt: DT, macro_step: 3 };
+    Simulation::with_config(network, config, sink)
+}
 
 /// A simulation of `net`, and its entry lanes.
 fn build(net: &RoadNetwork) -> (Simulation, Vec<LaneId>) {
-    let sim = Simulation::new(compile(net).unwrap().sim, NoopSink);
+    let sim = sim(compile(net).unwrap().sim, NoopSink);
     let entries = sim
         .network()
         .lanes()

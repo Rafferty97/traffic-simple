@@ -11,7 +11,14 @@ use traffic_sim::{
     VehicleSpec,
 };
 
-const DT: f64 = traffic_sim::STEP;
+/// The length of a step, in seconds: 30 Hz.
+const DT: f64 = 1.0 / 30.0;
+
+/// A simulation of `network` stepping at 30 Hz, with the slower updates at 10 Hz.
+fn sim<D: traffic_sim::DebugSink>(network: traffic_sim::SimNetwork, sink: D) -> Simulation<D> {
+    let config = traffic_sim::Config { dt: DT, macro_step: 3 };
+    Simulation::with_config(network, config, sink)
+}
 
 /// SplitMix64, so the probe needs no dependencies.
 struct Rng(u64);
@@ -224,7 +231,7 @@ fn run<D: DebugSink>(
     measure: bool,
 ) -> (Stats, Duration, Simulation<D>) {
     let compiled = compile(net).expect("compiles");
-    let mut sim = Simulation::new(compiled.sim, sink);
+    let mut sim = sim(compiled.sim, sink);
     let entries = sim
         .network()
         .lanes()
@@ -291,7 +298,7 @@ fn run<D: DebugSink>(
 fn why(net: &RoadNetwork, demand: Demand, seed: u64, minutes: f64) {
     use traffic_sim::AccelSource as S;
     let compiled = compile(net).expect("compiles");
-    let mut sim = Simulation::new(compiled.sim, Counts::default());
+    let mut sim = sim(compiled.sim, Counts::default());
     let entries = sim
         .network()
         .lanes()
@@ -408,7 +415,7 @@ fn targeted(
     let compiled = compile(&freeway3()).unwrap();
     let ids = compiled.road_lanes[0].clone();
     let (l, m, r) = (ids[0], ids[1], ids[2]);
-    let mut sim = Simulation::new(compiled.sim, NoopSink);
+    let mut sim = sim(compiled.sim, NoopSink);
     let mut rng = Rng(1);
     let spec = || VehicleSpec { speed_factor: 1.0, ..car(&mut Rng(7)) };
     let _ = &mut rng;
@@ -521,7 +528,7 @@ fn at_the_drop(va: f64, vb: f64, d: f64, x: f64, tb: Option<f64>) -> (bool, u64)
     let compiled = compile(&scenarios::ramps(100.0 / 3.6, 80.0 / 3.6)).unwrap();
     let parallel = compiled.road_lanes[1].clone();
     let (accel, left) = (parallel[0], parallel[1]);
-    let mut sim = Simulation::new(compiled.sim, NoopSink);
+    let mut sim = sim(compiled.sim, NoopSink);
     let spec = VehicleSpec { speed_factor: 1.0, ..car(&mut Rng(7)) };
     let b = sim.insert(
         spec,
@@ -614,7 +621,7 @@ fn grid2() {
 fn merge_probe(flow: f64, minutes: f64, seed: u64) {
     use std::collections::BTreeMap;
     let compiled = compile(&scenarios::ramps(100.0 / 3.6, 80.0 / 3.6)).expect("compiles");
-    let mut sim = Simulation::new(compiled.sim, Counts::default());
+    let mut sim = sim(compiled.sim, Counts::default());
     let entries = sim
         .network()
         .lanes()

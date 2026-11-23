@@ -29,32 +29,11 @@ use crate::vehicle::{Intent, OldFollower, Placement, Vehicle, VehicleId, Vehicle
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Config {
-    /// The length of a step, in seconds.
-    pub step: f64,
-    /// How many steps between longitudinal model updates: every third, at 10 Hz
-    /// with 30 Hz steps.
-    pub accel_every: u32,
-    /// The most gaps for lane changes checked at once, a backstop: drivers'
-    /// checks are spread out by their own cooldowns, and any beyond this wait
-    /// for the next time.
-    #[cfg_attr(feature = "serde", serde(default = "max_gap_checks"))]
-    pub max_gap_checks: usize,
-}
-
-#[cfg(feature = "serde")]
-fn max_gap_checks() -> usize {
-    Config::default().max_gap_checks
-}
-
-/// How many steps a second the simulation takes by default.
-pub const STEPS_PER_SECOND: u32 = 30;
-/// The length of a step by default, in seconds.
-pub const STEP: f64 = 1.0 / STEPS_PER_SECOND as f64;
-
-impl Default for Config {
-    fn default() -> Self {
-        Self { step: STEP, accel_every: 3, max_gap_checks: 64 }
-    }
+    /// The duration of a simulation step.
+    pub dt: f64,
+    /// Expensive simulation logic runs at a reduced rate,
+    /// every `macro_step` steps.
+    pub macro_step: u32,
 }
 
 /// A simulation's whole state at one instant, network included, without its
@@ -85,17 +64,14 @@ pub struct SimState {
     /// holds one to a stop. Few, so a list beats a field on every vehicle.
     pub(crate) caps: Vec<(VehicleId, f64)>,
     /// How it steps.
-    #[cfg_attr(feature = "serde", serde(default))]
     pub(crate) config: Config,
-    /// Steps taken: every [`Config::accel_every`]th updates the longitudinal model.
+    /// Number of simulation steps that have occured since the simulation began.
     #[cfg_attr(feature = "serde", serde(default))]
-    pub(crate) steps: u64,
+    pub(crate) frame: u64,
     /// Time [`Simulation::step_variable`] was given but hasn't stepped yet, in
     /// seconds: less than a step.
     #[cfg_attr(feature = "serde", serde(default))]
     pub(crate) residual: f64,
-    /// Simulated time, in seconds.
-    pub(crate) time: f64,
     /// Each signal controller's place in its plan, by controller.
     #[cfg_attr(feature = "serde", serde(default))]
     pub(crate) signals: Vec<SignalState>,
@@ -104,14 +80,36 @@ pub struct SimState {
     pub(crate) lights: Vec<MovementLight>,
 }
 
+impl SimState {
+    /// Simulated time since the simulation was created, in seconds.
+    pub fn time(&self) -> f64 {
+        self.time_since(0)
+    }
+
+    /// Simulated time since the give `frame`.
+    pub(crate) fn time_since(&self, frame: u64) -> f64 {
+        self.config.dt * self.frame.saturating_sub(frame) as f64
+    }
+}
+
+#[cfg(test)]
+impl SimState {
+    pub(crate) fn macro_step_dt(&self) -> f64 {
+        self.config.dt * (self.config.macro_step as f64)
+    }
+
+    pub(crate) fn set_time(&mut self, time: f64) {
+        self.frame = (time / self.config.dt) as u64;
+    }
+}
+
 /// What the simulation derives from its state, rebuilt rather than saved.
 pub(crate) struct Derived {
     /// Each lane's overlapping lanes outside junctions, from the network.
     pub overlaps: Overlaps,
     /// Which merge each lane belongs to, from the network and the overlaps.
     pub merges: Merges,
-    /// How far beyond each lane's end the paths through it reach (see
-    /// [`Through`]).
+    /// How far beyond each lane's end the paths through it reach (see [`Through`]).
     pub through: Through,
 }
 
@@ -217,16 +215,41 @@ pub enum LaneChangeError {
 }
 
 impl<D: DebugSink> Simulation<D> {
-    /// The whole state, network included: a freeze frame, to clone or serialize.
+    /// Creates a simulation of `network` with default configuration.
+    pub fn new(network: SimNetwork, sink: D) -> Self {
+        let config = Config { dt: 1.0 / 30.0, macro_step: 3 };
+        Self::with_config(network, config, sink)
+    }
+
+    /// Creates a simulation of `network`.
+    pub fn with_config(network: SimNetwork, config: Config, sink: D) -> Self {
+        let lane_count = network.lanes().count();
+        let junction_count = network.junctions().count();
+        let state = SimState {
+            network,
+            vehicles: SlotMap::with_key(),
+            occupants: vec![Vec::new(); lane_count],
+            queues: vec![Queue::default(); junction_count],
+            caps: Vec::new(),
+            config,
+            frame: 0,
+            residual: 0.0,
+            signals: Vec::new(),
+            lights: Vec::new(),
+        };
+        Self::restore(state, sink)
+    }
+
+    /// The current state of the simulation, which can be serialized and restored.
     pub fn state(&self) -> &SimState {
         &self.state
     }
 
-    /// A simulation exactly as it was in `state`, with `sink` for its debug
-    /// events. The sink starts empty, so its events refill as each update runs.
+    /// A simulation exactly as it was in `state`, with `sink` for its debug events.
+    /// The sink starts empty, so its events refill as each update runs.
     pub fn restore(mut state: SimState, sink: D) -> Self {
         assert!(
-            state.config.step > 0.0 && state.config.accel_every > 0,
+            state.config.dt > 0.0 && state.config.macro_step > 0,
             "{:?}",
             state.config
         );
@@ -255,49 +278,27 @@ impl<D: DebugSink> Simulation<D> {
         }
     }
 
-    /// A simulation of `network`, stepping by [`Config::default`].
-    pub fn new(network: SimNetwork, sink: D) -> Self {
-        Self::with_config(network, sink, Config::default())
-    }
-
-    /// A simulation of `network`, stepping as `config` says.
-    pub fn with_config(network: SimNetwork, sink: D, config: Config) -> Self {
-        let lane_count = network.lanes().count();
-        let junction_count = network.junctions().count();
-        let state = SimState {
-            network,
-            vehicles: SlotMap::with_key(),
-            occupants: vec![Vec::new(); lane_count],
-            queues: vec![Queue::default(); junction_count],
-            caps: Vec::new(),
-            config,
-            steps: 0,
-            residual: 0.0,
-            time: 0.0,
-            signals: Vec::new(),
-            lights: Vec::new(),
-        };
-        Self::restore(state, sink)
-    }
-
     /// A signal movement's light now, and for how many steps it has shown it.
     pub fn light(&self, movement: MovementId) -> MovementLight {
         self.state.lights[movement.0 as usize]
     }
 
+    /// The network being simulated.
     pub fn network(&self) -> &SimNetwork {
         &self.state.network
     }
 
     /// Simulated time since the simulation was created, in seconds.
     pub fn time(&self) -> f64 {
-        self.state.time
+        self.state.time()
     }
 
+    /// An immutable reference to the debug sink.
     pub fn sink(&self) -> &D {
         &self.sink
     }
 
+    /// A mutable reference to the debug sink.
     pub fn sink_mut(&mut self) -> &mut D {
         &mut self.sink
     }
@@ -638,7 +639,7 @@ impl<D: DebugSink> Simulation<D> {
         let list = &mut self.state.occupants[neighbor.lane.0 as usize];
         let index = list.partition_point(|o| o.s() <= ghost.s());
         list.insert(index, ghost);
-        self.state.vehicles[id].intent = Some(Intent { side, since: self.state.time });
+        self.state.vehicles[id].intent = Some(Intent { side, since: self.time() });
     }
 
     /// Stops a vehicle indicating, removing its ghost.
@@ -664,7 +665,7 @@ impl<D: DebugSink> Simulation<D> {
     /// Returns how many steps it took.
     pub fn step_variable(&mut self, dt: f64) -> u32 {
         self.state.residual += dt;
-        let step = self.state.config.step;
+        let step = self.state.config.dt;
         let mut taken = 0;
         // A step's worth, give or take rounding, so frames of exactly a step
         // take exactly one.
@@ -681,27 +682,32 @@ impl<D: DebugSink> Simulation<D> {
     /// has reached, from 0 to 1: for drawing vehicles between where they were
     /// before the last step and where they are now.
     pub fn alpha(&self) -> f64 {
-        (self.state.residual / self.state.config.step).clamp(0.0, 1.0)
+        (self.state.residual / self.state.config.dt).clamp(0.0, 1.0)
     }
 
-    /// Advances the simulation by one step, [`Config::step`] seconds.
+    /// Advances the simulation by one step, [`Config::dt`] seconds.
     pub fn step(&mut self) {
-        let dt = self.state.config.step;
-        self.state.time += dt;
-        let SimState { network, signals, lights, .. } = &mut self.state;
-        signal::step(network, signals, lights, dt);
-        // As often as the longitudinal model, which they share lane speeds with.
-        let every = self.state.config.accel_every;
-        if self.state.steps.is_multiple_of(u64::from(every)) {
-            self.update_lane_changes(dt * f64::from(every));
-        }
-        self.state.steps += 1;
-        if self.state.steps.is_multiple_of(u64::from(self.state.config.accel_every)) {
+        let dt = self.state.config.dt;
+        let every = self.state.config.macro_step;
+
+        self.update_signals(dt);
+        if self.state.frame.is_multiple_of(every as u64) {
+            let dt = (every as f64) * dt;
+            self.update_lane_changes(dt);
             self.update_accels();
         }
+
         self.update_motion(dt);
         self.update_occupancy(dt);
         self.update_queues();
+
+        self.state.frame += 1;
+    }
+
+    /// Updates traffic lights.
+    fn update_signals(&mut self, dt: f64) {
+        let SimState { network, signals, lights, .. } = &mut self.state;
+        signal::step(network, signals, lights, dt);
     }
 
     /// Lane changes, for every vehicle, `dt` seconds after the last: the
@@ -793,7 +799,7 @@ impl<D: DebugSink> Simulation<D> {
         }
 
         let noise_step = acceleration::NoiseStep::new(
-            self.state.config.step * f64::from(self.state.config.accel_every),
+            self.state.config.dt * f64::from(self.state.config.macro_step),
         );
         // What its old side and its speed cap allow first, then its own update,
         // so that whether a leader binds it is judged against all of them.
@@ -812,7 +818,7 @@ impl<D: DebugSink> Simulation<D> {
                     barrier::draw_line_gap(vehicle);
                 }
                 if arrived {
-                    vehicle.stopped_at = Some(self.state.steps);
+                    vehicle.stopped_at = Some(self.state.frame);
                 }
                 // Committed past a barrier, it may now arrive at a junction beyond,
                 // or be handed over further in one; released, handed back.
@@ -1494,4 +1500,4 @@ fn remove_ghost(occupants: &mut [Vec<Occupant>], lane: LaneId, id: VehicleId) {
 }
 
 #[cfg(test)]
-mod test;
+pub(crate) mod test;

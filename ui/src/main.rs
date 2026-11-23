@@ -650,7 +650,7 @@ impl App {
                 self.paused = !self.paused;
             }
             if ui.add_enabled(self.paused, egui::Button::new("Step")).clicked() {
-                self.step(self.sim.config().step);
+                self.step(self.sim.config().dt);
             }
             for (speed, label) in [
                 (0.1, "0.1×"),
@@ -668,7 +668,7 @@ impl App {
             // The average time a fixed step takes, and its share of the time it
             // simulates.
             if let Some(average) = self.step_times.average() {
-                let step = self.sim.config().step;
+                let step = self.sim.config().dt;
                 ui.monospace(format!(
                     "step {:.2} ms ({:.0}% of 1/{:.0} s)",
                     average * 1000.0,

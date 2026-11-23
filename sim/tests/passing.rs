@@ -3,14 +3,13 @@
 //! `occupancy`.
 
 use traffic_sim::{
-    DebugEvent, DebugSink, Lane, LaneId, PassCheck, Placement, Route, Side, SimNetwork, Simulation,
-    VehicleId,
+    DebugEvent, DebugSink, Lane, LaneId, PassCheck, Placement, Route, Side, SimNetwork, VehicleId,
 };
 
 mod common;
 use common::car;
 
-const DT: f64 = traffic_sim::STEP;
+use common::DT;
 const SPEED_LIMIT: f64 = 14.0;
 
 /// Keeps every passing check made.
@@ -36,7 +35,7 @@ fn checks_against_a_held_car(ahead: f64) -> usize {
     // Lane 0 is on the left of lane 1.
     let mut network = SimNetwork::new(vec![lane(3.5), lane(0.0)]);
     network.set_adjacent(LaneId(0), LaneId(1), true, true);
-    let mut sim = Simulation::new(network, Checks::default());
+    let mut sim = common::sim(network, Checks::default());
     let changer = sim.insert(
         car(),
         Placement {

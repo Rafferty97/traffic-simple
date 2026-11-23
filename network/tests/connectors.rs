@@ -2,11 +2,11 @@
 //! the room one needs to pass another on each side, unless the network says
 //! otherwise.
 
+mod common;
+
 use glam::DVec2;
 use traffic_network::{Turn, compile, scenarios};
-use traffic_sim::{
-    LaneId, NoopSink, PASSING_CLEARANCE, Placement, Route, SimNetwork, Simulation, VehicleSpec,
-};
+use traffic_sim::{LaneId, NoopSink, PASSING_CLEARANCE, Placement, Route, SimNetwork, VehicleSpec};
 
 /// Whether `point` lies within `lane`'s outline, or just beyond an end: where
 /// a curve's first or last segment turns a little from the lane it meets, their
@@ -31,7 +31,7 @@ fn a_car_keeps_its_body_within_every_connector_it_takes() {
             // Briskly and slowly, since pure pursuit looks further ahead the
             // faster it goes.
             for speed in [limit, 2.0] {
-                let mut sim = Simulation::new(net.clone(), NoopSink);
+                let mut sim = common::sim(net.clone(), NoopSink);
                 let at = Placement { lane: connector, s: 0.0, speed, route: Route::random(0) };
                 let id = sim.insert(car, at);
                 sim.cap_speed(id, speed);

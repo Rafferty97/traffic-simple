@@ -28,7 +28,7 @@ const STILL: f64 = 40.0;
 /// junction is then watched afresh.
 fn run(net: &RoadNetwork, seed: u64, every: f64) -> Result<usize, String> {
     let compiled = compile(net).unwrap();
-    let mut sim = Simulation::new(compiled.sim, NoopSink);
+    let mut sim = common::sim(compiled.sim, NoopSink);
     let entries: Vec<LaneId> = sim
         .network()
         .lanes()

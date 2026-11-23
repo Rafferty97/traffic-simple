@@ -18,9 +18,7 @@ use crate::vehicle::{Vehicle, VehicleId};
 
 /// Lane changes, for every vehicle, `dt` seconds after the last: each driver's
 /// desires from its incentives, cheaply, and a check of the gap for those whose
-/// desire has reached their threshold, up to
-/// [`Config::max_gap_checks`](crate::Config::max_gap_checks) at once, the rest
-/// waiting for the next time. Fills `decisions` with each deciding driver's
+/// desire has reached their threshold. Fills `decisions` with each deciding driver's
 /// state afterwards and what it decided, in order, using `asks` as scratch
 /// space; the simulation applies them. `through` must be exact, for the
 /// follower searches.
@@ -33,7 +31,7 @@ pub(crate) fn decide<D: DebugSink>(
     decisions: &mut Vec<(VehicleId, State, Decision)>,
     asks: &mut Vec<(usize, Side)>,
 ) {
-    let time = state.time;
+    let time = state.time();
     decisions.clear();
     asks.clear();
     for (id, vehicle) in &state.vehicles {
@@ -75,10 +73,8 @@ pub(crate) fn decide<D: DebugSink>(
         };
         decisions.push((id, lc, decision));
     }
-    // The gaps, up to the limit: drivers' own cooldowns spread them out, so
-    // this is only a backstop.
-    let checks = asks.len().min(state.config.max_gap_checks);
-    for &(slot, side) in &asks[..checks] {
+    // The gaps: drivers' own cooldowns spread them out.
+    for &(slot, side) in &*asks {
         let (id, mut lc, _) = decisions[slot];
         let vehicle = &state.vehicles[id];
         // Measured again, for the debug view: checks are few.
@@ -96,17 +92,6 @@ pub(crate) fn decide<D: DebugSink>(
         );
         sink.record(|| DebugEvent::LaneChangeEval { vehicle: id, eval });
         decisions[slot] = (id, lc, decision);
-    }
-    // Those beyond the limit wait for the next time.
-    for &(slot, side) in &asks[checks..] {
-        let (id, lc, _) = decisions[slot];
-        sink.record(|| {
-            let vehicle = &state.vehicles[id];
-            let incentive = incentives(state, speeds, id, vehicle)[index(side)].unwrap_or_default();
-            let waiting = Outcome::Waiting;
-            let eval = unchecked(side, incentive, lc.desire(side), waiting);
-            DebugEvent::LaneChangeEval { vehicle: id, eval }
-        });
     }
 }
 

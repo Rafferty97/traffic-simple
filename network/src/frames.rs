@@ -72,7 +72,7 @@ fn turner_cycle_with_x() -> (Frame, VehicleId) {
     let mut sim = Simulation::new(network, NoopSink);
     let car = VehicleSpec::passenger_car();
     let run_until = |sim: &mut Simulation, done: &dyn Fn(&Simulation) -> bool| {
-        for _ in 0..120 * traffic_sim::STEPS_PER_SECOND {
+        while sim.time() < 120.0 {
             if done(sim) {
                 return;
             }
@@ -144,7 +144,7 @@ mod test {
         assert!(queue.iter().all(|e| e.id != x), "X is queued: {queue:?}");
         // Both get through, T first.
         let mut t_out = None;
-        for _ in 0..60 * traffic_sim::STEPS_PER_SECOND {
+        while sim.time() < 60.0 {
             sim.step();
             let out =
                 |id| sim.get(id).is_none_or(|v| sim.network().lane(v.lane()).junction().is_none());

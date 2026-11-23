@@ -8,7 +8,15 @@ use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use traffic_network::{RoadNetwork, compile, scenarios};
 use traffic_sim::{LaneId, NoopSink, Placement, Route, Simulation, VehicleSpec};
 
-const DT: f64 = traffic_sim::STEP;
+/// The length of a step, in seconds: 30 Hz.
+const DT: f64 = 1.0 / 30.0;
+
+/// A simulation of `network` stepping at 30 Hz, with the slower updates at 10 Hz.
+fn sim<D: traffic_sim::DebugSink>(network: traffic_sim::SimNetwork, sink: D) -> Simulation<D> {
+    let config = traffic_sim::Config { dt: DT, macro_step: 3 };
+    Simulation::with_config(network, config, sink)
+}
+
 const SPEED: f64 = 50.0 / 3.6;
 
 /// The small grid: 4 by 4 crossroads 100 m apart, as the stress test has it.
@@ -37,7 +45,7 @@ fn build(c: &mut Criterion) {
     group.bench_function("simulation_16x16", |b| {
         b.iter_batched(
             || compile(&net).unwrap().sim,
-            |sim| Simulation::new(sim, NoopSink),
+            |network| sim(network, NoopSink),
             BatchSize::LargeInput,
         )
     });
@@ -55,7 +63,7 @@ struct Flooded {
 
 impl Flooded {
     fn new(net: &RoadNetwork, every: u64) -> Self {
-        let sim = Simulation::new(compile(net).unwrap().sim, NoopSink);
+        let sim = sim(compile(net).unwrap().sim, NoopSink);
         let entries = sim
             .network()
             .lanes()
@@ -89,7 +97,7 @@ struct Kept {
 
 impl Kept {
     fn new(net: &RoadNetwork, target: usize) -> Self {
-        let sim = Simulation::new(compile(net).unwrap().sim, NoopSink);
+        let sim = sim(compile(net).unwrap().sim, NoopSink);
         let roads = sim
             .network()
             .lanes()

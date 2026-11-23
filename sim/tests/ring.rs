@@ -7,7 +7,7 @@ use common::{Terms, car, fill_lane, fill_ring, ring, ring_road};
 
 type Sim = Simulation<Terms>;
 
-const DT: f64 = traffic_sim::STEP;
+use common::DT;
 const SPEED_LIMIT: f64 = 14.0;
 
 fn run(sim: &mut Sim, seconds: f64, mut each: impl FnMut(&Sim)) {
@@ -34,7 +34,7 @@ fn check_occupancy(sim: &Sim) {
 
 #[test]
 fn lone_car_laps_forever_without_a_leader() {
-    let mut sim = Simulation::new(ring(230.0, SPEED_LIMIT), Terms::default());
+    let mut sim = common::sim(ring(230.0, SPEED_LIMIT), Terms::default());
     let id = sim.insert(
         car(),
         Placement { lane: LaneId(0), s: 0.0, speed: 0.0, route: Route::default() },
@@ -62,7 +62,7 @@ fn lone_car_laps_forever_without_a_leader() {
 
 #[test]
 fn crowded_ring_never_collides() {
-    let mut sim = Simulation::new(ring(230.0, SPEED_LIMIT), Terms::default());
+    let mut sim = common::sim(ring(230.0, SPEED_LIMIT), Terms::default());
     fill_ring(&mut sim, 22);
     run(&mut sim, 300.0, |sim| {
         assert_eq!(sim.vehicles().count(), 22);
@@ -78,7 +78,7 @@ fn crowded_ring_never_collides() {
 
 #[test]
 fn leaders_form_a_single_cycle() {
-    let mut sim = Simulation::new(ring(230.0, SPEED_LIMIT), Terms::default());
+    let mut sim = common::sim(ring(230.0, SPEED_LIMIT), Terms::default());
     fill_ring(&mut sim, 22);
     run(&mut sim, 30.0, |_| {});
     // Following leaders from any car visits every car once and comes back.
@@ -92,7 +92,7 @@ fn leaders_form_a_single_cycle() {
 
 #[test]
 fn held_car_stops_and_its_follower_queues() {
-    let mut sim = Simulation::new(ring(230.0, SPEED_LIMIT), Terms::default());
+    let mut sim = common::sim(ring(230.0, SPEED_LIMIT), Terms::default());
     fill_ring(&mut sim, 10);
     run(&mut sim, 30.0, |_| {});
 
@@ -115,7 +115,7 @@ fn held_car_stops_and_its_follower_queues() {
 
 #[test]
 fn picking_prefers_the_nearest_body() {
-    let mut sim = Simulation::new(ring(230.0, SPEED_LIMIT), Terms::default());
+    let mut sim = common::sim(ring(230.0, SPEED_LIMIT), Terms::default());
     fill_ring(&mut sim, 4);
     let (id, v) = sim.vehicles().next().unwrap();
     let center = v.center();
@@ -128,7 +128,7 @@ fn picking_prefers_the_nearest_body() {
 
 #[test]
 fn recorded_terms_reach_each_acceleration() {
-    let mut sim = Simulation::new(ring(230.0, SPEED_LIMIT), Terms::default());
+    let mut sim = common::sim(ring(230.0, SPEED_LIMIT), Terms::default());
     fill_ring(&mut sim, 22);
     let held = sim.vehicles().next().unwrap().0;
     sim.hold(held);
@@ -146,7 +146,7 @@ fn recorded_terms_reach_each_acceleration() {
 
 #[test]
 fn three_lane_ring_occupancy_stays_consistent() {
-    let mut sim = Simulation::new(ring_road(230.0, 3, SPEED_LIMIT), Terms::default());
+    let mut sim = common::sim(ring_road(230.0, 3, SPEED_LIMIT), Terms::default());
     // Densest inside and sparsest outside, so drivers have reason to move out.
     // Different counts also keep the lanes' cars from starting side by side.
     for (lane, count) in [(0, 22), (1, 16), (2, 8)] {

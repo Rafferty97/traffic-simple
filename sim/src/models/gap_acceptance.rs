@@ -126,7 +126,7 @@ fn impatience(state: &SimState, vehicle: &Vehicle) -> f64 {
     let Some(since) = vehicle.stopped_at else {
         return 0.0;
     };
-    let waited = state.steps.saturating_sub(since) as f64 * state.config.step;
+    let waited = state.time_since(since);
     let rate = (1.0 + 2.0 * vehicle.spec.assertiveness) / TIME_TO_IMPATIENCE;
     (waited * rate).min(1.0)
 }

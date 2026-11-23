@@ -54,7 +54,7 @@ fn red_line(skew: f64) -> (SimNetwork, Line) {
 /// x. Asserts no corner ever crosses it.
 fn stop(skew: f64, spec: VehicleSpec) -> (f64, f64) {
     let (net, line) = red_line(skew);
-    let mut sim = Simulation::new(net, NoopSink);
+    let mut sim = common::sim(net, NoopSink);
     let at = Placement {
         lane: LaneId(0),
         s: 40.0,

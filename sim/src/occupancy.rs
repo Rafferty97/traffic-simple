@@ -884,7 +884,7 @@ mod test {
     use super::*;
     use crate::debug::NoopSink;
     use crate::network::Lane;
-    use crate::simulation::Simulation;
+
     use crate::vehicle::{Placement, VehicleSpec};
 
     #[test]
@@ -946,7 +946,7 @@ mod test {
             line_gap: 1.0,
             line_gap_spread: 0.0,
         };
-        let mut sim = Simulation::new(network.clone(), NoopSink);
+        let mut sim = crate::simulation::test::new_sim(network.clone(), NoopSink);
         let id = sim.insert(
             spec,
             Placement {

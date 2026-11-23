@@ -9,7 +9,26 @@ pub mod replay;
 use std::f64::consts::TAU;
 
 use glam::DVec2;
-use traffic_sim::{Lane, LaneId, Placement, Route, SimNetwork, Simulation, VehicleSpec};
+use traffic_sim::{
+    Config, DebugSink, Lane, LaneId, Placement, Route, SimNetwork, Simulation, VehicleSpec,
+};
+
+/// The length of a step in the tests' standard simulation, in seconds: 30 Hz.
+pub const DT: f64 = 1.0 / 30.0;
+
+/// The tests' standard stepping: 30 Hz steps, with the slower updates every
+/// third, at 10 Hz.
+pub const CONFIG: Config = Config { dt: DT, macro_step: 3 };
+
+/// A simulation of `network` stepping by [`CONFIG`].
+pub fn sim<D: DebugSink>(network: SimNetwork, sink: D) -> Simulation<D> {
+    Simulation::with_config(network, CONFIG, sink)
+}
+
+/// How many standard steps take `seconds`.
+pub fn steps(seconds: f64) -> u64 {
+    (seconds / DT).round() as u64
+}
 
 pub fn car() -> VehicleSpec {
     VehicleSpec {

@@ -11,7 +11,7 @@ use traffic_sim::{
 mod common;
 use common::{Terms, car};
 
-const DT: f64 = traffic_sim::STEP;
+use common::DT;
 const SPEED_LIMIT: f64 = 14.0;
 
 type Sim = Simulation<Terms>;
@@ -29,7 +29,7 @@ fn two_lanes_with<D: DebugSink>(sink: D) -> Simulation<D> {
     };
     let mut network = SimNetwork::new(vec![lane(3.5), lane(0.0)]);
     network.set_adjacent(LaneId(0), LaneId(1), true, true);
-    Simulation::new(network, sink)
+    common::sim(network, sink)
 }
 
 fn place(lane: u32, s: f64, speed: f64) -> Placement {

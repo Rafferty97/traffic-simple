@@ -328,9 +328,6 @@ pub struct LaneChangeEval {
 pub enum Outcome {
     /// Not enough desire.
     NotWorthIt,
-    /// Enough desire, but waiting a few steps after a refused gap, or for its
-    /// turn, the simulation checking only so many gaps a step.
-    Waiting,
     /// Enough desire, but it, or the follower it would cut in front of, would
     /// brake too hard, or it would be left straddling.
     Unsafe,

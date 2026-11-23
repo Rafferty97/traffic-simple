@@ -7,9 +7,7 @@
 
 use rand::rngs::Xoshiro256PlusPlus;
 use rand::{RngExt, SeedableRng};
-use traffic_sim::{
-    LaneId, Lateral, NoopSink, Placement, Route, Side, Simulation, VehicleId, VehicleSpec,
-};
+use traffic_sim::{LaneId, Lateral, NoopSink, Placement, Route, Side, VehicleId, VehicleSpec};
 
 mod common;
 use common::{car, ring_road};
@@ -21,7 +19,7 @@ const SPEED_LIMIT: f64 = 50.0 / 3.6;
 fn trace(seed: u64, seconds: f64) -> Vec<u64> {
     let network = ring_road(600.0, 3, SPEED_LIMIT);
     let lanes: Vec<LaneId> = network.lanes().map(|(id, _)| id).collect();
-    let mut sim = Simulation::new(network, NoopSink);
+    let mut sim = common::sim(network, NoopSink);
     // Seeded, so the run's inputs are themselves reproducible.
     let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed);
     let mut out = Vec::new();

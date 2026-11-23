@@ -1,12 +1,25 @@
 //! Checks shared by the network's tests.
 
-/// How many steps of the simulation's default length take `seconds`.
-#[allow(dead_code)]
-pub fn steps(seconds: f64) -> u64 {
-    (seconds * f64::from(traffic_sim::STEPS_PER_SECOND)).round() as u64
+#![allow(dead_code)]
+
+use traffic_sim::{Config, ConflictKind, DebugSink, LaneId, SimNetwork, Simulation};
+
+/// The length of a step in the tests' standard simulation, in seconds: 30 Hz.
+pub const DT: f64 = 1.0 / 30.0;
+
+/// The tests' standard stepping: 30 Hz steps, with the slower updates every
+/// third, at 10 Hz.
+pub const CONFIG: Config = Config { dt: DT, macro_step: 3 };
+
+/// A simulation of `network` stepping by [`CONFIG`].
+pub fn sim<D: DebugSink>(network: SimNetwork, sink: D) -> Simulation<D> {
+    Simulation::with_config(network, CONFIG, sink)
 }
 
-use traffic_sim::{ConflictKind, DebugSink, LaneId, Simulation};
+/// How many standard steps take `seconds`.
+pub fn steps(seconds: f64) -> u64 {
+    (seconds / DT).round() as u64
+}
 
 /// How far a vehicle's front may be into a conflict it shouldn't have entered,
 /// in meters, before it counts: the backstop's margin lets one committing just

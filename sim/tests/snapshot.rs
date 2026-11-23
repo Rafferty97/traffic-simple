@@ -53,7 +53,7 @@ fn state<D: DebugSink>(sim: &Simulation<D>) -> Vec<u64> {
 /// the vehicle store has freed slots, lane changes are under way and some
 /// vehicles are indicating.
 fn busy() -> Simulation {
-    let mut sim = Simulation::new(ring_road(600.0, 3, SPEED_LIMIT), NoopSink);
+    let mut sim = common::sim(ring_road(600.0, 3, SPEED_LIMIT), NoopSink);
     let mut rng = Xoshiro256PlusPlus::seed_from_u64(3);
     while sim.time() < 60.0 {
         sim.step_variable(0.005 + 0.03 * rng.random::<f64>());
