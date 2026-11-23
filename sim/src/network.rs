@@ -36,13 +36,28 @@ impl Side {
     }
 }
 
-/// The lane beside another, and whether vehicles may change into it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// How nearly, in meters, two neighbouring lanes' ends must be square across
+/// them to count as together: snapping their points to the grid can tilt a
+/// short first or last segment, so this is looser than [`SAME_POINT`].
+pub const ALIGNED: f64 = 0.01;
+
+/// The lane beside another, whether vehicles may change into it, and where
+/// along the lane it is stored on the two run side by side: from where they
+/// start together to where they end together, or to where the first of them
+/// ends, square across both, as lanes coming into an intersection at a skewed
+/// stop line do, each ending at its own.
+#[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Neighbor {
     pub lane: LaneId,
     /// Whether vehicles may change from the lane this is stored on into `lane`.
     pub can_change: bool,
+    /// Where along the lane this is stored on the two start side by side, in
+    /// meters: 0 where they start together.
+    pub from: f64,
+    /// Where along it they stop being side by side: its length where they end
+    /// together. No lane change runs past it.
+    pub until: f64,
 }
 
 /// Why a network breaks an assumption the simulation makes about it.
@@ -602,9 +617,35 @@ impl SimNetwork {
         left_to_right: bool,
         right_to_left: bool,
     ) {
+        let ends = [left, right].map(|l| 0.0..self.lane(l).geometry().length());
+        self.set_adjacent_over(left, right, left_to_right, right_to_left, ends);
+    }
+
+    /// As [`SimNetwork::set_adjacent`], the two side by side only over `beside`,
+    /// along `left` and `right` in turn: from where they start together to
+    /// where the first of them ends, both square across there.
+    pub fn set_adjacent_over(
+        &mut self,
+        left: LaneId,
+        right: LaneId,
+        left_to_right: bool,
+        right_to_left: bool,
+        beside: [std::ops::Range<f64>; 2],
+    ) {
         assert!(left != right, "a lane can't neighbor itself");
-        let to_right = Neighbor { lane: right, can_change: left_to_right };
-        let to_left = Neighbor { lane: left, can_change: right_to_left };
+        let [l, r] = beside;
+        let to_right = Neighbor {
+            lane: right,
+            can_change: left_to_right,
+            from: l.start,
+            until: l.end,
+        };
+        let to_left = Neighbor {
+            lane: left,
+            can_change: right_to_left,
+            from: r.start,
+            until: r.end,
+        };
         self.lanes[left.0 as usize].adj_right = Some(to_right);
         self.lanes[right.0 as usize].adj_left = Some(to_left);
     }
@@ -614,11 +655,14 @@ impl SimNetwork {
     ///
     /// - Neighbors are mutual: a lane's neighbor on one side has it as its
     ///   neighbor on the other.
-    /// - Neighboring lanes start and end together, within a centimeter.
+    /// - Neighboring lanes start and stop being side by side together, within
+    ///   [`ALIGNED`]: at their ends, unless one ends further on than the other,
+    ///   as lanes at a skewed stop line do.
     /// - A lane's successors start where it ends, within a centimeter.
     /// - Lane sections line up: the neighbor of a lane's successor, if it has
-    ///   one, is a successor of the lane's neighbor. A successor may have no
-    ///   neighbor where the lane beside ends, as at a lane drop.
+    ///   one, is a successor of the lane's neighbor, where the two run side by
+    ///   side to their ends. A successor may have no neighbor where the lane
+    ///   beside ends, as at a lane drop.
     ///
     /// The simulation relies on these to map a vehicle's path to the lanes beside
     /// it. A network that breaks them gives wrong leaders rather than an error, so
@@ -640,15 +684,17 @@ impl SimNetwork {
                         neighbor: neighbor.lane,
                     });
                 }
-                // Where the neighbor's ends fall along this lane.
-                for (end, s) in [(End::Start, 0.0), (End::End, lane.geometry().length())] {
+                // Where the stretch they are side by side over starts and ends
+                // along the neighbor falls along this lane.
+                let theirs = beside.adj(side.opposite()).expect("mutual");
+                for (end, s) in [(End::Start, neighbor.from), (End::End, neighbor.until)] {
                     let at = match end {
-                        End::Start => point(beside, 0.0),
-                        End::End => point(beside, beside.geometry().length()),
+                        End::Start => point(beside, theirs.from),
+                        End::End => point(beside, theirs.until),
                     };
                     let along =
                         lane.geometry().world_to_lane_near(at, lane.geometry().lane_pos(s, 0.0)).s;
-                    if (along - s).abs() >= SAME_POINT {
+                    if (along - s).abs() >= ALIGNED {
                         let offset = along - s;
                         return Err(NetworkError::NotAligned {
                             lane: id,
@@ -658,7 +704,10 @@ impl SimNetwork {
                         });
                     }
                 }
-                for &successor in lane.successors() {
+                // Running on alone past it, its successors needn't line up.
+                let to_end = neighbor.until >= lane.geometry().length() - ALIGNED
+                    && theirs.until >= beside.geometry().length() - ALIGNED;
+                for &successor in lane.successors().iter().filter(|_| to_end) {
                     let Some(next) = self.lane(successor).adj(side) else {
                         continue;
                     };
@@ -751,10 +800,9 @@ impl SimNetwork {
             let ends = [lane_a, lane_b].map(|l| l.geometry().length()..l.geometry().length());
             return Some((ConflictKind::Merge, overlap.unwrap_or(ends)));
         }
-        // A connector may be split into several lanes, one after another, its
-        // first perhaps a lead-in before the junction, so branches of a fork
-        // are traced back to the first lane of each.
-        let (first_a, first_b) = (self.first_of_connector(a), self.first_of_connector(b));
+        // A connector may be split into several lanes, one after another, so
+        // branches of a fork are traced back to the first lane of each.
+        let (first_a, first_b) = (self.first_in_junction(a), self.first_in_junction(b));
         let linked = first_a == first_b
             || shares(
                 self.lane(first_a).predecessors(),
@@ -796,18 +844,6 @@ impl SimNetwork {
     pub(crate) fn left_behind(&self, now: LaneId, lane: LaneId) -> bool {
         let junction = self.lane(lane).junction.map(|j| j.0);
         self.lane(now).junction.map(|j| j.0) != junction || self.leads_to(now, lane)
-    }
-
-    /// The first lane of the connector `lane` is part of: as
-    /// [`first_in_junction`](Self::first_in_junction), and then back through a
-    /// lead-in before the junction, a lane outside any junction whose only
-    /// successor is that one, if there is one.
-    pub(crate) fn first_of_connector(&self, lane: LaneId) -> LaneId {
-        let first = self.first_in_junction(lane);
-        match self.lane(first).predecessors()[..] {
-            [p] if self.lane(p).junction.is_none() && self.lane(p).successors() == [first] => p,
-            _ => first,
-        }
     }
 
     /// Whether `from` leads to `to` through that run of lanes: `to` comes
@@ -989,11 +1025,11 @@ mod test {
         net.set_adjacent(a, b, true, false);
         assert_eq!(
             net.lane(a).adj_right(),
-            Some(Neighbor { lane: b, can_change: true })
+            Some(Neighbor { lane: b, can_change: true, from: 0.0, until: 10.0 })
         );
         assert_eq!(
             net.lane(b).adj_left(),
-            Some(Neighbor { lane: a, can_change: false })
+            Some(Neighbor { lane: a, can_change: false, from: 0.0, until: 10.0 })
         );
         assert_eq!(net.lane(a).adj_left(), None);
         assert_eq!(net.lane(b).adj_right(), None);

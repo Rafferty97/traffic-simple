@@ -140,16 +140,10 @@ pub(crate) fn held_by(
 }
 
 /// The junction a barrier on `path[k]` leads into, if any, and the index on the
-/// path of its first lane there: `path[k]` itself, or, for a barrier on a
-/// lead-in before the junction (see [`SimNetwork::first_of_connector`]), the
-/// lane after it.
+/// path of its first lane there: `path[k]` itself, a barrier into a junction
+/// being at the start of its first lane there.
 fn into_junction(network: &SimNetwork, path: &[LaneId], k: usize) -> Option<(JunctionId, usize)> {
-    if let Some(junction) = network.lane(path[k]).junction() {
-        return Some((junction, k));
-    }
-    let &next = path.get(k + 1)?;
-    let junction = network.lane(next).junction()?;
-    (network.first_of_connector(next) == path[k]).then_some((junction, k + 1))
+    network.lane(path[k]).junction().map(|junction| (junction, k))
 }
 
 /// How much further back than its gap to lines a vehicle at rest may be and

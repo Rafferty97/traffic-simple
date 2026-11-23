@@ -4,8 +4,8 @@ use std::fmt;
 
 use glam::DVec2;
 use traffic_sim::{
-    AMBER_DECEL, Barrier, BarrierKind, Keep, Lane, LaneError, LaneId, Line, Movement, MovementId,
-    NetworkError, Phase, SAME_POINT, SignalPlan, SimNetwork, VehicleSpec,
+    ALIGNED, AMBER_DECEL, Barrier, BarrierKind, Keep, Lane, LaneError, LaneId, Line, Movement,
+    MovementId, NetworkError, Phase, SAME_POINT, SignalPlan, SimNetwork, VehicleSpec,
 };
 
 use crate::arms::{self, StopLine};
@@ -166,10 +166,13 @@ impl Built {
 ///   from each other, at a lane drop or where a lane appears, are not.
 /// - Where roads join, a lane connects to each lane of the next road that
 ///   starts where it ends: two meeting one merge, one meeting two diverge.
-/// - Each intersection connection is a cubic Bézier from one lane's end to the
-///   other's start, along their directions, its control points a third of the
-///   way across. Its width blends from one to the other, and its speed limit
-///   is lowered for its tightest bend.
+/// - Each intersection connection is a quintic Bézier from one lane's end to
+///   the other's start, along their directions, with no curvature at either
+///   end. It is as wide as a vehicle sweeps along it, and its speed limit is
+///   lowered for its tightest bend.
+/// - Lanes coming into an intersection end at their own stop lines, so where
+///   a line is skewed, lanes side by side end apart, and are neighbours only
+///   as far as the first of them ends.
 /// - Each intersection's connectors are one junction. Road lanes merging into
 ///   the same lane are not: vehicles on them keep apart by following.
 pub fn compile(net: &RoadNetwork) -> Result<Compiled, CompileError> {
@@ -189,13 +192,13 @@ pub fn compile(net: &RoadNetwork) -> Result<Compiled, CompileError> {
 /// at a time, each lane's conflicts its own (see `docs/DESIGN.md`, Barriers
 /// inside a junction). Its sweep is checked whole, in the first pass.
 fn compile_swept(net: &RoadNetwork) -> Result<(Compiled, Vec<CompileError>), CompileError> {
-    let (compiled, swept, waiting) = assemble(net, &[], false)?;
+    let (compiled, swept, waiting) = assemble(net, &[])?;
     if !swept.is_empty() || net.intersections.is_empty() {
         return Ok((compiled, swept));
     }
-    // Cut each connector at its stop line, where that isn't at its start, and
-    // where it waits; and again further back while the lane before where it
-    // waits still meets traffic it gives way to, as a sliver at its end can.
+    // Cut each connector where it waits; and again further back while the lane
+    // before where it waits still meets traffic it gives way to, as a sliver at
+    // its end can.
     let mut splits: Vec<Vec<Option<f64>>> =
         compiled.connectors.iter().map(|ids| vec![None; ids.len()]).collect();
     let mut waiting = waiting;
@@ -207,7 +210,7 @@ fn compile_swept(net: &RoadNetwork) -> Result<(Compiled, Vec<CompileError>), Com
             splits[k][c] = Some(at);
         }
         let compiled;
-        (compiled, _, waiting) = assemble(net, &splits, true)?;
+        (compiled, _, waiting) = assemble(net, &splits)?;
         if waiting.is_empty() {
             return Ok((compiled, swept));
         }
@@ -215,6 +218,10 @@ fn compile_swept(net: &RoadNetwork) -> Result<(Compiled, Vec<CompileError>), Com
     let (intersection, connection, _) = waiting[0];
     Err(CompileError::Waiting { intersection, connection })
 }
+
+/// How near one another, in meters, the places a road's lanes are cut at one
+/// end are merged into one vertex of its reference line.
+const MERGE_CUTS: f64 = 0.05;
 
 /// How many times [`compile_swept`] splits a connector again before giving up.
 const SPLIT_PASSES: usize = 8;
@@ -227,17 +234,13 @@ const SPLIT_SNAP: f64 = 0.05;
 const SPLIT_MARGIN: f64 = 0.01;
 
 /// [`compile_swept`]'s passes: each connector split where `splits` says, if it
-/// says, and, with `lead_ins`, at its stop line, where that isn't at its start:
-/// the lane up to the line, its lead-in, is no part of the junction, and the
-/// junction's lanes after it are kept clear. Checked for its sweep if neither
-/// is, along its whole length. With it, each connector that
-/// should be split where it waits, further back if it is already, by
-/// intersection, connection and how far along it.
+/// says. Checked for its sweep if it isn't, along its whole length. With it,
+/// each connector that should be split where it waits, further back if it is
+/// already, by intersection, connection and how far along it.
 #[allow(clippy::type_complexity)]
 fn assemble(
     net: &RoadNetwork,
     splits: &[Vec<Option<f64>>],
-    lead_ins: bool,
 ) -> Result<(Compiled, Vec<CompileError>, Vec<(usize, usize, f64)>), CompileError> {
     let mut lanes: Vec<Lane> = Vec::new();
     let mut built: Vec<Built> = Vec::new();
@@ -255,12 +258,24 @@ fn assemble(
         let profiles: Vec<_> = road.lanes.iter().flat_map(|l| [l.offset, l.width]).collect();
         let total =
             *Polyline::new(road.start, &road.pieces, &profiles, [&[], &[]]).s.last().unwrap();
-        // How far back from each end its lanes coming in and going out are cut.
-        let cut = ends[r].map(|end| end.map(|(_, arm)| arm));
-        let cuts = [false, true].map(|at_end| {
-            cut[at_end as usize].map_or([0.0; 2], |arm| arms::cuts(road, total, &arm, at_end))
-        });
-        let kept = |c: [f64; 2]| c.into_iter().filter(|&d| d > 0.0).collect::<Vec<_>>();
+        // How far back from each end each of its lanes is cut, coming in or
+        // going out.
+        let arm = ends[r].map(|end| end.map(|(_, arm)| arm));
+        let cut_of = |lane: &crate::RoadLane, at_end: bool| {
+            arm[at_end as usize].map_or(0.0, |arm| arms::cut(lane, total, &arm, at_end))
+        };
+        // Every distinct cut at an end, for the reference line's vertices: any
+        // within MERGE_CUTS of another merged into the one furthest back, so no
+        // sliver of a segment kinks the lanes when they are snapped to the
+        // grid. A lane cut there ends a little short of its stop line, which
+        // its barrier's line still holds vehicles at.
+        let kept = |at_end: bool| {
+            let mut cuts: Vec<f64> =
+                road.lanes.iter().map(|l| cut_of(l, at_end)).filter(|&d| d > 0.0).collect();
+            cuts.sort_by(|a, b| b.total_cmp(a));
+            cuts.dedup_by(|a, b| *b - *a < MERGE_CUTS);
+            cuts
+        };
         if road
             .keep_clear
             .iter()
@@ -270,21 +285,32 @@ fn assemble(
         }
         // Vertices where its lanes are cut, and where its keep-clear zones
         // start and end, so they are square across it.
-        let mut from_start = kept(cuts[0]);
+        let (start_cuts, end_cuts) = (kept(false), kept(true));
+        let mut from_start = start_cuts.clone();
         from_start.extend(road.keep_clear.iter().flat_map(|z| [z.from, z.to]));
         let line = Polyline::new(
             road.start,
             &road.pieces,
             &profiles,
-            [&from_start, &kept(cuts[1])],
+            [&from_start, &end_cuts],
         );
         let mut ids = Vec::new();
         for (i, lane) in road.lanes.iter().enumerate() {
             let mut points = line.offset(&lane.offset);
             let mut half_widths: Vec<[f64; 2]> =
                 line.s.iter().map(|&s| [0.5 * lane.width.at(s); 2]).collect();
-            // Where it is cut at each end, coming in or going out.
-            let at = |at_end: bool| cuts[at_end as usize][!arms::arriving(lane, at_end) as usize];
+            // Where it is cut at each end, coming in or going out: at the
+            // vertex its cut was merged into.
+            let at = |at_end: bool| {
+                let cut = cut_of(lane, at_end);
+                let vertices = if at_end { &end_cuts } else { &start_cuts };
+                vertices
+                    .iter()
+                    .copied()
+                    .min_by(|a, b| (a - cut).abs().total_cmp(&(b - cut).abs()))
+                    .filter(|_| cut > 0.0)
+                    .unwrap_or(0.0)
+            };
             let n = points.len();
             let lo = if at(false) > 0.0 {
                 line.vertex(at(false))
@@ -351,10 +377,8 @@ fn assemble(
     }
 
     let mut connectors = Vec::new();
-    // Each connection's lanes in its junction, more than one where it is split;
-    // and how far along it the first of them starts, after any lead-in.
+    // Each connection's lanes in its junction, more than one where it is split.
     let mut pieces = Vec::new();
-    let mut lead_lengths: Vec<Vec<f64>> = Vec::new();
     // Each connection's first lane, where its stop line's barrier goes.
     let mut entries: Vec<Vec<LaneId>> = Vec::new();
     let mut turns = Vec::new();
@@ -364,7 +388,6 @@ fn assemble(
     for (k, intersection) in net.intersections.iter().enumerate() {
         let mut ids = Vec::new();
         let mut parts = Vec::new();
-        let mut leads = Vec::new();
         let mut firsts = Vec::new();
         let mut ways = Vec::new();
         let mut lines = Vec::new();
@@ -408,22 +431,19 @@ fn assemble(
                 tail,
                 intersection.connector_width,
             );
-            let (safe, centre, line) = stop(net, &polylines, &ends, from);
+            let (safe, line) = stop(net, &polylines, &ends, from);
             lines.push((safe, line));
             bodies.push(body);
             let limit = net.roads[from.road.0].speed_limit.min(net.roads[to.road.0].speed_limit);
             let what = || format!("intersection {k} connection {c}");
             let limit = turn_limit(&connector.points, limit);
-            // Cut where its stop line crosses its centreline, which no vehicle
-            // stopping for it passes, then where it waits, each along the whole.
-            let lead = (lead_ins && centre > SPLIT_MARGIN).then_some(centre);
-            let waits = splits.get(k).and_then(|s| s[c]);
+            // Cut where it waits, if it does.
             let mut cut = Vec::new();
-            let (mut rest, mut done) = (connector, 0.0);
-            for at in [lead, waits].into_iter().flatten() {
-                let [before, after] = rest.split(at - done);
+            let mut rest = connector;
+            if let Some(at) = splits.get(k).and_then(|s| s[c]) {
+                let [before, after] = rest.split(at);
                 cut.push(before);
-                (rest, done) = (after, at);
+                rest = after;
             }
             cut.push(rest);
             let mut lanes_of = Vec::new();
@@ -435,22 +455,14 @@ fn assemble(
             let ends = [lane_id(from)].into_iter().chain(lanes_of.iter().copied());
             links.extend(ends.zip(lanes_of.iter().copied().chain([lane_id(to)])));
             ids.push(lanes_of[0]);
-            // Its barrier at its stop line, on its lead-in if it has one, and
-            // its lanes in the junction after it.
+            // Its barrier at its stop line, at its start.
             firsts.push(lanes_of[0]);
-            if let Some(lead) = lead {
-                lanes_of.remove(0);
-                leads.push(lead);
-            } else {
-                leads.push(0.0);
-            }
             parts.push(lanes_of);
         }
         connectors.push(ids);
         pieces.push(parts);
         turns.push(ways);
         stops.push(lines);
-        lead_lengths.push(leads);
         entries.push(firsts);
     }
 
@@ -494,13 +506,24 @@ fn assemble(
                 continue;
             }
             let (u, l) = (road_lanes[r][pair[0]], road_lanes[r][pair[1]]);
+            let [over_u, over_l] = side_by_side(&sim, u, l);
             // Going forward, the upper lane is on the left of the lower one;
             // going backward, on its right.
             match upper.direction {
-                Direction::Forward => sim.set_adjacent(u, l, upper.change_right, lower.change_left),
-                Direction::Backward => {
-                    sim.set_adjacent(l, u, lower.change_right, upper.change_left)
-                }
+                Direction::Forward => sim.set_adjacent_over(
+                    u,
+                    l,
+                    upper.change_right,
+                    lower.change_left,
+                    [over_u, over_l],
+                ),
+                Direction::Backward => sim.set_adjacent_over(
+                    l,
+                    u,
+                    lower.change_right,
+                    upper.change_left,
+                    [over_l, over_u],
+                ),
             }
         }
     }
@@ -526,9 +549,7 @@ fn assemble(
                 &turns[k],
                 &stops[k],
             );
-            // Along the whole connector, its lead-in too.
-            let lead = &lead_lengths[k];
-            waiting.extend(waits.into_iter().map(|(c, at)| (k, c, at + lead[c])));
+            waiting.extend(waits.into_iter().map(|(c, at)| (k, c, at)));
         }
         if let Control::Priority { .. } = &intersection.control {
             let waits = add_priority(
@@ -540,8 +561,7 @@ fn assemble(
                 &turns[k],
                 &stops[k],
             );
-            let lead = &lead_lengths[k];
-            waiting.extend(waits.into_iter().map(|(c, at)| (k, c, at + lead[c])));
+            waiting.extend(waits.into_iter().map(|(c, at)| (k, c, at)));
         }
         if intersection.control == Control::AllWayStop {
             add_all_way_stop(&mut sim, &entries[k], &stops[k]);
@@ -559,6 +579,39 @@ fn assemble(
         swept,
         waiting,
     ))
+}
+
+/// Where along each of two lanes of a road, side by side the same way, the two
+/// run beside each other: from where the later of them starts to where the
+/// first of them ends, each found along the other, where they are square across
+/// both. Lanes coming into an intersection end at their own stop lines, apart
+/// where the line is skewed.
+fn side_by_side(sim: &SimNetwork, a: LaneId, b: LaneId) -> [std::ops::Range<f64>; 2] {
+    let [ga, gb] = [a, b].map(|l| sim.lane(l).geometry());
+    let [la, lb] = [ga.length(), gb.length()];
+    let point = |g: &traffic_sim::LaneGeometry, s: f64| g.lane_to_world(g.lane_pos(s, 0.0));
+    // Where `s` along `from` is along `onto`.
+    let along =
+        |from: &traffic_sim::LaneGeometry, s: f64, onto: &traffic_sim::LaneGeometry, near: f64| {
+            onto.world_to_lane_near(point(from, s), onto.lane_pos(near, 0.0)).s
+        };
+    // The later start, and the earlier end, or theirs where they start or end
+    // together.
+    let (from_a, from_b) = match along(gb, 0.0, ga, 0.0) {
+        s if s > ALIGNED => (s, 0.0),
+        _ => match along(ga, 0.0, gb, 0.0) {
+            s if s > ALIGNED => (0.0, s),
+            _ => (0.0, 0.0),
+        },
+    };
+    let (until_a, until_b) = match along(gb, lb, ga, la) {
+        s if s < la - ALIGNED => (s, lb),
+        _ => match along(ga, la, gb, lb) {
+            s if s < lb - ALIGNED => (la, s),
+            _ => (la, lb),
+        },
+    };
+    [from_a..until_a, from_b..until_b]
 }
 
 /// What [`fit_arms`] rounds how far it moves a stop line or lengthens a run
@@ -1051,35 +1104,34 @@ fn nearest(net: &RoadNetwork, lane: LaneRef, turn: Turn) -> bool {
     }
 }
 
-/// Where the stop line of `from`'s road end crosses a connector from it,
-/// along the connector, first where it is safe to stop, then where it crosses
-/// its centreline, which no vehicle stopping for it can pass: where no vehicle crossing it along the lane could reach
-/// it sooner, the crossing of its centreline set back by the lane's half-width
-/// times the tangent of the line's skew; with the line itself, if it is skewed.
+/// Where the stop line of `from`'s road end crosses a connector from it, along
+/// the connector, where it is safe to stop: where no vehicle crossing the line
+/// along the lane could reach it sooner, the crossing of its centreline set
+/// back by the lane's half-width times the tangent of the line's skew, but no
+/// earlier than the connector's start, where its lane ends, at the crossing;
+/// with the line itself, if it is skewed, which a vehicle stops by.
 fn stop(
     net: &RoadNetwork,
     polylines: &[Polyline],
     ends: &[[Option<(usize, crate::Arm)>; 2]],
     from: LaneRef,
-) -> (f64, f64, Option<Line>) {
+) -> (f64, Option<Line>) {
     let road = &net.roads[from.road.0];
     let lane = &road.lanes[from.lane];
     let at_end = lane.direction == Direction::Forward;
     let Some((_, arm)) = ends[from.road.0][at_end as usize] else {
-        return (0.0, 0.0, None);
+        return (0.0, None);
     };
     let line = &polylines[from.road.0];
     let total = *line.s.last().unwrap();
     let s_end = if at_end { total } else { 0.0 };
     let (offset, half) = (lane.offset.at(s_end), 0.5 * lane.width.at(s_end));
-    let cut = arms::cuts(road, total, &arm, at_end)[0];
-    let centre = cut - arms::back(&arm, at_end, offset);
-    let along = centre - half * arm.skew.tan().abs();
+    let cut = arms::cut(lane, total, &arm, at_end);
+    let along = cut - arms::back(&arm, at_end, offset) - half * arm.skew.tan().abs();
     let stop = StopLine::new(line, &arm, at_end);
     let skewed = arm.skew != 0.0;
     (
         along.max(0.0),
-        centre.max(0.0),
         skewed.then_some(Line { point: stop.point, normal: stop.normal }),
     )
 }

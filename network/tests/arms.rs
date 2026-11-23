@@ -79,40 +79,45 @@ fn a_skewed_stop_line_holds_every_connector_by_its_line_from_where_it_is_safe() 
     let skew = 20f64.to_radians();
     let net = scenarios::signalised_crossroads(2, 50.0 / 3.6);
     let set = compile(&with_arm(net, 0, |a| a.skew = skew)).unwrap();
-    // The lanes coming in still end side by side, square across the road.
+    // The lanes coming in each end at their own stop line, apart along the
+    // road, side by side only to where the first of them ends.
     let ends: Vec<DVec2> =
         (0..2).map(|i| *points(&set, lane(&set, 0, i)).last().unwrap()).collect();
     let dir = {
         let p = points(&set, lane(&set, 0, 0));
         (p[p.len() - 1] - p[p.len() - 2]).normalize()
     };
+    let apart = (ends[1] - ends[0]).dot(dir).abs();
+    assert!(apart > 1.0, "they end {apart:.3} m apart");
+    let [a, b] = [0, 1].map(|i| lane(&set, 0, i));
+    let beside = set.sim.lane(a).adj_left().or(set.sim.lane(a).adj_right()).unwrap();
+    assert_eq!(beside.lane, b);
+    let length = |l| set.sim.lane(l).geometry().length();
     assert!(
-        (ends[1] - ends[0]).dot(dir).abs() < 1e-3,
-        "they end out of step"
+        beside.until < length(a) - 1.0
+            || set.sim.lane(b).adj_left().or(set.sim.lane(b).adj_right()).unwrap().until
+                < length(b) - 1.0,
+        "they are side by side to the end"
     );
     for i in 0..2 {
         for id in from(&set, lane(&set, 0, i)) {
-            // Cut where its line crosses its centreline, unless that is its
-            // start: a lead-in up to it, outside the junction, its barrier on
-            // it, then the junction's lanes, kept clear.
+            // Its connector wholly in the junction, kept clear, its barrier,
+            // with the line, at its start: its lane ends where the line
+            // crosses its centre, so its edges there are either side of it.
             let first = set.sim.lane(id);
-            match first.junction() {
-                Some(_) => assert!(first.keep_clear(), "{id:?}"),
-                None => {
-                    assert!(!first.keep_clear(), "{id:?}");
-                    let next = set.sim.lane(first.successors()[0]);
-                    assert!(next.junction().is_some() && next.keep_clear(), "{id:?}");
-                }
-            }
+            assert!(first.junction().is_some() && first.keep_clear(), "{id:?}");
             let barrier = set.sim.lane(id).barriers()[0];
+            assert_eq!(barrier.s, 0.0, "{id:?}");
             let line = barrier.line.expect("a skewed stop line is a line");
-            // At its point, the whole lane is short of the line, one edge just.
             let geometry = set.sim.lane(id).geometry();
-            let edge = |t: f64| geometry.lane_to_world(geometry.lane_pos(barrier.s, t));
-            let short = [1.75, -1.75].map(|t| line.short_of(edge(t)));
-            let least = short[0].min(short[1]);
+            let at = |t: f64| geometry.lane_to_world(geometry.lane_pos(0.0, t));
             assert!(
-                least.abs() < 1e-3,
+                line.short_of(at(0.0)).abs() < 1e-3,
+                "{id:?}: not at the line"
+            );
+            let short = [1.75, -1.75].map(|t| line.short_of(at(t)));
+            assert!(
+                (short[0] + short[1]).abs() < 1e-3 && short[0].abs() > 0.1,
                 "{id:?}: its edges are {short:?} short of the line"
             );
         }

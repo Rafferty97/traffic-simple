@@ -1767,7 +1767,7 @@ fn draw_lights(painter: &egui::Painter, sim: &Simulation<DebugState>) {
             // junction, each the only way on from the last.
             let (mut on, mut colour) = (lane, colour);
             while let [next] = on.successors()[..] {
-                // Into the junction from a lead-in, or on through it.
+                // On through the junction.
                 let next_lane = network.lane(next);
                 let on_through = on.junction().is_none_or(|j| next_lane.junction() == Some(j));
                 if next_lane.junction().is_none() || !on_through {

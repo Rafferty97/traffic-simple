@@ -5,7 +5,7 @@
 use glam::DVec2;
 
 use crate::reference::Polyline;
-use crate::{Arm, Direction, Road, RoadLane, RoadNetwork};
+use crate::{Arm, Direction, RoadLane, RoadNetwork};
 
 /// Each road's ends, start and end: the intersection each meets, if any, and
 /// how.
@@ -45,17 +45,18 @@ pub(crate) fn back(arm: &Arm, at_end: bool, offset: f64) -> f64 {
     arm.stop_line + sign * offset * arm.skew.tan()
 }
 
-/// How far back from the road end its lanes coming in end, and its lanes going
-/// out start: the first where its stop line is furthest back across them, the
-/// second its run out.
-pub(crate) fn cuts(road: &Road, total: f64, arm: &Arm, at_end: bool) -> [f64; 2] {
+/// How far back from the road end `lane` is cut: coming in, where its stop line
+/// crosses its centre, so that a vehicle stopping by the line, its nearest
+/// corner short of it, has its front short of the lane's end, never in the
+/// junction before it commits; going out, the arm's run out. Each lane coming
+/// in ends at its own stop line, so lanes beside each other end apart where
+/// the line is skewed.
+pub(crate) fn cut(lane: &RoadLane, total: f64, arm: &Arm, at_end: bool) -> f64 {
+    if !arriving(lane, at_end) {
+        return arm.run_out;
+    }
     let s = station(total, at_end, 0.0);
-    let edges = road.lanes.iter().filter(|l| arriving(l, at_end)).flat_map(|l| {
-        let (o, w) = (l.offset.at(s), 0.5 * l.width.at(s));
-        [o - w, o + w]
-    });
-    let cut_in = edges.map(|o| back(arm, at_end, o)).fold(0.0, f64::max);
-    [cut_in, arm.run_out]
+    back(arm, at_end, lane.offset.at(s)).max(0.0)
 }
 
 /// A road end's stop line: a point on it, its direction, and its normal,
