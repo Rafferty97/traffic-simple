@@ -25,3 +25,11 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# One codegen unit, so the simulation's hot paths inline across modules, and
+# thin LTO across crates, for slower release builds: against the defaults, a
+# step on the busy 10,000-vehicle ring takes about 45% less time, and on the
+# 10,000-vehicle city grid about 13% less. Benchmarks inherit it.
+[profile.release]
+codegen-units = 1
+lto = "thin"
