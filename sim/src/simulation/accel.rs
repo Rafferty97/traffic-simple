@@ -9,11 +9,13 @@ use slotmap::SlotMap;
 use super::SimState;
 use crate::barrier;
 use crate::debug::{AccelSource, DebugEvent, DebugSink};
-use crate::following::{Ahead, Along, Found, for_each_leader};
+use std::ops::ControlFlow;
+
+use crate::following::{Ahead, Along, Found, find_leaders, for_each_leader};
 use crate::junction::{self, Entry, Queue, junction_term};
 use crate::merge::{self, Merges};
 use crate::models::acceleration;
-use crate::models::gap_acceptance;
+use crate::models::gap_acceptance::{self, Answer};
 use crate::models::signal::Light;
 use crate::network::{BarrierKind, JunctionId, LaneId, Side, SimNetwork};
 use crate::query::{LaneSpeeds, friction, speed_of};
@@ -96,65 +98,43 @@ pub(super) fn longitudinal<D: DebugSink>(
     // from rest.
     let halfway = acceleration::kept_room(&state.network, vehicle);
     // How many barriers ahead it is committed to, in order: those it is released
-    // from drop out, with all after them, and once one holds it, or one beyond is
-    // found out of turn behind one shielded, the rest wait.
+    // from drop out, with all after them. The nearest it hasn't committed to is
+    // the head's to decide about, once the search is done; the search stops
+    // there, unless the barrier may let it pass for now, a green light or a
+    // keep-clear zone, when it goes on to find the leaders beyond, and stops at
+    // the next.
     let mut committed = vehicle.committed;
-    let mut held = false;
-    let mut arrived = false;
+    let mut head = None;
     let reach = halfway.map_or(0.0, |h| vehicle.spec.min_gap + h);
-    for_each_leader(state, vehicle, Along::Path(own), reach, |found| {
+    let _ = find_leaders(state, vehicle, Along::Path(own), reach, |found| {
         if let Found::Ahead(Ahead::Barrier { lane, index, rank }, gap, _) = found {
             let barrier = state.network.lane(lane).barriers()[usize::from(index)];
             let gap = barrier::gap_to(vehicle, &barrier, gap);
             if rank < u16::from(committed) {
                 if !barrier::released(state, id, vehicle, lane, barrier, gap) {
-                    return;
+                    return ControlFlow::Continue(());
                 }
                 committed = rank as u8;
             }
-            if held || rank != u16::from(committed) {
-                held = true;
-                return;
+            // Found in turn, it is the head's; out of turn, beyond one shielded,
+            // it waits.
+            if head.is_none() && rank == u16::from(committed) {
+                head = Some((lane, index, barrier, gap));
             }
-            let k = vehicle.path.iter().position(|&l| l == lane).unwrap_or(0);
-            let (decision, yields_to) =
-                gap_acceptance::decide(state, through, id, vehicle, k, barrier, gap);
-            // At rest at a give-way, stop or all-way stop line, or a red light it
-            // may turn on, as the head on its way to it: it has arrived there.
-            // Not at rest further back, behind a vehicle headed elsewhere.
-            let stops = match barrier.kind {
-                BarrierKind::GiveWay | BarrierKind::Stop | BarrierKind::AllWayStop => true,
-                BarrierKind::Signal { movement, on_red } => {
-                    on_red.is_some() && state.lights[movement.0 as usize].light == Light::Red
+            return match barrier.kind {
+                BarrierKind::Signal { movement, .. }
+                    if head.is_some_and(|(l, i, ..)| (l, i) == (lane, index))
+                        && state.lights[movement.0 as usize].light == Light::Green =>
+                {
+                    ControlFlow::Continue(())
                 }
-                _ => false,
+                BarrierKind::KeepClear { .. }
+                    if head.is_some_and(|(l, i, ..)| (l, i) == (lane, index)) =>
+                {
+                    ControlFlow::Continue(())
+                }
+                _ => ControlFlow::Break(()),
             };
-            if stops
-                && vehicle.speed == 0.0
-                && gap <= state.longitudinal.line_gap(id) + barrier::AT_LINE
-                && vehicle.stopped_at.is_none()
-            {
-                arrived = true;
-            }
-            sink.record(|| DebugEvent::Barrier {
-                vehicle: id,
-                lane,
-                index,
-                gap,
-                decision,
-                yields_to,
-            });
-            match decision {
-                barrier::Decision::Commit => committed = committed.saturating_add(1),
-                barrier::Decision::Pass => held = true,
-                barrier::Decision::Hold(term) => {
-                    held = true;
-                    let source = AccelSource::Barrier { lane, index, gap };
-                    sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
-                    rest = rest.min(term);
-                }
-            }
-            return;
         }
         if let Found::Ahead(ahead, gap, _) = found {
             if let (true, Ahead::Ghost(owner)) = (first, ahead) {
@@ -163,7 +143,7 @@ pub(super) fn longitudinal<D: DebugSink>(
             first = false;
         }
         let Some(term) = react(&state.vehicles, sink, id, vehicle, found, halfway) else {
-            return;
+            return ControlFlow::Continue(());
         };
         match found {
             // On a loop shorter than its horizon it can find itself ahead, which
@@ -181,7 +161,61 @@ pub(super) fn longitudinal<D: DebugSink>(
             }
             _ => rest = rest.min(term),
         }
+        ControlFlow::Continue(())
     });
+
+    // The head's barrier: gap acceptance decides, at most one a step, and the
+    // core carries it out. Committing, it sees beyond at the next update.
+    let mut arrived = false;
+    if let Some((lane, index, barrier, gap)) = head {
+        let k = vehicle.path.iter().position(|&l| l == lane).unwrap_or(0);
+        let answer = gap_acceptance::decide(state, through, id, vehicle, k, barrier, gap);
+        let light = match barrier.kind {
+            BarrierKind::Signal { movement, .. } => Some(state.lights[movement.0 as usize].light),
+            _ => None,
+        };
+        debug_assert!(
+            answer != Answer::Pass
+                || light == Some(Light::Green)
+                || matches!(barrier.kind, BarrierKind::KeepClear { .. }),
+            "only a green light or a keep-clear zone lets a vehicle pass for now: {answer:?} at {barrier:?}"
+        );
+        let line_gap = state.longitudinal.line_gap(id);
+        // At rest at a give-way, stop or all-way stop line, or a red light it
+        // may turn on, as the head on its way to it: it has arrived there.
+        // Not at rest further back, behind a vehicle headed elsewhere.
+        let stops = match barrier.kind {
+            BarrierKind::GiveWay | BarrierKind::Stop | BarrierKind::AllWayStop => true,
+            BarrierKind::Signal { on_red, .. } => on_red.is_some() && light == Some(Light::Red),
+            _ => false,
+        };
+        if stops
+            && vehicle.speed == 0.0
+            && gap <= line_gap + barrier::AT_LINE
+            && vehicle.stopped_at.is_none()
+        {
+            arrived = true;
+        }
+        let (decision, yields_to) = match answer {
+            Answer::Commit => (barrier::Decision::Commit, None),
+            Answer::Pass => (barrier::Decision::Pass, None),
+            Answer::Yield(_) | Answer::Stop => {
+                let term = acceleration::hold(&vehicle.spec, line_gap, vehicle.speed, gap);
+                let source = AccelSource::Barrier { lane, index, gap };
+                sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
+                rest = rest.min(term);
+                let yields_to = match answer {
+                    Answer::Yield(other) => Some(other),
+                    _ => None,
+                };
+                (barrier::Decision::Hold(term), yields_to)
+            }
+        };
+        if answer == Answer::Commit {
+            committed = committed.saturating_add(1);
+        }
+        sink.record(|| DebugEvent::Barrier { vehicle: id, lane, index, gap, decision, yields_to });
+    }
 
     let binding = binding.map(|b| Binding { rest, ..b });
     let accel = binding.map_or(rest, |b| b.term.min(rest));

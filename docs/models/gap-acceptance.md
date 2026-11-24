@@ -4,6 +4,8 @@ When the vehicle at the head of a barrier commits to crossing it, behind the mod
 
 ## When the head commits
 
+At each longitudinal update, for the nearest barrier on its path the head hasn't committed to, the model answers one of four ways: **commit**, and the barrier isn't there for it from then on; **pass** for now, held by nothing though not committed, as at a green light it can still stop for or a keep-clear zone with room past it, and only those; **yield** to a vehicle, the first with priority it found no gap before or behind, or one in the junction it gives way to; or **stop**, for no vehicle in particular, as at a red or amber light or with no room beyond. The core holds a vehicle that yields or stops short of the line.
+
 - **When it commits,** at each longitudinal update, decided from a read-only view of the state and applied after:
 
 | Barrier          | Commits when                                                                                                                     |

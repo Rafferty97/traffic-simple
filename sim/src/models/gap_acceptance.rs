@@ -4,23 +4,39 @@
 //! with its impatience; at an all-way stop, by the order vehicles came to rest;
 //! and everywhere, once there is room beyond and nobody inside it gives way to.
 //!
-//! What it decides, the core's [`crate::barrier`] module carries out: counting what a
-//! vehicle has committed to, passing and releasing it, and holding it at the
-//! line. A gap is taken ahead only of vehicles not yet in the junction's queue,
+//! It answers once per longitudinal update, for the nearest barrier the head
+//! hasn't committed to, and the core carries the answer out (see
+//! [`crate::barrier`]): counting what a vehicle has committed to, passing and
+//! releasing it, and holding it at the line. A gap is taken ahead only of vehicles not yet in the junction's queue,
 //! and behind only those queued, so that a vehicle joins the queue where it
 //! means to go; a replacement must keep to that.
 
-use crate::barrier::{Decision, held_by_light, holds_before, into_junction, nth};
-use crate::models::acceleration::{hold, reach_time};
+use crate::barrier::{held_by_light, holds_before, into_junction, nth};
+use crate::models::acceleration::reach_time;
 use crate::models::signal::Light;
 use crate::network::{Barrier, BarrierKind, Conflict, JunctionId, LaneId, SimNetwork};
 use crate::simulation::SimState;
 use crate::vehicle::{Vehicle, VehicleId};
 
+/// What the head on its way to a barrier does about it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Answer {
+    /// It commits to crossing: from now on, the barrier isn't there for it.
+    Commit,
+    /// It isn't committed yet, but nothing holds it back: a green light it can
+    /// still stop for, or a keep-clear zone with room past it.
+    Pass,
+    /// It stops at the line, giving way to this vehicle: the first with
+    /// priority it found no gap before or behind, or one already in the
+    /// junction it gives way to.
+    Yield(VehicleId),
+    /// It stops at the line, for no vehicle in particular: a red or amber light,
+    /// or no room beyond.
+    Stop,
+}
+
 /// What `vehicle`, the head on its way to `barrier`, the `k`th lane of its path,
-/// `gap` from its front to the line, does about it, and the vehicle it gives
-/// way to, if it is held for one: the first with priority it found no gap
-/// before or behind, or one already in the junction it gives way to.
+/// `gap` from its front to the line, does about it.
 pub(crate) fn decide(
     state: &SimState,
     through: &[f64],
@@ -29,7 +45,7 @@ pub(crate) fn decide(
     k: usize,
     barrier: Barrier,
     gap: f64,
-) -> (Decision, Option<VehicleId>) {
+) -> Answer {
     let spec = &vehicle.spec;
     let speed = vehicle.speed;
     // Whether it can stop where it would like, a line gap short, at `decel`.
@@ -59,7 +75,7 @@ pub(crate) fn decide(
         // couldn't have stopped comfortably committed while it was green.
         BarrierKind::Signal { movement, on_red } => match state.lights[movement.0 as usize].light {
             Light::Green if can_stop(spec.comfy_decel) => match room() {
-                true => return (Decision::Pass, None),
+                true => return Answer::Pass,
                 false => false,
             },
             Light::Green => room(),
@@ -78,7 +94,7 @@ pub(crate) fn decide(
         BarrierKind::KeepClear { length } => {
             let room = room_past(state, id, vehicle, k, barrier.s, length);
             if room && can_stop(spec.comfy_decel) {
-                return (Decision::Pass, None);
+                return Answer::Pass;
             }
             room
         }
@@ -89,12 +105,10 @@ pub(crate) fn decide(
                 && room()
         }
     };
-    match commit {
-        true => (Decision::Commit, None),
-        false => (
-            Decision::Hold(hold(spec, line_gap, speed, gap)),
-            yields_to.get(),
-        ),
+    match (commit, yields_to.get()) {
+        (true, _) => Answer::Commit,
+        (false, Some(other)) => Answer::Yield(other),
+        (false, None) => Answer::Stop,
     }
 }
 
