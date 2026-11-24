@@ -314,11 +314,11 @@ pub fn reach_time(speed: f64, accel: f64, max_speed: f64, distance: f64) -> f64 
 pub const STOPPING_SPEED: f64 = 3.0 / 3.6;
 
 /// The least a vehicle finishing its stop brakes, in m/s².
-pub const STOPPING_DECEL: f64 = 0.5;
+pub const STOPPING_DECEL: f64 = 0.05;
 
 /// The acceleration a vehicle finishing its stop, or at rest, must be able to
 /// manage to move off again, in m/s².
-pub const MOVING_OFF: f64 = 0.2;
+pub const MOVING_OFF: f64 = 0.3;
 
 /// Whether a vehicle is finishing a stop, given whether it was (`stopping`),
 /// its speed, and its acceleration from every other term. It starts once it

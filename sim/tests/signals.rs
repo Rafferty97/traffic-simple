@@ -475,3 +475,56 @@ fn a_give_way_line_never_lets_a_car_go_behind_one_at_rest_in_its_way() {
         "it never went"
     );
 }
+
+#[test]
+fn a_car_stopping_at_a_red_light_comes_to_rest_close_to_its_line_and_stays_there() {
+    // A light at 400 m that stays red: its movement is never green.
+    let lane = Lane::new(
+        &[DVec2::ZERO, DVec2::new(800.0, 0.0)],
+        3.5,
+        LIMIT,
+        common::alone(),
+    );
+    let mut network = SimNetwork::new(vec![lane.unwrap()]);
+    let movement = Movement { conflicts: 0b10, amber: 3.0, clearance: 2.0 };
+    let plan = SignalPlan {
+        movements: vec![movement, Movement { conflicts: 0b01, ..movement }],
+        phases: vec![Phase { green: 0b10, duration: 1.0e6 }],
+    };
+    let movement = network.add_signal(plan);
+    let on_red = None;
+    network.add_barrier(
+        LaneId(0),
+        Barrier::new(400.0, BarrierKind::Signal { movement, on_red }),
+    );
+    // The shortest gap to lines drawn, where coming to rest short of it would
+    // soonest make IDM pull it on: from slow, and from the limit.
+    for speed in [2.0, LIMIT] {
+        let mut sim = common::sim(network.clone());
+        let spec = traffic_sim::VehicleSpec { line_gap: 0.5, line_gap_spread: 0.0, ..car() };
+        let s = (400.0 - 4.0 * speed * speed - 30.0).max(0.0);
+        let at = Placement { lane: LaneId(0), s, speed, route: Route::default(), seed: 0 };
+        let id = sim.insert(spec, at);
+        let short = |sim: &Simulation| {
+            let v = sim.get(id).unwrap();
+            400.0 - (v.lane_pos().s - spec.rear_axle + spec.length) - 0.5
+        };
+        let mut rested = None;
+        for _ in 0..common::steps(60.0) {
+            sim.step();
+            let v = sim.get(id).unwrap();
+            match rested {
+                None if v.speed() == 0.0 => rested = Some(v.lane_pos().s),
+                // Once at rest, it doesn't creep on.
+                Some(s) => assert_eq!(v.lane_pos().s, s, "crept on from {speed} m/s"),
+                None => {}
+            }
+        }
+        assert!(rested.is_some(), "never came to rest from {speed} m/s");
+        let short = short(&sim);
+        assert!(
+            (0.0..0.05).contains(&short),
+            "{short} m short of its line gap from {speed} m/s"
+        );
+    }
+}
