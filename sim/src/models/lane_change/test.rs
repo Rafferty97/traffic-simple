@@ -4,7 +4,7 @@
 use glam::DVec2;
 
 use super::*;
-use crate::debug::NoopSink;
+use crate::debug::{DebugEvent, Field, NoopSink};
 use crate::models::lane_change;
 use crate::network::{Lane, LaneId, SimNetwork};
 use crate::query::LaneSpeeds;
@@ -673,3 +673,55 @@ fn a_follower_keeps_making_room_once_it_has_chosen_to() {
 }
 
 // Several leaders.
+
+/// A driver's evaluations as the debug view keeps them, from the events of
+/// `steps` debug steps: each decision's reset clears the vehicle's earlier
+/// ones.
+fn evals_after(
+    sim: &mut Simulation,
+    id: VehicleId,
+    steps: usize,
+) -> Vec<Vec<(&'static str, Field)>> {
+    let mut kept = Vec::new();
+    let mut events = Vec::new();
+    for _ in 0..steps {
+        events.clear();
+        sim.step_debug(&mut events);
+        for event in events.drain(..) {
+            match event {
+                DebugEvent::RecomputeDecision { vehicle } if vehicle == id => kept.clear(),
+                DebugEvent::ModelEval { vehicle, fields, .. } if vehicle == id => kept.push(fields),
+                _ => {}
+            }
+        }
+    }
+    kept
+}
+
+#[test]
+fn a_driver_with_nothing_left_to_weigh_up_keeps_no_stale_evaluations() {
+    // Changes allowed only from left to right.
+    let lane =
+        |y: f64| Lane::new(&[DVec2::new(0.0, y), DVec2::new(500.0, y)], WIDTH, LIMIT).unwrap();
+    let mut network = SimNetwork::new(vec![lane(0.0), lane(-WIDTH)]);
+    network.set_adjacent(LaneId(0), LaneId(1), true, false);
+    let mut sim = new_sim(network);
+    // Held up on the left, it wants the free lane on its right.
+    let id = sim.insert(car(), at(0, 100.0, 10.0));
+    sim.insert(car(), at(0, 125.0, 0.0));
+    let before = evals_after(&mut sim, id, 30);
+    let side = |e: &Vec<(&'static str, Field)>| e.iter().find(|f| f.0 == "side").map(|f| f.1);
+    assert!(
+        before.iter().any(|e| side(e) == Some(Field::Text("right"))),
+        "{before:?}"
+    );
+    // Once over, on the right, it may change nowhere, so has nothing to weigh up.
+    let after = evals_after(&mut sim, id, 30 * 20);
+    assert_eq!(
+        sim.state().vehicles[id].path[0],
+        LaneId(1),
+        "it should have changed"
+    );
+    assert!(sim.state().vehicles[id].old_side.is_none());
+    assert!(after.is_empty(), "stale evaluations: {after:?}");
+}

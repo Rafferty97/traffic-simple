@@ -50,6 +50,9 @@ pub(crate) fn decide<D: DebugSink>(
     decisions.clear();
     asks.clear();
     for (id, vehicle) in &state.vehicles {
+        // What it weighed up before is stale, whether or not it weighs anything
+        // up now.
+        sink.record(|| DebugEvent::RecomputeDecision { vehicle: id });
         // Partway through a change, or still straddling, it doesn't decide.
         if vehicle.lane_change.is_some() || vehicle.old_side.is_some() {
             continue;
@@ -63,7 +66,6 @@ pub(crate) fn decide<D: DebugSink>(
         }
         let ask = step(&mut lc, vehicle.intent, &vehicle.spec, time, dt);
         // How it weighed up each side it didn't ask about, for the debug view.
-        sink.record(|| DebugEvent::RecomputeDecision { vehicle: id });
         for side in [Side::Left, Side::Right] {
             let Some(incentive) = incentives[index(side)] else {
                 continue;
