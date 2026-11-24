@@ -37,8 +37,6 @@ const PICK_TOLERANCE: f32 = 6.0;
 const SELECTED: Color32 = Color32::from_rgb(250, 210, 60);
 /// The selected vehicle's path, translucent so the road shows through.
 const PATH: Color32 = Color32::from_rgba_premultiplied(40, 90, 140, 140);
-/// With a vehicle selected, those it doesn't relate to.
-const UNRELATED: Color32 = Color32::from_gray(235);
 /// The colours of the vehicles the selected one relates to, in turn.
 const RELATED: [Color32; 8] = [
     Color32::from_rgb(70, 140, 255),
@@ -166,7 +164,7 @@ fn body_colour(
     match selected {
         None => plain,
         Some(s) if s == id => SELECTED,
-        Some(_) => related.iter().find(|&&(v, _)| v == id).map_or(UNRELATED, |&(_, c)| c),
+        Some(_) => related.iter().find(|&&(v, _)| v == id).map_or(VEHICLE, |&(_, c)| c),
     }
 }
 
@@ -1572,9 +1570,11 @@ fn draw_debug(
                 color,
                 Stroke::NONE,
             ));
-            // Its rear axle, across the body.
+            // Its axles, across the body.
             let axle = body.axle(v.spec().rear_axle);
-            painter.line_segment(axle.map(to_scene), Stroke::new(0.12, AXLE));
+            painter.line_segment(axle.map(to_scene), Stroke::new(0.15, AXLE));
+            let axle = body.axle(v.spec().front_axle);
+            painter.line_segment(axle.map(to_scene), Stroke::new(0.15, AXLE));
         }
 
         // From the vehicle's stored cubic, drawn on its current lane only, so it
@@ -1696,18 +1696,6 @@ fn draw_debug(
             );
         }
     }
-
-    if layers.on(Layer::FrontAxle) {
-        for &(id, point) in debug.front_axles.iter().filter(|l| shown(l.0)) {
-            let Some(v) = sim.get(id) else { continue };
-            let axle = drawn(id, v).axle_mid(v.spec().rear_axle);
-            painter.line_segment(
-                [to_scene(axle), to_scene(point)],
-                Stroke::new(0.04, LOOKAHEAD),
-            );
-            painter.circle_filled(to_scene(point), 0.2, LOOKAHEAD);
-        }
-    }
 }
 
 // Debug view colors, shared by the drawing and the legend.
@@ -1720,13 +1708,12 @@ const OCCUPANT: Color32 = Color32::from_rgb(200, 160, 255);
 const GHOST: Color32 = Color32::from_rgb(255, 150, 40);
 /// A vehicle, with none selected: white, as every vehicle unrelated to a
 /// selected one is.
-const VEHICLE: Color32 = UNRELATED;
+const VEHICLE: Color32 = Color32::WHITE;
 /// Half-transparent white.
-const AXLE: Color32 = Color32::from_rgba_premultiplied(128, 128, 128, 128);
+const AXLE: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 64);
 const LANE_CHANGE: Color32 = Color32::from_rgb(250, 160, 60);
 const LEADER_BINDING: Color32 = Color32::from_rgb(120, 230, 120);
 const LEADER_OTHER: Color32 = Color32::from_rgb(60, 110, 60);
-const LOOKAHEAD: Color32 = Color32::from_rgb(90, 200, 240);
 const LIGHT_GREEN: Color32 = Color32::from_rgb(60, 220, 90);
 const LIGHT_AMBER: Color32 = Color32::from_rgb(250, 190, 40);
 const LIGHT_RED: Color32 = Color32::from_rgb(230, 60, 50);
@@ -1752,12 +1739,11 @@ enum Layer {
     LaneChanges,
     Leaders,
     PassChecks,
-    FrontAxle,
     Barriers,
 }
 
 impl Layer {
-    const ALL: [Layer; 12] = [
+    const ALL: [Layer; 11] = [
         Layer::Path,
         Layer::LaneOutlines,
         Layer::Centerlines,
@@ -1768,7 +1754,6 @@ impl Layer {
         Layer::LaneChanges,
         Layer::Leaders,
         Layer::PassChecks,
-        Layer::FrontAxle,
         Layer::Barriers,
     ];
 
@@ -1834,11 +1819,6 @@ impl Layer {
                 ],
                 "Each barrier across its lane: a signal in its light's colour, a give-way line in white, a stop line in pink, an all-way stop line in violet, the start of a keep-clear zone in yellow",
             ),
-            Layer::FrontAxle => (
-                "Front axle",
-                &[LOOKAHEAD],
-                "Rear axle to the front axle, placed on its course, the rear trailing it",
-            ),
         }
     }
 }
@@ -1897,8 +1877,6 @@ type ModelEval = (&'static str, Vec<(&'static str, Field)>);
 struct DebugState {
     /// The last longitudinal update's terms: vehicle, what it reacted to, acceleration.
     accel_terms: Vec<(VehicleId, AccelSource, f64)>,
-    /// Where the last motion update put each front axle.
-    front_axles: Vec<(VehicleId, DVec2)>,
     /// Each vehicle's evaluations from its models' last decisions: the model,
     /// and what it weighed up, as named fields.
     decisions: HashMap<VehicleId, Vec<ModelEval>>,
@@ -1931,8 +1909,8 @@ impl DebugState {
             DebugEvent::AccelTerm { vehicle, source, accel } => {
                 self.accel_terms.push((vehicle, source, accel))
             }
-            DebugEvent::RecomputeMotion => self.front_axles.clear(),
-            DebugEvent::FrontAxle { vehicle, point } => self.front_axles.push((vehicle, point)),
+            // Not drawn: the debug view draws both axles on each body.
+            DebugEvent::RecomputeMotion | DebugEvent::FrontAxle { .. } => {}
             DebugEvent::RecomputeDecision { vehicle } => {
                 self.decisions.entry(vehicle).or_default().clear()
             }
@@ -1976,25 +1954,14 @@ impl Drawn {
         0.5 * (self.0[0] + self.0[1])
     }
 
-    /// The rear axle's ends, at the sides of the body, `rear_axle` ahead of the
-    /// rear bumper.
-    fn axle(self, rear_axle: f64) -> [DVec2; 2] {
+    /// An axle's ends, at the sides of the body.
+    fn axle(self, offset: f64) -> [DVec2; 2] {
         let length = self.0[0].distance(self.0[3]);
-        let ahead = if length > 0.0 {
-            rear_axle / length
-        } else {
-            0.0
-        };
+        let ahead = if length > 0.0 { offset / length } else { 0.0 };
         [
             self.0[0].lerp(self.0[3], ahead),
             self.0[1].lerp(self.0[2], ahead),
         ]
-    }
-
-    /// Midpoint of the rear axle.
-    fn axle_mid(self, rear_axle: f64) -> DVec2 {
-        let [left, right] = self.axle(rear_axle);
-        0.5 * (left + right)
     }
 }
 
