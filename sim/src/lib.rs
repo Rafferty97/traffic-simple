@@ -16,13 +16,11 @@ mod simulation;
 mod vehicle;
 
 pub use barrier::{AMBER_DECEL, Decision as BarrierDecision};
-pub use debug::{AccelSource, DebugEvent, PassCheck};
+pub use debug::{AccelSource, DebugEvent, Field, PassCheck};
 pub use following::{Lateral, Occupant, PASSING_CLEARANCE};
 pub use junction::Entry;
 pub use models::acceleration::{SAFE_BRAKING, STOPPING_DECEL, STOPPING_SPEED};
-pub use models::lane_change::{
-    D_COOP, D_FREE, D_SYNC, Incentives, LaneChangeEval, MIN_INDICATING, Outcome,
-};
+pub use models::lane_change::MIN_INDICATING;
 pub use models::routing::Route;
 pub use models::signal::{Light, MovementLight};
 pub use motion::kinematics::trail;

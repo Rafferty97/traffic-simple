@@ -30,6 +30,7 @@ pub(crate) use update::{Decided, decide, terms};
 
 use slotmap::SecondaryMap;
 
+use crate::debug::Field;
 use crate::models::acceleration::SAFE_BRAKING;
 use crate::network::Side;
 use crate::query::Gap;
@@ -364,6 +365,40 @@ pub struct LaneChangeEval {
     pub outcome: Outcome,
 }
 
+impl LaneChangeEval {
+    /// The evaluation as named fields, for the debug view: `spec` the
+    /// driver's, for its threshold.
+    pub(crate) fn fields(&self, spec: &VehicleSpec) -> Vec<(&'static str, Field)> {
+        let side = match self.side {
+            Side::Left => "left",
+            Side::Right => "right",
+        };
+        let checked = self.own_after.is_some();
+        let i = self.incentives;
+        vec![
+            ("side", side.into()),
+            ("outcome", self.outcome.name().into()),
+            ("desire", self.desire.into()),
+            ("threshold", free(spec.assertiveness).into()),
+            ("route", i.route.into()),
+            ("speed", i.speed.into()),
+            ("keep", i.keep.into()),
+            ("courtesy", i.courtesy.into()),
+            ("own accel after", self.own_after.into()),
+            (
+                "follower's accel",
+                checked.then_some(self.new_follower).flatten().into(),
+            ),
+            (
+                "braking accepted",
+                checked.then_some(self.accepted_braking).into(),
+            ),
+            ("safe", checked.then_some(self.safe).into()),
+            ("room to finish", checked.then_some(self.room).into()),
+        ]
+    }
+}
+
 /// What a vehicle decided about changing to one side, this step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -389,6 +424,23 @@ pub enum Outcome {
     Change,
     /// Stopped indicating.
     Cancel,
+}
+
+impl Outcome {
+    /// Its name, for the debug view.
+    pub fn name(self) -> &'static str {
+        match self {
+            Outcome::NotWorthIt => "not worth it",
+            Outcome::Unsafe => "unsafe",
+            Outcome::OtherSide => "other side",
+            Outcome::Indicate => "indicate",
+            Outcome::Request => "request",
+            Outcome::Measuring => "measuring",
+            Outcome::Wait => "wait",
+            Outcome::Change => "change",
+            Outcome::Cancel => "cancel",
+        }
+    }
 }
 
 /// How a driver weighed up a side it didn't check the gap for this step.

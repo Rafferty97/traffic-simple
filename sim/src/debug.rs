@@ -1,7 +1,6 @@
 use glam::DVec2;
 
 use crate::barrier::Decision as BarrierDecision;
-use crate::models::lane_change::LaneChangeEval;
 use crate::network::{ConflictKind, LaneId, Side};
 use crate::vehicle::VehicleId;
 
@@ -21,7 +20,7 @@ pub(crate) trait DebugSink {
 }
 
 /// What the simulation's algorithms are doing, for the debug view.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum DebugEvent {
     /// A longitudinal update is starting: earlier [`DebugEvent::AccelTerm`]s are stale.
     RecomputeAccels,
@@ -33,11 +32,17 @@ pub enum DebugEvent {
     /// Where a vehicle's front axle was placed on its course, its rear axle
     /// trailing.
     FrontAxle { vehicle: VehicleId, point: DVec2 },
-    /// A vehicle's lane-change decision is being made: its earlier
-    /// [`DebugEvent::LaneChangeEval`]s are stale.
+    /// A model's decision for a vehicle is being made: its earlier
+    /// [`DebugEvent::ModelEval`]s are stale.
     RecomputeDecision { vehicle: VehicleId },
-    /// One side a vehicle weighed up for a lane change.
-    LaneChangeEval { vehicle: VehicleId, eval: LaneChangeEval },
+    /// Something a model weighed up for a vehicle, such as one side the
+    /// lane-change model weighed up a change to, described as named fields, in
+    /// order, so the debug view can show it knowing nothing of the model.
+    ModelEval {
+        vehicle: VehicleId,
+        model: &'static str,
+        fields: Vec<(&'static str, Field)>,
+    },
     /// A vehicle has left the simulation.
     VehicleRemoved { vehicle: VehicleId },
     /// A vehicle's leader search, in the longitudinal update, weighed up passing
@@ -56,6 +61,41 @@ pub enum DebugEvent {
         /// The vehicle it gives way to, held for one.
         yields_to: Option<VehicleId>,
     },
+}
+
+/// The value of a field a model describes something it weighed up by (see
+/// [`DebugEvent::ModelEval`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Field {
+    Num(f64),
+    Flag(bool),
+    Text(&'static str),
+    /// Nothing there: not measured, say.
+    None,
+}
+
+impl From<f64> for Field {
+    fn from(x: f64) -> Self {
+        Field::Num(x)
+    }
+}
+
+impl From<bool> for Field {
+    fn from(b: bool) -> Self {
+        Field::Flag(b)
+    }
+}
+
+impl From<&'static str> for Field {
+    fn from(s: &'static str) -> Self {
+        Field::Text(s)
+    }
+}
+
+impl<T: Into<Field>> From<Option<T>> for Field {
+    fn from(x: Option<T>) -> Self {
+        x.map_or(Field::None, Into::into)
+    }
 }
 
 /// Whether a vehicle can pass another ahead of it on a lane, checked in world
@@ -94,9 +134,6 @@ pub enum AccelSource {
     /// Slow and short of moving off, it finishes its stop or stays at rest (see
     /// `models::acceleration::stopping`).
     FinishingStop,
-    /// Making room for a vehicle indicating into its lane ahead, as if that
-    /// vehicle's ghost were a leader, with the gap to it.
-    Yield { id: VehicleId, gap: f64 },
     /// The end of the lanes the vehicle knows it will take, as a stop line, with
     /// the gap to it.
     PathEnd { gap: f64 },
@@ -109,9 +146,14 @@ pub enum AccelSource {
     /// the gap to it: it would be both blocked by a vehicle queued only part of
     /// its way and block its next stretch.
     JunctionHold { gap: f64 },
-    /// The leader it would have in the lane it is indicating into, as it adjusts
-    /// its speed to change into it: LMRS's synchronisation.
-    Sync { id: VehicleId, gap: f64 },
+    /// A term a model adds, named by the model, as the lane-change model's
+    /// synchronisation is: the vehicle it is for and the gap to it, if any.
+    Model {
+        model: &'static str,
+        term: &'static str,
+        id: Option<VehicleId>,
+        gap: Option<f64>,
+    },
     /// The vehicle before it in a merge's order, with the gap between them as
     /// each is from the merge point: negative while it is the nearer.
     Merge { id: VehicleId, gap: f64 },

@@ -76,7 +76,7 @@ pub(crate) fn decide<D: DebugSink>(
                 Ask::Nothing => Outcome::NotWorthIt,
             };
             let eval = unchecked(side, incentive, lc.desire(side), outcome);
-            sink.record(|| DebugEvent::LaneChangeEval { vehicle: id, eval });
+            sink.record(|| eval_event(id, vehicle, &eval));
         }
         let decision = match ask {
             Ask::Cancel => Decision::Cancel,
@@ -103,7 +103,7 @@ pub(crate) fn decide<D: DebugSink>(
         let Some(gap) = measured else {
             // Not measured that way yet: it asks, and judges it next time.
             let eval = unchecked(side, incentive, lc.desire(side), Outcome::Measuring);
-            sink.record(|| DebugEvent::LaneChangeEval { vehicle: id, eval });
+            sink.record(|| eval_event(id, vehicle, &eval));
             continue;
         };
         let (decision, eval) = resolve(
@@ -115,7 +115,7 @@ pub(crate) fn decide<D: DebugSink>(
             gap,
             dt,
         );
-        sink.record(|| DebugEvent::LaneChangeEval { vehicle: id, eval });
+        sink.record(|| eval_event(id, vehicle, &eval));
         decisions[slot] = decided(id, vehicle, lc, decision, time, dt);
     }
 }
@@ -208,7 +208,7 @@ pub(crate) fn terms<D: DebugSink>(
         ghost.map(|(owner, _, desire, term)| (owner, desire, term)),
     );
     if let Some((owner, gap, _, term)) = ghost.filter(|_| yielding.is_some()) {
-        let source = AccelSource::Yield { id: owner, gap };
+        let source = source("making room for", owner, gap);
         sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
         rest = rest.min(term);
     }
@@ -223,10 +223,27 @@ pub(crate) fn terms<D: DebugSink>(
             let headway = headway(desire);
             let term = acceleration::relaxed(&vehicle.spec, vehicle.speed, gap, speed, headway)
                 .max(-vehicle.spec.comfy_decel);
-            let source = AccelSource::Sync { id: leader, gap };
+            let source = source("synchronising with", leader, gap);
             sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
             rest = rest.min(term);
         }
     }
     (rest, yielding)
+}
+
+/// A lane-change evaluation as a debug event.
+fn eval_event(id: VehicleId, vehicle: &Vehicle, eval: &super::LaneChangeEval) -> DebugEvent {
+    let fields = eval.fields(&vehicle.spec);
+    DebugEvent::ModelEval { vehicle: id, model: "lane change", fields }
+}
+
+/// One of the lane-change model's acceleration terms, as the debug view names
+/// it: `what` it does about vehicle `id`, `gap` ahead.
+fn source(what: &'static str, id: VehicleId, gap: f64) -> AccelSource {
+    AccelSource::Model {
+        model: "lane change",
+        term: what,
+        id: Some(id),
+        gap: Some(gap),
+    }
 }

@@ -338,7 +338,7 @@ fn why(net: &RoadNetwork, demand: Demand, seed: u64, minutes: f64) {
                 }
                 Some(S::Merge { .. }) => "merge".into(),
                 Some(S::Junction { .. }) => "junction".into(),
-                Some(S::Yield { .. }) => "yield".into(),
+                Some(S::Model { term, .. }) => term.into(),
                 Some(S::PathEnd { .. }) => "path end".into(),
                 Some(other) => format!("{other:?}").split(' ').next().unwrap().into(),
                 None => "old side?".into(),

@@ -16,9 +16,9 @@ use traffic_network::{
     Arrow, MarkingStyle, RenderGeometry, RoadNetwork, Sign, Strip, compile, scenarios,
 };
 use traffic_sim::{
-    AccelSource, BarrierDecision, BarrierKind, ConflictKind, DebugEvent, LaneChangeError,
-    LaneChangeEval, LaneChangeIntent, LaneId, Leaving, Light, PassCheck, Placement, Route, Side,
-    Simulation, Vehicle, VehicleId, VehicleSpec,
+    AccelSource, BarrierDecision, BarrierKind, ConflictKind, DebugEvent, Field, LaneChangeError,
+    LaneChangeIntent, LaneId, Leaving, Light, PassCheck, Placement, Route, Side, Simulation,
+    Vehicle, VehicleId, VehicleSpec,
 };
 
 /// The inner lane's circumference: about 160 m across, roomy enough for
@@ -62,10 +62,9 @@ fn number(id: VehicleId) -> String {
 fn named(source: AccelSource) -> Option<VehicleId> {
     match source {
         AccelSource::Leader { id, .. }
-        | AccelSource::Yield { id, .. }
         | AccelSource::Junction { id, .. }
-        | AccelSource::Sync { id, .. }
         | AccelSource::Merge { id, .. } => Some(id),
+        AccelSource::Model { id, .. } => id,
         _ => None,
     }
 }
@@ -791,46 +790,43 @@ impl App {
             row("curvature", format!("{:+.4} /m", v.curvature()));
         });
 
-        ui.separator();
-        ui.label("Lane-change desire (LMRS)");
+        // What the models last weighed up for it, a table for each model: a
+        // row for each field, a column for each thing it weighed up.
         let evals = self.debug.decisions.get(&id).cloned().unwrap_or_default();
-        {
-            for eval in &evals {
-                let side = match eval.side {
-                    Side::Left => "left",
-                    Side::Right => "right",
-                };
-                // Only when the gap was checked: its own acceleration there and
-                // its new follower's.
-                let gap = match eval.own_after {
-                    None => String::new(),
-                    Some(own) => format!(
-                        ", gap: own {own:+.2}, follower {}, accepts {:.1} m/s²{}{}",
-                        eval.new_follower.map_or("none".into(), |x| format!("{x:+.2}")),
-                        eval.accepted_braking,
-                        if eval.safe { "" } else { ", unsafe" },
-                        if eval.room { "" } else { ", no room" },
-                    ),
-                };
-                let i = eval.incentives;
-                ui.label(format!("{side}: {:?}", eval.outcome));
-                let detail = egui::RichText::new(format!(
-                    "desire {:+.2} (free {:.2}, sync {:.2}, coop {:.2}): route {:+.2}, speed {:+.2}, keep {:+.2}, courtesy {:+.2}{gap}",
-                    eval.desire,
-                    traffic_sim::D_FREE,
-                    traffic_sim::D_SYNC,
-                    traffic_sim::D_COOP,
-                    i.route,
-                    i.speed,
-                    i.keep,
-                    i.courtesy,
-                ))
-                .small();
-                ui.add(egui::Label::new(detail).wrap());
+        let mut models: Vec<&'static str> = Vec::new();
+        for (model, _) in &evals {
+            if !models.contains(model) {
+                models.push(model);
             }
         }
-        if evals.is_empty() {
-            ui.small("No permitted lane to either side.");
+        for model in models {
+            ui.separator();
+            ui.label(format!("Model: {model}"));
+            let columns: Vec<_> = evals.iter().filter(|e| e.0 == model).map(|e| &e.1).collect();
+            let mut names: Vec<&'static str> = Vec::new();
+            for &(name, _) in columns.iter().flat_map(|c| c.iter()) {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+            egui::Grid::new(("model", model))
+                .num_columns(columns.len() + 1)
+                .striped(true)
+                .show(ui, |ui| {
+                    for name in names {
+                        ui.label(name);
+                        for column in &columns {
+                            let value = column.iter().find(|f| f.0 == name).map(|f| f.1);
+                            ui.label(match value {
+                                Some(Field::Num(x)) => format!("{x:+.2}"),
+                                Some(Field::Flag(b)) => if b { "yes" } else { "no" }.into(),
+                                Some(Field::Text(t)) => t.into(),
+                                Some(Field::None) | None => "–".into(),
+                            });
+                        }
+                        ui.end_row();
+                    }
+                });
         }
 
         ui.separator();
@@ -892,9 +888,6 @@ impl App {
                     format!("capped at {:.0} km/h", max_speed * 3.6),
                     String::new(),
                 ),
-                AccelSource::Yield { gap, .. } => {
-                    ("making room for ".into(), format!(", gap {gap:.2} m"))
-                }
                 AccelSource::PathEnd { gap } => {
                     (format!("end of known path, gap {gap:.2} m"), String::new())
                 }
@@ -912,9 +905,10 @@ impl App {
                 AccelSource::Junction { kind: ConflictKind::Merge, gap, .. } => {
                     ("merging after ".into(), format!(", gap {gap:.2} m"))
                 }
-                AccelSource::Sync { gap, .. } => {
-                    ("synchronising with ".into(), format!(", gap {gap:.2} m"))
-                }
+                AccelSource::Model { model, term, gap, .. } => (
+                    format!("{model}: {term} "),
+                    gap.map_or(String::new(), |gap| format!(", gap {gap:.2} m")),
+                ),
                 AccelSource::Merge { gap, .. } => {
                     ("merge order after ".into(), format!(", gap {gap:.2} m"))
                 }
@@ -1622,6 +1616,10 @@ impl Layers {
     }
 }
 
+/// Something a model weighed up for a vehicle: the model, and its fields, by
+/// name, in order.
+type ModelEval = (&'static str, Vec<(&'static str, Field)>);
+
 /// Accumulates the simulation's debug events. Each group is cleared by its reset
 /// event, so it always holds exactly what the last update of that group used.
 #[derive(Default)]
@@ -1630,8 +1628,9 @@ struct DebugState {
     accel_terms: Vec<(VehicleId, AccelSource, f64)>,
     /// Where the last motion update put each front axle.
     front_axles: Vec<(VehicleId, DVec2)>,
-    /// Each vehicle's evaluations from its last lane-change decision.
-    decisions: HashMap<VehicleId, Vec<LaneChangeEval>>,
+    /// Each vehicle's evaluations from its models' last decisions: the model,
+    /// and what it weighed up, as named fields.
+    decisions: HashMap<VehicleId, Vec<ModelEval>>,
     /// The last longitudinal update's checks for passing a diverging vehicle.
     pass_checks: Vec<(VehicleId, PassCheck)>,
     /// The last longitudinal update's barrier decisions, by vehicle: the lane,
@@ -1666,8 +1665,8 @@ impl DebugState {
             DebugEvent::RecomputeDecision { vehicle } => {
                 self.decisions.entry(vehicle).or_default().clear()
             }
-            DebugEvent::LaneChangeEval { vehicle, eval } => {
-                self.decisions.entry(vehicle).or_default().push(eval)
+            DebugEvent::ModelEval { vehicle, model, fields } => {
+                self.decisions.entry(vehicle).or_default().push((model, fields))
             }
             DebugEvent::VehicleRemoved { vehicle } => {
                 self.decisions.remove(&vehicle);

@@ -165,11 +165,14 @@ pub fn fill_lane(sim: &mut Simulation, lane: LaneId, count: usize) {
 }
 
 /// A collector that keeps the last longitudinal update's acceleration terms (`.0`)
-/// and each vehicle's last lane-change evaluations (`.1`).
+/// and each vehicle's last model evaluations (`.1`), as their fields.
 #[derive(Default)]
 pub struct Terms(
     pub Vec<(traffic_sim::VehicleId, traffic_sim::AccelSource, f64)>,
-    pub Vec<(traffic_sim::VehicleId, traffic_sim::LaneChangeEval)>,
+    pub  Vec<(
+        traffic_sim::VehicleId,
+        Vec<(&'static str, traffic_sim::Field)>,
+    )>,
 );
 
 impl Collect for Terms {
@@ -182,7 +185,7 @@ impl Collect for Terms {
             DebugEvent::RecomputeDecision { vehicle } | DebugEvent::VehicleRemoved { vehicle } => {
                 self.1.retain(|e| e.0 != vehicle)
             }
-            DebugEvent::LaneChangeEval { vehicle, eval } => self.1.push((vehicle, eval)),
+            DebugEvent::ModelEval { vehicle, fields, .. } => self.1.push((vehicle, fields)),
             DebugEvent::RecomputeMotion
             | DebugEvent::FrontAxle { .. }
             | DebugEvent::PassCheck { .. }
