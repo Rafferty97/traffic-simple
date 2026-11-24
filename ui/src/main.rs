@@ -1347,13 +1347,56 @@ fn draw_path(painter: &egui::Painter, sim: &Simulation, id: VehicleId, march: f6
     let period = f64::from(PATH_DASH + PATH_GAP);
     let offset = march.rem_euclid(period) as f32;
     let stroke = Stroke::new(PATH_WIDTH, PATH);
-    painter.extend(Shape::dashed_line_with_offset(
-        &points,
-        stroke,
-        &[PATH_DASH],
-        &[PATH_GAP],
-        offset,
-    ));
+    painter.extend(dashed_path(&points, stroke, PATH_DASH, PATH_GAP, offset));
+}
+
+/// A dashed line along `points`, its dashes `dash` long and `gap` apart, one
+/// starting `offset` along it, the one before cut short where the line starts.
+/// Each dash is one stroked path, bending with the line and joined at its
+/// vertices, rather than a straight segment for each piece of it, which leaves
+/// notches on the outside of a bend when the line is thick.
+fn dashed_path(points: &[Pos2], stroke: Stroke, dash: f32, gap: f32, offset: f32) -> Vec<Shape> {
+    let period = dash + gap;
+    let mut shapes = Vec::new();
+    // The dash being drawn, and where along the line it starts.
+    let mut current = Vec::new();
+    let mut start = offset.rem_euclid(period) - period;
+    // How far along the line the piece from `a` starts.
+    let mut along = 0.0;
+    for piece in points.windows(2) {
+        let (a, b) = (piece[0], piece[1]);
+        let length = a.distance(b);
+        if length == 0.0 {
+            continue;
+        }
+        let at = |d: f32| a + (b - a) * ((d - along) / length);
+        let end = along + length;
+        loop {
+            if current.is_empty() {
+                if start + dash <= along {
+                    start += period;
+                    continue;
+                }
+                if start >= end {
+                    break;
+                }
+                current.push(at(start.max(along)));
+            }
+            if start + dash <= end {
+                current.push(at(start + dash));
+                shapes.push(Shape::line(std::mem::take(&mut current), stroke));
+                start += period;
+            } else {
+                current.push(b);
+                break;
+            }
+        }
+        along = end;
+    }
+    if current.len() >= 2 {
+        shapes.push(Shape::line(current, stroke));
+    }
+    shapes
 }
 
 /// How far in from the body's front and rear ends the indicators sit, in
