@@ -2,6 +2,7 @@ use glam::DVec2;
 
 use crate::models::routing::Route;
 use crate::motion::lateral::LaneChange;
+use crate::motion::path::PathReach;
 use crate::network::geometry::LanePos;
 use crate::network::{LaneId, Side};
 
@@ -157,6 +158,9 @@ pub struct Vehicle {
     /// know where it is going, however short the lanes, unless it leaves the
     /// network sooner.
     pub(crate) path: Vec<LaneId>,
+    /// How far `path` reaches, so it is extended only when it might need to be.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) path_reach: PathReach,
     /// The rear axle's position on `path[0]`.
     pub(crate) lane_pos: LanePos,
     /// After a lane change, the side its old lane is on, until the vehicle has

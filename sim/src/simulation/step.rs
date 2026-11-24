@@ -362,7 +362,7 @@ impl Simulation {
                 let s = vehicle.lane_pos.s;
                 let needed = reach(vehicle, s, vehicle.lane_change);
                 let lanes = vehicle.path.len();
-                extend_path(
+                vehicle.path_reach = extend_path(
                     network,
                     &mut vehicle.path,
                     routing.route_mut(id),
@@ -400,14 +400,16 @@ impl Simulation {
             let s = vehicle.lane_pos.s;
             let needed = reach(vehicle, s, vehicle.lane_change);
             let lanes = vehicle.path.len();
-            extend_path(
-                network,
-                &mut vehicle.path,
-                routing.route_mut(id),
-                routes,
-                s,
-                needed,
-            );
+            if vehicle.path_reach.short(s, needed) {
+                vehicle.path_reach = extend_path(
+                    network,
+                    &mut vehicle.path,
+                    routing.route_mut(id),
+                    routes,
+                    s,
+                    needed,
+                );
+            }
             arrives |= vehicle.path.len() > lanes;
             if arrives {
                 raise_through(network, through, &vehicle.path);
@@ -439,8 +441,8 @@ impl Simulation {
     /// (see `junction::may_release`), and each lane approached is scanned for vehicles
     /// to commit (see `junction::commit_along`).
     pub(super) fn update_queues(&mut self) {
-        let Self { state, arrivals, scan_empty, scan_kept, .. } = self;
-        junction::update(state, arrivals, scan_empty, scan_kept);
+        let Self { state, arrivals, scan_empty, scan_kept, last_entries, .. } = self;
+        junction::update(state, arrivals, scan_empty, scan_kept, last_entries);
     }
 
     /// Refreshes the occupant lists, and clears the old side of vehicles that have

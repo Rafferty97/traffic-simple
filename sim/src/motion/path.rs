@@ -27,11 +27,40 @@ pub(crate) fn reach(vehicle: &Vehicle, axle_s: f64, change: Option<LaneChange>) 
 /// search stays within its horizon, however far its path reaches.
 pub(crate) const PATH_TIME: f64 = 15.0;
 
+/// How far a vehicle's path reaches, so it isn't extended again until it
+/// might need to be (see [`PathReach::short`]): along `path[0]`, where the path
+/// ends, and where the rear axle would leave less than [`PATH_TIME`] of it
+/// ahead at the speed limits. Both infinite where the path can't grow, its last
+/// lane leading nowhere. Worked out afresh whenever the path changes, as
+/// [`extend_path`] runs whenever it does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub(crate) struct PathReach {
+    end: f64,
+    timed: f64,
+}
+
+impl Default for PathReach {
+    /// Short at once, to be worked out.
+    fn default() -> Self {
+        Self { end: f64::NEG_INFINITY, timed: f64::NEG_INFINITY }
+    }
+}
+
+impl PathReach {
+    /// Whether a path, with the rear axle at `axle_s` along its first lane,
+    /// might not reach `needed` beyond it, or [`PATH_TIME`], so
+    /// [`extend_path`] should run.
+    pub fn short(&self, axle_s: f64, needed: f64) -> bool {
+        axle_s + needed > self.end || axle_s > self.timed
+    }
+}
+
 /// Extends `path` by the lanes `route` chooses, by `tables` if it is toward a
 /// destination, until it reaches `needed`
 /// beyond the rear axle, at `axle_s` on its first lane, and [`PATH_TIME`] at
 /// the lanes' speed limits, or reaches a lane that leads nowhere. Returns how
-/// far beyond the rear axle it then reaches.
+/// far it then reaches (see [`PathReach`]).
 ///
 /// A path that ends inside a junction goes on until it is out of it, so a
 /// vehicle in a junction's queue knows its way through: the junction keeps
@@ -45,7 +74,7 @@ pub(crate) fn extend_path(
     tables: &Tables,
     axle_s: f64,
     needed: f64,
-) -> f64 {
+) -> PathReach {
     // How far, and how long at the speed limits, it reaches beyond the rear axle.
     let along = |lane: LaneId, length: f64| length / network.lane(lane).speed_limit();
     let (mut covered, mut time) = (-axle_s, -along(path[0], axle_s));
@@ -65,7 +94,8 @@ pub(crate) fn extend_path(
             break;
         }
         let Some(next) = route.choose(tables, network.lane(last).successors()) else {
-            break;
+            // It can't grow, until it moves on.
+            return PathReach { end: f64::INFINITY, timed: f64::INFINITY };
         };
         if enough {
             inside += 1;
@@ -75,7 +105,11 @@ pub(crate) fn extend_path(
         covered += length;
         time += along(next, length);
     }
-    covered
+    // From the start of the first lane, where the rear axle is measured from.
+    let limit = network.lane(path[0]).speed_limit();
+    let end = axle_s + covered;
+    let timed = axle_s + (time - PATH_TIME) * limit;
+    PathReach { end, timed }
 }
 
 /// How far beyond each lane's end, in meters, the paths through it reach, by

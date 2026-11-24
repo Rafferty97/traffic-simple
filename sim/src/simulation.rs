@@ -43,6 +43,9 @@ pub struct Simulation {
     /// beyond, and those they found someone on, or beyond. Reused.
     scan_empty: Vec<LaneId>,
     scan_kept: Vec<LaneId>,
+    /// Scratch space for a junction's scans: each vehicle's last entry in its
+    /// queue. Reused.
+    last_entries: crate::junction::LastEntries,
     /// Scratch space for vehicles that lost a record on a lane they had left.
     departed: Vec<VehicleId>,
     /// Scratch space for lane-change decisions, reused between steps: each
@@ -139,6 +142,7 @@ impl Simulation {
             arrivals: Vec::new(),
             scan_empty: Vec::new(),
             scan_kept: Vec::new(),
+            last_entries: Default::default(),
             departed: Vec::new(),
             lane_decisions: Vec::new(),
             asks: Vec::new(),
@@ -244,6 +248,7 @@ impl Simulation {
             curvature: 0.0,
             front_s: at.s + spec.wheelbase(),
             path: vec![at.lane],
+            path_reach: Default::default(),
             lane_pos,
             old_side: None,
             lane_change: None,
@@ -263,7 +268,7 @@ impl Simulation {
         }
         let needed = reach(&vehicle, at.s, None);
         let mut route = at.route;
-        extend_path(
+        vehicle.path_reach = extend_path(
             &self.state.network,
             &mut vehicle.path,
             &mut route,
@@ -522,7 +527,7 @@ impl Simulation {
         self.state.longitudinal.new_barrier(id, &vehicle.spec);
         let needed = reach(vehicle, lane_pos.s, Some(change));
         let route = self.state.routing.route_mut(id);
-        extend_path(
+        vehicle.path_reach = extend_path(
             &self.state.network,
             &mut vehicle.path,
             route,

@@ -4,7 +4,7 @@
 //! is released, and the terms committed vehicles impose on those behind them.
 
 use arrayvec::ArrayVec;
-use slotmap::SlotMap;
+use slotmap::{Key, SlotMap};
 
 use crate::barrier;
 use crate::debug::{AccelSource, DebugEvent, DebugSink};
@@ -87,6 +87,7 @@ pub(crate) fn update(
     arrivals: &mut Vec<VehicleId>,
     scan_empty: &mut Vec<LaneId>,
     scan_kept: &mut Vec<LaneId>,
+    last_entries: &mut LastEntries,
 ) {
     let SimState { network, vehicles, occupants, queues, lights, .. } = state;
     // Some may have left the network since.
@@ -127,6 +128,7 @@ pub(crate) fn update(
             continue;
         }
         let Queue { committed, approaching, fronts, held } = queue;
+        last_entries.fill(committed);
         let mut scan = Scan {
             network,
             vehicles,
@@ -138,6 +140,7 @@ pub(crate) fn update(
             kept: scan_kept,
             fronts,
             held,
+            last_entries,
         };
         scan.empty.clear();
         scan.kept.clear();
@@ -146,6 +149,7 @@ pub(crate) fn update(
                 commit_along(&mut scan, lane, committed);
             }
         }
+        scan.last_entries.clear(committed);
         // A lane stays while some scan found someone on it or beyond, or none
         // reached it, so whoever is on it is behind someone found.
         approaching.retain(|lane| !scan_empty.contains(lane) || scan_kept.contains(lane));
@@ -308,6 +312,49 @@ struct Scan<'a> {
     fronts: &'a mut Vec<VehicleId>,
     /// The vehicles held out of the queue (see [`Queue::held`]).
     held: &'a mut Vec<VehicleId>,
+    /// Each queued vehicle's last entry in the queue scanned.
+    last_entries: &'a mut LastEntries,
+}
+
+/// Each vehicle's last entry in one junction's queue, by its slot, so a scan
+/// passing a vehicle finds its place in the queue at once rather than
+/// searching the queue for it: scratch space, filled for a junction before its
+/// scans, kept up as they queue vehicles, and cleared after.
+#[derive(Default)]
+pub(crate) struct LastEntries(Vec<Option<(VehicleId, u32)>>);
+
+impl LastEntries {
+    fn slot(id: VehicleId) -> usize {
+        // The slot's index is the key's low half.
+        (id.data().as_ffi() & 0xffff_ffff) as usize
+    }
+
+    /// Notes that `id`'s last entry is the `k`th.
+    fn set(&mut self, id: VehicleId, k: usize) {
+        let slot = Self::slot(id);
+        if slot >= self.0.len() {
+            self.0.resize(slot + 1, None);
+        }
+        self.0[slot] = Some((id, k as u32));
+    }
+
+    /// The place of `id`'s last entry in the queue, if it is queued.
+    fn get(&self, id: VehicleId) -> Option<usize> {
+        let (queued, k) = (*self.0.get(Self::slot(id))?)?;
+        (queued == id).then_some(k as usize)
+    }
+
+    fn fill(&mut self, queue: &[Entry]) {
+        for (k, entry) in queue.iter().enumerate() {
+            self.set(entry.id, k);
+        }
+    }
+
+    fn clear(&mut self, queue: &[Entry]) {
+        for entry in queue {
+            self.0[Self::slot(entry.id)] = None;
+        }
+    }
 }
 
 /// How many lanes a scan back from a junction's lane holds at once: that lane
@@ -398,7 +445,7 @@ fn stops_on(
         // Committed for the way to `target`, it is passed over; handed over
         // only part way, short of it, it may yet go on ahead of those behind
         // it, as a turner waiting for a gap may, so stops the scan.
-        let last = committed.iter().rev().find(|e| e.id == o.id).copied();
+        let last = scan.last_entries.get(o.id).map(|k| committed[k]);
         if let Some(last) = last
             && handed_over_for(scan.network, scan.junction, &last, vehicle, target)
         {
@@ -434,6 +481,7 @@ fn stops_on(
                     }
                     return true;
                 }
+                scan.last_entries.set(o.id, committed.len());
                 committed.push(next);
                 continue;
             }

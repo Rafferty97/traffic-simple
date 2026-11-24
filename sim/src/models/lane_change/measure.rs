@@ -39,11 +39,13 @@ pub(crate) fn incentives(
     // A side it may change to, and could finish a change to before the lanes
     // beside its path run out, or reach a junction: once it couldn't, it can't
     // again until they do, so a driver gives up wanting to.
-    let permitted = |side: Side| {
+    // Worked out once a side, as finding the room walks its path.
+    let sides = [Side::Left, Side::Right].map(|side| {
         lane.adj(side)
             .filter(|n| n.can_change && room_to_change(network, vehicle, side))
-    };
-    if permitted(Side::Left).is_none() && permitted(Side::Right).is_none() {
+    });
+    let permitted = |side: Side| sides[lane_change::index(side)];
+    if sides == [None, None] {
         return [None, None];
     }
     let rear = vehicle.lane_pos.s - vehicle.spec.rear_axle;
