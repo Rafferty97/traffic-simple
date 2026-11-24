@@ -57,44 +57,73 @@ fn number(id: VehicleId) -> String {
     id.index().to_string()
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Entity {
+    Vehicle(VehicleId),
+    Lane(LaneId),
+}
+
 /// How an acceleration term is described in the inspector, and the gap it
 /// keeps, if any; the vehicle it names is [`named`]'s.
-fn describe(source: AccelSource) -> (String, Option<f64>) {
+fn describe(source: AccelSource) -> (String, Option<Entity>, Option<f64>) {
     match source {
         AccelSource::FreeRoad { desired_speed } => (
             format!("target speed of {:.0} km/h", desired_speed * 3.6),
             None,
+            None,
         ),
-        AccelSource::Leader { gap, headway, .. } if headway < 1.0 => {
-            (format!("leader (headway ×{headway:.2})"), Some(gap))
+        AccelSource::Leader { id, gap, headway } if headway < 1.0 => (
+            format!("leader (headway ×{headway:.2})"),
+            Some(Entity::Vehicle(id)),
+            Some(gap),
+        ),
+        AccelSource::Leader { id, gap, .. } => {
+            ("leader".into(), Some(Entity::Vehicle(id)), Some(gap))
         }
-        AccelSource::Leader { gap, .. } => ("leader".into(), Some(gap)),
-        AccelSource::Cap { max_speed: 0.0 } => ("held to a stop".into(), None),
-        AccelSource::Cap { max_speed } => (format!("capped at {:.0} km/h", max_speed * 3.6), None),
+        AccelSource::Cap { max_speed: 0.0 } => ("held to a stop".into(), None, None),
+        AccelSource::Cap { max_speed } => {
+            (format!("capped at {:.0} km/h", max_speed * 3.6), None, None)
+        }
         AccelSource::FinishingStop => (
             format!(
                 "finishing a stop, below {:.0} km/h",
                 traffic_sim::STOPPING_SPEED * 3.6
             ),
             None,
+            None,
         ),
-        AccelSource::PathEnd { gap } => ("end of known path".into(), Some(gap)),
-        AccelSource::LimitAhead { limit, gap, .. } => (
+        AccelSource::PathEnd { gap } => ("end of known path".into(), None, Some(gap)),
+        AccelSource::LimitAhead { lane, limit, gap } => (
             format!("slowing to {:.0} km/h ahead", limit * 3.6),
+            Some(Entity::Lane(lane)),
             Some(gap),
         ),
-        AccelSource::Barrier { lane, gap, .. } => {
-            (format!("barrier on lane {}", lane.0), Some(gap))
+        AccelSource::Barrier { lane, gap, kind, .. } => {
+            let kind = match kind {
+                BarrierKind::Signal { .. } => "traffic light",
+                BarrierKind::GiveWay => "give way",
+                BarrierKind::Stop => "stop",
+                BarrierKind::KeepClear { .. } => "keep clear",
+            };
+            (kind.into(), Some(Entity::Lane(lane)), Some(gap))
         }
-        AccelSource::Junction { kind: ConflictKind::Cross, gap, .. } => {
-            ("crossing after".into(), Some(gap))
+        AccelSource::Junction { id, kind: ConflictKind::Cross, gap } => (
+            "crossing after".into(),
+            Some(Entity::Vehicle(id)),
+            Some(gap),
+        ),
+        AccelSource::Junction { id, kind: ConflictKind::Merge, gap } => {
+            ("merging after".into(), Some(Entity::Vehicle(id)), Some(gap))
         }
-        AccelSource::Junction { kind: ConflictKind::Merge, gap, .. } => {
-            ("merging after".into(), Some(gap))
+        AccelSource::JunctionHold { gap } => ("held out of junction queue".into(), None, Some(gap)),
+        AccelSource::Merge { id, gap } => (
+            "merge order after".into(),
+            Some(Entity::Vehicle(id)),
+            Some(gap),
+        ),
+        AccelSource::Model { id, model, term, gap } => {
+            (format!("{model}: {term}"), id.map(Entity::Vehicle), gap)
         }
-        AccelSource::JunctionHold { gap } => ("held out of junction queue".into(), Some(gap)),
-        AccelSource::Merge { gap, .. } => ("merge order after".into(), Some(gap)),
-        AccelSource::Model { model, term, gap, .. } => (format!("{model}: {term}"), gap),
     }
 }
 
@@ -837,7 +866,6 @@ impl App {
             return;
         };
         let pos = v.lane_pos();
-        ui.strong("Vehicle");
         egui::Grid::new("inspector").num_columns(2).striped(true).show(ui, |ui| {
             ui.label("id");
             ui.label(egui::RichText::new(number(id)).monospace().color(SELECTED));
@@ -931,25 +959,26 @@ impl App {
         });
 
         ui.separator();
-        ui.strong("Acceleration terms (the lowest binds)");
+        ui.strong("Acceleration terms");
         let related = related(&self.debug, id);
         let colour_of = |other: VehicleId| {
             related.iter().find(|&&(v, _)| v == other).map_or(SELECTED, |&(_, c)| c)
         };
         let terms: Vec<_> = self.debug.terms(id).collect();
         egui::Grid::new("accel terms").num_columns(4).striped(true).show(ui, |ui| {
-            for heading in ["term", "vehicle", "gap", "m/s²"] {
+            for heading in ["term", "entity", "gap", "m/s²"] {
                 ui.strong(heading);
             }
             fill_row(ui);
             ui.end_row();
             for &(source, accel) in &terms {
-                let (term, gap) = describe(source);
+                let (term, entity, gap) = describe(source);
                 ui.label(term);
-                match named(source) {
-                    Some(other) => {
+                match entity {
+                    Some(Entity::Vehicle(other)) => {
                         ui.label(egui::RichText::new(number(other)).color(colour_of(other)))
                     }
+                    Some(Entity::Lane(lane)) => ui.label(lane.0.to_string()),
                     None => ui.label(""),
                 };
                 ui.monospace(gap.map_or(String::new(), |gap| format!("{gap:.2} m")));
@@ -1243,7 +1272,7 @@ fn draw_pretty(
         } else {
             Stroke::NONE
         };
-        let colour = body_colour(id, selected, related, Color32::from_rgb(200, 40, 40));
+        let colour = body_colour(id, selected, related, VEHICLE);
         painter.add(Shape::convex_polygon(corners, colour, outline));
         draw_indicators(painter, sim, v, drawn);
     }
@@ -1644,7 +1673,9 @@ const MAY_CHANGE: Color32 = Color32::from_rgb(80, 200, 80);
 const MAY_NOT_CHANGE: Color32 = Color32::from_rgb(220, 70, 70);
 const OCCUPANT: Color32 = Color32::from_rgb(200, 160, 255);
 const GHOST: Color32 = Color32::from_rgb(255, 150, 40);
-const VEHICLE: Color32 = Color32::from_rgb(220, 40, 40);
+/// A vehicle, with none selected: white, as every vehicle unrelated to a
+/// selected one is.
+const VEHICLE: Color32 = UNRELATED;
 /// Half-transparent white.
 const AXLE: Color32 = Color32::from_rgba_premultiplied(128, 128, 128, 128);
 const LANE_CHANGE: Color32 = Color32::from_rgb(250, 160, 60);

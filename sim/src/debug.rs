@@ -1,5 +1,6 @@
 use glam::DVec2;
 
+use crate::BarrierKind;
 use crate::barrier::Decision as BarrierDecision;
 use crate::network::{ConflictKind, LaneId, Side};
 use crate::vehicle::VehicleId;
@@ -163,7 +164,7 @@ pub enum AccelSource {
     Merge { id: VehicleId, gap: f64 },
     /// A barrier holding the vehicle back, the `index`th of `lane`'s, with the
     /// gap from its front to the line.
-    Barrier { lane: LaneId, index: u16, gap: f64 },
+    Barrier { lane: LaneId, index: u16, kind: BarrierKind, gap: f64 },
 }
 
 /// A sink that discards everything: the simulation's own, outside a debug step.

@@ -240,7 +240,8 @@ pub(super) fn longitudinal<D: DebugSink>(
             Answer::Pass => (barrier::Decision::Pass, None),
             Answer::Yield(_) | Answer::Stop => {
                 let term = acceleration::hold(&vehicle.spec, line_gap, vehicle.speed, gap);
-                let source = AccelSource::Barrier { lane, index, gap };
+                let kind = barrier.kind;
+                let source = AccelSource::Barrier { kind, lane, index, gap };
                 sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
                 rest = rest.min(term);
                 let yields_to = match answer {
