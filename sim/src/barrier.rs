@@ -197,8 +197,11 @@ pub(crate) fn gap_to(vehicle: &Vehicle, barrier: &Barrier, along: f64) -> f64 {
 /// gap it took, or the room it saw beyond the zone, is stale, unless its
 /// junction has queued it past the line already, so that others are queued
 /// behind it on that footing (see `docs/DESIGN.md`, Queue invariants). On amber,
-/// a committed vehicle goes on: one caught in the dilemma zone, or a turner
-/// waiting past its line for a gap, which comes as the oncoming traffic stops.
+/// a committed vehicle goes on, one caught in the dilemma zone, or a turner
+/// waiting past its line for a gap, which comes as the oncoming traffic stops,
+/// unless it has come to rest short of the line, held there by traffic ahead,
+/// when it is released as at a stop line: a driver standing at the line
+/// doesn't move off into an amber light.
 pub(crate) fn released(
     state: &SimState,
     id: VehicleId,
@@ -225,11 +228,11 @@ pub(crate) fn released(
             // vehicle that has committed to turn moves off slowly enough to
             // stop, so isn't released otherwise.
             BarrierKind::Signal { movement, on_red } => {
-                state.lights[movement.0 as usize].light == Light::Red
-                    && match on_red {
-                        None => speed * speed / (2.0 * acceleration::SAFE_BRAKING) <= gap,
-                        Some(_) => speed == 0.0 && !queued_past(),
-                    }
+                match (state.lights[movement.0 as usize].light, on_red) {
+                    (Light::Red, None) => speed * speed / (2.0 * acceleration::SAFE_BRAKING) <= gap,
+                    (Light::Red, Some(_)) | (Light::Amber, _) => speed == 0.0 && !queued_past(),
+                    (Light::Green, _) => false,
+                }
             }
             BarrierKind::GiveWay | BarrierKind::Stop | BarrierKind::KeepClear { .. } => {
                 speed == 0.0 && !queued_past()

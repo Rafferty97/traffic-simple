@@ -62,6 +62,45 @@ pub(super) struct Binding {
     pub(super) rest: f64,
 }
 
+/// The harshest of a vehicle's terms for lower speed limits on the lanes ahead
+/// along its path (see [`acceleration::limit_ahead`]), as far ahead as they can
+/// matter, each recorded; infinite if there are none. On a lane its front is
+/// already on, but its rear axle isn't, as the free road's.
+fn limits_ahead<D: DebugSink>(
+    state: &SimState,
+    sink: &mut D,
+    id: VehicleId,
+    vehicle: &Vehicle,
+) -> f64 {
+    let network = &state.network;
+    let spec = &vehicle.spec;
+    let reach = acceleration::limit_reach(spec, vehicle.speed);
+    let front = vehicle.lane_pos.s + spec.length - spec.rear_axle;
+    // Where each lane after the one it follows starts, along that one.
+    let mut start = network.lane(vehicle.path[0]).geometry().length();
+    let own = spec.desired_speed(network.lane(vehicle.path[0]).speed_limit());
+    let mut harshest = f64::INFINITY;
+    for &lane in &vehicle.path[1..] {
+        let gap = start - front;
+        if gap > reach {
+            break;
+        }
+        let limit = spec.desired_speed(network.lane(lane).speed_limit());
+        let term = match gap > 0.0 {
+            true => acceleration::limit_ahead(spec, vehicle.speed, gap, limit),
+            false if limit < own => Some(acceleration::free_road(spec, vehicle.speed, limit)),
+            false => None,
+        };
+        if let Some(accel) = term {
+            let source = AccelSource::LimitAhead { lane, limit, gap: gap.max(0.0) };
+            sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel });
+            harshest = harshest.min(accel);
+        }
+        start += network.lane(lane).geometry().length();
+    }
+    harshest
+}
+
 /// A vehicle's acceleration under the longitudinal model along its own lanes,
 /// and the nearest ghost ahead of it, for the lane-change model. `own` is the
 /// index of its record in the occupants of the lane it follows.
@@ -88,7 +127,7 @@ pub(super) fn longitudinal<D: DebugSink>(
     let source = AccelSource::FreeRoad { desired_speed };
     sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: free });
     // The lowest of every term but the binding leader's, and that leader.
-    let mut rest = free;
+    let mut rest = free.min(limits_ahead(state, sink, id, vehicle));
     let mut binding: Option<Binding> = None;
 
     // The nearest ghost, if it comes before anything else ahead.

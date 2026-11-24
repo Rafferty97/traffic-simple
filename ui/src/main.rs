@@ -62,11 +62,11 @@ fn number(id: VehicleId) -> String {
 fn describe(source: AccelSource) -> (String, Option<f64>) {
     match source {
         AccelSource::FreeRoad { desired_speed } => (
-            format!("free road, v0 {:.0} km/h", desired_speed * 3.6),
+            format!("target speed of {:.0} km/h", desired_speed * 3.6),
             None,
         ),
         AccelSource::Leader { gap, headway, .. } if headway < 1.0 => {
-            (format!("leader, headway ×{headway:.2}"), Some(gap))
+            (format!("leader (headway ×{headway:.2})"), Some(gap))
         }
         AccelSource::Leader { gap, .. } => ("leader".into(), Some(gap)),
         AccelSource::Cap { max_speed: 0.0 } => ("held to a stop".into(), None),
@@ -79,6 +79,10 @@ fn describe(source: AccelSource) -> (String, Option<f64>) {
             None,
         ),
         AccelSource::PathEnd { gap } => ("end of known path".into(), Some(gap)),
+        AccelSource::LimitAhead { limit, gap, .. } => (
+            format!("slowing to {:.0} km/h ahead", limit * 3.6),
+            Some(gap),
+        ),
         AccelSource::Barrier { lane, gap, .. } => {
             (format!("barrier on lane {}", lane.0), Some(gap))
         }
@@ -619,14 +623,15 @@ impl Harness {
         }
     }
 
-    /// A speed factor from a normal distribution with mean 1 and deviation 0.1,
-    /// as SUMO's default, clamped to [0.8, 1.2].
+    /// A speed factor from a normal distribution with mean 1 and deviation 0.05,
+    /// clamped to [0.85, 1.15]: nearly every driver on a 50 km/h road wants 45
+    /// to 55 km/h. SUMO's default deviation, 0.1, spreads them wider.
     fn speed_factor(&mut self) -> f64 {
         // Box-Muller on two uniform samples, u in (0, 1] so its log is finite.
         let u = 1.0 - self.rng.random::<f64>();
         let v = self.rng.random::<f64>();
         let normal = (-2.0 * u.ln()).sqrt() * (TAU * v).cos();
-        (1.0 + 0.1 * normal).clamp(0.8, 1.2)
+        (1.0 + 0.05 * normal).clamp(0.85, 1.15)
     }
 
     fn controls(&mut self, ui: &mut egui::Ui, on_road: usize) {
@@ -836,6 +841,7 @@ impl App {
         egui::Grid::new("inspector").num_columns(2).striped(true).show(ui, |ui| {
             ui.label("id");
             ui.label(egui::RichText::new(number(id)).monospace().color(SELECTED));
+            fill_row(ui);
             ui.end_row();
             let mut row = |name: &str, value: String| {
                 ui.label(name);
@@ -907,6 +913,15 @@ impl App {
                 "speed",
                 format!("{:.1} km/h ({:.2} m/s)", v.speed() * 3.6, v.speed()),
             );
+            let limit = self.sim.network().lane(v.lane()).speed_limit();
+            row(
+                "speed limit",
+                format!(
+                    "{:.0} km/h, wanting {:.0} km/h",
+                    limit * 3.6,
+                    v.spec().desired_speed(limit) * 3.6
+                ),
+            );
             row("accel", format!("{:+.2} m/s²", v.accel()));
             row(
                 "stopping",
@@ -926,6 +941,7 @@ impl App {
             for heading in ["term", "vehicle", "gap", "m/s²"] {
                 ui.strong(heading);
             }
+            fill_row(ui);
             ui.end_row();
             for &(source, accel) in &terms {
                 let (term, gap) = describe(source);
@@ -978,7 +994,7 @@ impl App {
                         .num_columns(columns.len() + 1)
                         .striped(true)
                         .show(ui, |ui| {
-                            for name in names {
+                            for (k, name) in names.into_iter().enumerate() {
                                 ui.label(name);
                                 for column in &columns {
                                     let value = column.iter().find(|f| f.0 == name).map(|f| f.1);
@@ -988,6 +1004,9 @@ impl App {
                                         Some(Field::Text(t)) => t.into(),
                                         Some(Field::None) | None => "–".into(),
                                     });
+                                }
+                                if k == 0 {
+                                    fill_row(ui);
                                 }
                                 ui.end_row();
                             }
@@ -1228,6 +1247,15 @@ fn draw_pretty(
         painter.add(Shape::convex_polygon(corners, colour, outline));
         draw_indicators(painter, sim, v, drawn);
     }
+}
+
+/// Widens the last column of a grid to the edge of the panel, called in its
+/// last cell, so the table and its stripes span the panel's width. Inside a
+/// scroll area that scrolls sideways, the width available is only as wide as
+/// the content was, so it reaches to the visible edge instead.
+fn fill_row(ui: &mut egui::Ui) {
+    let width = ui.clip_rect().right() - ui.cursor().left();
+    ui.allocate_space(egui::vec2(width.max(0.0), 0.0));
 }
 
 /// How fast the dashes of a selected vehicle's path flow along it, in meters

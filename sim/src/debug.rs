@@ -129,6 +129,10 @@ pub enum AccelSource {
     /// and the share of its time headway the follower keeps to it as relaxation
     /// has it: less than 1 just after either appeared in the lane.
     Leader { id: VehicleId, gap: f64, headway: f64 },
+    /// A lower speed limit on a lane ahead along its path, the speed it would go
+    /// there, in m/s, and the gap from its front to that lane's start: zero
+    /// once its front is on it.
+    LimitAhead { lane: LaneId, limit: f64, gap: f64 },
     /// A maximum speed imposed on the vehicle, in m/s: 0 holds it to a stop.
     Cap { max_speed: f64 },
     /// Slow and short of moving off, it finishes its stop or stays at rest (see

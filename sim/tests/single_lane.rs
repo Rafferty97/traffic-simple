@@ -175,3 +175,56 @@ fn a_queue_comes_to_rest_at_the_minimum_gap() {
         assert!(gap < spec.min_gap + 0.2, "stopped {gap} m behind");
     }
 }
+
+#[test]
+fn a_vehicle_slows_for_a_lower_limit_ahead_before_it_reaches_it() {
+    // 500 m at 100 km/h, then 300 m at 50 km/h.
+    let (fast, slow) = (100.0 / 3.6, 50.0 / 3.6);
+    let lanes = vec![
+        Lane::new(
+            &[DVec2::ZERO, DVec2::new(500.0, 0.0)],
+            3.5,
+            fast,
+            common::alone(),
+        )
+        .unwrap(),
+        Lane::new(
+            &[DVec2::new(500.0, 0.0), DVec2::new(800.0, 0.0)],
+            3.5,
+            slow,
+            common::alone(),
+        )
+        .unwrap(),
+    ];
+    let mut network = SimNetwork::new(lanes);
+    network.connect(LaneId(0), LaneId(1));
+    let mut sim = common::sim(network);
+    let spec = car();
+    let at = Placement {
+        lane: LaneId(0),
+        s: 0.0,
+        speed: fast,
+        route: Route::default(),
+        seed: 0,
+    };
+    let id = sim.insert(spec, at);
+    let mut hardest: f64 = 0.0;
+    loop {
+        let v = sim.get(id).unwrap();
+        let front = v.lane_pos().s + spec.length - spec.rear_axle;
+        if v.lane() == LaneId(0) && front < 150.0 {
+            // Far from the limit, it hasn't begun to slow.
+            assert!(v.speed() > 0.95 * fast, "{} m/s at {front} m", v.speed());
+        }
+        if v.lane() == LaneId(1) || front >= 500.0 {
+            // Down to about the limit as its front reaches the slower lane.
+            let limit = spec.desired_speed(slow);
+            assert!(v.speed() < limit + 1.0, "{} m/s against {limit}", v.speed());
+            break;
+        }
+        hardest = hardest.min(v.accel());
+        sim.step();
+    }
+    // About comfortably, never harder than twice that.
+    assert!(hardest > -2.0 * spec.comfy_decel - 0.5, "{hardest} m/s²");
+}

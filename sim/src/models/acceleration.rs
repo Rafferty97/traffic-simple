@@ -149,6 +149,23 @@ pub fn free_road(spec: &VehicleSpec, speed: f64, desired_speed: f64) -> f64 {
     -spec.comfy_decel * (1.0 - (desired_speed / speed).powf(exponent))
 }
 
+/// The term for a lower speed limit `gap` ahead of the vehicle's front, where
+/// it would go no faster than `limit`: braking to be down to it there,
+/// `(limit² − v²) / 2·gap`, once that is harsher than its comfortable
+/// deceleration, and never harsher than twice that, so it slows ahead of the
+/// limit rather than once on it, and brakes at about its comfortable
+/// deceleration as it does. Nothing before then.
+pub fn limit_ahead(spec: &VehicleSpec, speed: f64, gap: f64, limit: f64) -> Option<f64> {
+    let needed = (speed * speed - limit * limit) / (2.0 * gap.max(0.1));
+    (needed > spec.comfy_decel).then(|| -needed.min(2.0 * spec.comfy_decel))
+}
+
+/// How far ahead of its front a lower speed limit can matter to a vehicle: any
+/// further, slowing to a stop there takes no more than comfortable braking.
+pub fn limit_reach(spec: &VehicleSpec, speed: f64) -> f64 {
+    speed * speed / (2.0 * spec.comfy_decel)
+}
+
 /// The time constant of a driver's acceleration noise, in seconds: how long it
 /// takes to wander away from what it was (see [`VehicleSpec::accel_noise`]).
 pub const NOISE_TIME: f64 = 10.0;
