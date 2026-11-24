@@ -52,7 +52,7 @@ pub(crate) fn incentives(
     // How fast traffic goes ahead on a lane, from `s` along it.
     let anticipated = |lane: LaneId, s: f64| {
         let limit = network.lane(lane).speed_limit();
-        let desired = vehicle.spec.desired_speed(limit);
+        let desired = state.drivers.desired_speed(id, &vehicle.spec, limit);
         let ahead = speeds[lane.0 as usize].average(s, s + ANTICIPATION * limit);
         ahead.map_or(desired, |v| v.min(desired))
     };
@@ -72,7 +72,8 @@ pub(crate) fn incentives(
     let courtesy = vehicle.held_up.and_then(|held| {
         let follower = vehicles.get(held.id)?;
         let gain = (held.without - follower.accel).max(0.0);
-        Some(vehicle.spec.politeness * gain / vehicle.spec.comfy_decel)
+        let politeness = state.lane_changing.state(id).traits.politeness;
+        Some(politeness * gain / vehicle.spec.comfy_decel)
     });
     [Side::Left, Side::Right].map(|side| {
         let beside = permitted(side)?;

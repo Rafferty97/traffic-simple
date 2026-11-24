@@ -16,9 +16,9 @@ use traffic_network::{
     Arrow, MarkingStyle, RenderGeometry, RoadNetwork, Sign, Strip, compile, scenarios,
 };
 use traffic_sim::{
-    AccelSource, BarrierDecision, BarrierKind, ConflictKind, DebugEvent, DestinationId, Field,
-    LaneChangeError, LaneChangeIntent, LaneId, Leaving, Light, PassCheck, Placement, RoadId, Route,
-    Side, Simulation, Vehicle, VehicleId, VehicleSpec,
+    AccelSource, BarrierDecision, BarrierKind, ConflictKind, DebugEvent, DestinationId, Driver,
+    Field, LaneChangeError, LaneChangeIntent, LaneId, Leaving, Light, PassCheck, Placement, RoadId,
+    Route, Side, Simulation, Vehicle, VehicleId, VehicleSpec,
 };
 
 /// The inner lane's circumference: about 160 m across, roomy enough for
@@ -626,15 +626,17 @@ impl Harness {
         // Drivers vary in how hard they'll brake to let someone in, in how much
         // they weigh others when changing lanes, and in how readily they change:
         // mostly cautious, about one in ten above 0.7.
-        let car = VehicleSpec {
+        let car = demo_car();
+        let mut driver = Driver {
             speed_factor: self.speed_factor(),
             courtesy: 2.0 * self.rng.random::<f64>(),
             politeness: 0.1 + 0.3 * self.rng.random::<f64>(),
             assertiveness: self.rng.random::<f64>().powi(3),
-            ..demo_car()
+            ..Driver::default()
         };
         let limit = sim.network().lane(lane).speed_limit();
         let seed = self.rng.random();
+        driver.seed = seed;
         // To an exit it can reach from where it starts, if it is to go to one.
         let reachable: Vec<_> = match self.to_exits {
             true => self.exits.iter().filter(|&&d| sim.time_to(d, lane).is_some()).collect(),
@@ -644,9 +646,9 @@ impl Harness {
             0 => Route::random(seed),
             n => Route::to(*reachable[self.rng.random_range(0..n)]),
         };
-        let at = Placement { lane, s, speed: car.desired_speed(limit), route, seed };
+        let at = Placement { lane, s, speed: driver.desired_speed(&car, limit), route };
         // Refused where there is no safe room: the credit waits for another try.
-        if sim.try_insert(car, at).is_ok() {
+        if sim.try_insert(car, driver, at).is_ok() {
             self.credit -= 1.0;
             self.spawned += 1;
         }
@@ -947,7 +949,7 @@ impl App {
                 format!(
                     "{:.0} km/h, wanting {:.0} km/h",
                     limit * 3.6,
-                    v.spec().desired_speed(limit) * 3.6
+                    self.sim.driver(id).map_or(limit, |d| d.desired_speed(v.spec(), limit)) * 3.6
                 ),
             );
             row("accel", format!("{:+.2} m/s²", v.accel()));

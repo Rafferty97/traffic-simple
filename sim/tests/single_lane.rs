@@ -27,14 +27,8 @@ fn lane(turn: f64) -> Lane {
 fn drive(lane: Lane) -> (f64, f64) {
     let length = lane.geometry().length();
     let mut sim = common::sim(SimNetwork::new(vec![lane]));
-    let at = Placement {
-        lane: LaneId(0),
-        s: 0.0,
-        speed: 0.0,
-        route: Route::default(),
-        seed: 0,
-    };
-    let id = sim.insert(car(), at);
+    let at = Placement { lane: LaneId(0), s: 0.0, speed: 0.0, route: Route::default() };
+    let id = sim.insert(car(), common::driver(), at);
 
     let (mut time, mut max_t, mut last_s) = (0.0, 0.0f64, 0.0);
     while let Some(v) = sim.get(id) {
@@ -75,15 +69,10 @@ fn drivers_settle_at_their_share_of_the_limit() {
     for factor in [0.8, 1.2] {
         // Alone on a ring, so nothing gets in the way.
         let mut sim = common::sim(common::ring(230.0, SPEED_LIMIT));
-        let at = Placement {
-            lane: LaneId(0),
-            s: 0.0,
-            speed: 0.0,
-            route: Route::default(),
-            seed: 0,
-        };
+        let at = Placement { lane: LaneId(0), s: 0.0, speed: 0.0, route: Route::default() };
         let id = sim.insert(
-            traffic_sim::VehicleSpec { speed_factor: factor, ..car() },
+            car(),
+            traffic_sim::Driver { speed_factor: factor, ..common::driver() },
             at,
         );
         for _ in 0..(40.0 / DT) as usize {
@@ -106,12 +95,12 @@ fn a_capped_car_slows_to_its_cap_and_goes_on_once_released() {
     let mut sim = common::sim(SimNetwork::new(vec![lane]));
     let id = sim.insert(
         car(),
+        common::driver(),
         Placement {
             lane: LaneId(0),
             s: 0.0,
             speed: SPEED_LIMIT,
             route: Route::default(),
-            seed: 0,
         },
     );
     let cap = 20.0 / 3.6;
@@ -150,11 +139,11 @@ fn a_queue_comes_to_rest_at_the_minimum_gap() {
     .unwrap();
     let mut sim = common::sim(SimNetwork::new(vec![lane]));
     let spec = car();
-    let at = |s, speed| Placement { lane: LaneId(0), s, speed, route: Route::default(), seed: 0 };
-    let stopped = sim.insert(spec, at(500.0, 0.0));
+    let at = |s, speed| Placement { lane: LaneId(0), s, speed, route: Route::default() };
+    let stopped = sim.insert(spec, common::driver(), at(500.0, 0.0));
     sim.hold(stopped);
-    let a = sim.insert(spec, at(300.0, SPEED_LIMIT));
-    let b = sim.insert(spec, at(250.0, SPEED_LIMIT));
+    let a = sim.insert(spec, common::driver(), at(300.0, SPEED_LIMIT));
+    let b = sim.insert(spec, common::driver(), at(250.0, SPEED_LIMIT));
     // Bumper to bumper: the cars' rear axles are a car length plus the gap apart.
     let gap = |sim: &Simulation, follower, leader| {
         let s = |id| sim.get(id).unwrap().lane_pos().s;
@@ -205,9 +194,8 @@ fn a_vehicle_slows_for_a_lower_limit_ahead_before_it_reaches_it() {
         s: 0.0,
         speed: fast,
         route: Route::default(),
-        seed: 0,
     };
-    let id = sim.insert(spec, at);
+    let id = sim.insert(spec, common::driver(), at);
     let mut hardest: f64 = 0.0;
     loop {
         let v = sim.get(id).unwrap();
@@ -218,7 +206,7 @@ fn a_vehicle_slows_for_a_lower_limit_ahead_before_it_reaches_it() {
         }
         if v.lane() == LaneId(1) || front >= 500.0 {
             // Down to about the limit as its front reaches the slower lane.
-            let limit = spec.desired_speed(slow);
+            let limit = common::driver().desired_speed(&spec, slow);
             assert!(v.speed() < limit + 1.0, "{} m/s against {limit}", v.speed());
             break;
         }

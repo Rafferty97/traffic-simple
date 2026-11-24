@@ -253,29 +253,22 @@ mod test {
             length: 4.6,
             width: 1.9,
             max_speed: 30.0,
-            speed_factor: 1.0,
             max_accel: 1.0,
             comfy_decel: 1.5,
             time_headway: 1.0,
             min_gap: 1.5,
             rear_axle: 1.0,
             front_axle: 3.7,
-            courtesy: 1.0,
-            politeness: 0.2,
-            assertiveness: 0.0,
-            accel_noise: 0.0,
-            line_gap: 1.0,
-            line_gap_spread: 0.0,
         };
         let mut sim = crate::simulation::test::new_sim(network.clone());
         let id = sim.insert(
             spec,
+            crate::simulation::test::driver(),
             Placement {
                 lane: LaneId(lane),
                 s,
                 speed: 10.0,
                 route: crate::models::routing::Route::default(),
-                seed: 0,
             },
         );
         sim.get(id).unwrap().clone()

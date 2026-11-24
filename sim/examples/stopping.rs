@@ -8,7 +8,7 @@
 
 use glam::DVec2;
 use traffic_sim::{
-    Barrier, BarrierKind, Config, Lane, LaneId, Movement, Phase, Placement, RoadId, Route,
+    Barrier, BarrierKind, Config, Driver, Lane, LaneId, Movement, Phase, Placement, RoadId, Route,
     SignalPlan, SimNetwork, Simulation, VehicleId, VehicleSpec,
 };
 
@@ -52,16 +52,20 @@ fn red_light() -> Simulation {
     Simulation::with_config(network, Config { dt: DT, macro_step: 3 })
 }
 
-fn car(noise: bool) -> VehicleSpec {
-    let car = VehicleSpec::passenger_car();
-    VehicleSpec {
-        accel_noise: if noise { car.accel_noise } else { 0.0 },
-        ..car
-    }
+fn car() -> VehicleSpec {
+    VehicleSpec::passenger_car()
 }
 
-fn place(s: f64, speed: f64, seed: u64) -> Placement {
-    Placement { lane: LaneId(0), s, speed, route: Route::default(), seed }
+/// A driver of textbook habits, with its dawdling or without, its generator
+/// seeded by `seed`.
+fn driver(noise: bool, seed: u64) -> Driver {
+    let driver = Driver::default();
+    let accel_noise = if noise { driver.accel_noise } else { 0.0 };
+    Driver { accel_noise, seed, ..driver }
+}
+
+fn place(s: f64, speed: f64) -> Placement {
+    Placement { lane: LaneId(0), s, speed, route: Route::default() }
 }
 
 /// The bumper-to-bumper gap from `follower` to `leader`.
@@ -124,11 +128,12 @@ fn main() {
         // One vehicle coming up to a stationary leader from each speed.
         for speed in [2.0, 6.0, 14.0] {
             let mut sim = sim();
-            let leader = sim.insert(car(false), place(400.0, 0.0, 1));
+            let leader = sim.insert(car(), driver(false, 1), place(400.0, 0.0));
             sim.hold(leader);
             let id = sim.insert(
-                car(noise),
-                place(400.0 - 4.0 * speed * speed - 30.0, speed, 7),
+                car(),
+                driver(noise, 7),
+                place(400.0 - 4.0 * speed * speed - 30.0, speed),
             );
             let mut stops = Stops::default();
             for _ in 0..(90.0 / DT) as usize {
@@ -151,8 +156,12 @@ fn main() {
         for (speed, line_gap) in [(2.0, 1.0), (6.0, 1.0), (14.0, 1.0), (2.0, 0.5), (14.0, 0.5)] {
             let mut sim = red_light();
             // Its gap to lines exactly so, no spread.
-            let spec = VehicleSpec { line_gap, line_gap_spread: 0.0, ..car(noise) };
-            let id = sim.insert(spec, place(400.0 - 4.0 * speed * speed - 30.0, speed, 7));
+            let driver = Driver { line_gap, line_gap_spread: 0.0, ..driver(noise, 7) };
+            let id = sim.insert(
+                car(),
+                driver,
+                place(400.0 - 4.0 * speed * speed - 30.0, speed),
+            );
             let short = |sim: &Simulation| {
                 let v = sim.get(id).unwrap();
                 let front = v.lane_pos().s - v.spec().rear_axle + v.spec().length;
@@ -188,7 +197,7 @@ fn main() {
         }
         // A queue of ten arriving at the limit two seconds apart, then let go.
         let mut sim = sim();
-        let head = sim.insert(car(false), place(600.0, 0.0, 1));
+        let head = sim.insert(car(), driver(false, 1), place(600.0, 0.0));
         sim.hold(head);
         let mut queue = vec![head];
         let mut stops: Vec<Stops> = Vec::new();
@@ -196,7 +205,7 @@ fn main() {
         let release = (120.0 / DT) as usize;
         for step in 0..(180.0 / DT) as usize {
             if step % (2.0 / DT) as usize == 0 && queue.len() < 11 {
-                let id = sim.insert(car(noise), place(0.0, LIMIT, 100 + step as u64));
+                let id = sim.insert(car(), driver(noise, 100 + step as u64), place(0.0, LIMIT));
                 queue.push(id);
                 stops.push(Stops::default());
             }

@@ -20,6 +20,7 @@ pub use debug::{AccelSource, DebugEvent, Field, PassCheck};
 pub use following::{Lateral, Occupant, PASSING_CLEARANCE};
 pub use junction::Entry;
 pub use models::acceleration::{MOVING_OFF, SAFE_BRAKING, STOPPING_DECEL, STOPPING_SPEED};
+pub use models::driver::Driver;
 pub use models::lane_change::MIN_INDICATING;
 pub use models::routing::{DestinationId, Route};
 pub use models::signal::{Light, MovementLight};

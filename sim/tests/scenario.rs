@@ -8,7 +8,7 @@ use std::f64::consts::TAU;
 
 use rand::rngs::Xoshiro256PlusPlus;
 use rand::{RngExt, SeedableRng};
-use traffic_sim::{LaneId, Placement, Route, Side, VehicleId, VehicleSpec};
+use traffic_sim::{Driver, LaneId, Placement, Route, Side, VehicleId, VehicleSpec};
 
 mod common;
 use common::{Terms, ring_road};
@@ -21,24 +21,17 @@ const SPAWN_LANE: LaneId = LaneId(2);
 const DESPAWN_LANE: LaneId = LaneId(0);
 
 /// The UI's demo car.
-fn demo_car(speed_factor: f64) -> VehicleSpec {
+fn demo_car() -> VehicleSpec {
     VehicleSpec {
         length: 4.6,
         width: 1.9,
         max_speed: 30.0,
-        speed_factor,
         max_accel: 1.0,
         comfy_decel: 1.5,
         time_headway: 1.0,
         min_gap: 1.5,
         rear_axle: 1.0,
         front_axle: 3.7,
-        courtesy: 1.0,
-        politeness: 0.2,
-        assertiveness: 0.0,
-        accel_noise: 0.0,
-        line_gap: 1.0,
-        line_gap_spread: 0.0,
     }
 }
 
@@ -78,15 +71,15 @@ fn run_scenario(spawn_rate: f64, despawn_rate: f64, minutes: f64) -> Stats {
 
         spawn_credit = (spawn_credit + spawn_rate * DT).min(1.0);
         if spawn_credit >= 1.0 {
-            let car = demo_car(speed_factor(&mut rng));
+            let car = demo_car();
+            let driver = Driver { speed_factor: speed_factor(&mut rng), ..common::driver() };
             let at = Placement {
                 lane: SPAWN_LANE,
                 s: spawn_s,
-                speed: car.desired_speed(SPEED_LIMIT),
+                speed: driver.desired_speed(&car, SPEED_LIMIT),
                 route: Route::default(),
-                seed: 0,
             };
-            if sim.try_insert(car, at).is_ok() {
+            if sim.try_insert(car, driver, at).is_ok() {
                 spawn_credit -= 1.0;
                 stats.spawned += 1;
             }

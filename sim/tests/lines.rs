@@ -61,9 +61,8 @@ fn stop(skew: f64, spec: VehicleSpec) -> (f64, f64) {
         s: 40.0,
         speed: LIMIT,
         route: Route::random(0),
-        seed: 0,
     };
-    let id = sim.insert(spec, at);
+    let id = sim.insert(spec, common::driver(), at);
     let short = |sim: &Simulation| {
         let corners = sim.get(id).unwrap().corners();
         corners.map(|c| line.short_of(c)).into_iter().fold(f64::INFINITY, f64::min)
@@ -82,9 +81,10 @@ fn stop(skew: f64, spec: VehicleSpec) -> (f64, f64) {
     (short(&sim), nose)
 }
 
-/// A car with no spread in its gap to lines, so it stops exactly that short.
+/// A car of the given width, its driver with no spread in its gap to lines (see
+/// [`common::driver`]), so it stops exactly that short.
 fn exact(width: f64) -> VehicleSpec {
-    VehicleSpec { width, line_gap_spread: 0.0, ..car() }
+    VehicleSpec { width, ..car() }
 }
 
 #[test]
@@ -92,7 +92,7 @@ fn a_vehicle_stops_its_gap_short_of_an_oblique_line_by_its_nearest_corner() {
     let spec = exact(1.9);
     let (short, _) = stop(30f64.to_radians(), spec);
     assert!(
-        (short - spec.line_gap).abs() < STOP_TOLERANCE,
+        (short - common::driver().line_gap).abs() < STOP_TOLERANCE,
         "it stopped {short:.3} m short"
     );
 }
@@ -116,11 +116,11 @@ fn a_square_line_stops_a_vehicle_where_its_position_alone_does() {
     let spec = exact(1.9);
     let (short, nose) = stop(0.0, spec);
     assert!(
-        (short - spec.line_gap).abs() < STOP_TOLERANCE,
+        (short - common::driver().line_gap).abs() < STOP_TOLERANCE,
         "it stopped {short:.3} m short"
     );
     assert!(
-        (nose - (20.0 - spec.line_gap)).abs() < STOP_TOLERANCE,
+        (nose - (20.0 - common::driver().line_gap)).abs() < STOP_TOLERANCE,
         "its nose is at {nose:.3}"
     );
 }
@@ -132,7 +132,7 @@ fn a_vehicle_never_stops_short_of_where_the_line_is_safe_to_reach() {
     let spec = exact(1.9);
     let (short, _) = stop(-30f64.to_radians(), spec);
     assert!(
-        (short - spec.line_gap).abs() < STOP_TOLERANCE,
+        (short - common::driver().line_gap).abs() < STOP_TOLERANCE,
         "it stopped {short:.3} m short"
     );
 }

@@ -3,7 +3,7 @@
 
 use rand::rngs::Xoshiro256PlusPlus;
 use rand::{RngExt, SeedableRng};
-use traffic_sim::{Lateral, Placement, Route, Side, SimState, Simulation, VehicleId, VehicleSpec};
+use traffic_sim::{Lateral, Placement, Route, Side, SimState, Simulation, VehicleId};
 
 mod common;
 use common::{car, frame, ring_road};
@@ -56,15 +56,15 @@ fn busy() -> Simulation {
         sim.step_variable(0.005 + 0.03 * rng.random::<f64>());
         let roll = rng.random::<f64>();
         if roll < 0.05 {
-            let spec = VehicleSpec { speed_factor: 0.8 + 0.4 * rng.random::<f64>(), ..car() };
+            let speed_factor = 0.8 + 0.4 * rng.random::<f64>();
+            let driver = traffic_sim::Driver { speed_factor, ..common::driver() };
             let at = Placement {
                 lane: traffic_sim::LaneId(2),
                 s: 600.0 * roll * 20.0,
                 speed: 12.0,
                 route: Route::default(),
-                seed: 0,
             };
-            let _ = sim.try_insert(spec, at);
+            let _ = sim.try_insert(car(), driver, at);
         } else if roll < 0.06 {
             let id = sim.vehicles().nth(rng.random_range(0..8)).map(|(id, _)| id);
             if let Some(id) = id {

@@ -24,92 +24,47 @@ pub const MAX_BRAKING: f64 = 9.0;
 /// inserted ahead of it. MOBIL's `b_safe`; 4 m/s² is Treiber's default.
 pub const SAFE_BRAKING: f64 = 4.0;
 
-/// A driver's own state under the longitudinal model, kept beside its vehicle.
-#[derive(Clone, Copy, Debug)]
+/// A vehicle's own state under the longitudinal model, kept beside it.
+#[derive(Clone, Copy, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-struct Driver {
-    /// Its acceleration noise now, added to its free-road term, in m/s² (see
-    /// [`VehicleSpec::accel_noise`]).
-    pub noise: f64,
-    /// The state of its own generator, for that noise and its gaps to lines.
-    pub rng: u64,
-    /// How far short of the barrier it is heading for it will stop, in meters,
-    /// drawn afresh for each (see [`draw_line_gap`]).
-    pub line_gap: f64,
+struct State {
     /// Whether it is finishing a stop, braking at least firmly enough to come
     /// to rest promptly, or staying at rest, until it can move off properly
     /// (see [`stopping`]).
     pub stopping: bool,
 }
 
-impl Driver {
-    /// A driver whose generator starts at `seed`, its gap to lines drawn.
-    fn new(spec: &VehicleSpec, seed: u64) -> Self {
-        let mut driver = Self {
-            noise: 0.0,
-            rng: seed,
-            line_gap: spec.line_gap,
-            stopping: false,
-        };
-        draw_line_gap(&mut driver, spec);
-        driver
-    }
-}
-
-/// The longitudinal model's state for every vehicle, which it owns: each
-/// driver's [`Driver`], kept beside its vehicle.
+/// The longitudinal model's state for every vehicle, which it owns.
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub(crate) struct Model {
-    drivers: SecondaryMap<VehicleId, Driver>,
+    vehicles: SecondaryMap<VehicleId, State>,
 }
 
 impl Model {
-    /// Takes on a vehicle just inserted, its generator starting at `seed`.
-    pub fn insert(&mut self, id: VehicleId, spec: &VehicleSpec, seed: u64) {
-        self.drivers.insert(id, Driver::new(spec, seed));
+    /// Takes on a vehicle just inserted.
+    pub fn insert(&mut self, id: VehicleId) {
+        self.vehicles.insert(id, State::default());
     }
 
     /// Lets go of a vehicle removed.
     pub fn remove(&mut self, id: VehicleId) {
-        self.drivers.remove(id);
-    }
-
-    /// The vehicle's acceleration noise now, added to its free-road term.
-    pub fn noise(&self, id: VehicleId) -> f64 {
-        self.drivers[id].noise
-    }
-
-    /// How far short of the barrier it is heading for the vehicle will stop.
-    pub fn line_gap(&self, id: VehicleId) -> f64 {
-        self.drivers[id].line_gap
+        self.vehicles.remove(id);
     }
 
     /// Whether the vehicle is finishing a stop (see [`stopping`]).
     pub fn stopping(&self, id: VehicleId) -> bool {
-        self.drivers[id].stopping
-    }
-
-    /// Heading for another barrier, the vehicle draws how far short of it it
-    /// will stop (see [`draw_line_gap`]).
-    pub fn new_barrier(&mut self, id: VehicleId, spec: &VehicleSpec) {
-        draw_line_gap(&mut self.drivers[id], spec);
-    }
-
-    /// Moves the vehicle's acceleration noise on by `step`.
-    pub fn advance_noise(&mut self, id: VehicleId, spec: &VehicleSpec, step: NoiseStep) {
-        let driver = &mut self.drivers[id];
-        driver.noise = noise(driver.noise, spec.accel_noise, step, &mut driver.rng);
+        self.vehicles[id].stopping
     }
 
     /// Whether the vehicle, at `speed`, with every other term giving `accel`,
     /// is finishing a stop now, and the term that finishes it if so (see
     /// [`stopping`]).
     pub fn finish_stop(&mut self, id: VehicleId, speed: f64, accel: f64) -> Option<f64> {
-        let driver = &mut self.drivers[id];
-        driver.stopping = stopping(driver.stopping, speed, accel);
-        driver.stopping.then_some(-STOPPING_DECEL)
+        let state = &mut self.vehicles[id];
+        state.stopping = stopping(state.stopping, speed, accel);
+        state.stopping.then_some(-STOPPING_DECEL)
     }
 }
 
@@ -119,14 +74,6 @@ impl Model {
 /// far, past its minimum gap. `None` if it doesn't want to change.
 pub(crate) fn kept_room(network: &SimNetwork, vehicle: &Vehicle) -> Option<f64> {
     vehicle.intent.wants_change().then(|| halfway_from_rest(network, vehicle))
-}
-
-/// Draws how far short of the next barrier it heads for a driver will stop,
-/// from its own generator, uniformly within its spec's spread of its mean.
-fn draw_line_gap(driver: &mut Driver, spec: &VehicleSpec) {
-    let draw = crate::models::routing::splitmix64(&mut driver.rng);
-    let unit = (draw >> 11) as f64 / (1u64 << 53) as f64;
-    driver.line_gap = (spec.line_gap + spec.line_gap_spread * (2.0 * unit - 1.0)).max(0.0);
 }
 
 /// The term holding a vehicle `gap` short of a line: a stationary leader there,
@@ -164,45 +111,6 @@ pub fn limit_ahead(spec: &VehicleSpec, speed: f64, gap: f64, limit: f64) -> Opti
 /// further, slowing to a stop there takes no more than comfortable braking.
 pub fn limit_reach(spec: &VehicleSpec, speed: f64) -> f64 {
     speed * speed / (2.0 * spec.comfy_decel)
-}
-
-/// The time constant of a driver's acceleration noise, in seconds: how long it
-/// takes to wander away from what it was (see [`VehicleSpec::accel_noise`]).
-pub const NOISE_TIME: f64 = 10.0;
-
-/// How an acceleration noise steps `dt` seconds on: how much of it is left,
-/// and how much of its spread each step's kick carries, so it wanders with
-/// that spread. Worked out once per update, not per driver.
-#[derive(Clone, Copy, Debug)]
-pub struct NoiseStep {
-    decay: f64,
-    kick: f64,
-}
-
-impl NoiseStep {
-    pub fn new(dt: f64) -> Self {
-        let decay = (-dt / NOISE_TIME).exp();
-        Self { decay, kick: (1.0 - decay * decay).sqrt() }
-    }
-}
-
-/// A driver's acceleration noise one `step` on, an Ornstein-Uhlenbeck process:
-/// it decays toward zero with [`NOISE_TIME`] and is kicked by a draw with mean
-/// 0 and deviation 1, so it wanders with standard deviation `spread`. The draw
-/// is the sum of four uniform ones, scaled: near enough normal, and cheaper.
-/// `rng` is the driver's own SplitMix64 state, so the noise is the same every
-/// run.
-pub fn noise(previous: f64, spread: f64, step: NoiseStep, rng: &mut u64) -> f64 {
-    if spread <= 0.0 {
-        return 0.0;
-    }
-    let mut sum = 0.0;
-    for _ in 0..4 {
-        sum += (crate::models::routing::splitmix64(rng) >> 11) as f64 / (1u64 << 53) as f64;
-    }
-    // Four uniforms have mean 2 and variance 1/3.
-    let draw = (sum - 2.0) * 3f64.sqrt();
-    previous * step.decay + spread * step.kick * draw
 }
 
 /// The desired gap behind a leader going at `leader_speed`:
@@ -369,19 +277,12 @@ mod test {
             length: 4.6,
             width: 1.9,
             max_speed: 30.0,
-            speed_factor: 1.0,
             max_accel: 1.5,
             comfy_decel: 2.0,
             time_headway: 1.2,
             min_gap: 2.0,
             rear_axle: 1.0,
             front_axle: 3.7,
-            courtesy: 1.0,
-            politeness: 0.2,
-            assertiveness: 0.0,
-            accel_noise: 0.0,
-            line_gap: 1.0,
-            line_gap_spread: 0.0,
         }
     }
 
@@ -447,23 +348,6 @@ mod test {
             relaxed(&spec, 20.0, 15.0, 20.0, 1.0),
             interaction(&spec, 20.0, 15.0, 20.0)
         );
-    }
-
-    #[test]
-    fn acceleration_noise_wanders_with_its_spread() {
-        let (mut rng, mut xi) = (7u64, 0.0);
-        let (mut sum, mut squares, n) = (0.0, 0.0, 200_000);
-        let step = NoiseStep::new(0.05);
-        for _ in 0..n {
-            xi = noise(xi, 0.2, step, &mut rng);
-            sum += xi;
-            squares += xi * xi;
-        }
-        let mean = sum / n as f64;
-        let sd = (squares / n as f64 - mean * mean).sqrt();
-        assert!(mean.abs() < 0.03, "{mean}");
-        assert!((sd - 0.2).abs() < 0.03, "{sd}");
-        assert_eq!(noise(0.5, 0.0, step, &mut rng), 0.0);
     }
 
     #[test]

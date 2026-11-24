@@ -3,8 +3,8 @@
 
 use glam::DVec2;
 use traffic_sim::{
-    Barrier, BarrierKind, Lane, LaneId, Light, Movement, MovementId, Phase, Placement, Route,
-    SignalPlan, SimNetwork, Simulation, VehicleId,
+    Barrier, BarrierKind, Driver, Lane, LaneId, Light, Movement, MovementId, Phase, Placement,
+    Route, SignalPlan, SimNetwork, Simulation, VehicleId,
 };
 
 mod common;
@@ -59,13 +59,7 @@ fn crossroads_with(plan: SignalPlan) -> (SimNetwork, [MovementId; 2]) {
 }
 
 fn at(lane: u32, s: f64, speed: f64) -> Placement {
-    Placement {
-        lane: LaneId(lane),
-        s,
-        speed,
-        route: Route::random(0),
-        seed: 0,
-    }
+    Placement { lane: LaneId(lane), s, speed, route: Route::random(0) }
 }
 
 /// How far a vehicle's front is along its heading: past the line at the
@@ -87,11 +81,12 @@ fn a_red_light_holds_its_queue_a_line_gap_short() {
     let (net, _) = crossroads();
     let mut sim = common::sim(net);
     // Coming from the south, red for the first 25 s.
-    let ids: Vec<_> =
-        (0..4).map(|i| sim.insert(car(), at(1, 70.0 - 12.0 * i as f64, 10.0))).collect();
+    let ids: Vec<_> = (0..4)
+        .map(|i| sim.insert(car(), common::driver(), at(1, 70.0 - 12.0 * i as f64, 10.0)))
+        .collect();
     run_until(&mut sim, 20.0);
     let head = front(&sim, ids[0]).y;
-    let line_gap = car().line_gap;
+    let line_gap = common::driver().line_gap;
     assert!(
         (head - (-10.0 - line_gap)).abs() < 0.3,
         "the head's front is at y = {head}, its line 10 m south of the origin"
@@ -111,7 +106,7 @@ fn vehicles_cross_only_on_green_or_amber() {
     for step in 0..(120.0 / DT) as u64 {
         if step % (2.5 / DT).round() as u64 == 0 {
             for lane in [0, 1] {
-                let _ = sim.try_insert(car(), at(lane, 5.0, LIMIT));
+                let _ = sim.try_insert(car(), common::driver(), at(lane, 5.0, LIMIT));
             }
         }
         sim.step();
@@ -158,8 +153,9 @@ fn drivers_of_every_speed_cross_only_on_green_or_amber_with_ites_amber() {
         if step % every == 0 {
             for lane in [0, 1] {
                 let factor = [0.9, 1.0, 1.1, 1.2, 1.3][(step / every) as usize % 5];
-                let spec = VehicleSpec { speed_factor: factor, ..VehicleSpec::passenger_car() };
-                let _ = sim.try_insert(spec, at(lane, 5.0, LIMIT * factor));
+                let spec = VehicleSpec::passenger_car();
+                let driver = Driver { speed_factor: factor, ..Driver::default() };
+                let _ = sim.try_insert(spec, driver, at(lane, 5.0, LIMIT * factor));
             }
         }
         sim.step();
@@ -190,8 +186,8 @@ fn on_amber_it_goes_if_it_committed_on_green_and_stops_if_it_can() {
     // Near: about 16 m short of its line as it turns amber, too close to stop
     // comfortably at 14 m/s, so committed while it was green. Far: about 60 m
     // short, room to stop comfortably.
-    let near = sim.insert(car(), at(0, 49.0, LIMIT));
-    let far = sim.insert(car(), at(0, 5.0, LIMIT));
+    let near = sim.insert(car(), common::driver(), at(0, 49.0, LIMIT));
+    let far = sim.insert(car(), common::driver(), at(0, 5.0, LIMIT));
     run_until(&mut sim, 22.2);
     assert_eq!(sim.light(movements[0]).light, Light::Amber);
     run_until(&mut sim, 25.0);
@@ -211,8 +207,9 @@ fn on_green_the_whole_queue_goes_each_seeing_the_line_once_its_leader_commits() 
     let (net, movements) = crossroads();
     let mut sim = common::sim(net);
     // From the south: red until 26 s, green from 28 s to 48 s.
-    let ids: Vec<_> =
-        (0..4).map(|i| sim.insert(car(), at(1, 70.0 - 12.0 * i as f64, 10.0))).collect();
+    let ids: Vec<_> = (0..4)
+        .map(|i| sim.insert(car(), common::driver(), at(1, 70.0 - 12.0 * i as f64, 10.0)))
+        .collect();
     run_until(&mut sim, 27.0);
     assert_ne!(sim.light(movements[1]).light, Light::Green);
     assert!(
@@ -233,9 +230,9 @@ fn a_green_light_with_no_room_beyond_holds_it_until_there_is() {
     let (net, movements) = crossroads();
     let mut sim = common::sim(net);
     // Held just past the junction, where the next car from the west would go.
-    let blocker = sim.insert(car(), at(4, 3.0, 0.0));
+    let blocker = sim.insert(car(), common::driver(), at(4, 3.0, 0.0));
     sim.hold(blocker);
-    let id = sim.insert(car(), at(0, 30.0, 10.0));
+    let id = sim.insert(car(), common::driver(), at(0, 30.0, 10.0));
     run_until(&mut sim, 15.0);
     assert_eq!(sim.light(movements[0]).light, Light::Green);
     assert!(front(&sim, id).x < -10.0, "it entered with no room beyond");
@@ -279,8 +276,8 @@ fn a_give_way_line_waits_for_traffic_with_priority_then_goes() {
     // The line, along the connector from the south, which starts 10 m south.
     let line = sim.network().lane(LaneId(3)).barriers()[0].s - 10.0;
     // At rest short of its line, with a car with priority coming 4 s away.
-    let yielding = sim.insert(car(), at(3, 0.0, 0.0));
-    let priority = sim.insert(car(), at(0, 40.0, LIMIT));
+    let yielding = sim.insert(car(), common::driver(), at(3, 0.0, 0.0));
+    let priority = sim.insert(car(), common::driver(), at(0, 40.0, LIMIT));
     let mut waited_for_it = true;
     let mut slowest = f64::INFINITY;
     for _ in 0..(20.0 / DT) as usize {
@@ -307,9 +304,9 @@ fn a_give_way_line_waits_for_traffic_with_priority_then_goes() {
 #[test]
 fn a_give_way_line_goes_through_a_wide_gap() {
     let mut sim = common::sim(give_way());
-    let yielding = sim.insert(car(), at(3, 0.0, 0.0));
+    let yielding = sim.insert(car(), common::driver(), at(3, 0.0, 0.0));
     // Far off: about 85 m away at 14 m/s, 6 s.
-    let _far = sim.insert(car(), at(0, 5.0, LIMIT));
+    let _far = sim.insert(car(), common::driver(), at(0, 5.0, LIMIT));
     run_until(&mut sim, 4.0);
     assert!(front(&sim, yielding).y > 5.0, "it waited for a car far off");
 }
@@ -330,8 +327,8 @@ fn a_give_way_line_waits_for_traffic_with_priority_at_rest_at_a_green_light() {
     let line = sim.network().lane(LaneId(3)).barriers()[0].s - 10.0;
     // Both at rest at their lines: the one at the green light is about to go,
     // so the one at the give-way line waits for it.
-    let yielding = sim.insert(car(), at(3, 0.0, 0.0));
-    let priority = sim.insert(car(), at(0, 84.0, 0.0));
+    let yielding = sim.insert(car(), common::driver(), at(3, 0.0, 0.0));
+    let priority = sim.insert(car(), common::driver(), at(0, 84.0, 0.0));
     let mut waited_for_it = true;
     for _ in 0..(20.0 / DT) as usize {
         sim.step();
@@ -363,7 +360,7 @@ fn a_committed_car_stopped_short_of_its_line_is_released_on_red_and_waits() {
     // At 14 m/s, 40 m short of its line at 16 s: committed, as it can't stop
     // comfortably, then held to a stop well short of the line.
     run_until(&mut sim, 16.0);
-    let id = sim.insert(car(), at(0, 90.0 - 40.0 - 3.6, LIMIT));
+    let id = sim.insert(car(), common::driver(), at(0, 90.0 - 40.0 - 3.6, LIMIT));
     run_until(&mut sim, 16.2);
     assert_eq!(
         sim.get(id).unwrap().committed(),
@@ -401,8 +398,8 @@ fn on_red_a_committed_car_goes_on_if_it_cant_stop_safely_and_stops_if_it_can() {
     // 33 m short on red, with room. Both committed on green, unable to stop
     // comfortably, and far enough apart that `far` isn't slowed by `near`.
     run_until(&mut sim, 21.0);
-    let near = sim.insert(car(), at(0, 70.0 - 14.0 - 3.6, LIMIT));
-    let far = sim.insert(car(), at(0, 43.0 - 14.0 - 3.6, LIMIT));
+    let near = sim.insert(car(), common::driver(), at(0, 70.0 - 14.0 - 3.6, LIMIT));
+    let far = sim.insert(car(), common::driver(), at(0, 43.0 - 14.0 - 3.6, LIMIT));
     run_until(&mut sim, 21.9);
     assert_eq!(sim.light(movements[0]).light, Light::Green);
     assert_eq!(sim.get(near).unwrap().committed(), 1);
@@ -428,12 +425,16 @@ fn drivers_stop_short_of_a_line_by_a_gap_drawn_for_it() {
     for i in 0..6 {
         // A few meters short of its line, slow, so it settles there in time.
         // Each its own driver.
-        let place = Placement { route: Route::random(i), seed: i, ..at(1, 80.0, 2.0) };
-        let id = sim.insert(VehicleSpec::passenger_car(), place);
+        let place = Placement { route: Route::random(i), ..at(1, 80.0, 2.0) };
+        let id = sim.insert(
+            VehicleSpec::passenger_car(),
+            Driver { seed: i, ..Driver::default() },
+            place,
+        );
         let drawn = sim.line_gap(id).unwrap();
-        let spec = VehicleSpec::passenger_car();
+        let driver = Driver::default();
         assert!(
-            (drawn - spec.line_gap).abs() <= spec.line_gap_spread,
+            (drawn - driver.line_gap).abs() <= driver.line_gap_spread,
             "drew {drawn}"
         );
         run_until(&mut sim, 2.0 + 4.0 * (i + 1) as f64);
@@ -458,10 +459,10 @@ fn a_give_way_line_never_lets_a_car_go_behind_one_at_rest_in_its_way() {
     let crossing = sim.network().conflict_between(LaneId(2), LaneId(3)).unwrap().mine.clone();
     // A car with priority, stopped in the crossing, and held there: it never
     // clears, so there's no going behind it.
-    let stopped = sim.insert(car(), at(2, crossing.start + 2.0, 0.0));
+    let stopped = sim.insert(car(), common::driver(), at(2, crossing.start + 2.0, 0.0));
     sim.hold(stopped);
     let line = sim.network().lane(LaneId(3)).barriers()[0].s - 10.0;
-    let yielding = sim.insert(car(), at(3, 0.0, 0.0));
+    let yielding = sim.insert(car(), common::driver(), at(3, 0.0, 0.0));
     run_until(&mut sim, 20.0);
     assert!(
         front(&sim, yielding).y < line,
@@ -501,10 +502,11 @@ fn a_car_stopping_at_a_red_light_comes_to_rest_close_to_its_line_and_stays_there
     // soonest make IDM pull it on: from slow, and from the limit.
     for speed in [2.0, LIMIT] {
         let mut sim = common::sim(network.clone());
-        let spec = traffic_sim::VehicleSpec { line_gap: 0.5, line_gap_spread: 0.0, ..car() };
+        let spec = car();
+        let driver = Driver { line_gap: 0.5, line_gap_spread: 0.0, ..common::driver() };
         let s = (400.0 - 4.0 * speed * speed - 30.0).max(0.0);
-        let at = Placement { lane: LaneId(0), s, speed, route: Route::default(), seed: 0 };
-        let id = sim.insert(spec, at);
+        let at = Placement { lane: LaneId(0), s, speed, route: Route::default() };
+        let id = sim.insert(spec, driver, at);
         let short = |sim: &Simulation| {
             let v = sim.get(id).unwrap();
             400.0 - (v.lane_pos().s - spec.rear_axle + spec.length) - 0.5

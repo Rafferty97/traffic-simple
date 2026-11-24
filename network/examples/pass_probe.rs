@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use glam::DVec2;
 use traffic_network::{Direction, Piece, Pose, Road, RoadLane, RoadNetwork, compile, scenarios};
 use traffic_sim::{
-    DebugEvent, Keep, LaneId, Placement, Route, Side, Simulation, VehicleId, VehicleSpec,
+    DebugEvent, Driver, Keep, LaneId, Placement, Route, Side, Simulation, VehicleId, VehicleSpec,
 };
 
 /// The length of a step, in seconds: 30 Hz.
@@ -70,17 +70,22 @@ impl Counts {
     }
 }
 
-fn car(rng: &mut Rng) -> VehicleSpec {
+fn driver(rng: &mut Rng) -> Driver {
     let u = 1.0 - rng.f();
     let v = rng.f();
     let normal = (-2.0 * u.ln()).sqrt() * (TAU * v).cos();
-    VehicleSpec {
+    Driver {
         speed_factor: (1.0 + 0.1 * normal).clamp(0.8, 1.2),
         courtesy: 2.0 * rng.f(),
         politeness: 0.1 + 0.3 * rng.f(),
         assertiveness: rng.f().powi(3),
-        ..VehicleSpec::passenger_car()
+        ..Driver::default()
     }
+}
+
+/// The probes' driver: drawn once, at the limit exactly.
+fn probe_driver() -> Driver {
+    Driver { speed_factor: 1.0, ..driver(&mut Rng(7)) }
 }
 
 #[derive(Clone, Copy)]
@@ -126,17 +131,18 @@ impl Harness {
     }
 
     fn spawn(&mut self, sim: &mut Simulation, lane: LaneId, s: f64) {
-        let spec = car(&mut self.rng);
+        let spec = VehicleSpec::passenger_car();
+        let driver = driver(&mut self.rng);
         let limit = sim.network().lane(lane).speed_limit();
         let seed = self.rng.next();
+        let driver = Driver { seed, ..driver };
         let at = Placement {
             lane,
             s,
-            speed: spec.desired_speed(limit),
+            speed: driver.desired_speed(&spec, limit),
             route: Route::random(seed),
-            seed,
         };
-        if sim.try_insert(spec, at).is_ok() {
+        if sim.try_insert(spec, driver, at).is_ok() {
             self.credit -= 1.0;
         }
     }
@@ -435,7 +441,7 @@ fn targeted(
     let (l, m, r) = (ids[0], ids[1], ids[2]);
     let mut sim = sim(compiled.sim);
     let mut rng = Rng(1);
-    let spec = || VehicleSpec { speed_factor: 1.0, ..car(&mut Rng(7)) };
+    let spec = VehicleSpec::passenger_car;
     let _ = &mut rng;
     let (la, lb, sa, sb) = match case {
         Case::IntoLeaving => (m, l, Side::Right, Side::Right),
@@ -445,23 +451,13 @@ fn targeted(
     };
     let a = sim.insert(
         spec(),
-        Placement {
-            lane: la,
-            s: 100.0,
-            speed: va,
-            route: Route::default(),
-            seed: 0,
-        },
+        probe_driver(),
+        Placement { lane: la, s: 100.0, speed: va, route: Route::default() },
     );
     let b = sim.insert(
         spec(),
-        Placement {
-            lane: lb,
-            s: 100.0 + d,
-            speed: vb,
-            route: Route::default(),
-            seed: 0,
-        },
+        probe_driver(),
+        Placement { lane: lb, s: 100.0 + d, speed: vb, route: Route::default() },
     );
     sim.cap_speed(a, va);
     sim.cap_speed(b, vb);
@@ -559,26 +555,16 @@ fn at_the_drop(va: f64, vb: f64, d: f64, x: f64, tb: Option<f64>) -> (bool, u64)
     let parallel = compiled.road_lanes[1].clone();
     let (accel, left) = (parallel[0], parallel[1]);
     let mut sim = sim(compiled.sim);
-    let spec = VehicleSpec { speed_factor: 1.0, ..car(&mut Rng(7)) };
+    let spec = VehicleSpec::passenger_car();
     let b = sim.insert(
         spec,
-        Placement {
-            lane: left,
-            s: x,
-            speed: vb,
-            route: Route::default(),
-            seed: 0,
-        },
+        probe_driver(),
+        Placement { lane: left, s: x, speed: vb, route: Route::default() },
     );
     let a = sim.insert(
         spec,
-        Placement {
-            lane: accel,
-            s: x - d,
-            speed: va,
-            route: Route::default(),
-            seed: 0,
-        },
+        probe_driver(),
+        Placement { lane: accel, s: x - d, speed: va, route: Route::default() },
     );
     sim.cap_speed(a, va);
     sim.cap_speed(b, vb);

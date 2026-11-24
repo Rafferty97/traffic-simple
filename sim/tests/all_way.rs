@@ -4,7 +4,7 @@
 
 use glam::DVec2;
 use traffic_sim::{
-    Barrier, BarrierKind, Lane, LaneId, Placement, Route, SimNetwork, Simulation, VehicleId,
+    Barrier, BarrierKind, Driver, Lane, LaneId, Placement, Route, SimNetwork, Simulation, VehicleId,
 };
 
 mod common;
@@ -63,15 +63,18 @@ fn four_ways() -> SimNetwork {
 /// A car at rest where it stops for its line, coming from `way`.
 fn arrive(sim: &mut Simulation, way: u32) -> VehicleId {
     let spec = car();
-    let s = 90.0 - (spec.length - spec.rear_axle) - spec.line_gap;
+    let s = 90.0 - (spec.length - spec.rear_axle) - common::driver().line_gap;
     let at = Placement {
         lane: LaneId(way),
         s,
         speed: 0.0,
         route: Route::random(way.into()),
-        seed: u64::from(way),
     };
-    sim.insert(spec, at)
+    sim.insert(
+        spec,
+        Driver { seed: u64::from(way), ..common::driver() },
+        at,
+    )
 }
 
 /// How far a car's front is past its line, along its way in.

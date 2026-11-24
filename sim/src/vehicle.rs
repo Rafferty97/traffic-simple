@@ -21,7 +21,9 @@ impl VehicleId {
     }
 }
 
-/// A vehicle's static attributes. Lengths in meters, speeds in m/s,
+/// A vehicle's static attributes: its body, and the longitudinal model's
+/// parameters for its class. The driver's own traits are apart (see
+/// [`Driver`](crate::Driver)). Lengths in meters, speeds in m/s,
 /// accelerations in m/s².
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -30,9 +32,6 @@ pub struct VehicleSpec {
     pub width: f64,
     /// The fastest the vehicle will go, whatever the speed limit.
     pub max_speed: f64,
-    /// How fast the driver likes to go relative to the speed limit: 1 is exactly
-    /// the limit. SUMO's `speedFactor`.
-    pub speed_factor: f64,
     pub max_accel: f64,
     /// Comfortable deceleration, positive.
     pub comfy_decel: f64,
@@ -44,72 +43,24 @@ pub struct VehicleSpec {
     pub rear_axle: f64,
     /// Distance from the rear bumper to the front axle.
     pub front_axle: f64,
-    /// The hardest the driver will brake to let another vehicle in ahead, in
-    /// m/s²: 0 never yields to one indicating into its lane.
-    pub courtesy: f64,
-    /// How much the driver weighs other drivers' gains and losses against its own
-    /// when changing lanes: MOBIL's politeness.
-    pub politeness: f64,
-    /// How readily the driver changes lanes, from 0 to 1: it intends a change
-    /// for a smaller gain, and accepts harder braking, for itself and the
-    /// vehicle it cuts in front of, before it grows frustrated. As SUMO's
-    /// `lcAssertive` and `lcSpeedGain`. A few assertive drivers pull out into a
-    /// faster lane and slow it, so a fast lane doesn't form.
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub assertiveness: f64,
-    /// How much its acceleration wanders on the open road, in m/s², the
-    /// standard deviation of a slowly varying noise added to its free-road
-    /// term: drivers don't hold a speed exactly, as in Treiber and Kesting's
-    /// IDM with acceleration noise (2017). 0 for none. Following stays exact.
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub accel_noise: f64,
-    /// How far short of a line the driver stops, nose to line, in meters, on
-    /// average: each time it heads for a barrier, it draws how far, uniformly
-    /// within [`VehicleSpec::line_gap_spread`] of this, so a row of vehicles at
-    /// a line doesn't stand in perfect step.
-    #[cfg_attr(feature = "serde", serde(default = "default_line_gap"))]
-    pub line_gap: f64,
-    /// How far either side of [`VehicleSpec::line_gap`] its gap at a line may
-    /// fall, in meters.
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub line_gap_spread: f64,
-}
-
-#[cfg(feature = "serde")]
-fn default_line_gap() -> f64 {
-    VehicleSpec::passenger_car().line_gap
 }
 
 impl VehicleSpec {
     /// A passenger car with textbook parameters: IDM's as calibrated with LMRS
     /// (Schakel, Knoop and van Arem, 2012), as OpenTrafficSim uses them, a
-    /// = 1.25 m/s², b = 2.09 m/s², s0 = 3 m and T = 1.2 s, and MOBIL's
-    /// politeness of 0.2 as Treiber's simulator uses it. Its speed factor,
-    /// courtesy, politeness and assertiveness are the caller's to vary.
+    /// = 1.25 m/s², b = 2.09 m/s², s0 = 3 m and T = 1.2 s.
     pub const fn passenger_car() -> Self {
         Self {
             length: 4.6,
             width: 1.9,
             max_speed: 50.0,
-            speed_factor: 1.0,
             max_accel: 1.25,
             comfy_decel: 2.09,
             time_headway: 1.2,
             min_gap: 3.0,
             rear_axle: 1.0,
             front_axle: 3.7,
-            courtesy: 1.0,
-            politeness: 0.2,
-            assertiveness: 0.0,
-            accel_noise: 0.2,
-            line_gap: 1.0,
-            line_gap_spread: 0.5,
         }
-    }
-
-    /// The speed the driver wants on a lane with the given limit.
-    pub fn desired_speed(&self, speed_limit: f64) -> f64 {
-        (speed_limit * self.speed_factor).min(self.max_speed)
     }
 
     /// Distance between the axles.
@@ -127,10 +78,6 @@ pub struct Placement {
     pub speed: f64,
     /// How it chooses its way at forks.
     pub route: Route,
-    /// Seeds the driver's own generator, for its acceleration noise and its
-    /// gaps to lines, mixed with where it starts, so drivers placed alike still
-    /// differ.
-    pub seed: u64,
 }
 
 /// A vehicle in the simulation.

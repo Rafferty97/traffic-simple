@@ -8,7 +8,7 @@
 //! `cargo run --release -p traffic-network --example critical_gaps`
 
 use traffic_network::{Sign, Turn, compile, scenarios};
-use traffic_sim::{LaneId, Placement, Route, Simulation, VehicleId, VehicleSpec};
+use traffic_sim::{Driver, LaneId, Placement, Route, Simulation, VehicleId, VehicleSpec};
 
 /// The length of a step, in seconds: 30 Hz.
 const DT: f64 = 1.0 / 30.0;
@@ -43,7 +43,7 @@ fn main() {
             let lag = f64::from(tenths) / 10.0;
             let mut sim = sim(compiled.sim.clone());
             let length = sim.network().lane(south).geometry().length();
-            let s = length - (spec.length - spec.rear_axle) - spec.line_gap;
+            let s = length - (spec.length - spec.rear_axle) - Driver::default().line_gap;
             let minor = insert_going(&mut sim, south, s, connector);
             let major_length = sim.network().lane(major_lane).geometry().length();
             // Its front `lag` from the junction's centre, about 8 m past its line,
@@ -95,7 +95,8 @@ fn insert_going(sim: &mut Simulation, lane: LaneId, s: f64, connector: LaneId) -
         .find_map(|seed| {
             let id = sim.insert(
                 spec,
-                Placement { lane, s, speed, route: Route::random(seed), seed },
+                Driver { seed, ..Driver::default() },
+                Placement { lane, s, speed, route: Route::random(seed) },
             );
             match sim.get(id).unwrap().path().contains(&connector) {
                 true => Some(id),

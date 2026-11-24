@@ -13,7 +13,7 @@ use crate::models::routing;
 use crate::network::Side;
 use crate::query::{LaneSpeeds, Prospect};
 use crate::simulation::SimState;
-use crate::vehicle::{LaneChangeIntent, Vehicle, VehicleId, VehicleSpec};
+use crate::vehicle::{LaneChangeIntent, Vehicle, VehicleId};
 
 /// What a driver decided at a lane-change update, for the simulation to carry
 /// out.
@@ -77,7 +77,7 @@ pub(crate) fn decide<D: DebugSink>(
         if lc.idle() && vehicle.intent == LaneChangeIntent::None {
             continue;
         }
-        let ask = step(&mut lc, vehicle.intent, &vehicle.spec, time, dt);
+        let ask = step(&mut lc, vehicle.intent, time, dt);
         // How it weighed up each side it didn't ask about, for the debug view.
         for side in [Side::Left, Side::Right] {
             let Some(incentive) = incentives[index(side)] else {
@@ -91,7 +91,7 @@ pub(crate) fn decide<D: DebugSink>(
                 Ask::Nothing => Outcome::NotWorthIt,
             };
             let eval = unchecked(side, incentive, lc.desire(side), outcome);
-            sink.record(|| eval_event(id, vehicle, &eval));
+            sink.record(|| eval_event(id, &lc.traits, &eval));
         }
         let decision = match ask {
             Ask::Cancel => Decision::Cancel,
@@ -118,7 +118,7 @@ pub(crate) fn decide<D: DebugSink>(
         let Some(gap) = measured else {
             // Not measured that way yet: it asks, and judges it next time.
             let eval = unchecked(side, incentive, lc.desire(side), Outcome::Measuring);
-            sink.record(|| eval_event(id, vehicle, &eval));
+            sink.record(|| eval_event(id, &lc.traits, &eval));
             continue;
         };
         let (decision, eval) = resolve(
@@ -130,7 +130,7 @@ pub(crate) fn decide<D: DebugSink>(
             gap,
             dt,
         );
-        sink.record(|| eval_event(id, vehicle, &eval));
+        sink.record(|| eval_event(id, &lc.traits, &eval));
         decisions[slot] = decided(id, vehicle, lc, decision, time, dt);
     }
 }
@@ -153,10 +153,10 @@ fn decided(
         }
         (Decision::Nothing, _) => None,
     };
-    let wants = lc.wants(vehicle.spec.assertiveness);
+    let wants = lc.wants();
     let look = match decision {
         Decision::Change(_) => None,
-        _ => look(&lc, &vehicle.spec, now + dt, dt, indicating, wants),
+        _ => look(&lc, now + dt, dt, indicating, wants),
     };
     Decided { id, state: lc, decision, wants, look }
 }
@@ -174,7 +174,6 @@ fn decided(
 /// other. Only if its incentives rise faster than that does it ask a step late.
 fn look(
     lc: &State,
-    spec: &VehicleSpec,
     next: f64,
     dt: f64,
     indicating: Option<(Side, f64)>,
@@ -189,7 +188,7 @@ fn look(
     let side = wants?;
     let target = lc.target[index(side)]?;
     let desire = smooth(lc.desire(side), target, dt);
-    let checks = desire >= free(spec.assertiveness) && lc.cooldown == 0;
+    let checks = desire >= free(lc.traits.assertiveness) && lc.cooldown == 0;
     checks.then(|| headway(lc.desire(side)))
 }
 
@@ -219,7 +218,6 @@ pub(crate) fn terms<D: DebugSink>(
     });
     let yielding = make_room(
         &state.lane_changing.state(id),
-        &vehicle.spec,
         ghost.map(|(owner, _, desire, term)| (owner, desire, term)),
     );
     if let Some((owner, gap, _, term)) = ghost.filter(|_| yielding.is_some()) {
@@ -247,8 +245,8 @@ pub(crate) fn terms<D: DebugSink>(
 }
 
 /// A lane-change evaluation as a debug event.
-fn eval_event(id: VehicleId, vehicle: &Vehicle, eval: &super::LaneChangeEval) -> DebugEvent {
-    let fields = eval.fields(&vehicle.spec);
+fn eval_event(id: VehicleId, traits: &super::Traits, eval: &super::LaneChangeEval) -> DebugEvent {
+    let fields = eval.fields(traits);
     DebugEvent::ModelEval { vehicle: id, model: "lane change", fields }
 }
 

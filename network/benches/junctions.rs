@@ -6,7 +6,7 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use traffic_network::{RoadNetwork, compile, scenarios};
-use traffic_sim::{LaneId, Placement, Route, Simulation, VehicleSpec};
+use traffic_sim::{Driver, LaneId, Placement, Route, Simulation, VehicleSpec};
 
 /// The length of a step, in seconds: 30 Hz.
 const DT: f64 = 1.0 / 30.0;
@@ -39,8 +39,12 @@ fn step(sim: &mut Simulation, entries: &[LaneId], every: u64, n: &mut u64) {
     if n.is_multiple_of(every) {
         let lane = entries[(*n / every) as usize % entries.len()];
         let speed = sim.network().lane(lane).speed_limit();
-        let at = Placement { lane, s: 5.0, speed, route: Route::random(*n), seed: *n };
-        let _ = sim.try_insert(VehicleSpec::passenger_car(), at);
+        let at = Placement { lane, s: 5.0, speed, route: Route::random(*n) };
+        let _ = sim.try_insert(
+            VehicleSpec::passenger_car(),
+            Driver { seed: *n, ..Driver::default() },
+            at,
+        );
     }
     *n += 1;
     sim.step_variable(black_box(DT));

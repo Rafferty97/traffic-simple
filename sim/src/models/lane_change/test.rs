@@ -5,6 +5,7 @@ use glam::DVec2;
 
 use super::*;
 use crate::debug::{DebugEvent, Field, NoopSink};
+use crate::models::driver::Driver;
 use crate::models::lane_change;
 use crate::network::{Lane, LaneId, SimNetwork};
 use crate::query::LaneSpeeds;
@@ -19,24 +20,22 @@ fn prospect(own_after: f64, room: bool) -> Gap {
     Gap { own_after, new_follower: None, room }
 }
 
+/// The traits of the tests' driver the lane-change model reads.
+fn traits() -> Traits {
+    Traits { courtesy: 1.0, politeness: 0.2, assertiveness: 0.0 }
+}
+
 fn spec() -> VehicleSpec {
     VehicleSpec {
         length: 4.6,
         width: 1.9,
         max_speed: 30.0,
-        speed_factor: 1.0,
         max_accel: 1.0,
         comfy_decel: 1.5,
         time_headway: 1.0,
         min_gap: 1.5,
         rear_axle: 1.0,
         front_axle: 3.7,
-        courtesy: 1.0,
-        politeness: 0.2,
-        assertiveness: 0.0,
-        accel_noise: 0.0,
-        line_gap: 1.0,
-        line_gap_spread: 0.0,
     }
 }
 
@@ -72,29 +71,32 @@ fn route_desire_rises_to_one_at_the_lane_end() {
 
 #[test]
 fn desire_is_smoothed_and_a_check_waits_for_the_threshold() {
-    let mut state = State::default();
+    let mut state = State { traits: traits(), ..State::default() };
     let wants = Incentives { speed: 0.9, ..Incentives::default() };
     let dt = 1.0 / 60.0;
     // A fleeting desire: one step doesn't get there.
     aim(&mut state, [Some(wants), None]);
-    let ask = step(&mut state, LaneChangeIntent::None, &spec(), 0.0, dt);
+    let ask = step(&mut state, LaneChangeIntent::None, 0.0, dt);
     assert_eq!(ask, Ask::Nothing);
     assert!(state.desire(Side::Left) > 0.0 && state.desire(Side::Left) < D_FREE);
     // Lasting, it does, and asks for the gap.
     let mut ask = Ask::Nothing;
     for _ in 0..60 {
-        ask = step(&mut state, LaneChangeIntent::None, &spec(), 0.0, dt);
+        ask = step(&mut state, LaneChangeIntent::None, 0.0, dt);
         if ask != Ask::Nothing {
             break;
         }
     }
     assert_eq!(ask, Ask::Check(Side::Left));
     // Not permitted that way: no check, however strong.
-    let mut state = State { desire: [0.9, 0.0], ..State::default() };
+    let mut state = State {
+        desire: [0.9, 0.0],
+        ..State { traits: traits(), ..State::default() }
+    };
     assert_eq!(
         {
             aim(&mut state, [None, None]);
-            step(&mut state, LaneChangeIntent::None, &spec(), 0.0, dt)
+            step(&mut state, LaneChangeIntent::None, 0.0, dt)
         },
         Ask::Nothing
     );
@@ -102,7 +104,10 @@ fn desire_is_smoothed_and_a_check_waits_for_the_threshold() {
 
 #[test]
 fn a_refused_gap_cools_off_before_the_next_check() {
-    let mut state = State { desire: [0.5, 0.0], ..State::default() };
+    let mut state = State {
+        desire: [0.5, 0.0],
+        ..State { traits: traits(), ..State::default() }
+    };
     let refused = prospect(-5.0, true);
     let (decision, eval) = resolve(
         &mut state,
@@ -118,26 +123,30 @@ fn a_refused_gap_cools_off_before_the_next_check() {
         (Decision::Nothing, Outcome::Unsafe)
     );
     let wait = state.cooldown();
-    assert_eq!(wait, cooldown(&spec(), DT));
+    assert_eq!(wait, cooldown(&traits(), DT));
     let wants = Some(Incentives { speed: 0.5, ..Incentives::default() });
     aim(&mut state, [wants, None]);
     for _ in 0..wait {
-        let ask = step(&mut state, LaneChangeIntent::None, &spec(), 0.0, DT);
+        let ask = step(&mut state, LaneChangeIntent::None, 0.0, DT);
         assert_eq!(ask, Ask::Nothing);
     }
-    let ask = step(&mut state, LaneChangeIntent::None, &spec(), 0.0, DT);
+    let ask = step(&mut state, LaneChangeIntent::None, 0.0, DT);
     assert_eq!(ask, Ask::Check(Side::Left));
     // Politer drivers wait longer, more assertive ones less.
-    let polite = VehicleSpec { politeness: 0.5, ..spec() };
-    let assertive = VehicleSpec { assertiveness: 1.0, ..spec() };
-    assert!(cooldown(&polite, DT) > cooldown(&spec(), DT));
-    assert!(cooldown(&assertive, DT) < cooldown(&spec(), DT));
+    let plain = traits();
+    let polite = Traits { politeness: 0.5, ..plain };
+    let assertive = Traits { assertiveness: 1.0, ..plain };
+    assert!(cooldown(&polite, DT) > cooldown(&plain, DT));
+    assert!(cooldown(&assertive, DT) < cooldown(&plain, DT));
 }
 
 #[test]
 fn enough_desire_indicates_without_a_gap_and_more_changes_without_room() {
     let unsafe_gap = prospect(-5.0, true);
-    let mut state = State { desire: [D_SYNC, 0.0], ..State::default() };
+    let mut state = State {
+        desire: [D_SYNC, 0.0],
+        ..State { traits: traits(), ..State::default() }
+    };
     let (decision, _) = resolve(
         &mut state,
         LaneChangeIntent::None,
@@ -150,7 +159,10 @@ fn enough_desire_indicates_without_a_gap_and_more_changes_without_room() {
     assert_eq!(decision, Decision::Indicate(Side::Left));
     let no_room = prospect(0.0, false);
     let intent = LaneChangeIntent::Indicating { side: Side::Left, since: 0.0, check: None };
-    let mut state = State { desire: [0.5, 0.0], ..State::default() };
+    let mut state = State {
+        desire: [0.5, 0.0],
+        ..State { traits: traits(), ..State::default() }
+    };
     let (decision, _) = resolve(
         &mut state,
         intent,
@@ -161,7 +173,10 @@ fn enough_desire_indicates_without_a_gap_and_more_changes_without_room() {
         DT,
     );
     assert_eq!(decision, Decision::Nothing);
-    let mut state = State { desire: [D_COOP, 0.0], ..State::default() };
+    let mut state = State {
+        desire: [D_COOP, 0.0],
+        ..State { traits: traits(), ..State::default() }
+    };
     let (decision, _) = resolve(
         &mut state,
         intent,
@@ -179,24 +194,22 @@ fn desire_shortens_the_headway_and_raises_the_braking_accepted() {
     assert_eq!(headway(0.0), 1.0);
     let relaxed = crate::models::acceleration::RELAXED_HEADWAY;
     assert!((headway(1.0) - relaxed).abs() < 1e-12);
-    assert!(accepted_braking(&spec(), 0.5) > accepted_braking(&spec(), 0.4));
-    let assertive = VehicleSpec { assertiveness: 1.0, ..spec() };
-    assert!(accepted_braking(&assertive, 0.5) > accepted_braking(&spec(), 0.5));
-    assert_eq!(accepted_braking(&assertive, 1.0), SAFE_BRAKING);
+    let plain = traits();
+    assert!(accepted_braking(&spec(), &plain, 0.5) > accepted_braking(&spec(), &plain, 0.4));
+    let assertive = Traits { assertiveness: 1.0, ..plain };
+    assert!(accepted_braking(&spec(), &assertive, 0.5) > accepted_braking(&spec(), &plain, 0.5));
+    assert_eq!(accepted_braking(&spec(), &assertive, 1.0), SAFE_BRAKING);
 }
 
 #[test]
 fn followers_make_room_only_for_a_strong_desire() {
-    let state = State::default();
+    let state = State { traits: traits(), ..State::default() };
     let mut ids = slotmap::SlotMap::<VehicleId, ()>::with_key();
     let owner = ids.insert(());
-    assert_eq!(make_room(&state, &spec(), Some((owner, 0.5, -0.5))), None);
-    assert_eq!(
-        make_room(&state, &spec(), Some((owner, 0.9, -0.5))),
-        Some(owner)
-    );
+    assert_eq!(make_room(&state, Some((owner, 0.5, -0.5))), None);
+    assert_eq!(make_room(&state, Some((owner, 0.9, -0.5))), Some(owner));
     // Beyond its courtesy, it drives on.
-    assert_eq!(make_room(&state, &spec(), Some((owner, 0.9, -2.0))), None);
+    assert_eq!(make_room(&state, Some((owner, 0.9, -2.0))), None);
 }
 
 // What drivers decide in a simulation.
@@ -232,7 +245,7 @@ fn decision(
     let mut lc = sim.state().lane_changing.state(id);
     let dt = sim.state().macro_step_dt();
     lane_change::aim(&mut lc, incentives);
-    let ask = lane_change::step(&mut lc, vehicle.intent, &vehicle.spec, sim.time(), dt);
+    let ask = lane_change::step(&mut lc, vehicle.intent, sim.time(), dt);
     let mut evals = Vec::new();
     let mut decision = Decision::Nothing;
     for side in [Side::Left, Side::Right] {
@@ -295,9 +308,9 @@ const WANTING: f64 = 0.5;
 /// desire for it, behind a car held stopped 20 m ahead, so
 /// changing is well worth it.
 fn indicating_behind_a_stopped_car(sim: &mut Simulation) -> VehicleId {
-    let blocker = sim.insert(car(), at(1, 320.0, 0.0));
+    let blocker = sim.insert(car(), crate::simulation::test::driver(), at(1, 320.0, 0.0));
     sim.hold(blocker);
-    let id = sim.insert(car(), at(1, 300.0, 5.0));
+    let id = sim.insert(car(), crate::simulation::test::driver(), at(1, 300.0, 5.0));
     sim.indicate(id, Side::Left);
     sim.state_mut().lane_changing.state_mut(id).set_desire([WANTING, 0.0]);
     sim.state_mut().set_time(2.0);
@@ -319,9 +332,13 @@ fn it_changes_when_the_gap_is_clear_and_it_has_indicated_long_enough() {
 /// A car on lane 1 at `s` and `speed`, indicating left for 2 s with
 /// advantage built up for it, behind a car held stopped 20 m ahead.
 fn indicating_behind_a_stopped_car_at(sim: &mut Simulation, s: f64, speed: f64) -> VehicleId {
-    let blocker = sim.insert(car(), at(1, s + 20.0, 0.0));
+    let blocker = sim.insert(
+        car(),
+        crate::simulation::test::driver(),
+        at(1, s + 20.0, 0.0),
+    );
     sim.hold(blocker);
-    let id = sim.insert(car(), at(1, s, speed));
+    let id = sim.insert(car(), crate::simulation::test::driver(), at(1, s, speed));
     sim.indicate(id, Side::Left);
     sim.state_mut().lane_changing.state_mut(id).set_desire([WANTING, 0.0]);
     sim.state_mut().set_time(2.0);
@@ -333,9 +350,9 @@ fn it_wont_start_a_change_it_couldnt_get_halfway_through_before_stopping() {
     // Crawling up to a stopped car, 6 m bumper to bumper, it would have to
     // stop well before halfway through a change: it would be left straddling.
     let mut sim = two_lanes();
-    let blocker = sim.insert(car(), at(1, 300.0, 0.0));
+    let blocker = sim.insert(car(), crate::simulation::test::driver(), at(1, 300.0, 0.0));
     sim.hold(blocker);
-    let id = sim.insert(car(), at(1, 289.4, 1.0));
+    let id = sim.insert(car(), crate::simulation::test::driver(), at(1, 289.4, 1.0));
     sim.indicate(id, Side::Left);
     sim.state_mut().lane_changing.state_mut(id).set_desire([WANTING, 0.0]);
     sim.state_mut().set_time(2.0);
@@ -344,9 +361,9 @@ fn it_wont_start_a_change_it_couldnt_get_halfway_through_before_stopping() {
     assert!(evals[0].safe && !evals[0].room, "{evals:?}");
     // With room to get halfway, it goes.
     let mut sim = two_lanes();
-    let blocker = sim.insert(car(), at(1, 300.0, 0.0));
+    let blocker = sim.insert(car(), crate::simulation::test::driver(), at(1, 300.0, 0.0));
     sim.hold(blocker);
-    let id = sim.insert(car(), at(1, 280.0, 1.0));
+    let id = sim.insert(car(), crate::simulation::test::driver(), at(1, 280.0, 1.0));
     sim.indicate(id, Side::Left);
     sim.state_mut().lane_changing.state_mut(id).set_desire([WANTING, 0.0]);
     sim.state_mut().set_time(2.0);
@@ -393,7 +410,7 @@ fn it_waits_until_it_has_indicated_long_enough() {
 fn it_wont_cut_off_a_fast_car_close_behind_in_the_target_lane() {
     let mut sim = two_lanes();
     let id = indicating_behind_a_stopped_car(&mut sim);
-    sim.insert(car(), at(0, 290.0, 14.0));
+    sim.insert(car(), crate::simulation::test::driver(), at(0, 290.0, 14.0));
     let (decision, evals) = decide_now(&sim, id);
     assert_eq!(decision, Decision::Nothing);
     let eval = evals[0];
@@ -409,7 +426,7 @@ fn a_car_far_behind_in_the_target_lane_is_no_follower() {
     let mut sim = two_lanes();
     let id = indicating_behind_a_stopped_car(&mut sim);
     // 245 m back, beyond the leader horizon, even coming fast.
-    sim.insert(car(), at(0, 50.0, 14.0));
+    sim.insert(car(), crate::simulation::test::driver(), at(0, 50.0, 14.0));
     let (decision, evals) = decide_now(&sim, id);
     assert_eq!(decision, Decision::Change(Side::Left), "{evals:?}");
     assert_eq!(evals[0].new_follower, None);
@@ -423,7 +440,7 @@ fn it_never_changes_into_a_car_alongside() {
         let mut sim = two_lanes();
         let id = indicating_behind_a_stopped_car(&mut sim);
         let s = 300.0 + tenths as f64 / 10.0;
-        sim.insert(car(), at(0, s, 5.0));
+        sim.insert(car(), crate::simulation::test::driver(), at(0, s, 5.0));
         let (decision, evals) = decide_now(&sim, id);
         // Ahead of it, the car beside makes changing worse than staying, so it
         // cancels; either way it doesn't change.
@@ -438,7 +455,7 @@ fn its_old_follower_gains_when_it_leaves() {
     let id = indicating_behind_a_stopped_car(&mut sim);
     // Close behind it on lane 1, held back by it now, as the longitudinal update
     // records.
-    let behind = sim.insert(car(), at(1, 290.0, 5.0));
+    let behind = sim.insert(car(), crate::simulation::test::driver(), at(1, 290.0, 5.0));
     sim.update_accels(&mut NoopSink);
     assert_eq!(sim.state().vehicles[id].held_up.map(|f| f.id), Some(behind));
     // Courtesy: it wants to let it by.
@@ -452,10 +469,10 @@ fn another_cars_ghost_ahead_in_the_target_lane_is_a_leader() {
     // Weighing up changing left, a ghost just ahead in lane 0 counts: changing
     // would put it right behind a car about to arrive there.
     let mut sim = two_lanes();
-    let blocker = sim.insert(car(), at(1, 220.0, 0.0));
+    let blocker = sim.insert(car(), crate::simulation::test::driver(), at(1, 220.0, 0.0));
     sim.hold(blocker);
-    let id = sim.insert(car(), at(1, 200.0, 5.0));
-    let other = sim.insert(car(), at(1, 206.0, 0.0));
+    let id = sim.insert(car(), crate::simulation::test::driver(), at(1, 200.0, 5.0));
+    let other = sim.insert(car(), crate::simulation::test::driver(), at(1, 206.0, 0.0));
     sim.indicate(other, Side::Left);
     // With desire for it, so only safety can hold it back.
     sim.state_mut().lane_changing.state_mut(id).set_desire([WANTING; 2]);
@@ -470,9 +487,9 @@ fn it_cancels_once_changing_no_longer_helps_it() {
     // Indicating left, but lane 0 now has a stopped car just ahead and lane 1
     // is clear.
     let mut sim = two_lanes();
-    let id = sim.insert(car(), at(1, 200.0, 10.0));
+    let id = sim.insert(car(), crate::simulation::test::driver(), at(1, 200.0, 10.0));
     sim.indicate(id, Side::Left);
-    let stopped = sim.insert(car(), at(0, 215.0, 0.0));
+    let stopped = sim.insert(car(), crate::simulation::test::driver(), at(0, 215.0, 0.0));
     sim.hold(stopped);
     sim.state_mut().set_time(2.0);
     let (decision, evals) = decide_now(&sim, id);
@@ -482,7 +499,7 @@ fn it_cancels_once_changing_no_longer_helps_it() {
 #[test]
 fn it_doesnt_decide_partway_through_a_change() {
     let mut sim = two_lanes();
-    let id = sim.insert(car(), at(1, 200.0, 10.0));
+    let id = sim.insert(car(), crate::simulation::test::driver(), at(1, 200.0, 10.0));
     sim.change_lane(id, Side::Left).unwrap();
     let (decision, evals) = decide_now(&sim, id);
     assert_eq!(decision, Decision::Nothing);
@@ -501,7 +518,7 @@ fn traffic_stopped_ahead_makes_it_want_the_free_lane_once_its_desire_builds_up()
     assert_eq!(left.outcome, Outcome::NotWorthIt);
     // Its lane stopped, the other free: as fast as it would like to go there,
     // over the gain that makes a full desire.
-    let wanted = car().desired_speed(LIMIT) / lane_change::V_GAIN;
+    let wanted = driver().desired_speed(&car(), LIMIT) / lane_change::V_GAIN;
     assert!((left.incentives.speed - wanted).abs() < 1e-9, "{left:?}");
     // Smoothed: one step goes a step's share of the way.
     let step = sim.state().macro_step_dt() / lane_change::DESIRE_TIME;
@@ -518,14 +535,14 @@ fn traffic_stopped_ahead_makes_it_want_the_free_lane_once_its_desire_builds_up()
 fn it_wont_indicate_into_an_unsafe_gap_short_of_synchronising() {
     // A fast car close behind in lane 0: changing would cut it off.
     let (mut sim, id) = behind_a_stopped_car(20.0);
-    sim.insert(car(), at(0, 290.0, 14.0));
+    sim.insert(car(), crate::simulation::test::driver(), at(0, 290.0, 14.0));
     sim.state_mut().lane_changing.state_mut(id).set_desire([WANTING, 0.0]);
     let (action, state, evals) = decision(&sim, id);
     assert_eq!(action, Decision::Nothing);
     assert_eq!(evals[0].outcome, Outcome::Unsafe);
     // It waits a few steps before checking again.
     let dt = sim.state().macro_step_dt();
-    assert_eq!(state.cooldown(), lane_change::cooldown(&car(), dt));
+    assert_eq!(state.cooldown(), lane_change::cooldown(&traits(), dt));
     // Wanting it enough to synchronise, it indicates all the same, asking
     // for room.
     sim.state_mut()
@@ -557,8 +574,8 @@ fn synchronising_it_adjusts_its_speed_to_the_target_lanes_leader() {
     // ahead in lane 0, nothing ahead in its own lane.
     let accel = |desire: f64| {
         let mut sim = two_lanes();
-        let id = sim.insert(car(), at(1, 300.0, 12.0));
-        sim.insert(car(), at(0, 315.0, 4.0));
+        let id = sim.insert(car(), crate::simulation::test::driver(), at(1, 300.0, 12.0));
+        sim.insert(car(), crate::simulation::test::driver(), at(0, 315.0, 4.0));
         sim.indicate(id, Side::Left);
         sim.state_mut().lane_changing.state_mut(id).set_desire([desire, 0.0]);
         // As a lane-change update measures it, before the longitudinal one.
@@ -575,12 +592,12 @@ fn synchronising_it_adjusts_its_speed_to_the_target_lanes_leader() {
 #[test]
 fn keeping_to_a_side_is_a_free_lane_changes_worth_of_desire_toward_it() {
     let mut sim = two_lanes_with(|lane| lane.with_keep(crate::network::Keep::Left));
-    let id = sim.insert(car(), at(1, 300.0, 10.0));
+    let id = sim.insert(car(), crate::simulation::test::driver(), at(1, 300.0, 10.0));
     let (_, evals) = decide_now(&sim, id);
     assert_eq!(evals[0].side, Side::Left);
     assert_eq!(evals[0].incentives.keep, lane_change::D_FREE);
     // Already on the side kept to, nothing pulls it further.
-    let other = sim.insert(car(), at(0, 100.0, 10.0));
+    let other = sim.insert(car(), crate::simulation::test::driver(), at(0, 100.0, 10.0));
     let (_, evals) = decide_now(&sim, other);
     assert_eq!(evals[0].incentives.keep, 0.0);
 }
@@ -605,8 +622,8 @@ fn a_lane_left_early_makes_drivers_want_to_leave_it_more_near_its_end() {
     };
     network.set_adjacent(LaneId(0), LaneId(1), true, true);
     let mut sim = new_sim(network);
-    let far = sim.insert(car(), at(1, 50.0, 10.0));
-    let near = sim.insert(car(), at(1, 450.0, 10.0));
+    let far = sim.insert(car(), crate::simulation::test::driver(), at(1, 50.0, 10.0));
+    let near = sim.insert(car(), crate::simulation::test::driver(), at(1, 450.0, 10.0));
     let route = |id| decide_now(&sim, id).1[0].incentives.route;
     assert!(
         route(near) > route(far),
@@ -616,7 +633,7 @@ fn a_lane_left_early_makes_drivers_want_to_leave_it_more_near_its_end() {
     );
     assert!(route(near) > 0.5, "{}", route(near));
     // Drivers in the lane that goes on have no reason to leave it.
-    let staying = sim.insert(car(), at(0, 450.0, 10.0));
+    let staying = sim.insert(car(), crate::simulation::test::driver(), at(0, 450.0, 10.0));
     let evals = decide_now(&sim, staying).1;
     assert_eq!(evals[0].incentives.route, 0.0);
 }
@@ -625,15 +642,15 @@ fn a_lane_left_early_makes_drivers_want_to_leave_it_more_near_its_end() {
 /// `behind` metres back, at 10 m/s, with the given courtesy.
 fn behind_an_indicator(behind: f64, courtesy: f64) -> (Simulation, VehicleId, VehicleId) {
     let mut sim = two_lanes();
-    let indicating = sim.insert(car(), at(1, 300.0, 10.0));
+    let indicating = sim.insert(car(), crate::simulation::test::driver(), at(1, 300.0, 10.0));
     sim.indicate(indicating, Side::Left);
     // Wanting it enough for followers to cooperate.
     sim.state_mut()
         .lane_changing
         .state_mut(indicating)
         .set_desire([lane_change::D_COOP, 0.0]);
-    let spec = VehicleSpec { courtesy, ..car() };
-    let follower = sim.insert(spec, at(0, 300.0 - behind, 10.0));
+    let driver = Driver { courtesy, ..crate::simulation::test::driver() };
+    let follower = sim.insert(car(), driver, at(0, 300.0 - behind, 10.0));
     (sim, indicating, follower)
 }
 
@@ -730,8 +747,8 @@ fn a_driver_with_nothing_left_to_weigh_up_keeps_no_stale_evaluations() {
     network.set_adjacent(LaneId(0), LaneId(1), true, false);
     let mut sim = new_sim(network);
     // Held up on the left, it wants the free lane on its right.
-    let id = sim.insert(car(), at(0, 100.0, 10.0));
-    sim.insert(car(), at(0, 125.0, 0.0));
+    let id = sim.insert(car(), crate::simulation::test::driver(), at(0, 100.0, 10.0));
+    sim.insert(car(), crate::simulation::test::driver(), at(0, 125.0, 0.0));
     let before = evals_after(&mut sim, id, 30);
     let side = |e: &Vec<(&'static str, Field)>| e.iter().find(|f| f.0 == "side").map(|f| f.1);
     assert!(

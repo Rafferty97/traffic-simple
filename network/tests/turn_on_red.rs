@@ -3,7 +3,8 @@
 
 use traffic_network::{Compiled, RoadId, Turn, compile, scenarios};
 use traffic_sim::{
-    BarrierKind, LaneId, Light, MovementId, Placement, Route, Simulation, VehicleId, VehicleSpec,
+    BarrierKind, Driver, LaneId, Light, MovementId, Placement, Route, Simulation, VehicleId,
+    VehicleSpec,
 };
 
 mod common;
@@ -37,13 +38,17 @@ fn insert_going(sim: &mut Simulation, connector: LaneId, s: Option<f64>) -> Vehi
     let length = sim.network().lane(lane).geometry().length();
     let (s, speed) = match s {
         Some(s) => (s, LIMIT),
-        None => (length - (spec.length - spec.rear_axle) - spec.line_gap, 0.0),
+        None => (
+            length - (spec.length - spec.rear_axle) - Driver::default().line_gap,
+            0.0,
+        ),
     };
     (0..64)
         .find_map(|seed| {
             let id = sim.insert(
                 spec,
-                Placement { lane, s, speed, route: Route::random(seed), seed },
+                Driver { seed, ..Driver::default() },
+                Placement { lane, s, speed, route: Route::random(seed) },
             );
             if sim.get(id).unwrap().path().contains(&connector) {
                 return Some(id);
@@ -185,14 +190,15 @@ fn a_busy_crossroads_turning_on_red_keeps_flowing_and_turners_go_on_red() {
     for step in 1..=common::steps(300.0) {
         if step % common::steps(0.75) == 0 {
             let lane = entries[(step / common::steps(0.75) * 7) as usize % entries.len()];
-            let at = Placement {
-                lane,
-                s: 5.0,
-                speed: LIMIT,
-                route: Route::random(step),
-                seed: step,
-            };
-            if sim.try_insert(VehicleSpec::passenger_car(), at).is_ok() {
+            let at = Placement { lane, s: 5.0, speed: LIMIT, route: Route::random(step) };
+            if sim
+                .try_insert(
+                    VehicleSpec::passenger_car(),
+                    Driver { seed: step, ..Driver::default() },
+                    at,
+                )
+                .is_ok()
+            {
                 spawned += 1;
             }
         }

@@ -1,7 +1,7 @@
 //! Experiment: forces lane changes on random vehicles in busy traffic, in a
 //! debug build, to catch broken occupancy invariants.
 use traffic_network::{compile, scenarios};
-use traffic_sim::{LaneId, Placement, Route, Side, Simulation, VehicleSpec};
+use traffic_sim::{Driver, LaneId, Placement, Route, Side, Simulation, VehicleSpec};
 
 fn main() {
     let mut state = 7u64;
@@ -31,19 +31,22 @@ fn main() {
                 length: 4.6,
                 width: 1.9,
                 max_speed: 40.0,
-                speed_factor: 1.0,
                 max_accel: 1.0,
                 comfy_decel: 1.5,
                 time_headway: 1.0,
                 min_gap: 1.5,
                 rear_axle: 1.0,
                 front_axle: 3.7,
+            };
+            let driver = Driver {
+                speed_factor: 1.0,
                 courtesy: 1.0,
                 politeness: 0.2,
                 assertiveness: 0.3,
                 accel_noise: 0.0,
                 line_gap: 1.0,
                 line_gap_spread: 0.0,
+                seed: step,
             };
             let at = if entries.is_empty() {
                 let lane = LaneId((uniform() * lanes as f64) as u32);
@@ -52,20 +55,13 @@ fn main() {
                     s: uniform() * 900.0,
                     speed: 10.0,
                     route: Route::random(step),
-                    seed: step,
                 }
             } else {
                 let lane = entries[(uniform() * entries.len() as f64) as usize];
-                Placement {
-                    lane,
-                    s: 5.0,
-                    speed: 25.0,
-                    route: Route::random(step),
-                    seed: step,
-                }
+                Placement { lane, s: 5.0, speed: 25.0, route: Route::random(step) }
             };
             if !entries.is_empty() || sim.vehicles().count() < 200 {
-                let _ = sim.try_insert(car, at);
+                let _ = sim.try_insert(car, driver, at);
             }
         }
         if step % 30 == 0 {

@@ -30,7 +30,7 @@ fn road() -> SimNetwork {
 }
 
 fn at(s: f64, speed: f64) -> Placement {
-    Placement { lane: LaneId(0), s, speed, route: Route::random(0), seed: 0 }
+    Placement { lane: LaneId(0), s, speed, route: Route::random(0) }
 }
 
 fn rear(sim: &Simulation, id: VehicleId) -> f64 {
@@ -47,12 +47,16 @@ fn front(sim: &Simulation, id: VehicleId) -> f64 {
 fn queue(beyond: f64, cars: usize, seconds: f64) -> (Simulation, Vec<VehicleId>) {
     let mut sim = common::sim(road());
     let spec = car();
-    let held = sim.insert(spec, at(START + LENGTH + beyond + spec.rear_axle, 0.0));
+    let held = sim.insert(
+        spec,
+        common::driver(),
+        at(START + LENGTH + beyond + spec.rear_axle, 0.0),
+    );
     sim.hold(held);
     let mut ids = vec![held];
     while sim.time() < seconds {
         if ids.len() <= cars && sim.time() >= 2.0 * (ids.len() - 1) as f64 {
-            ids.push(sim.insert(spec, at(0.0, LIMIT)));
+            ids.push(sim.insert(spec, common::driver(), at(0.0, LIMIT)));
         }
         sim.step();
     }
@@ -96,9 +100,13 @@ fn with_room_for_one_beyond_one_goes_through_and_the_next_waits() {
 fn a_car_stopped_short_of_the_zone_goes_once_the_queue_beyond_moves_on() {
     let mut sim = common::sim(road());
     let spec = car();
-    let held = sim.insert(spec, at(START + LENGTH + 1.0 + spec.rear_axle, 0.0));
+    let held = sim.insert(
+        spec,
+        common::driver(),
+        at(START + LENGTH + 1.0 + spec.rear_axle, 0.0),
+    );
     sim.hold(held);
-    let waiting = sim.insert(spec, at(40.0, LIMIT));
+    let waiting = sim.insert(spec, common::driver(), at(40.0, LIMIT));
     while sim.time() < 20.0 {
         sim.step();
     }
@@ -122,7 +130,7 @@ fn a_keep_clear_zone_doesnt_slow_traffic_flowing_freely_through_it() {
         // A car every 2 s at the limit: flowing freely, each well over its
         // time headway behind the one before.
         if sim.time() >= 2.0 * inserted as f64 && inserted < 15 {
-            sim.insert(car(), at(0.0, LIMIT));
+            sim.insert(car(), common::driver(), at(0.0, LIMIT));
             inserted += 1;
         }
         sim.step();

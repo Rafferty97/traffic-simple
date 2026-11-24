@@ -86,9 +86,15 @@ pub(crate) struct Model {
 }
 
 impl Model {
-    /// Takes on a vehicle just inserted, with no desire to change lanes.
-    pub fn insert(&mut self, id: VehicleId) {
-        self.drivers.insert(id, Driver::default());
+    /// Takes on a vehicle just inserted, with no desire to change lanes, and
+    /// the traits of its driver this model reads, copied from `driver`.
+    pub fn insert(&mut self, id: VehicleId, driver: &crate::models::driver::Driver) {
+        let traits = Traits {
+            courtesy: driver.courtesy,
+            politeness: driver.politeness,
+            assertiveness: driver.assertiveness,
+        };
+        self.drivers.insert(id, Driver { lc: State { traits, ..State::default() } });
     }
 
     /// Lets go of a vehicle removed.
@@ -135,6 +141,21 @@ pub struct State {
     /// The vehicle whose ghost it has chosen to make room for, if any. Kept so the
     /// choice sticks rather than flickering on and off.
     yielding: Option<VehicleId>,
+    /// The driver's traits this model reads, copied from the driver model when
+    /// the vehicle was inserted.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub traits: Traits,
+}
+
+/// The traits of a driver the lane-change model reads (see
+/// [`Driver`](crate::models::driver::Driver)): copied once, so the model reads
+/// them from its own state.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Traits {
+    pub courtesy: f64,
+    pub politeness: f64,
+    pub assertiveness: f64,
 }
 
 impl State {
@@ -158,14 +179,14 @@ impl State {
     /// The side the driver wants to change to, if any: the side whose desire is
     /// stronger, once it has reached half its threshold for changing, a lower
     /// bar, so the wish doesn't flicker.
-    pub fn wants(&self, assertiveness: f64) -> Option<Side> {
+    pub fn wants(&self) -> Option<Side> {
         let [left, right] = self.desire;
         let (side, d) = if left >= right {
             (Side::Left, left)
         } else {
             (Side::Right, right)
         };
-        (d >= 0.5 * free(assertiveness)).then_some(side)
+        (d >= 0.5 * free(self.traits.assertiveness)).then_some(side)
     }
 }
 
@@ -305,18 +326,12 @@ pub fn aim(state: &mut State, incentives: [Option<Incentives>; 2]) {
 ///   indicated long enough and isn't cooling down, it asks for the gap.
 /// - Not indicating: once its desire for a side reaches its threshold, the
 ///   stronger side if both, and it isn't cooling down, it asks for the gap.
-pub fn step(
-    state: &mut State,
-    intent: LaneChangeIntent,
-    spec: &VehicleSpec,
-    now: f64,
-    dt: f64,
-) -> Ask {
+pub fn step(state: &mut State, intent: LaneChangeIntent, now: f64, dt: f64) -> Ask {
     let permitted = state.target.map(|t| t.is_some());
     for i in 0..2 {
         state.desire[i] = smooth(state.desire[i], state.target[i].unwrap_or(0.0), dt);
     }
-    let threshold = free(spec.assertiveness);
+    let threshold = free(state.traits.assertiveness);
     let waiting = state.cooldown > 0;
     state.cooldown = state.cooldown.saturating_sub(1);
     match intent {
@@ -358,10 +373,10 @@ pub fn headway(desire: f64) -> f64 {
 /// desire, for itself and its new follower: LMRS's desire times its
 /// comfortable deceleration, raised toward [`SAFE_BRAKING`] by its
 /// assertiveness, as SUMO's `lcAssertive` accepts smaller gaps.
-pub fn accepted_braking(spec: &VehicleSpec, desire: f64) -> f64 {
+pub fn accepted_braking(spec: &VehicleSpec, traits: &Traits, desire: f64) -> f64 {
     let desire = desire.clamp(0.0, 1.0);
     let comfy = desire * spec.comfy_decel;
-    comfy + (SAFE_BRAKING - comfy).max(0.0) * spec.assertiveness.clamp(0.0, 1.0) * desire
+    comfy + (SAFE_BRAKING - comfy).max(0.0) * traits.assertiveness.clamp(0.0, 1.0) * desire
 }
 
 /// How a vehicle weighed up changing lanes to one side.
@@ -387,9 +402,9 @@ pub struct LaneChangeEval {
 }
 
 impl LaneChangeEval {
-    /// The evaluation as named fields, for the debug view: `spec` the
+    /// The evaluation as named fields, for the debug view: `traits` the
     /// driver's, for its threshold.
-    pub(crate) fn fields(&self, spec: &VehicleSpec) -> Vec<(&'static str, Field)> {
+    pub(crate) fn fields(&self, traits: &Traits) -> Vec<(&'static str, Field)> {
         let side = match self.side {
             Side::Left => "left",
             Side::Right => "right",
@@ -400,7 +415,7 @@ impl LaneChangeEval {
             ("side", side.into()),
             ("outcome", self.outcome.name().into()),
             ("desire", self.desire.into()),
-            ("threshold", free(spec.assertiveness).into()),
+            ("threshold", free(traits.assertiveness).into()),
             ("route", i.route.into()),
             ("speed", i.speed.into()),
             ("keep", i.keep.into()),
@@ -505,7 +520,7 @@ pub fn resolve(
     dt: f64,
 ) -> (Decision, LaneChangeEval) {
     let desire = state.desire[index(side)];
-    let accepted = accepted_braking(spec, desire);
+    let accepted = accepted_braking(spec, &state.traits, desire);
     let safe = gap.own_after >= -accepted && gap.new_follower.is_none_or(|a| a >= -accepted);
     let room = gap.room || desire >= D_COOP;
     let indicating = intent.indicating().is_some();
@@ -518,9 +533,10 @@ pub fn resolve(
     };
     match decision {
         Decision::Change(_) => {
-            *state = State { yielding: state.yielding, ..State::default() };
+            let (yielding, traits) = (state.yielding, state.traits);
+            *state = State { yielding, traits, ..State::default() };
         }
-        Decision::Nothing => state.cooldown = cooldown(spec, dt),
+        Decision::Nothing => state.cooldown = cooldown(&state.traits, dt),
         _ => {}
     }
     let eval = LaneChangeEval {
@@ -540,8 +556,8 @@ pub fn resolve(
 /// How many updates, `dt` seconds apart, a driver waits after a refused gap:
 /// [`COOLDOWN`], longer for a more polite driver and shorter for a more
 /// assertive one, so drivers don't check in step. At least one.
-pub fn cooldown(spec: &VehicleSpec, dt: f64) -> u16 {
-    let scale = 1.0 + spec.politeness - 0.5 * spec.assertiveness;
+pub fn cooldown(traits: &Traits, dt: f64) -> u16 {
+    let scale = 1.0 + traits.politeness - 0.5 * traits.assertiveness;
     (COOLDOWN * scale / dt).round().clamp(1.0, f64::from(u16::MAX)) as u16
 }
 
@@ -554,18 +570,15 @@ pub fn cooldown(spec: &VehicleSpec, dt: f64) -> u16 {
 /// takes no more braking than its courtesy, so nearer followers often drive on
 /// and a later one, further back or more courteous, opens the gap. This is
 /// Hidas's (2002, 2005) cooperative lane changing, and SUMO's `lcCooperative`.
-pub fn make_room(
-    state: &State,
-    spec: &VehicleSpec,
-    ghost: Option<(VehicleId, f64, f64)>,
-) -> Option<VehicleId> {
+pub fn make_room(state: &State, ghost: Option<(VehicleId, f64, f64)>) -> Option<VehicleId> {
     let (owner, desire, accel) = ghost?;
     let chosen = state.yielding == Some(owner);
     if !chosen && desire < D_COOP {
         return None;
     }
-    let courteous = spec.courtesy > 0.0;
-    let limit = if chosen { SAFE_BRAKING } else { spec.courtesy };
+    let courtesy = state.traits.courtesy;
+    let courteous = courtesy > 0.0;
+    let limit = if chosen { SAFE_BRAKING } else { courtesy };
     ((chosen || courteous) && accel >= -limit).then_some(owner)
 }
 

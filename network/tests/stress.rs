@@ -9,7 +9,7 @@
 //! `cargo test --release --test stress -- --ignored --nocapture`.
 
 use traffic_network::{RoadNetwork, Sign, compile, scenarios};
-use traffic_sim::{LaneId, Placement, Route, Simulation, VehicleSpec};
+use traffic_sim::{Driver, LaneId, Placement, Route, Simulation, VehicleSpec};
 
 mod common;
 
@@ -53,24 +53,19 @@ fn run(net: &RoadNetwork, seed: u64, every: f64) -> Result<usize, String> {
     for step in 0..common::steps(15.0 * 60.0) {
         if step % every == 0 {
             let lane = entries[(uniform() * entries.len() as f64) as usize];
-            let car = VehicleSpec {
+            let driver = Driver {
                 speed_factor: 0.85 + 0.4 * uniform(),
                 assertiveness: uniform().powi(3),
                 courtesy: 2.0 * uniform(),
                 politeness: uniform(),
                 line_gap: 0.5 + uniform(),
                 line_gap_spread: 0.3,
-                ..VehicleSpec::passenger_car()
+                ..Driver::default()
             };
-            let speed = sim.network().lane(lane).speed_limit() * car.speed_factor;
-            let at = Placement {
-                lane,
-                s: 5.0,
-                speed,
-                route: Route::random(step ^ seed),
-                seed: step ^ seed,
-            };
-            let _ = sim.try_insert(car, at);
+            let car = VehicleSpec::passenger_car();
+            let speed = sim.network().lane(lane).speed_limit() * driver.speed_factor;
+            let at = Placement { lane, s: 5.0, speed, route: Route::random(step ^ seed) };
+            let _ = sim.try_insert(car, Driver { seed: step ^ seed, ..driver }, at);
         }
         sim.step();
         if step % check != 0 {

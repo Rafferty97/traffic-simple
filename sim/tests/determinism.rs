@@ -7,7 +7,7 @@
 
 use rand::rngs::Xoshiro256PlusPlus;
 use rand::{RngExt, SeedableRng};
-use traffic_sim::{LaneId, Lateral, Placement, Route, Side, VehicleId, VehicleSpec};
+use traffic_sim::{Driver, LaneId, Lateral, Placement, Route, Side, VehicleId};
 
 mod common;
 use common::{car, ring_road};
@@ -33,12 +33,16 @@ fn trace(seed: u64, seconds: f64) -> Vec<u64> {
         let picked = sim.vehicles().nth((roll * 1000.0) as usize % 50).map(|(id, _)| id);
         if roll < 0.04 {
             let lane = LaneId(2);
-            let spec = VehicleSpec { speed_factor: 0.8 + 0.4 * rng.random::<f64>(), ..car() };
+            let driver = Driver {
+                speed_factor: 0.8 + 0.4 * rng.random::<f64>(),
+                ..common::driver()
+            };
             let s = rng.random::<f64>() * sim.network().lane(lane).geometry().length();
-            let speed = spec.desired_speed(SPEED_LIMIT);
+            let speed = driver.desired_speed(&car(), SPEED_LIMIT);
             let _ = sim.try_insert(
-                spec,
-                Placement { lane, s, speed, route: Route::default(), seed: 0 },
+                car(),
+                driver,
+                Placement { lane, s, speed, route: Route::default() },
             );
         } else if let Some(id) = picked {
             match (roll * 1000.0) as usize % 7 {

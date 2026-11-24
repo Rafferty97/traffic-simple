@@ -10,6 +10,7 @@ use crate::debug::{AccelSource, DebugEvent, DebugSink, NoopSink};
 use crate::following;
 use crate::junction;
 use crate::models::acceleration;
+use crate::models::driver;
 use crate::models::lane_change::{self, Decided, Decision};
 use crate::models::signal;
 use crate::motion;
@@ -211,16 +212,15 @@ impl Simulation {
             }
         }
 
-        let noise_step = acceleration::NoiseStep::new(
-            self.state.config.dt * f64::from(self.state.config.macro_step),
-        );
+        let noise_step =
+            driver::NoiseStep::new(self.state.config.dt * f64::from(self.state.config.macro_step));
         // What its old side and its speed cap allow first, then its own update,
         // so that whether a leader binds it is judged against all of them.
         for update in &self.decisions {
             if let AccelUpdate::Own { id, committed, arrived, .. } = *update {
                 let commits = committed.saturating_sub(self.state.vehicles[id].committed);
                 let released = committed < self.state.vehicles[id].committed;
-                let SimState { vehicles, longitudinal, frame, .. } = &mut self.state;
+                let SimState { vehicles, drivers, frame, .. } = &mut self.state;
                 let vehicle = &mut vehicles[id];
                 // Heading for another barrier now, it draws how far short it stops;
                 // past one it arrived at, it has yet to arrive at the next.
@@ -229,7 +229,7 @@ impl Simulation {
                         vehicle.stopped_at = None;
                     }
                     vehicle.committed = committed;
-                    longitudinal.new_barrier(id, &vehicle.spec);
+                    drivers.new_barrier(id);
                 }
                 if arrived {
                     vehicle.stopped_at = Some(*frame);
@@ -239,7 +239,7 @@ impl Simulation {
                 if commits > 0 || released {
                     self.arrivals.push(id);
                 }
-                longitudinal.advance_noise(id, &vehicle.spec, noise_step);
+                drivers.advance_noise(id, noise_step);
                 vehicle.accel = f64::INFINITY;
                 vehicle.held_up = None;
             }
@@ -312,16 +312,7 @@ impl Simulation {
     /// the change's cubic, and the change ends where the cubic does.
     pub(super) fn update_motion<S: DebugSink>(&mut self, dt: f64, sink: &mut S) {
         let Self {
-            state:
-                SimState {
-                    network,
-                    vehicles,
-                    occupants,
-                    routing,
-                    longitudinal,
-                    removals,
-                    ..
-                },
+            state: SimState { network, vehicles, occupants, routing, drivers, removals, .. },
             derived: Derived { overlaps, merges, through, routes },
             arrivals,
             ..
@@ -391,7 +382,7 @@ impl Simulation {
                 passed += barrier::between(network.lane(vehicle.path[0]), from, vehicle.lane_pos.s);
                 vehicle.committed = vehicle.committed.saturating_sub(passed.min(255) as u8);
                 if passed > 0 {
-                    longitudinal.new_barrier(id, &vehicle.spec);
+                    drivers.new_barrier(id);
                     vehicle.stopped_at = None;
                 }
             }

@@ -49,7 +49,7 @@ pub(crate) fn decide(
     let spec = &vehicle.spec;
     let speed = vehicle.speed;
     // Whether it can stop where it would like, a line gap short, at `decel`.
-    let line_gap = state.longitudinal.line_gap(id);
+    let line_gap = state.drivers.line_gap(id);
     let can_stop = |decel: f64| speed * speed / (2.0 * decel) <= gap - line_gap;
     let yields_to = std::cell::Cell::new(None);
     let room = || {
@@ -129,12 +129,12 @@ const IMPATIENT_DECEL: f64 = 0.5;
 /// which breaks the ties where each of two waits on traffic stuck behind the
 /// other. The junction keeps it safe, and a vehicle that hasn't committed can
 /// always stop for it at comfortable deceleration.
-fn impatience(state: &SimState, vehicle: &Vehicle) -> f64 {
+fn impatience(state: &SimState, id: VehicleId, vehicle: &Vehicle) -> f64 {
     let Some(since) = vehicle.stopped_at else {
         return 0.0;
     };
     let waited = state.time_since(since);
-    let rate = (1.0 + 2.0 * vehicle.spec.assertiveness) / TIME_TO_IMPATIENCE;
+    let rate = (1.0 + 2.0 * state.drivers.traits(id).assertiveness) / TIME_TO_IMPATIENCE;
     (waited * rate).min(1.0)
 }
 
@@ -174,7 +174,7 @@ fn has_gap(
         barriers.iter().find(|b| b.s > from).map(|b| (j, b.s))
     });
     let front = vehicle.lane_pos.s - spec.rear_axle + spec.length;
-    let impatience = impatience(state, vehicle);
+    let impatience = impatience(state, id, vehicle);
     // The start of each lane of its path, from its front.
     let mut start = -front;
     for (j, &mine) in path.iter().enumerate() {
@@ -194,7 +194,7 @@ fn has_gap(
                     continue;
                 }
                 // It clears a crossing once its rear is past it.
-                let desired = spec.desired_speed(lane.speed_limit());
+                let desired = state.drivers.desired_speed(id, spec, lane.speed_limit());
                 let to_clear = start + conflict.mine.end + spec.length;
                 let clears = reach_time(vehicle.speed, spec.max_accel, desired, to_clear);
                 let to_start = start + conflict.mine.start;
@@ -338,7 +338,7 @@ fn clear(
                 return false;
             }
             let length = network.lane(way.theirs).geometry().length();
-            let rear_at_rest = length - state.longitudinal.line_gap(o.id) - other.spec.length;
+            let rear_at_rest = length - state.drivers.line_gap(o.id) - other.spec.length;
             rear_at_rest < way.conflict.theirs.end
         };
         let clears = if other.speed > 0.0 && !stops_in_it() {
@@ -385,7 +385,7 @@ fn clear(
             return Ok(());
         }
         let limit = network.lane(way.theirs).speed_limit();
-        let desired = other.spec.desired_speed(limit);
+        let desired = state.drivers.desired_speed(o.id, &other.spec, limit);
         // As fast as it can, or, to an impatient driver, giving way to it: at
         // full impatience braking at `IMPATIENT_DECEL` of its comfortable
         // deceleration to stop its minimum gap short, as IDM, following, brakes

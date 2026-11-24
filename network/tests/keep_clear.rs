@@ -2,7 +2,7 @@
 //! light backs past it and leaves it empty.
 
 use traffic_network::{MarkingStyle, compile, scenarios};
-use traffic_sim::{BarrierKind, LaneId, Placement, Route, VehicleSpec};
+use traffic_sim::{BarrierKind, Driver, LaneId, Placement, Route, VehicleSpec};
 
 mod common;
 
@@ -73,14 +73,8 @@ fn the_queue_at_a_red_light_leaves_a_keep_clear_zone_empty() {
         // A car every second from the west, each lane in turn.
         if step % common::steps(1.0) == 0 {
             let lane = west[(step / common::steps(1.0)) as usize % 2];
-            let at = Placement {
-                lane,
-                s: 5.0,
-                speed: LIMIT,
-                route: Route::random(step),
-                seed: step,
-            };
-            let _ = sim.try_insert(car, at);
+            let at = Placement { lane, s: 5.0, speed: LIMIT, route: Route::random(step) };
+            let _ = sim.try_insert(car, Driver { seed: step, ..Driver::default() }, at);
         }
         sim.step();
         if step % common::steps(0.1) != 0 {

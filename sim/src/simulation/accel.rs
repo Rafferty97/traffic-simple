@@ -78,14 +78,15 @@ fn limits_ahead<D: DebugSink>(
     let front = vehicle.lane_pos.s + spec.length - spec.rear_axle;
     // Where each lane after the one it follows starts, along that one.
     let mut start = network.lane(vehicle.path[0]).geometry().length();
-    let own = spec.desired_speed(network.lane(vehicle.path[0]).speed_limit());
+    let driver = state.drivers.traits(id);
+    let own = driver.desired_speed(spec, network.lane(vehicle.path[0]).speed_limit());
     let mut harshest = f64::INFINITY;
     for &lane in &vehicle.path[1..] {
         let gap = start - front;
         if gap > reach {
             break;
         }
-        let limit = spec.desired_speed(network.lane(lane).speed_limit());
+        let limit = driver.desired_speed(spec, network.lane(lane).speed_limit());
         let term = match gap > 0.0 {
             true => acceleration::limit_ahead(spec, vehicle.speed, gap, limit),
             false if limit < own => Some(acceleration::free_road(spec, vehicle.speed, limit)),
@@ -119,11 +120,12 @@ pub(super) fn longitudinal<D: DebugSink>(
     own: usize,
 ) -> AccelUpdate {
     let lane = vehicle.path[0];
-    let desired_speed = vehicle.spec.desired_speed(state.network.lane(lane).speed_limit());
+    let limit = state.network.lane(lane).speed_limit();
+    let desired_speed = state.drivers.desired_speed(id, &vehicle.spec, limit);
     let desired_speed = desired_speed.min(friction(state, speeds, vehicle));
     // Drivers don't hold a speed exactly: their noise wanders it.
     let free = acceleration::free_road(&vehicle.spec, vehicle.speed, desired_speed)
-        + state.longitudinal.noise(id);
+        + state.drivers.noise(id);
     let source = AccelSource::FreeRoad { desired_speed };
     sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: free });
     // The lowest of every term but the binding leader's, and that leader.
@@ -219,7 +221,7 @@ pub(super) fn longitudinal<D: DebugSink>(
                 || matches!(barrier.kind, BarrierKind::KeepClear { .. }),
             "only a green light or a keep-clear zone lets a vehicle pass for now: {answer:?} at {barrier:?}"
         );
-        let line_gap = state.longitudinal.line_gap(id);
+        let line_gap = state.drivers.line_gap(id);
         // At rest at a give-way, stop or all-way stop line, or a red light it
         // may turn on, as the head on its way to it: it has arrived there.
         // Not at rest further back, behind a vehicle headed elsewhere.

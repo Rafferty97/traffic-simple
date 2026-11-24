@@ -38,22 +38,22 @@ fn checks_against_a_held_car(ahead: f64) -> usize {
     let mut sim = common::watched(network, Checks::default());
     let changer = sim.insert(
         car(),
+        common::driver(),
         Placement {
             lane: LaneId(1),
             s: 100.0,
             speed: 10.0,
             route: Route::default(),
-            seed: 0,
         },
     );
     let held = sim.insert(
         car(),
+        common::driver(),
         Placement {
             lane: LaneId(1),
             s: 100.0 + ahead,
             speed: 0.0,
             route: Route::default(),
-            seed: 0,
         },
     );
     sim.hold(held);

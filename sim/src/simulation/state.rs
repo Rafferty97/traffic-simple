@@ -7,6 +7,7 @@ use crate::following::{self, Occupant, Overlaps};
 use crate::junction::Queue;
 use crate::merge::{self, Merges};
 use crate::models::acceleration;
+use crate::models::driver;
 use crate::models::lane_change;
 use crate::models::routing;
 use crate::models::signal::{MovementLight, SignalState};
@@ -45,6 +46,9 @@ pub struct Config {
 pub struct SimState {
     pub(crate) network: SimNetwork,
     pub(crate) vehicles: SlotMap<VehicleId, Vehicle>,
+    /// The driver model: each driver's traits, and the state they vary with.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) drivers: driver::Model,
     /// The longitudinal model, with its state for each vehicle.
     pub(crate) longitudinal: acceleration::Model,
     /// The lane-change model, with its state for each vehicle.

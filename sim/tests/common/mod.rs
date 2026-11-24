@@ -107,19 +107,28 @@ pub fn car() -> VehicleSpec {
         length: 4.6,
         width: 1.9,
         max_speed: 30.0,
-        speed_factor: 1.0,
         max_accel: 1.5,
         comfy_decel: 2.0,
         time_headway: 1.2,
         min_gap: 2.0,
         rear_axle: 1.0,
         front_axle: 3.7,
-        courtesy: 1.0,
-        politeness: 0.2,
-        assertiveness: 0.0,
+    }
+}
+
+/// The tests' driver: at the limit exactly, holding its speed without
+/// dawdling, and stopping exactly a metre short of lines, so runs are
+/// deterministic and easy to reason about.
+pub fn driver() -> traffic_sim::Driver {
+    traffic_sim::Driver {
+        speed_factor: 1.0,
         accel_noise: 0.0,
         line_gap: 1.0,
         line_gap_spread: 0.0,
+        courtesy: 1.0,
+        politeness: 0.2,
+        assertiveness: 0.0,
+        seed: 0,
     }
 }
 
@@ -171,7 +180,8 @@ pub fn fill_lane(sim: &mut Simulation, lane: LaneId, count: usize) {
         let s = length * i as f64 / count as f64;
         sim.insert(
             car(),
-            Placement { lane, s, speed: 0.0, route: Route::default(), seed: 0 },
+            driver(),
+            Placement { lane, s, speed: 0.0, route: Route::default() },
         );
     }
 }

@@ -6,6 +6,7 @@
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap};
 
+use crate::models::driver::Driver;
 use crate::motion::lateral::change_length;
 use crate::network::{LaneId, Leaving, Neighbor, RoadId, Side, SimNetwork};
 use crate::vehicle::VehicleSpec;
@@ -254,7 +255,8 @@ fn change_room(network: &SimNetwork, lane: LaneId) -> f64 {
     let at = lane.geometry().lane_pos(0.0, 0.0);
     let width =
         lane.geometry().half_width(at, Side::Left) + lane.geometry().half_width(at, Side::Right);
-    car.wheelbase() + change_length(car.desired_speed(lane.speed_limit()), width) + car.length
+    let speed = Driver::default().desired_speed(&car, lane.speed_limit());
+    car.wheelbase() + change_length(speed, width) + car.length
 }
 
 /// Whether two times to the destination are the same, but for rounding.

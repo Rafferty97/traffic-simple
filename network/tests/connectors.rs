@@ -6,7 +6,7 @@ mod common;
 
 use glam::DVec2;
 use traffic_network::{Turn, compile, scenarios};
-use traffic_sim::{LaneId, PASSING_CLEARANCE, Placement, Route, SimNetwork, VehicleSpec};
+use traffic_sim::{Driver, LaneId, PASSING_CLEARANCE, Placement, Route, SimNetwork, VehicleSpec};
 
 /// Whether `point` lies within `lane`'s outline, or just beyond an end: where
 /// a curve's first or last segment turns a little from the lane it meets, their
@@ -32,14 +32,8 @@ fn a_car_keeps_its_body_within_every_connector_it_takes() {
             // faster it goes.
             for speed in [limit, 2.0] {
                 let mut sim = common::sim(net.clone());
-                let at = Placement {
-                    lane: connector,
-                    s: 0.0,
-                    speed,
-                    route: Route::random(0),
-                    seed: 0,
-                };
-                let id = sim.insert(car, at);
+                let at = Placement { lane: connector, s: 0.0, speed, route: Route::random(0) };
+                let id = sim.insert(car, Driver::default(), at);
                 sim.cap_speed(id, speed);
                 while sim.get(id).is_some_and(|v| v.lane() == connector) {
                     sim.step();

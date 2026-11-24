@@ -2,7 +2,7 @@
 //! route needs, and leaves the network where it was sent.
 
 use traffic_network::{Sign, compile, scenarios};
-use traffic_sim::{DestinationId, LaneId, Placement, Route, Simulation, VehicleSpec};
+use traffic_sim::{DestinationId, Driver, LaneId, Placement, Route, Simulation, VehicleSpec};
 
 mod common;
 
@@ -41,14 +41,12 @@ fn every_car_leaves_by_its_exit(net: &traffic_network::RoadNetwork) -> usize {
             if sim.time_to(exit, entry).is_none() {
                 continue;
             }
-            let at = Placement {
-                lane: entry,
-                s: 5.0,
-                speed: SPEED,
-                route: Route::to(exit),
-                seed: 1,
-            };
-            let id = sim.insert(VehicleSpec::passenger_car(), at);
+            let at = Placement { lane: entry, s: 5.0, speed: SPEED, route: Route::to(exit) };
+            let id = sim.insert(
+                VehicleSpec::passenger_car(),
+                Driver { seed: 1, ..Driver::default() },
+                at,
+            );
             let mut last = entry;
             // Long enough to wait at every red light on the way.
             for _ in 0..(600.0 / common::DT) as usize {
@@ -126,8 +124,12 @@ fn busy(net: &traffic_network::RoadNetwork) -> (usize, usize) {
             let ways: Vec<_> = exits.iter().filter(|&&e| sim.time_to(e, entry).is_some()).collect();
             let exit = *ways[draw(ways.len())];
             let route = Route::to(exit);
-            let at = Placement { lane: entry, s: 5.0, speed: SPEED, route, seed: step as u64 };
-            if let Ok(id) = sim.try_insert(VehicleSpec::passenger_car(), at) {
+            let at = Placement { lane: entry, s: 5.0, speed: SPEED, route };
+            if let Ok(id) = sim.try_insert(
+                VehicleSpec::passenger_car(),
+                Driver { seed: step as u64, ..Driver::default() },
+                at,
+            ) {
                 sent.insert(id, exit);
             }
         }

@@ -14,7 +14,8 @@
 //! ```
 
 use traffic_sim::{
-    DestinationId, LaneId, Placement, Route, Side, SimNetwork, Simulation, VehicleId, VehicleSpec,
+    DestinationId, Driver, LaneId, Placement, Route, Side, SimNetwork, Simulation, VehicleId,
+    VehicleSpec,
 };
 
 /// A replayed simulation at the moment it was captured.
@@ -68,13 +69,15 @@ pub fn replay(log: &str) -> Replay {
                     length: f.get("length"),
                     width: f.get("width"),
                     max_speed: f.get("max_speed"),
-                    speed_factor: f.get("speed_factor"),
                     max_accel: f.get("max_accel"),
                     comfy_decel: f.get("comfy_decel"),
                     time_headway: f.get("time_headway"),
                     min_gap: f.get("min_gap"),
                     rear_axle: f.get("rear_axle"),
                     front_axle: f.get("front_axle"),
+                };
+                let driver = Driver {
+                    speed_factor: f.get("speed_factor"),
                     courtesy: f.get("courtesy"),
                     politeness: f.get("politeness"),
                     // Absent from replays made before drivers had it.
@@ -82,6 +85,7 @@ pub fn replay(log: &str) -> Replay {
                     accel_noise: f.get_or("accel_noise", 0.0),
                     line_gap: f.get_or("line_gap", 1.0),
                     line_gap_spread: f.get_or("line_gap_spread", 0.0),
+                    seed: f.get_u64("seed"),
                 };
                 let lane = LaneId(f.get("lane") as u32);
                 let at_ = Placement {
@@ -95,9 +99,8 @@ pub fn replay(log: &str) -> Replay {
                         false if f.has("route") => Route::random(f.get_u64("route")),
                         false => Route::random(f.get_u64("seed")),
                     },
-                    seed: f.get_u64("seed"),
                 };
-                let result = sim.try_insert(spec, at_);
+                let result = sim.try_insert(spec, driver, at_);
                 assert_eq!(result.is_ok(), outcome == "ok", "diverged at {}", at());
                 ids.extend(result.ok());
             }

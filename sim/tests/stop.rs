@@ -43,13 +43,7 @@ fn stop() -> SimNetwork {
 }
 
 fn at(lane: u32, s: f64, speed: f64) -> Placement {
-    Placement {
-        lane: LaneId(lane),
-        s,
-        speed,
-        route: Route::random(0),
-        seed: 0,
-    }
+    Placement { lane: LaneId(lane), s, speed, route: Route::random(0) }
 }
 
 /// At rest, from the south, where a car stops for its line.
@@ -57,7 +51,7 @@ fn at_line() -> Placement {
     let spec = car();
     at(
         1,
-        90.0 - (spec.length - spec.rear_axle) - spec.line_gap,
+        90.0 - (spec.length - spec.rear_axle) - common::driver().line_gap,
         0.0,
     )
 }
@@ -73,7 +67,7 @@ fn front_y(sim: &Simulation, id: VehicleId) -> f64 {
 #[test]
 fn a_car_comes_to_rest_at_a_clear_stop_line_then_goes() {
     let mut sim = common::sim(stop());
-    let car_id = sim.insert(car(), at(1, 20.0, LIMIT));
+    let car_id = sim.insert(car(), common::driver(), at(1, 20.0, LIMIT));
     let mut came_to_rest = false;
     let mut crossed = None;
     while sim.time() < 30.0 {
@@ -92,9 +86,9 @@ fn a_car_comes_to_rest_at_a_clear_stop_line_then_goes() {
 #[test]
 fn a_car_at_a_stop_line_waits_for_traffic_with_priority_then_goes() {
     let mut sim = common::sim(stop());
-    let yielding = sim.insert(car(), at_line());
+    let yielding = sim.insert(car(), common::driver(), at_line());
     // About 5 s away: too close to go ahead of.
-    let priority = sim.insert(car(), at(0, 30.0, LIMIT));
+    let priority = sim.insert(car(), common::driver(), at(0, 30.0, LIMIT));
     let mut waited = true;
     let mut slowest = f64::INFINITY;
     while sim.time() < 30.0 {
@@ -121,9 +115,9 @@ fn a_car_at_a_stop_line_waits_for_traffic_with_priority_then_goes() {
 #[test]
 fn a_car_at_rest_at_a_stop_line_goes_through_a_wide_gap() {
     let mut sim = common::sim(stop());
-    let yielding = sim.insert(car(), at_line());
+    let yielding = sim.insert(car(), common::driver(), at_line());
     // Far off: about 90 m from their crossing at 10 m/s, 9 s.
-    let _far = sim.insert(car(), at(0, 5.0, 10.0));
+    let _far = sim.insert(car(), common::driver(), at(0, 5.0, 10.0));
     while sim.time() < 4.0 {
         sim.step();
     }
@@ -136,9 +130,9 @@ fn a_car_at_rest_at_a_stop_line_goes_through_a_wide_gap() {
 #[test]
 fn a_car_arriving_at_a_stop_line_records_when_it_came_to_rest() {
     let mut sim = common::sim(stop());
-    let car_id = sim.insert(car(), at(1, 60.0, LIMIT));
+    let car_id = sim.insert(car(), common::driver(), at(1, 60.0, LIMIT));
     // A car with priority keeps it waiting after it comes to rest.
-    let _priority = sim.insert(car(), at(0, 0.0, 6.0));
+    let _priority = sim.insert(car(), common::driver(), at(0, 0.0, 6.0));
     let mut recorded = false;
     while sim.time() < 12.0 && !recorded {
         // Judged from where it was before the step: it may move off in the same
@@ -159,10 +153,14 @@ fn a_car_arriving_at_a_stop_line_records_when_it_came_to_rest() {
 #[test]
 fn a_car_kept_waiting_in_time_goes_ahead_of_a_stopped_car_with_priority() {
     let mut sim = common::sim(stop());
-    let yielding = sim.insert(car(), at_line());
+    let yielding = sim.insert(car(), common::driver(), at_line());
     // At rest 5 m short of the junction, held there.
     let spec = car();
-    let priority = sim.insert(spec, at(0, 85.0 - (spec.length - spec.rear_axle), 0.0));
+    let priority = sim.insert(
+        spec,
+        common::driver(),
+        at(0, 85.0 - (spec.length - spec.rear_axle), 0.0),
+    );
     sim.hold(priority);
     while sim.time() < 3.0 {
         sim.step();

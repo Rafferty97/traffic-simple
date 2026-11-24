@@ -2,8 +2,8 @@
 //! looking at, for the UI to open paused.
 
 use traffic_sim::{
-    BarrierKind, LaneId, Light, MovementId, Placement, Route, SimState, Simulation, VehicleId,
-    VehicleSpec,
+    BarrierKind, Driver, LaneId, Light, MovementId, Placement, Route, SimState, Simulation,
+    VehicleId, VehicleSpec,
 };
 
 use crate::{Compiled, RenderGeometry, Turn, compile, scenarios};
@@ -80,14 +80,13 @@ fn turner_cycle_with_x() -> (Frame, VehicleId) {
         }
         panic!("the turner cycle never came about");
     };
-    let at_rest =
-        |lane: LaneId, s: f64| Placement { lane, s, speed: 0.0, route: Route::random(0), seed: 0 };
+    let at_rest = |lane: LaneId, s: f64| Placement { lane, s, speed: 0.0, route: Route::random(0) };
     // Just past its line, short of its conflicts, so the junction queues it.
     let inside = car.rear_axle + 0.5;
     // On T's green, an oncoming car held just inside the junction, queued, so T
     // waits for it at its waiting point.
     run_until(&mut sim, &|sim| sim.light(t_movement).light == Light::Green);
-    let o = sim.insert(car, at_rest(o_lane, inside));
+    let o = sim.insert(car, Driver::default(), at_rest(o_lane, inside));
     sim.hold(o);
     // T, coming up to the junction to turn right.
     let t = (0..)
@@ -97,9 +96,8 @@ fn turner_cycle_with_x() -> (Frame, VehicleId) {
                 s: approach_length - 40.0,
                 speed: 8.0,
                 route: Route::random(seed),
-                seed,
             };
-            let id = sim.insert(car, at);
+            let id = sim.insert(car, Driver { seed, ..Driver::default() }, at);
             if sim.get(id).unwrap().path().contains(&t_first) {
                 return Some(id);
             }
@@ -115,7 +113,7 @@ fn turner_cycle_with_x() -> (Frame, VehicleId) {
     run_until(&mut sim, &|sim| {
         sim.light(t_movement).light == Light::Red && sim.light(x_movement).light == Light::Green
     });
-    let x = sim.insert(car, at_rest(x_lane, inside));
+    let x = sim.insert(car, Driver::default(), at_rest(x_lane, inside));
     for _ in 0..30 {
         sim.step();
     }

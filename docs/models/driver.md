@@ -1,0 +1,12 @@
+# Driver model
+
+Each driver's own traits, given when its vehicle is inserted, and the state they vary with, behind the module boundary `models::driver`. The vehicle, its body and the longitudinal model's parameters for its class, is apart, in `VehicleSpec`; the driver is the `Driver` passed beside it, `insert(vehicle, driver, at)`, as VISSIM keeps driving behaviour apart from vehicle types. How drivers are distributed is the caller's concern (see [the design](../DESIGN.md), Demand).
+
+- **Desired speed:** the lane's speed limit times the driver's speed factor, capped at its vehicle's maximum speed, as SUMO's `speedFactor`. The UI draws the factor from a normal with mean 1 and deviation 0.05, clamped to 0.85–1.15, so nearly every driver on a 50 km/h road wants 45 to 55 km/h; SUMO's default deviation is 0.1.
+- **Dawdling:** drivers don't hold a speed exactly. Each has a slowly varying noise, added to its free-road term by the longitudinal model, an Ornstein-Uhlenbeck process with a time constant of 10 s and a per-driver spread (`accel_noise`), as in Treiber and Kesting's IDM with acceleration noise (2017). Following stays exact, so the noise never brings vehicles closer than IDM would.
+- **Gap to lines:** how far short of a line a driver stops, drawn afresh each time it heads for a new barrier, uniformly within `line_gap_spread` of its `line_gap`: about 1 m, within 0.5 m either way, so a row of vehicles at a line doesn't stand in perfect step.
+- **Changing lanes:** its courtesy, politeness and assertiveness (see [Lane changes](lane-change.md)). The lane-change model copies them into its own state when the vehicle is inserted, so it reads them from one place; gap acceptance reads assertiveness from the driver model, for impatience.
+- **Its own generator:** a SplitMix64 seeded from the driver's seed, mixed with where it is placed, so drivers placed alike still differ and runs repeat. The dawdling and the gaps to lines draw from it.
+- **State:** each driver's traits, its noise now, its generator and the gap to lines it drew, in a `SecondaryMap` it alone reads and writes. The longitudinal model keeps only whether a vehicle is finishing a stop.
+
+`Driver::default()` is a driver of textbook habits: at the limit exactly, MOBIL's politeness of 0.2 as Treiber's simulator uses it, an acceleration noise of 0.2 m/s², and stopping about a metre short of lines, within half a metre either way.

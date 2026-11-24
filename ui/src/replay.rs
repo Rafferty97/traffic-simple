@@ -31,8 +31,8 @@ use std::fmt::Write;
 use std::ops::Deref;
 
 use traffic_sim::{
-    DebugEvent, DestinationId, InsertError, LaneChangeError, LaneId, Placement, Route, Side,
-    Simulation, VehicleId, VehicleSpec,
+    DebugEvent, DestinationId, Driver, InsertError, LaneChangeError, LaneId, Placement, Route,
+    Side, Simulation, VehicleId, VehicleSpec,
 };
 
 /// A simulation that logs every call that changes it.
@@ -74,30 +74,34 @@ impl Recorded {
     pub fn try_insert(
         &mut self,
         spec: VehicleSpec,
+        driver: Driver,
         at: Placement,
     ) -> Result<VehicleId, InsertError> {
-        let result = self.sim.try_insert(spec, at);
+        let result = self.sim.try_insert(spec, driver, at);
         let outcome = if result.is_ok() { "ok" } else { "refused" };
         // Destructured, so a new field fails to compile until it is logged.
         let VehicleSpec {
             length,
             width,
             max_speed,
-            speed_factor,
             max_accel,
             comfy_decel,
             time_headway,
             min_gap,
             rear_axle,
             front_axle,
-            courtesy,
-            politeness,
-            assertiveness,
+        } = spec;
+        let Driver {
+            speed_factor,
             accel_noise,
             line_gap,
             line_gap_spread,
-        } = spec;
-        let Placement { lane, s, speed, route, seed } = at;
+            courtesy,
+            politeness,
+            assertiveness,
+            seed,
+        } = driver;
+        let Placement { lane, s, speed, route } = at;
         let route = match route {
             Route::Random { state } => format!("route={state}"),
             Route::Destination(destination) => format!("destination={}", destination.0),
@@ -214,17 +218,17 @@ mod test {
             let roll = rng.random::<f64>();
             if roll < 0.05 {
                 let speed_factor = 0.8 + 0.4 * rng.random::<f64>();
-                let spec = VehicleSpec { speed_factor, ..VehicleSpec::passenger_car() };
+                let spec = VehicleSpec::passenger_car();
                 let s = 600.0 * rng.random::<f64>();
                 let seed = rng.random();
+                let driver = Driver { speed_factor, seed, ..Driver::default() };
                 let at = Placement {
                     lane: LaneId(2),
                     s,
-                    speed: spec.desired_speed(speed_limit),
+                    speed: driver.desired_speed(&spec, speed_limit),
                     route: Route::random(seed),
-                    seed,
                 };
-                ids.extend(sim.try_insert(spec, at).ok());
+                ids.extend(sim.try_insert(spec, driver, at).ok());
             } else if roll < 0.07 && !ids.is_empty() {
                 let id = ids[rng.random_range(0..ids.len())];
                 if sim.get(id).is_some() {

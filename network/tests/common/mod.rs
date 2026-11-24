@@ -2,7 +2,7 @@
 
 #![allow(dead_code)]
 
-use traffic_sim::{Config, ConflictKind, DebugEvent, LaneId, SimNetwork, Simulation};
+use traffic_sim::{Config, ConflictKind, DebugEvent, Driver, LaneId, SimNetwork, Simulation};
 
 /// The length of a step in the tests' standard simulation, in seconds: 30 Hz.
 pub const DT: f64 = 1.0 / 30.0;
@@ -261,8 +261,8 @@ pub fn flood(net: &traffic_network::RoadNetwork, seconds: f64) {
             if step % 20 == 0 {
                 let lane = entries[(step / 20 * 7) as usize % entries.len()];
                 let speed = sim.network().lane(lane).speed_limit();
-                let at = Placement { lane, s: 5.0, speed, route: Route::random(step), seed: step };
-                let _ = sim.try_insert(car, at);
+                let at = Placement { lane, s: 5.0, speed, route: Route::random(step) };
+                let _ = sim.try_insert(car, Driver { seed: step, ..Driver::default() }, at);
             }
             sim.step_variable(1.0 / 60.0);
             // Collisions last for many frames, so a check every tenth of a second

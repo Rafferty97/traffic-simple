@@ -33,13 +33,7 @@ fn two_lanes_with<C: common::Collect>(sink: C) -> common::Watched<C> {
 }
 
 fn place(lane: u32, s: f64, speed: f64) -> Placement {
-    Placement {
-        lane: LaneId(lane),
-        s,
-        speed,
-        route: Route::default(),
-        seed: 0,
-    }
+    Placement { lane: LaneId(lane), s, speed, route: Route::default() }
 }
 
 fn run(sim: &mut Sim, seconds: f64, mut each: impl FnMut(&Sim)) {
@@ -52,9 +46,9 @@ fn run(sim: &mut Sim, seconds: f64, mut each: impl FnMut(&Sim)) {
 #[test]
 fn overtakes_a_stopped_car_after_indicating() {
     let mut sim = two_lanes();
-    let blocker = sim.insert(car(), place(1, 100.0, 0.0));
+    let blocker = sim.insert(car(), common::driver(), place(1, 100.0, 0.0));
     sim.hold(blocker);
-    let id = sim.insert(car(), place(1, 20.0, 10.0));
+    let id = sim.insert(car(), common::driver(), place(1, 20.0, 10.0));
 
     let (mut indicated_at, mut changed_at, mut time) = (None, None, 0.0);
     run(&mut sim, 15.0, |sim| {
@@ -81,13 +75,13 @@ fn overtakes_a_stopped_car_after_indicating() {
 #[test]
 fn waits_for_a_fast_car_in_the_target_lane() {
     let mut sim = two_lanes();
-    let blocker = sim.insert(car(), place(1, 120.0, 0.0));
+    let blocker = sim.insert(car(), common::driver(), place(1, 120.0, 0.0));
     sim.hold(blocker);
     // Closing on the stopped car, so it has every reason to change at once and
     // politeness alone won't hold it back.
-    let id = sim.insert(car(), place(1, 85.0, 8.0));
+    let id = sim.insert(car(), common::driver(), place(1, 85.0, 8.0));
     // A fast car in the free lane, just behind: changing now would cut it off.
-    let fast = sim.insert(car(), place(0, 65.0, SPEED_LIMIT));
+    let fast = sim.insert(car(), common::driver(), place(0, 65.0, SPEED_LIMIT));
 
     let mut hardest = 0.0f64;
     let mut changed_behind_fast = None;
@@ -113,11 +107,11 @@ fn waits_for_a_fast_car_in_the_target_lane() {
 #[test]
 fn ghosts_brake_nobody() {
     let mut sim = two_lanes();
-    let blocker = sim.insert(car(), place(1, 100.0, 0.0));
+    let blocker = sim.insert(car(), common::driver(), place(1, 100.0, 0.0));
     sim.hold(blocker);
-    let id = sim.insert(car(), place(1, 40.0, 6.0));
+    let id = sim.insert(car(), common::driver(), place(1, 40.0, 6.0));
     // Close behind in the target lane, so the change waits and the ghost stays.
-    let follower = sim.insert(car(), place(0, 30.0, 8.0));
+    let follower = sim.insert(car(), common::driver(), place(0, 30.0, 8.0));
 
     let mut indicating_frames = 0;
     run(&mut sim, 6.0, |sim| {
@@ -148,8 +142,9 @@ impl common::Collect for Decisions {
 #[test]
 fn every_vehicle_measures_its_lane_change_incentives_ten_times_a_second() {
     let mut sim = two_lanes_with(Decisions::default());
-    let ids: Vec<VehicleId> =
-        (0..7).map(|i| sim.insert(car(), place(i % 2, 50.0 * i as f64, 0.0))).collect();
+    let ids: Vec<VehicleId> = (0..7)
+        .map(|i| sim.insert(car(), common::driver(), place(i % 2, 50.0 * i as f64, 0.0)))
+        .collect();
     for _ in 0..(10.0 / DT) as usize {
         sim.step_variable(DT);
     }
@@ -166,12 +161,12 @@ fn a_car_far_behind_in_the_target_lane_doesnt_hold_up_a_change() {
     // A car held 300 m back in lane 0, beyond the reach of its leader search, so
     // it never replies to the ghost; and it is too far back to be affected.
     let mut sim = two_lanes();
-    let far = sim.insert(car(), place(0, 50.0, 0.0));
+    let far = sim.insert(car(), common::driver(), place(0, 50.0, 0.0));
     sim.hold(far);
     // A stopped car ahead in lane 1 makes changing left worth it.
-    let blocker = sim.insert(car(), place(1, 420.0, 0.0));
+    let blocker = sim.insert(car(), common::driver(), place(1, 420.0, 0.0));
     sim.hold(blocker);
-    let id = sim.insert(car(), place(1, 350.0, 10.0));
+    let id = sim.insert(car(), common::driver(), place(1, 350.0, 10.0));
     let mut changed = false;
     run(&mut sim, 5.0, |sim| {
         changed |= sim.get(id).unwrap().lane() == LaneId(0)
@@ -186,11 +181,11 @@ fn never_changes_into_a_car_alongside() {
     // follower there, so the change is never safe.
     for tenths in -40..=40 {
         let mut sim = two_lanes();
-        let blocker = sim.insert(car(), place(1, 108.0, 0.0));
+        let blocker = sim.insert(car(), common::driver(), place(1, 108.0, 0.0));
         sim.hold(blocker);
-        let id = sim.insert(car(), place(1, 100.0, 0.0));
+        let id = sim.insert(car(), common::driver(), place(1, 100.0, 0.0));
         let s = 100.0 + tenths as f64 / 10.0;
-        let beside = sim.insert(car(), place(0, s, 0.0));
+        let beside = sim.insert(car(), common::driver(), place(0, s, 0.0));
         sim.hold(beside);
         let mut changed = false;
         run(&mut sim, 5.0, |sim| {

@@ -97,7 +97,7 @@ pub(crate) fn measure(
     // gap goes first; its own ghost passed over.
     let along = Along::Into(side);
     let lane = along.lane(network, vehicle, 0).unwrap_or(vehicle.path[0]);
-    let desired = vehicle.spec.desired_speed(network.lane(lane).speed_limit());
+    let desired = state.drivers.desired_speed(id, &vehicle.spec, network.lane(lane).speed_limit());
     let mut own_after = acceleration::free_road(&vehicle.spec, vehicle.speed, desired);
     let mut leader = None;
     for_each_leader(state, vehicle, along, 0.0, |found| match found {

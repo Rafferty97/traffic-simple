@@ -6,7 +6,7 @@ use std::hint::black_box;
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use traffic_network::{RoadNetwork, compile, scenarios};
-use traffic_sim::{LaneId, Placement, Route, Simulation, VehicleSpec};
+use traffic_sim::{Driver, LaneId, Placement, Route, Simulation, VehicleSpec};
 
 /// The length of a step, in seconds: 30 Hz.
 const DT: f64 = 1.0 / 30.0;
@@ -73,14 +73,12 @@ impl Flooded {
         if self.n.is_multiple_of(self.every) {
             let lane = self.entries[(self.n / self.every) as usize % self.entries.len()];
             let speed = self.sim.network().lane(lane).speed_limit();
-            let at = Placement {
-                lane,
-                s: 5.0,
-                speed,
-                route: Route::random(self.n),
-                seed: self.n,
-            };
-            let _ = self.sim.try_insert(VehicleSpec::passenger_car(), at);
+            let at = Placement { lane, s: 5.0, speed, route: Route::random(self.n) };
+            let _ = self.sim.try_insert(
+                VehicleSpec::passenger_car(),
+                Driver { seed: self.n, ..Driver::default() },
+                at,
+            );
         }
         self.n += 1;
         self.sim.step_variable(black_box(DT));
@@ -125,8 +123,9 @@ impl Kept {
             let length = self.sim.network().lane(lane).geometry().length();
             let s = (self.next() % 1000) as f64 / 1000.0 * length;
             let seed = self.next();
-            let at = Placement { lane, s, speed: 0.0, route: Route::random(seed), seed };
-            let _ = self.sim.try_insert(VehicleSpec::passenger_car(), at);
+            let at = Placement { lane, s, speed: 0.0, route: Route::random(seed) };
+            let driver = Driver { seed, ..Driver::default() };
+            let _ = self.sim.try_insert(VehicleSpec::passenger_car(), driver, at);
         }
         self.sim.step_variable(black_box(DT));
     }
