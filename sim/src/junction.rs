@@ -16,7 +16,7 @@ use crate::simulation::SimState;
 use crate::vehicle::{Vehicle, VehicleId};
 
 /// A vehicle's place in a junction's queue, for a stretch of its way through:
-/// the stretch its barriers have handed it over for (see [`handed_over`]).
+/// the stretch its barriers have handed it over for (see `handed_over`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Entry {
@@ -216,7 +216,7 @@ pub(crate) fn arrive(
 }
 
 /// Brings `id`'s entries in a junction's queue, `queue`, up to date with a
-/// barrier it had committed to releasing it (see [`handed_over`]): the entries
+/// barrier it had committed to releasing it (see `handed_over`): the entries
 /// from there on go. Handed over further instead, having committed to the
 /// barrier its last entry stops at, it is queued for the rest by the scans, as
 /// a vehicle arriving is, which hold it if that would close a cycle.

@@ -1,6 +1,6 @@
 //! Records every call that changes the simulation, so a session can be saved and
 //! replayed exactly: the simulation is deterministic, so the same calls in the
-//! same order reproduce the same state, bit for bit. [`read`] reads the format
+//! same order reproduce the same state, bit for bit. Its test-only `read` module reads the format
 //! back, for tests.
 //!
 //! The format is one call per line. Vehicles are named by their index in the

@@ -205,7 +205,7 @@ pub enum LaneChangeIntent {
     /// `kept_room`). With `check`, it means to check the gap that way, so at
     /// the next lane-change update the core measures what the change would do,
     /// judging time headways at that share, for the lane-change model to weigh
-    /// (see [`Prospect`](crate::query::Prospect)).
+    /// (see `query::Prospect`).
     Desire { side: Side, check: Option<f64> },
     /// It is indicating to `side`, since `since`, in simulated seconds, keeping
     /// room as when it wants to. It has a ghost record in the target lane's

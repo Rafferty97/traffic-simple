@@ -293,7 +293,7 @@ pub fn reach_time(speed: f64, accel: f64, max_speed: f64, distance: f64) -> f64 
 }
 
 /// Below this speed, in m/s (3 km/h), a vehicle that is slowing starts
-/// finishing its stop (see [`stopping`]).
+/// finishing its stop (see `stopping`).
 pub const STOPPING_SPEED: f64 = 3.0 / 3.6;
 
 /// The least a vehicle finishing its stop brakes, in m/s².

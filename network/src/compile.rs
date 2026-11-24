@@ -622,7 +622,7 @@ const FIT_STEP: f64 = 0.25;
 /// wherever a vehicle's body turning along a connector would sweep onto a road
 /// lane: onto one coming in, its stop line goes back as far as the sweep
 /// reaches along it; onto one going out, or past the connector's end onto
-/// another, its run out grows as far, each rounded up to [`FIT_STEP`]. So road design sets stop lines back
+/// another, its run out grows as far, each rounded up to `FIT_STEP`. So road design sets stop lines back
 /// to clear turning vehicles' swept paths. The arms it fits are left in `net`.
 pub fn fit_arms(net: &mut RoadNetwork) -> Result<Compiled, CompileError> {
     loop {

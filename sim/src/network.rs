@@ -552,9 +552,9 @@ impl SimNetwork {
         rounded.unwrap_or_else(|| point(path[k], i, s, base))
     }
 
-    /// The point `s` along `path` and `t` across it, as [`SimNetwork::point_along`]
+    /// The point `s` along `path` and `t` across it, as [`SimNetwork::smooth_point_along`]
     /// gives it, with the unit direction there of a curve whose offset changes by
-    /// `slope` (see [`LaneGeometry::direction_at`]).
+    /// `slope` (see [`LaneGeometry::direction_at`](crate::network::geometry::LaneGeometry::direction_at)).
     pub(crate) fn pose_along(
         &self,
         path: impl IntoIterator<Item = LaneId>,

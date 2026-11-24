@@ -14,7 +14,7 @@
 //! vehicle's intent and the model's own state, opaque to it. At each
 //! lane-change update, [`decide`] measures each driver's incentives cheaply
 //! (`measure`) and judges the gaps the core has just measured for the drivers
-//! whose intent asked at the update before (see [`Prospect`]), and returns what
+//! whose intent asked at the update before (see `query::Prospect`), and returns what
 //! each decided for the simulation to carry out: indicating, cancelling, or
 //! changing lanes, and whether it wants to change and to have a gap measured.
 //! So a driver first asks for a gap, and judges it an update later, on what it
@@ -202,7 +202,7 @@ pub struct Incentives {
     /// Its route: positive toward a lane it must reach, negative away from it.
     pub route: f64,
     /// Speed: how much faster traffic goes in that lane ahead than in its own,
-    /// over [`V_GAIN`].
+    /// over `V_GAIN`, 69.6 km/h.
     pub speed: f64,
     /// Keeping to one side: [`D_FREE`] toward the side the lane says to keep to.
     pub keep: f64,
@@ -359,7 +359,7 @@ pub struct LaneChangeEval {
     /// Whether it and its new follower would brake gently enough.
     pub safe: bool,
     /// Whether it would be halfway through the change before it had to stop
-    /// behind its leader (see [`Prospect::room`]).
+    /// behind its leader (see `query::Gap::room`).
     pub room: bool,
     pub outcome: Outcome,
 }

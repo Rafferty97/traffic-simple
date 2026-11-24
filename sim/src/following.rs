@@ -16,7 +16,7 @@
 //! explicitly, when the intent is cancelled or carried out.
 //!
 //! The rest is in the submodules, one for each part of the design doc:
-//! [`overlaps`] (Preprocessing), [`classify`] (Classifying occupancy records),
+//! [`overlaps`](mod@overlaps) (Preprocessing), [`classify`](mod@classify) (Classifying occupancy records),
 //! [`join`] (joining lanes, invariant 1), [`leaders`] (the leader search and Old-lane search), and [`pass`] (Pass
 //! check).
 
@@ -55,7 +55,7 @@ pub struct Occupant {
     /// it changed lanes into it, entered a merge onto it or joined it from
     /// beside. Advancing from one lane to the next carries it over, and an
     /// inserted vehicle starts settled.
-    /// Leader terms relax with it (see [`relaxation`](crate::models::acceleration::relaxation)).
+    /// Leader terms relax with it (see the longitudinal model's `relaxation`).
     #[cfg_attr(feature = "serde", serde(default = "settled"))]
     pub age: f64,
 }
@@ -103,7 +103,7 @@ pub enum Lateral {
     /// into it, merging into it from a lane that leads into the same one, or
     /// leaving it on a course that may come back. It turns diverging toward
     /// `side` once its `s` reaches `turn`, which is `f64::MAX` if it never does
-    /// (see [`crate::following::classify`]); finite, so snapshots serialize.
+    /// (see `following::classify`); finite, so snapshots serialize.
     Converging { turn: f64, side: Side },
     /// Moving away from the lane sideways, toward this side, and never coming
     /// back to it.
