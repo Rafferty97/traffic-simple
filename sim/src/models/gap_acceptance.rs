@@ -98,12 +98,6 @@ pub(crate) fn decide(
             }
             room
         }
-        BarrierKind::AllWayStop => {
-            vehicle.stopped_at.is_some()
-                && first_to_arrive(state, id, vehicle, k, barrier)
-                && has_gap(&barrier)
-                && room()
-        }
     };
     match (commit, yields_to.get()) {
         (true, _) => Answer::Commit,
@@ -149,11 +143,14 @@ fn impatience(state: &SimState, vehicle: &Vehicle) -> f64 {
 /// can clear each conflict with a lane the barrier gives way to before any
 /// vehicle there could reach it, plus [`GAP_MARGIN`], each accelerating as hard
 /// as it can up to its desired speed; at a merge, ahead of it by that vehicle's
-/// time headway too, so it needn't brake. On any other lane, and on every lane
-/// at an all-way stop, so that vehicles go in the order they came to rest, it
-/// only counts vehicles already in the junction's queue, and goes behind them
-/// (see `docs/models/gap-acceptance.md`). Otherwise, the vehicle
-/// that refuses it.
+/// time headway too, so it needn't brake. On a lane of equal priority it takes
+/// turns with, the same, except that a vehicle not yet committed to its own
+/// line gives way to this one if this one came to rest at its line first, and
+/// impatience counts for nothing: so vehicles of equal priority go in the order
+/// they came to rest, and two that would meet both stop and take turns. On any
+/// other lane it only counts vehicles already in the junction's queue, and
+/// goes behind them (see `docs/models/gap-acceptance.md`). Otherwise, the
+/// vehicle that refuses it.
 fn has_gap(
     state: &SimState,
     through: &[f64],
@@ -165,7 +162,7 @@ fn has_gap(
     let network = &state.network;
     let s = barrier.s;
     let yields = network.yields(barrier);
-    let all_way = barrier.kind == BarrierKind::AllWayStop;
+    let ties = network.ties(barrier);
     let (path, spec) = (&vehicle.path, &vehicle.spec);
     let Some((junction, _)) = into_junction(network, path, k) else {
         return Ok(());
@@ -205,7 +202,8 @@ fn has_gap(
                 let headway = spec.time_headway;
                 // Not given way to, only those in the junction's queue for it
                 // count, which the junction holds it back for all the same.
-                let queued_only = all_way || !yields.contains(&theirs);
+                let tie = !yields.contains(&theirs) && ties.contains(&theirs);
+                let queued_only = !yields.contains(&theirs) && !tie;
                 let way = Way {
                     junction,
                     theirs,
@@ -214,6 +212,8 @@ fn has_gap(
                     arrives,
                     headway,
                     queued_only,
+                    tie,
+                    arrived: vehicle.stopped_at,
                     impatience,
                 };
                 let between = -network.lane(theirs).geometry().length();
@@ -240,6 +240,11 @@ struct Way<'a> {
     /// Whether the barrier doesn't give way to the lane, so only vehicles that
     /// have committed count, and those only to go behind.
     queued_only: bool,
+    /// Whether the lane is of equal priority: its vehicles give way to the
+    /// yielding vehicle if it came to rest at its line first.
+    tie: bool,
+    /// When the yielding vehicle came to rest at its line, if it has.
+    arrived: Option<u64>,
     /// How impatient the yielding vehicle is (see [`impatience`]).
     impatience: f64,
 }
@@ -353,6 +358,16 @@ fn clear(
                     && k.is_some_and(|k| !holds_before(network, other, k, at))
                     && !state.queues[way.junction.0 as usize].held.contains(&o.id)
         };
+        // Of equal priority and not yet committed to its own line, it gives way
+        // to this one if this one came to rest at its line first: earlier, or
+        // in the same step and first by vehicle, so runs repeat.
+        let first = |t: u64| other.stopped_at.is_none_or(|u| (t, id) < (u, o.id));
+        if way.tie
+            && k.is_some_and(|k| holds_before(network, other, k, at))
+            && way.arrived.is_some_and(first)
+        {
+            continue;
+        }
         if queued() || way.queued_only && committed() {
             if way.arrives < clears + behind_margin {
                 return Err(o.id);
@@ -375,7 +390,7 @@ fn clear(
         // full impatience braking at `IMPATIENT_DECEL` of its comfortable
         // deceleration to stop its minimum gap short, as IDM, following, brakes
         // harder than the constant deceleration that would just stop it.
-        let i = way.impatience;
+        let i = if way.tie { 0.0 } else { way.impatience };
         let decel = IMPATIENT_DECEL * other.spec.comfy_decel;
         let accel = (1.0 - i) * other.spec.max_accel - i * decel;
         let reaches = reach_time(
@@ -404,61 +419,6 @@ fn clear(
         clear(state, through, id, way, p, length, ahead + length, between)?;
     }
     Ok(())
-}
-
-/// Whether `vehicle`, at rest at the all-way stop `barrier` on its `k`th lane,
-/// came to rest there before the head at every other all-way stop line of its
-/// junction whose lane conflicts with its own: earlier, or in the same step and
-/// first in the lines' order, by lane and then along it, so runs repeat. The
-/// head at a line is the nearest vehicle short of it that is heading for it.
-fn first_to_arrive(
-    state: &SimState,
-    id: VehicleId,
-    vehicle: &Vehicle,
-    k: usize,
-    barrier: Barrier,
-) -> bool {
-    let network = &state.network;
-    let mine = vehicle.path[k];
-    let Some(junction) = network.lane(mine).junction() else {
-        return true;
-    };
-    let me = (vehicle.stopped_at.unwrap_or(u64::MAX), mine.0, barrier.s);
-    for &theirs in network.junction(junction).lanes() {
-        if theirs == mine || network.conflict_between(mine, theirs).is_none() {
-            continue;
-        }
-        for line in network.lane(theirs).barriers() {
-            if line.kind != BarrierKind::AllWayStop {
-                continue;
-            }
-            let arrived = head_at(state, id, theirs, *line).and_then(|v| v.stopped_at);
-            if arrived.is_some_and(|t| (t, theirs.0, line.s) < me) {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-/// The head on its way to `line` on `lane`: the nearest vehicle short of it,
-/// on `lane` or a lane leading into it, whose next barrier it hasn't committed
-/// to is that line.
-fn head_at(state: &SimState, id: VehicleId, lane: LaneId, line: Barrier) -> Option<&Vehicle> {
-    let network = &state.network;
-    let heading = |o: &crate::following::Occupant| {
-        let v = &state.vehicles[o.id];
-        let next = nth(network, v, v.committed as usize);
-        (o.id != id && !o.is_ghost() && next.is_some_and(|(l, b)| l == lane && b.s == line.s))
-            .then_some(v)
-    };
-    let on = state.occupants[lane.0 as usize].iter().rev().filter(|o| o.s() < line.s);
-    let before = network
-        .lane(lane)
-        .predecessors()
-        .iter()
-        .flat_map(|&p| state.occupants[p.0 as usize].iter().rev());
-    on.chain(before).find_map(heading)
 }
 
 /// Whether `vehicle`, with record `o` on a lane leading to a conflict, blocks

@@ -564,7 +564,7 @@ fn assemble(
             waiting.extend(waits.into_iter().map(|(c, at)| (k, c, at)));
         }
         if intersection.control == Control::AllWayStop {
-            add_all_way_stop(&mut sim, &entries[k], &stops[k]);
+            add_all_way_stop(&mut sim, &pieces[k], &entries[k], &stops[k]);
         }
     }
     sim.validate().map_err(CompileError::Network)?;
@@ -871,8 +871,9 @@ fn add_far_side_waits(
 /// as at signals, every connection able to move with every other; and each
 /// connection from any other road starts with its approach's sign at its stop
 /// line, giving way to the lanes of every connection of a higher level whose
-/// lanes conflict with its own. It takes one gap from the line, a far-side
-/// turn too.
+/// lanes conflict with its own, and taking turns with those of the same level
+/// from another such line. It takes one gap from the line, a far-side turn
+/// too.
 ///
 /// Returned, as from [`add_far_side_waits`], where to split connections.
 fn add_priority(
@@ -913,20 +914,46 @@ fn add_priority(
             .filter(|&o| levels[o] > levels[c] && crosses(o))
             .flat_map(|o| pieces[o].iter().copied())
             .collect();
+        let equal: Vec<LaneId> = (0..pieces.len())
+            .filter(|&o| !major.contains(&road(o)) && levels[o] == levels[c] && crosses(o))
+            .flat_map(|o| pieces[o].iter().copied())
+            .collect();
         let yields = (!priority.is_empty()).then(|| sim.add_yields(&priority));
-        sim.add_barrier(entry, Barrier { line, yields, ..Barrier::new(s, kind) });
+        let ties = (!equal.is_empty()).then(|| sim.add_yields(&equal));
+        sim.add_barrier(
+            entry,
+            Barrier { line, yields, ties, ..Barrier::new(s, kind) },
+        );
     }
     waiting
 }
 
-/// An all-way stop barrier at the stop line at the start of each of an
-/// intersection's connectors, counting only vehicles in the junction's queue,
-/// so vehicles go in the order they came to rest at their lines (see
+/// An all-way stop: a stop line at the start of each of an intersection's
+/// connectors, giving way to nothing of higher priority and taking turns with
+/// every connector whose lanes conflict with its own, so vehicles go in the
+/// order they came to rest at their lines (see
 /// `docs/models/gap-acceptance.md`).
-fn add_all_way_stop(sim: &mut SimNetwork, entries: &[LaneId], stops: &[(f64, Option<Line>)]) {
-    for (&entry, &(s, line)) in entries.iter().zip(stops) {
-        let kind = BarrierKind::AllWayStop;
-        sim.add_barrier(entry, Barrier { line, ..Barrier::new(s, kind) });
+fn add_all_way_stop(
+    sim: &mut SimNetwork,
+    pieces: &[Vec<LaneId>],
+    entries: &[LaneId],
+    stops: &[(f64, Option<Line>)],
+) {
+    for (c, (&entry, &(s, line))) in entries.iter().zip(stops).enumerate() {
+        let crosses = |o: usize| {
+            pieces[c]
+                .iter()
+                .any(|&a| pieces[o].iter().any(|&b| sim.conflict_between(a, b).is_some()))
+        };
+        let equal: Vec<LaneId> = (0..pieces.len())
+            .filter(|&o| o != c && crosses(o))
+            .flat_map(|o| pieces[o].iter().copied())
+            .collect();
+        let ties = (!equal.is_empty()).then(|| sim.add_yields(&equal));
+        sim.add_barrier(
+            entry,
+            Barrier { line, ties, ..Barrier::new(s, BarrierKind::Stop) },
+        );
     }
 }
 

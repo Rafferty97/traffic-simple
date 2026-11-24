@@ -95,6 +95,12 @@ impl SimNetwork {
         barrier.yields.map_or(&[], |id| &self.yields[id.0 as usize])
     }
 
+    /// The lanes of equal priority `barrier` takes turns with: none if it has
+    /// no set (see [`Barrier::ties`]).
+    pub fn ties(&self, barrier: &Barrier) -> &[LaneId] {
+        barrier.ties.map_or(&[], |id| &self.yields[id.0 as usize])
+    }
+
     /// Adds a barrier to `lane`, keeping its barriers sorted.
     pub fn add_barrier(&mut self, lane: LaneId, barrier: Barrier) {
         let barriers = &mut self.lanes[lane.0 as usize].barriers;

@@ -126,10 +126,7 @@ pub(crate) fn held_by(
                         Light::Red => on_red.is_none(),
                     }
                 }
-                BarrierKind::GiveWay
-                | BarrierKind::Stop
-                | BarrierKind::AllWayStop
-                | BarrierKind::KeepClear { .. } => false,
+                BarrierKind::GiveWay | BarrierKind::Stop | BarrierKind::KeepClear { .. } => false,
             };
             if rank >= vehicle.committed as usize && holds {
                 return true;
@@ -234,9 +231,8 @@ pub(crate) fn released(
                         Some(_) => speed == 0.0 && !queued_past(),
                     }
             }
-            BarrierKind::GiveWay
-            | BarrierKind::Stop
-            | BarrierKind::AllWayStop
-            | BarrierKind::KeepClear { .. } => speed == 0.0 && !queued_past(),
+            BarrierKind::GiveWay | BarrierKind::Stop | BarrierKind::KeepClear { .. } => {
+                speed == 0.0 && !queued_past()
+            }
         }
 }

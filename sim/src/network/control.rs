@@ -21,12 +21,18 @@ pub struct Barrier {
     /// lists the turners' next stretches it lets go first.
     #[cfg_attr(feature = "serde", serde(default))]
     pub yields: Option<YieldsId>,
+    /// The lanes of equal priority it takes turns with, if any, a set as
+    /// [`yields`](Self::yields) is: conflicting lanes beyond other lines,
+    /// neither giving way to the other, whose vehicles it gives way to unless it
+    /// came to rest at its line before them.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub ties: Option<YieldsId>,
 }
 
 impl Barrier {
     /// A barrier square across its lane at `s`, giving way to nothing.
     pub fn new(s: f64, kind: BarrierKind) -> Self {
-        Barrier { s, kind, line: None, yields: None }
+        Barrier { s, kind, line: None, yields: None, ties: None }
     }
 }
 
@@ -69,15 +75,13 @@ pub enum BarrierKind {
         on_red: Option<YieldsId>,
     },
     /// A give-way line: crossed once there is a gap in the traffic with
-    /// priority.
+    /// priority, and in the traffic of equal priority that came to rest at
+    /// its lines first.
     GiveWay,
-    /// A stop line: crossed once the vehicle has come to rest there and there
-    /// is a gap in the traffic with priority.
+    /// A stop line: crossed as a give-way line is, once the vehicle has come to
+    /// rest there. An all-way stop is stop lines with nothing of higher
+    /// priority, taking turns with every other.
     Stop,
-    /// An all-way stop line: crossed once the vehicle has come to rest there,
-    /// no vehicle at a conflicting all-way stop line of its junction came to
-    /// rest earlier, and there is a gap in the traffic that has committed.
-    AllWayStop,
     /// The start of a keep-clear zone `length` meters long, in meters along
     /// the vehicle's way: crossed once there is room beyond its far end, and
     /// it can no longer stop comfortably before it.

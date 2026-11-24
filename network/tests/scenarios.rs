@@ -184,12 +184,22 @@ fn an_all_way_stop_holds_every_connector_at_its_line_giving_way_by_arrival() {
             let lane = sim.lane(connector);
             let barriers = lane.barriers();
             assert_eq!(barriers.len(), 1, "{connector:?} has {barriers:?}");
-            assert_eq!(barriers[0].kind, BarrierKind::AllWayStop);
+            assert_eq!(barriers[0].kind, BarrierKind::Stop);
             assert_eq!(barriers[0].s, 0.0);
-            // No lanes given way to: only those already in the junction count.
+            // Nothing of higher priority: it only takes turns, with every
+            // connector it crosses.
             assert!(
                 barriers[0].yields.is_none(),
                 "{connector:?} gives way to a set"
+            );
+            let ties = sim.ties(&barriers[0]);
+            let crossed = compiled.connectors[0]
+                .iter()
+                .filter(|&&o| sim.conflict_between(connector, o).is_some())
+                .count();
+            assert!(
+                crossed > 0 && ties.len() >= crossed,
+                "{connector:?} takes turns with {ties:?}"
             );
             // Not split: nobody waits inside.
             assert!(sim.lane(lane.successors()[0]).junction().is_none());

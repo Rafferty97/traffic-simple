@@ -1273,8 +1273,11 @@ fn draw_debug(
                         Light::Red => LIGHT_RED,
                     },
                     BarrierKind::GiveWay => GIVE_WAY,
+                    // Giving way to nothing, only taking turns: an all-way stop.
+                    BarrierKind::Stop if barrier.yields.is_none() && barrier.ties.is_some() => {
+                        ALL_WAY
+                    }
                     BarrierKind::Stop => STOP,
-                    BarrierKind::AllWayStop => ALL_WAY,
                     BarrierKind::KeepClear { .. } => KEEP_CLEAR,
                 };
                 let pos = geometry.lane_pos(barrier.s, 0.0);

@@ -27,8 +27,11 @@ const SOUTH: u32 = 2;
 /// 3.5 m apart, so they never conflict; each crosses both of the others.
 fn all_way_stop() -> SimNetwork {
     let mut net = four_ways();
+    // Each takes turns with every other: only those it crosses matter.
     for c in (4..8).map(LaneId) {
-        net.add_barrier(c, Barrier::new(0.0, BarrierKind::AllWayStop));
+        let others: Vec<LaneId> = (4..8).map(LaneId).filter(|&o| o != c).collect();
+        let ties = Some(net.add_yields(&others));
+        net.add_barrier(c, Barrier { ties, ..Barrier::new(0.0, BarrierKind::Stop) });
     }
     net
 }

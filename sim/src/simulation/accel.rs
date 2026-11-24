@@ -185,7 +185,7 @@ pub(super) fn longitudinal<D: DebugSink>(
         // may turn on, as the head on its way to it: it has arrived there.
         // Not at rest further back, behind a vehicle headed elsewhere.
         let stops = match barrier.kind {
-            BarrierKind::GiveWay | BarrierKind::Stop | BarrierKind::AllWayStop => true,
+            BarrierKind::GiveWay | BarrierKind::Stop => true,
             BarrierKind::Signal { on_red, .. } => on_red.is_some() && light == Some(Light::Red),
             _ => false,
         };
