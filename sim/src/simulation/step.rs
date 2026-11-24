@@ -97,7 +97,7 @@ impl Simulation {
     /// Lane changes, for every vehicle, `dt` seconds after the last: the
     /// lane-change model decides from a read-only view of the state (see
     /// [`lane_change::decide`]), and its decisions are applied in order.
-    pub(super) fn update_lane_changes<S: DebugSink>(&mut self, dt: f64, sink: &mut S) {
+    pub(crate) fn update_lane_changes<S: DebugSink>(&mut self, dt: f64, sink: &mut S) {
         let Self {
             state, derived, lane_decisions, asks, lane_speeds, prospects, ..
         } = self;
@@ -152,7 +152,7 @@ impl Simulation {
     /// their record on the lane they follow, so each one's search there starts at
     /// its own record rather than looking for it. SUMO plans each lane's vehicles
     /// from the front back in the same way.
-    pub(super) fn update_accels<S: DebugSink>(&mut self, sink: &mut S) {
+    pub(crate) fn update_accels<S: DebugSink>(&mut self, sink: &mut S) {
         let Self { state, derived, decisions, lane_speeds, prospects, .. } = self;
         let SimState { network, vehicles, occupants, .. } = &*state;
         sink.record(|| DebugEvent::RecomputeAccels);

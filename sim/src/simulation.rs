@@ -531,7 +531,7 @@ impl Simulation {
 
     /// Starts a vehicle indicating a change to `side`: it gets a ghost record in
     /// the target lane's occupants.
-    fn indicate(&mut self, id: VehicleId, side: Side) {
+    pub(crate) fn indicate(&mut self, id: VehicleId, side: Side) {
         let vehicle = &self.state.vehicles[id];
         let current = self.state.network.lane(vehicle.path[0]);
         let Some(neighbor) = current.adj(side) else {
@@ -554,7 +554,7 @@ impl Simulation {
     }
 
     /// Stops a vehicle indicating, removing its ghost.
-    fn cancel_intent(&mut self, id: VehicleId) {
+    pub(crate) fn cancel_intent(&mut self, id: VehicleId) {
         let Some(vehicle) = self.state.vehicles.get_mut(id) else {
             return;
         };
