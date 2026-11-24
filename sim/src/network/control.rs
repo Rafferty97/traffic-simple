@@ -90,7 +90,7 @@ pub enum BarrierKind {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MovementId(pub u32);
 
-/// A fixed-time signal plan (see `docs/DESIGN.md`, Barriers and signals).
+/// A fixed-time signal plan (see `docs/models/signals.md`).
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SignalPlan {

@@ -169,7 +169,7 @@ impl common::Collect for JunctionTerms {
 /// harder than safely for a vehicle from the minor road. It may stop for one:
 /// a minor-road driver grows impatient waiting, and cuts in, reckoning on the
 /// major road's traffic slowing for it, which can take more than comfortable
-/// braking (see `docs/DESIGN.md`, Impatience).
+/// braking (see `docs/models/gap-acceptance.md`, Impatience).
 #[test]
 fn major_road_traffic_never_brakes_hard_for_minor_road_traffic() {
     for (name, net) in scenarios() {

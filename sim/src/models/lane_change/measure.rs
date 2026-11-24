@@ -1,18 +1,13 @@
-//! What the lane-change model measures for each driver, by searching the
-//! network through the core's queries: its incentives, and the gap for a change.
+//! What the lane-change model measures for each driver, cheaply, from what
+//! the core keeps: its incentives.
 
-use std::ops::ControlFlow;
-
-use crate::following::{Ahead, Along, Found, find_leaders};
-use crate::models::acceleration;
 use crate::models::lane_change;
 use crate::models::routing;
-use crate::motion::lateral::{halfway, halfway_from_rest, room_to_change};
+use crate::motion::lateral::room_to_change;
 use crate::network::{LaneId, Side};
-use crate::query::find_follower;
-use crate::query::{ANTICIPATION, LaneSpeeds, accel_along};
+use crate::query::{ANTICIPATION, LaneSpeeds};
 use crate::simulation::SimState;
-use crate::vehicle::{Vehicle, VehicleId, VehicleSpec};
+use crate::vehicle::{Vehicle, VehicleId};
 
 /// What makes a driver want to change lanes to each side, measured cheaply,
 /// every step (see [`lane_change::Incentives`]): `None` for a side it may not
@@ -92,68 +87,4 @@ pub(crate) fn incentives(
             courtesy: courtesy.unwrap_or(0.0).min(1.0),
         })
     })
-}
-
-/// Checks the gap for a change to `side`, at `desire`: what LMRS's gap
-/// acceptance weighs. Its acceleration in the target lane, as if already
-/// settled there, level with where it is, and its new follower's with it as a
-/// leader, both with their time headways shortened by its desire (see
-/// [`lane_change::headway`]); and whether it would be halfway through the
-/// change before it had to stop behind its leader. A speed cap holds it back
-/// in any lane, so it does after changing too.
-pub(crate) fn check_gap(
-    state: &SimState,
-    through: &[f64],
-    id: VehicleId,
-    vehicle: &Vehicle,
-    side: Side,
-    desire: f64,
-) -> lane_change::Prospect {
-    let SimState { network, vehicles, .. } = state;
-    let headway = lane_change::headway(desire);
-    let cap = state.caps.iter().find(|&&(capped, _)| capped == id);
-    let cap = cap.map_or(f64::INFINITY, |&(_, max_speed)| {
-        acceleration::capped(vehicle.speed, max_speed)
-    });
-    let own_after = accel_along(state, id, vehicle, Along::Into(side), true, headway).min(cap);
-    // The new follower, behind it in the target lane: the lane is split at its
-    // rear there, as its search there splits it.
-    let target = network.lane(vehicle.path[0]).adj(side).expect("asked only where permitted");
-    let rear = crate::query::axle_beside(network, vehicle, target.lane) - vehicle.spec.rear_axle;
-    let new_follower =
-        find_follower(state, through, target.lane, rear, id).map(|(follower, gap)| {
-            let f = &vehicles[follower];
-            acceleration::relaxed(&f.spec, f.speed, gap, vehicle.speed, headway)
-        });
-    // Halfway through before it would have to stop behind its leader.
-    let own = crate::query::record_index(state, vehicle.path[0], id);
-    let mut stop = f64::INFINITY;
-    // Checking a gap, it wants to change, so keeps room to.
-    let reach = vehicle.spec.min_gap + halfway_from_rest(network, vehicle);
-    let _ = find_leaders(
-        state,
-        vehicle,
-        Along::Path(own),
-        reach,
-        |found| match found {
-            Found::Ahead(Ahead::Vehicle(leader), gap, _) if leader != id => {
-                stop = room_to_stop(&vehicle.spec, gap, &vehicles[leader]);
-                ControlFlow::Break(())
-            }
-            Found::Ahead(Ahead::PathEnd, gap, _) => {
-                stop = gap - vehicle.spec.min_gap;
-                ControlFlow::Break(())
-            }
-            _ => ControlFlow::Continue(()),
-        },
-    );
-    let room = stop >= halfway(network, vehicle);
-    lane_change::Prospect { own_after, new_follower, room }
-}
-
-/// How far a vehicle with `spec` could go before it had to stop behind
-/// `leader`, `gap` ahead: to its minimum gap behind where the leader would
-/// stop, braking comfortably from now.
-fn room_to_stop(spec: &VehicleSpec, gap: f64, leader: &Vehicle) -> f64 {
-    gap - spec.min_gap + leader.comfortable_stop()
 }

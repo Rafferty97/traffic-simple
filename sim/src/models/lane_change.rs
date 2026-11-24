@@ -11,24 +11,28 @@
 //! with the target lane, and with more, followers there make room for it.
 //!
 //! The whole model lives here; the rest of the simulation sees only each
-//! vehicle's indicator and an opaque [`State`]. At each lane-change update,
-//! [`decide`] measures each driver's incentives and, when asked, the gap, by
-//! searching the network through the core's queries (`measure`), and returns
-//! what each decided for the simulation to carry out: indicating, cancelling,
-//! or changing lanes. At each longitudinal update, [`terms`] adds
-//! synchronisation and making room to a driver's acceleration.
+//! vehicle's intent and the model's own state, opaque to it. At each
+//! lane-change update, [`decide`] measures each driver's incentives cheaply
+//! (`measure`) and judges the gaps the core has just measured for the drivers
+//! whose intent asked at the update before (see [`Prospect`]), and returns what
+//! each decided for the simulation to carry out: indicating, cancelling, or
+//! changing lanes, and whether it wants to change and to have a gap measured.
+//! So a driver first asks for a gap, and judges it an update later, on what it
+//! sees then. At each longitudinal update, [`terms`] adds synchronisation and
+//! making room to a driver's acceleration.
 
 mod measure;
 mod update;
 
 #[cfg(test)]
-pub(crate) use measure::{check_gap, incentives};
-pub(crate) use update::{decide, terms};
+pub(crate) use measure::incentives;
+pub(crate) use update::{Decided, decide, terms};
 
 use slotmap::SecondaryMap;
 
 use crate::models::acceleration::SAFE_BRAKING;
 use crate::network::Side;
+use crate::query::Gap;
 use crate::vehicle::{LaneChangeIntent, VehicleId, VehicleSpec};
 
 /// Desire at which a driver changes lanes if the gap lets it, after indicating
@@ -294,7 +298,7 @@ pub fn step(
     let waiting = state.cooldown > 0;
     state.cooldown = state.cooldown.saturating_sub(1);
     match intent {
-        LaneChangeIntent::Indicating { side, since } => {
+        LaneChangeIntent::Indicating { side, since, .. } => {
             let i = index(side);
             if !permitted[i] || state.desire[i] < 0.5 * threshold {
                 return Ask::Cancel;
@@ -317,23 +321,6 @@ pub fn step(
             Ask::Check(side)
         }
     }
-}
-
-/// What a change to one side would do, as the simulation measured it once the
-/// driver asked for the gap: with its time headway, and its new follower's,
-/// shortened by its desire (see [`headway`]).
-#[derive(Clone, Copy, Debug)]
-pub struct Prospect {
-    /// Its own acceleration in the target lane.
-    pub own_after: f64,
-    /// The acceleration of the follower it would cut in front of, if one is in
-    /// reach, with it as a leader.
-    pub new_follower: Option<f64>,
-    /// Whether it would be at least halfway through the change before it had
-    /// to stop behind its leader in its own lane. Otherwise it would be left
-    /// straddling both lanes, blocking them, so it doesn't change yet, though
-    /// it may indicate, and makes room while it does.
-    pub room: bool,
 }
 
 /// The share of their time headways a driver and the follower it cuts in front
@@ -393,6 +380,9 @@ pub enum Outcome {
     /// Started indicating without a gap, its desire strong enough to
     /// synchronise and ask for room.
     Request,
+    /// It means to check the gap, which the simulation measures for its next
+    /// update.
+    Measuring,
     /// Still indicating, waiting for a gap.
     Wait,
     /// Changing lanes now.
@@ -438,14 +428,13 @@ pub fn resolve(
     spec: &VehicleSpec,
     side: Side,
     incentives: Incentives,
-    prospect: Prospect,
+    gap: Gap,
     dt: f64,
 ) -> (Decision, LaneChangeEval) {
     let desire = state.desire[index(side)];
     let accepted = accepted_braking(spec, desire);
-    let safe =
-        prospect.own_after >= -accepted && prospect.new_follower.is_none_or(|a| a >= -accepted);
-    let room = prospect.room || desire >= D_COOP;
+    let safe = gap.own_after >= -accepted && gap.new_follower.is_none_or(|a| a >= -accepted);
+    let room = gap.room || desire >= D_COOP;
     let indicating = intent.indicating().is_some();
     let (decision, outcome) = match indicating {
         false if safe && room => (Decision::Indicate(side), Outcome::Indicate),
@@ -465,11 +454,11 @@ pub fn resolve(
         side,
         incentives,
         desire,
-        own_after: Some(prospect.own_after),
-        new_follower: prospect.new_follower,
+        own_after: Some(gap.own_after),
+        new_follower: gap.new_follower,
         accepted_braking: accepted,
         safe,
-        room: prospect.room,
+        room: gap.room,
         outcome,
     };
     (decision, eval)
@@ -513,6 +502,11 @@ mod test {
 
     /// The time between updates: 10 Hz.
     const DT: f64 = 0.1;
+
+    /// A measured gap with no follower there.
+    fn prospect(own_after: f64, room: bool) -> Gap {
+        Gap { own_after, new_follower: None, room }
+    }
 
     fn spec() -> VehicleSpec {
         VehicleSpec {
@@ -598,7 +592,7 @@ mod test {
     #[test]
     fn a_refused_gap_cools_off_before_the_next_check() {
         let mut state = State { desire: [0.5, 0.0], ..State::default() };
-        let refused = Prospect { own_after: -5.0, new_follower: None, room: true };
+        let refused = prospect(-5.0, true);
         let (decision, eval) = resolve(
             &mut state,
             LaneChangeIntent::None,
@@ -631,7 +625,7 @@ mod test {
 
     #[test]
     fn enough_desire_indicates_without_a_gap_and_more_changes_without_room() {
-        let unsafe_gap = Prospect { own_after: -5.0, new_follower: None, room: true };
+        let unsafe_gap = prospect(-5.0, true);
         let mut state = State { desire: [D_SYNC, 0.0], ..State::default() };
         let (decision, _) = resolve(
             &mut state,
@@ -643,8 +637,8 @@ mod test {
             DT,
         );
         assert_eq!(decision, Decision::Indicate(Side::Left));
-        let no_room = Prospect { own_after: 0.0, new_follower: None, room: false };
-        let intent = LaneChangeIntent::Indicating { side: Side::Left, since: 0.0 };
+        let no_room = prospect(0.0, false);
+        let intent = LaneChangeIntent::Indicating { side: Side::Left, since: 0.0, check: None };
         let mut state = State { desire: [0.5, 0.0], ..State::default() };
         let (decision, _) = resolve(
             &mut state,

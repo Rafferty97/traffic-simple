@@ -1,5 +1,4 @@
-//! Gap acceptance and priority (see `docs/DESIGN.md`, Barriers and signals,
-//! and Gap acceptance and priority): when the head on its way to a barrier
+//! Gap acceptance and priority (see `docs/models/gap-acceptance.md`): when the head on its way to a barrier
 //! commits to crossing it. At a signal, by its light and the dilemma zone; at a
 //! give-way or stop line, once there is a gap in the traffic it gives way to,
 //! with its impatience; at an all-way stop, by the order vehicles came to rest;
@@ -139,7 +138,7 @@ fn impatience(state: &SimState, vehicle: &Vehicle) -> f64 {
 /// time headway too, so it needn't brake. On any other lane, and on every lane
 /// at an all-way stop, so that vehicles go in the order they came to rest, it
 /// only counts vehicles already in the junction's queue, and goes behind them
-/// (see `docs/DESIGN.md`, Gap acceptance and priority). Otherwise, the vehicle
+/// (see `docs/models/gap-acceptance.md`). Otherwise, the vehicle
 /// that refuses it.
 fn has_gap(
     state: &SimState,

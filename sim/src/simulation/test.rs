@@ -7,7 +7,7 @@ use super::*;
 use crate::barrier;
 use crate::debug::{AccelSource, DebugEvent, DebugSink, NoopSink};
 use crate::merge;
-use crate::models::lane_change::{LaneChangeEval, Outcome, check_gap, incentives};
+use crate::models::lane_change::{Decision, LaneChangeEval, Outcome, incentives};
 use crate::network::{Barrier, BarrierKind, Lane};
 
 /// The length of a step in the unit tests' standard simulation: 30 Hz.
@@ -143,14 +143,13 @@ fn decision(
         };
         let eval = match ask {
             lane_change::Ask::Check(asked) if asked == side => {
-                let prospect = check_gap(
-                    &sim.state,
-                    &sim.derived.through,
-                    id,
-                    vehicle,
-                    side,
-                    lc.desire(side),
-                );
+                // Measured now, as the core would for the next update.
+                let headway = lane_change::headway(lc.desire(side));
+                let through = &sim.derived.through;
+                let prospect =
+                    crate::query::measure(&sim.state, through, id, vehicle, side, Some(headway))
+                        .and_then(|p| p.gap)
+                        .expect("asked only where permitted");
                 let spec = &vehicle.spec;
                 let (d, eval) = lane_change::resolve(
                     &mut lc,
@@ -1209,6 +1208,8 @@ fn synchronising_it_adjusts_its_speed_to_the_target_lanes_leader() {
         sim.insert(car(), at(0, 315.0, 4.0));
         sim.indicate(id, Side::Left);
         sim.state.lane_changing.state_mut(id).set_desire([desire, 0.0]);
+        // As a lane-change update measures it, before the longitudinal one.
+        super::step::measure_prospects(&sim.state, &sim.derived.through, &mut sim.prospects);
         sim.update_accels(&mut NoopSink);
         sim.state.vehicles[id].accel
     };

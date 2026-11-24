@@ -168,7 +168,7 @@ pub(crate) fn advance(
                 occupants[n.lane.0 as usize]
                     .push(Occupant::ghost(network, n.lane, id, vehicle, hint));
             }
-            None => vehicle.intent = LaneChangeIntent::Desire { side },
+            None => vehicle.intent = LaneChangeIntent::Desire { side, check: None },
         }
     }
 }

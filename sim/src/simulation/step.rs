@@ -10,13 +10,13 @@ use crate::debug::{AccelSource, DebugEvent, DebugSink, NoopSink};
 use crate::following;
 use crate::junction;
 use crate::models::acceleration;
-use crate::models::lane_change::{self, Decision};
+use crate::models::lane_change::{self, Decided, Decision};
 use crate::models::signal;
 use crate::motion;
 use crate::motion::path::{extend_path, raise_through, reach, recompute_through};
 use crate::network::{JunctionId, LaneId};
-use crate::query::LaneSpeeds;
-use crate::vehicle::{HeldUp, LaneChangeIntent};
+use crate::query::{self, LaneSpeeds, Prospect};
+use crate::vehicle::{HeldUp, LaneChangeIntent, VehicleId};
 
 impl Simulation {
     /// Advances the simulation by `dt` seconds of wall time, a frame's: as many
@@ -98,14 +98,19 @@ impl Simulation {
     /// lane-change model decides from a read-only view of the state (see
     /// [`lane_change::decide`]), and its decisions are applied in order.
     pub(super) fn update_lane_changes<S: DebugSink>(&mut self, dt: f64, sink: &mut S) {
-        let Self { state, derived, lane_decisions, asks, lane_speeds, .. } = self;
-        // Exact again for the follower searches the gap checks make.
+        let Self {
+            state, derived, lane_decisions, asks, lane_speeds, prospects, ..
+        } = self;
+        // Exact again for the follower searches measuring gaps make.
         let paths = state.vehicles.values().map(|v| v.path.as_slice());
         recompute_through(&state.network, &mut derived.through, paths);
         LaneSpeeds::refresh(lane_speeds, state);
+        // For the lane-change model to judge now, and for its terms at the
+        // longitudinal update after.
+        measure_prospects(state, &derived.through, prospects);
         lane_change::decide(
             state,
-            &derived.through,
+            prospects,
             lane_speeds,
             sink,
             dt,
@@ -114,22 +119,28 @@ impl Simulation {
         );
 
         for i in 0..self.lane_decisions.len() {
-            let (id, state, decision, wants) = self.lane_decisions[i];
+            let Decided { id, state, decision, wants, look } = self.lane_decisions[i];
             self.state.lane_changing.set_state(id, state);
             match decision {
                 Decision::Nothing => {}
                 Decision::Indicate(side) => self.indicate(id, side),
                 Decision::Cancel => self.cancel_intent(id),
-                // Already checked: only permitted changes are asked about.
+                // Already judged: only permitted changes are asked about.
                 Decision::Change(side) => drop(self.change_lane(id, side)),
             }
-            // Not indicating, it may still want to change, and keeps room to.
+            // Indicating, it has its gap measured at the share of headways it
+            // asks; otherwise it may still want to change, keeping room to, and
+            // ask for a gap to be measured.
             let vehicle = &mut self.state.vehicles[id];
-            if vehicle.intent.indicating().is_none() {
-                vehicle.intent = wants.map_or(LaneChangeIntent::None, |side| {
-                    LaneChangeIntent::Desire { side }
-                });
-            }
+            vehicle.intent = match vehicle.intent {
+                LaneChangeIntent::Indicating { side, since, .. } => {
+                    LaneChangeIntent::Indicating { side, since, check: look }
+                }
+                _ => wants.map_or(LaneChangeIntent::None, |side| LaneChangeIntent::Desire {
+                    side,
+                    check: look,
+                }),
+            };
         }
     }
 
@@ -142,7 +153,7 @@ impl Simulation {
     /// its own record rather than looking for it. SUMO plans each lane's vehicles
     /// from the front back in the same way.
     pub(super) fn update_accels<S: DebugSink>(&mut self, sink: &mut S) {
-        let Self { state, derived, decisions, lane_speeds, .. } = self;
+        let Self { state, derived, decisions, lane_speeds, prospects, .. } = self;
         let SimState { network, vehicles, occupants, .. } = &*state;
         sink.record(|| DebugEvent::RecomputeAccels);
         decisions.clear();
@@ -188,6 +199,19 @@ impl Simulation {
         for m in 0..derived.merges.len() {
             merge_terms(state, &derived.merges, sink, m, decisions);
         }
+        // The lane-change model's terms: making room for a ghost ahead, and
+        // synchronising with the target lane.
+        for i in 0..decisions.len() {
+            if let AccelUpdate::Own { id, ghost, .. } = decisions[i] {
+                let prospect = prospects
+                    .binary_search_by_key(&id, |&(id, _)| id)
+                    .ok()
+                    .map(|i| &prospects[i].1);
+                let (accel, yielding) =
+                    lane_change::terms(state, sink, id, &vehicles[id], ghost, prospect);
+                decisions.push(AccelUpdate::LaneChange { id, accel, yielding });
+            }
+        }
 
         let noise_step = acceleration::NoiseStep::new(
             self.state.config.dt * f64::from(self.state.config.macro_step),
@@ -195,10 +219,10 @@ impl Simulation {
         // What its old side and its speed cap allow first, then its own update,
         // so that whether a leader binds it is judged against all of them.
         for update in &self.decisions {
-            if let AccelUpdate::Own { id, yielding, committed, arrived, .. } = *update {
+            if let AccelUpdate::Own { id, committed, arrived, .. } = *update {
                 let commits = committed.saturating_sub(self.state.vehicles[id].committed);
                 let released = committed < self.state.vehicles[id].committed;
-                let SimState { vehicles, longitudinal, lane_changing, frame, .. } = &mut self.state;
+                let SimState { vehicles, longitudinal, frame, .. } = &mut self.state;
                 let vehicle = &mut vehicles[id];
                 // Heading for another barrier now, it draws how far short it stops;
                 // past one it arrived at, it has yet to arrive at the next.
@@ -220,13 +244,16 @@ impl Simulation {
                 longitudinal.advance_noise(id, &vehicle.spec, noise_step);
                 vehicle.accel = f64::INFINITY;
                 vehicle.held_up = None;
-                lane_changing.set_yielding(id, yielding);
             }
         }
         for update in &self.decisions {
+            if let AccelUpdate::LaneChange { id, yielding, .. } = *update {
+                self.state.lane_changing.set_yielding(id, yielding);
+            }
             if let AccelUpdate::OldSide { id, accel }
             | AccelUpdate::Junction { id, accel }
-            | AccelUpdate::Merge { id, accel } = *update
+            | AccelUpdate::Merge { id, accel }
+            | AccelUpdate::LaneChange { id, accel, .. } = *update
             {
                 let vehicle = &mut self.state.vehicles[id];
                 vehicle.accel = vehicle.accel.min(accel);
@@ -434,6 +461,22 @@ impl Simulation {
             if !straddling {
                 vehicle.old_side = None;
             }
+        }
+    }
+}
+
+/// Fills `prospects` with what a lane change would do, for each driver whose
+/// intent asks, sorted by vehicle (see [`query::measure`]).
+pub(super) fn measure_prospects(
+    state: &SimState,
+    through: &[f64],
+    prospects: &mut Vec<(VehicleId, Prospect)>,
+) {
+    prospects.clear();
+    for (id, vehicle) in &state.vehicles {
+        if let Some((side, check)) = query::asked(vehicle) {
+            let measured = query::measure(state, through, id, vehicle, side, check);
+            prospects.extend(measured.map(|p| (id, p)));
         }
     }
 }

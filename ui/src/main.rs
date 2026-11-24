@@ -758,12 +758,20 @@ impl App {
                 None => row("changing", "no".into()),
             }
             match v.intent() {
-                LaneChangeIntent::Indicating { side: to, since } => {
+                LaneChangeIntent::Indicating { side: to, since, .. } => {
                     let since = self.sim.time() - since;
                     row("indicating", format!("{} for {since:.1} s", side(Some(to))));
                 }
-                LaneChangeIntent::Desire { side: to } => {
-                    row("indicating", format!("no, wants {}", side(Some(to))));
+                LaneChangeIntent::Desire { side: to, check } => {
+                    let checking = if check.is_some() {
+                        ", checking the gap"
+                    } else {
+                        ""
+                    };
+                    row(
+                        "indicating",
+                        format!("no, wants {}{checking}", side(Some(to))),
+                    );
                 }
                 LaneChangeIntent::None => row("indicating", "no".into()),
             }

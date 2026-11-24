@@ -15,12 +15,13 @@ use crate::debug::{DebugEvent, DebugSink};
 use crate::following::{self, Ahead, Along, Found, Lateral, Occupant, find_leaders};
 use crate::junction::{Entry, Queue, arrive};
 use crate::models::acceleration;
-use crate::models::lane_change::{self, Decision};
+use crate::models::lane_change;
 use crate::models::routing::Route;
 use crate::models::signal::{self, MovementLight};
 use crate::motion::lateral::plan_change;
 use crate::motion::path::{extend_path, raise_through, reach};
 use crate::network::{JunctionId, LaneId, MovementId, Side, SimNetwork};
+use crate::query::Prospect;
 use crate::query::find_follower;
 use crate::query::{LaneSpeeds, speed_of};
 use crate::vehicle::{HeldUp, LaneChangeIntent, Placement, Vehicle, VehicleId, VehicleSpec};
@@ -46,12 +47,17 @@ pub struct Simulation {
     departed: Vec<VehicleId>,
     /// Scratch space for lane-change decisions, reused between steps: each
     /// vehicle's lane-change state afterwards, and what it decided.
-    lane_decisions: Vec<(VehicleId, lane_change::State, Decision, Option<Side>)>,
+    lane_decisions: Vec<lane_change::Decided>,
     /// Scratch space: the gaps asked for in a step, by the driver's place in
     /// `lane_decisions`.
     asks: Vec<(usize, Side)>,
     /// Scratch space: each lane's speeds, for averages over stretches ahead.
     lane_speeds: Vec<LaneSpeeds>,
+    /// Scratch space: what a lane change would do, for each vehicle whose
+    /// intent asks, sorted by vehicle, measured at a lane-change update for the
+    /// lane-change model to judge then, and for its terms at the longitudinal
+    /// update after.
+    prospects: Vec<(VehicleId, Prospect)>,
 }
 
 /// Why [`Simulation::try_insert`] refused.
@@ -136,6 +142,7 @@ impl Simulation {
             lane_decisions: Vec::new(),
             asks: Vec::new(),
             lane_speeds: Vec::new(),
+            prospects: Vec::new(),
         }
     }
 
@@ -539,7 +546,11 @@ impl Simulation {
         let list = &mut self.state.occupants[neighbor.lane.0 as usize];
         let index = list.partition_point(|o| o.s() <= ghost.s());
         list.insert(index, ghost);
-        self.state.vehicles[id].intent = LaneChangeIntent::Indicating { side, since: self.time() };
+        // Its gap measured at its whole time headway, until the lane-change model
+        // asks for the share it judges at.
+        let since = self.time();
+        let check = Some(1.0);
+        self.state.vehicles[id].intent = LaneChangeIntent::Indicating { side, since, check };
     }
 
     /// Stops a vehicle indicating, removing its ghost.

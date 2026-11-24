@@ -7,7 +7,7 @@ A Rust traffic simulation aiming for city and freeway traffic that _looks_ reali
 ## Ownership rules
 
 - Alexander must approve, before they are added: new dependencies, non-trivial `unsafe` code, and any allocation or data layout changes inside the simulation loop (`Simulation::step` and everything it calls). Propose it, explain why, and wait.
-- `docs/DESIGN.md` is the canonical design. If a task conflicts with it, stop and say so rather than working around it. The design will naturally evolve and improve over time, so keep it up to date, ideally in the same commit that touches the relevant code.
+- `docs/DESIGN.md` is the canonical design: the architecture and the core, with each model's design in `docs/models/` and multi-lane car following in `docs/multilane-car-following.md`; known limitations, oddities to follow up and performance worth chasing go in `docs/known-issues.md`. If a task conflicts with it, stop and say so rather than working around it. The design will naturally evolve and improve over time, so keep it up to date, ideally in the same commit that touches the relevant code.
 - When suggesting an approach, say how established tools (SUMO, OpenDRIVE, IDM/MOBIL literature, game-engine practice) handle it, and flag any deviations from the standard approach that deserve a second thought.
 
 ## Working style

@@ -922,7 +922,7 @@ fn add_priority(
 /// An all-way stop barrier at the stop line at the start of each of an
 /// intersection's connectors, counting only vehicles in the junction's queue,
 /// so vehicles go in the order they came to rest at their lines (see
-/// `docs/DESIGN.md`, Barriers and signals).
+/// `docs/models/gap-acceptance.md`).
 fn add_all_way_stop(sim: &mut SimNetwork, entries: &[LaneId], stops: &[(f64, Option<Line>)]) {
     for (&entry, &(s, line)) in entries.iter().zip(stops) {
         let kind = BarrierKind::AllWayStop;

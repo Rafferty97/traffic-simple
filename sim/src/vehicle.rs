@@ -202,12 +202,17 @@ pub enum LaneChangeIntent {
     None,
     /// It wants to change to `side`, but isn't indicating: it keeps room behind
     /// its leaders to change from rest (see the longitudinal model's
-    /// `kept_room`).
-    Desire { side: Side },
+    /// `kept_room`). With `check`, it means to check the gap that way, so at
+    /// the next lane-change update the core measures what the change would do,
+    /// judging time headways at that share, for the lane-change model to weigh
+    /// (see [`Prospect`](crate::query::Prospect)).
+    Desire { side: Side, check: Option<f64> },
     /// It is indicating to `side`, since `since`, in simulated seconds, keeping
     /// room as when it wants to. It has a ghost record in the target lane's
-    /// occupants until the change is cancelled or carried out.
-    Indicating { side: Side, since: f64 },
+    /// occupants until the change is cancelled or carried out. With `check`,
+    /// as when it wants to, the core measures what the change would do at the
+    /// next lane-change update, judging time headways at that share.
+    Indicating { side: Side, since: f64, check: Option<f64> },
 }
 
 impl LaneChangeIntent {

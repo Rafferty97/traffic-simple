@@ -14,7 +14,6 @@ use crate::junction::{self, Entry, Queue, junction_term};
 use crate::merge::{self, Merges};
 use crate::models::acceleration;
 use crate::models::gap_acceptance;
-use crate::models::lane_change;
 use crate::models::signal::Light;
 use crate::network::{BarrierKind, JunctionId, LaneId, Side, SimNetwork};
 use crate::query::{LaneSpeeds, friction, speed_of};
@@ -23,13 +22,14 @@ use crate::vehicle::{Vehicle, VehicleId, VehicleSpec};
 /// What the longitudinal update decided for a vehicle, from one of its records.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum AccelUpdate {
-    /// From its record on the lane it follows: its acceleration, whose ghost it is
-    /// making room for, and the leader whose term is the lowest there, if any.
+    /// From its record on the lane it follows: its acceleration, the leader
+    /// whose term is the lowest there, if any, and the nearest ghost ahead, if
+    /// it comes before anything else, with the gap to it.
     Own {
         id: VehicleId,
         accel: f64,
-        yielding: Option<VehicleId>,
         binding: Option<Binding>,
+        ghost: Option<(VehicleId, f64)>,
         /// How many barriers ahead it is committed to now.
         committed: u8,
         /// Whether it has just come to rest at the all-way stop line it heads for.
@@ -44,6 +44,9 @@ pub(super) enum AccelUpdate {
     /// From a merge it is approaching: the most the vehicle before it in the
     /// merge's order allows.
     Merge { id: VehicleId, accel: f64 },
+    /// From the lane-change model: the most its terms allow, and whose ghost it
+    /// is making room for, if anyone's.
+    LaneChange { id: VehicleId, accel: f64, yielding: Option<VehicleId> },
 }
 
 /// The leader whose term was the lowest in a vehicle's search along its path.
@@ -53,17 +56,17 @@ pub(super) struct Binding {
     /// Its term.
     pub(super) term: f64,
     /// The lowest of every other term from that search: the free road, other
-    /// leaders, the end of the path and the ghost it makes room for.
+    /// leaders and the end of the path.
     pub(super) rest: f64,
 }
 
-/// A vehicle's acceleration under the longitudinal model, and whose ghost it is
-/// making room for, if anyone's. `own` is the index of its record in the occupants of the lane it
-/// follows.
+/// A vehicle's acceleration under the longitudinal model along its own lanes,
+/// and the nearest ghost ahead of it, for the lane-change model. `own` is the
+/// index of its record in the occupants of the lane it follows.
 ///
-/// The acceleration is the minimum over every term the model considers: the free
-/// road, each leader along its path, the end of its path, and the ghost it makes
-/// room for. While it straddles, its old side adds more (see [`old_side`]). Each
+/// The acceleration is the minimum over every term the model considers there:
+/// the free road, each leader along its path, the end of its path and the
+/// barriers on it. While it straddles, its old side adds more (see [`old_side`]). Each
 /// term is recorded to the debug sink as it is computed.
 pub(super) fn longitudinal<D: DebugSink>(
     state: &SimState,
@@ -180,13 +183,9 @@ pub(super) fn longitudinal<D: DebugSink>(
         }
     });
 
-    // The lane-change model's terms: making room for the ghost, and
-    // synchronising with the target lane.
-    let (term, yielding) = lane_change::terms(state, sink, id, vehicle, ghost);
-    rest = rest.min(term);
     let binding = binding.map(|b| Binding { rest, ..b });
     let accel = binding.map_or(rest, |b| b.term.min(rest));
-    AccelUpdate::Own { id, accel, yielding, binding, committed, arrived }
+    AccelUpdate::Own { id, accel, binding, ghost, committed, arrived }
 }
 
 /// The terms the vehicles committed at a junction impose on each one committed

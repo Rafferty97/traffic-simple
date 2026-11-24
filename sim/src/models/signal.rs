@@ -1,5 +1,5 @@
 //! The signal model: fixed-time plans, each running its phases in turn (see
-//! `docs/DESIGN.md`, Barriers and signals). Replaced by editing this module,
+//! `docs/models/signals.md`). Replaced by editing this module,
 //! for actuated control say.
 
 use arrayvec::ArrayVec;
