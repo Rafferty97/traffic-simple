@@ -173,14 +173,19 @@ pub struct Vehicle {
     /// junction's lines go in.
     #[cfg_attr(feature = "serde", serde(default))]
     pub(crate) stopped_at: Option<u64>,
+    /// The vehicle behind that it holds up most, as of the last longitudinal
+    /// update, and how that one would accelerate without it: an output of the
+    /// core for the models, such as the lane-change model's courtesy.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) held_up: Option<HeldUp>,
 }
 
 /// A vehicle held up by the one ahead of it: that one is the term binding its
-/// acceleration. Weighing up a lane change, the one ahead measures what leaving
-/// would do for it, without searching back for it.
-#[derive(Clone, Copy, Debug)]
+/// acceleration. The one ahead can tell what getting out of the way would do
+/// for it, without searching back for it.
+#[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub(crate) struct OldFollower {
+pub(crate) struct HeldUp {
     pub id: VehicleId,
     /// Its acceleration from every other term: what it would be, if the vehicle
     /// ahead were gone and nothing took its place.

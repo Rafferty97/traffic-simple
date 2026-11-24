@@ -851,10 +851,7 @@ fn its_old_follower_gains_when_it_leaves() {
     // records.
     let behind = sim.insert(car(), at(1, 290.0, 5.0));
     sim.update_accels(&mut NoopSink);
-    assert_eq!(
-        sim.state.lane_changing.old_follower(id).map(|f| f.id),
-        Some(behind)
-    );
+    assert_eq!(sim.state.vehicles[id].held_up.map(|f| f.id), Some(behind));
     // Courtesy: it wants to let it by.
     let (_, evals) = decide_now(&sim, id);
     let courtesy = evals[0].incentives.courtesy;
@@ -868,7 +865,7 @@ fn a_car_it_doesnt_hold_up_isnt_its_old_follower() {
     let id = sim.insert(car(), at(1, 300.0, 5.0));
     sim.insert(car(), at(1, 240.0, 5.0));
     sim.update_accels(&mut NoopSink);
-    assert!(sim.state.lane_changing.old_follower(id).is_none());
+    assert!(sim.state.vehicles[id].held_up.is_none());
 }
 
 #[test]
@@ -879,13 +876,10 @@ fn a_car_its_speed_cap_holds_back_isnt_held_up_by_the_car_ahead() {
     let id = sim.insert(car(), at(1, 300.0, 5.0));
     let behind = sim.insert(car(), at(1, 290.0, 5.0));
     sim.update_accels(&mut NoopSink);
-    assert_eq!(
-        sim.state.lane_changing.old_follower(id).map(|f| f.id),
-        Some(behind)
-    );
+    assert_eq!(sim.state.vehicles[id].held_up.map(|f| f.id), Some(behind));
     sim.hold(behind);
     sim.update_accels(&mut NoopSink);
-    assert!(sim.state.lane_changing.old_follower(id).is_none());
+    assert!(sim.state.vehicles[id].held_up.is_none());
 }
 
 #[test]

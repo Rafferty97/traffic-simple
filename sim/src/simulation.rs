@@ -23,7 +23,7 @@ use crate::motion::path::{extend_path, raise_through, reach};
 use crate::network::{JunctionId, LaneId, MovementId, Side, SimNetwork};
 use crate::query::find_follower;
 use crate::query::{LaneSpeeds, speed_of};
-use crate::vehicle::{Intent, OldFollower, Placement, Vehicle, VehicleId, VehicleSpec};
+use crate::vehicle::{HeldUp, Intent, Placement, Vehicle, VehicleId, VehicleSpec};
 
 /// The traffic simulation.
 pub struct Simulation {
@@ -34,7 +34,7 @@ pub struct Simulation {
     decisions: Vec<AccelUpdate>,
     /// Scratch space for the longitudinal update: each vehicle held up by a
     /// leader, by that leader, before the leader keeps the one it holds up most.
-    held: Vec<(VehicleId, OldFollower)>,
+    held: Vec<(VehicleId, HeldUp)>,
     /// Scratch space for vehicles whose path grew or that entered a junction in
     /// a step, which may arrive at junctions; reused between steps.
     arrivals: Vec<VehicleId>,
@@ -242,6 +242,7 @@ impl Simulation {
             intent: None,
             committed: 0,
             stopped_at: None,
+            held_up: None,
         };
         // Its own generator, from its route's seed and where it starts, so
         // drivers don't wander in step.

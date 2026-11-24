@@ -16,7 +16,7 @@ use crate::motion;
 use crate::motion::path::{extend_path, raise_through, reach, recompute_through};
 use crate::network::{JunctionId, LaneId};
 use crate::query::LaneSpeeds;
-use crate::vehicle::OldFollower;
+use crate::vehicle::HeldUp;
 
 impl Simulation {
     /// Advances the simulation by `dt` seconds of wall time, a frame's: as many
@@ -212,8 +212,8 @@ impl Simulation {
                 }
                 longitudinal.advance_noise(id, &vehicle.spec, noise_step);
                 vehicle.accel = f64::INFINITY;
+                vehicle.held_up = None;
                 lane_changing.set_yielding(id, yielding);
-                lane_changing.set_old_follower(id, None);
             }
         }
         for update in &self.decisions {
@@ -242,19 +242,19 @@ impl Simulation {
                 if let Some(b) = binding {
                     let without = b.rest.min(others);
                     if b.term <= without {
-                        let follower = OldFollower { id, without };
+                        let follower = HeldUp { id, without };
                         self.held.push((b.leader, follower));
                     }
                 }
             }
         }
         // Each leader keeps the one it holds up most: the most it would gain.
-        let SimState { vehicles, longitudinal, lane_changing, .. } = &mut self.state;
+        let SimState { vehicles, longitudinal, .. } = &mut self.state;
         for &(leader, follower) in &self.held {
-            let gain = |f: &OldFollower| f.without - vehicles[f.id].accel;
-            let kept = lane_changing.old_follower(leader);
+            let gain = |f: &HeldUp| f.without - vehicles[f.id].accel;
+            let kept = vehicles[leader].held_up;
             if kept.is_none_or(|kept| gain(&follower) > gain(&kept)) {
-                lane_changing.set_old_follower(leader, Some(follower));
+                vehicles[leader].held_up = Some(follower);
             }
         }
         // Slow and slowing, it finishes its stop, or stays put until it can

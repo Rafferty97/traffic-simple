@@ -122,13 +122,14 @@ The state is one struct, `SimState`, holding everything that can't be rebuilt fr
 - Path: the lane it follows and the lanes it will take next, as far as its leader search, path tracking and lane change look, and as far as it would go in 15 s at each lane's speed limit, however short the lanes. The time is at the limits, not its speed, so a slow vehicle in a queue still knows where it is going, and merges and junctions ahead know of it; its leader search stays within its horizon however far the path reaches. A path ending inside a junction is extended until it is out of it, so a vehicle in a junction's queue always knows its way through. It is a `Vec`.
 - Commitment: how many of the barriers ahead of its rear axle on its path it has committed to crossing, a `u8`, and the step at which it came to rest at a stop line, if it has (see Barriers and signals)
 - Indicator: the side it is indicating to and since when
+- Held up: the vehicle behind that it holds up most, as of the last longitudinal update, with that vehicle's acceleration from every other term: the core's output, which the lane-change model's courtesy incentive reads
 - The old side and lane change in progress
 - Class and static attributes (`VehicleSpec`): dimensions and driver parameters, with a preset for each class (see Vehicle classes)
 
 Each model's, beside it:
 
 - **Longitudinal model:** its acceleration noise; whether it is finishing a stop (see Finishing a stop); how far short of the barrier it is heading for it will stop, drawn for each; and its own random generator's state, for the noise and those gaps
-- **Lane-change model:** its desire, cooldown and the ghost it makes room for, and its old follower: the vehicle behind that it holds up most, as of the last longitudinal update, with that vehicle's acceleration from every other term, for the courtesy incentive
+- **Lane-change model:** its desire, cooldown and the ghost it makes room for
 - **Routing:** its route, how it chooses its way at forks, with any state that needs (see Routing)
 
 **Per-lane occupancy**
@@ -202,7 +203,7 @@ How vehicles keep apart while they change lanes, merge and diverge, and when one
    - **Route,** `d_r`: toward the neighbour from which its route needs fewer lane changes, by its route table (see Routing). For each change still needed, it rises linearly from 0 to 1 toward the point by which that change must be done, by distance (295 m per change to make) or time at its speed (43 s), whichever is higher, and the most urgent counts. A lane that ends by merging and is left early counts as ending there, so vehicles move out of it along the way. **Built so far:** only the lane left early, toward the neighbour that goes on.
    - **Speed,** `d_s`: how much faster traffic goes ahead in the lane beside it than in its own, over 69.6 km/h. Each lane's speed is the average of its vehicles over the next 8 s at its limit, no faster than the driver would like, and as fast as it would like where nobody is: an average, not the leader alone, so a driver moves over before its own lane has stopped. Each lane's speeds are summed in order once per update, so an average is two binary searches.
    - **Keeping to a side,** `d_b`: the free threshold toward the side the lane says to keep to.
-   - **Courtesy:** letting by its old follower, by what that follower would gain, weighed by its politeness, in units of its comfortable deceleration.
+   - **Courtesy:** letting by the vehicle it holds up most, its old follower once it changes, by what that follower would gain, weighed by its politeness, in units of its comfortable deceleration.
 
    As LMRS has it, `d = d_r + θ·(d_s + d_b + d_c)`: the voluntary incentives count fully unless they work against the route, and not at all once the route's desire is strong enough to cooperate. The desire follows the incentives smoothed over 1 s, so a fleeting gain doesn't make a driver change.
 2. **Thresholds:** at `d_free`, 0.365, the driver checks the gap and, if it lets it, indicates, and changes after indicating for at least 0.5 s. At `d_sync`, 0.577, it indicates even without a gap, asking for room, and synchronises: it adjusts its speed to the leader it would have in the target lane, its headway shortened by its desire, no harder than comfortably. At `d_coop`, 0.788, followers in the target lane make room for it, and it changes even without room to finish. It cancels once its desire falls below half its threshold, or no permitted neighbour remains on that side: none it may change into, or none it could finish a change into before the lanes beside its path run out or reach a junction. So a vehicle committed to a junction doesn't hold itself back to line up with the lane beside, as a driver who has missed the chance stops trying.

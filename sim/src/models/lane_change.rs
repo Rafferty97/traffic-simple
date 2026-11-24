@@ -70,9 +70,6 @@ pub const ASSERTIVE: f64 = 0.5;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 struct Driver {
     pub lc: State,
-    /// The vehicle behind it that it holds up most, as of the last
-    /// longitudinal update: its old follower, if it changed lanes.
-    pub old_follower: Option<crate::vehicle::OldFollower>,
 }
 
 /// The lane-change model's state for every vehicle, which it owns.
@@ -107,21 +104,6 @@ impl Model {
     /// Records whom the vehicle is making room for, as [`terms`] chose.
     pub fn set_yielding(&mut self, id: VehicleId, yielding: Option<VehicleId>) {
         self.drivers[id].lc.set_yielding(yielding);
-    }
-
-    /// The vehicle behind `id` it holds up most, as of the last longitudinal
-    /// update.
-    pub fn old_follower(&self, id: VehicleId) -> Option<crate::vehicle::OldFollower> {
-        self.drivers[id].old_follower
-    }
-
-    /// Sets the vehicle behind `id` it holds up most.
-    pub fn set_old_follower(
-        &mut self,
-        id: VehicleId,
-        follower: Option<crate::vehicle::OldFollower>,
-    ) {
-        self.drivers[id].old_follower = follower;
     }
 
     #[cfg(test)]

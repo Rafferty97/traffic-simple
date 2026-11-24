@@ -70,7 +70,7 @@ pub(crate) fn incentives(
         }
         None => [0.0; 2],
     };
-    let courtesy = state.lane_changing.old_follower(id).and_then(|held| {
+    let courtesy = vehicle.held_up.and_then(|held| {
         let follower = vehicles.get(held.id)?;
         let gain = (held.without - follower.accel).max(0.0);
         Some(vehicle.spec.politeness * gain / vehicle.spec.comfy_decel)
