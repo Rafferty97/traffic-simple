@@ -80,6 +80,8 @@ pub(crate) fn build(
 ) -> RenderGeometry {
     let mut out = RenderGeometry::default();
     let ends = arms::road_ends(net);
+    // Each road's edge lines, by road, before they are cut where siblings overlap.
+    let mut edges = Vec::new();
     for (r, (road, line)) in net.roads.iter().zip(polylines).enumerate() {
         let edge = |i: usize, lane: usize, side: f64| {
             let l = &road.lanes[lane];
@@ -93,8 +95,7 @@ pub(crate) fn build(
         let left = |i: usize| lanes.clone().map(|l| edge(i, l, 1.0)).fold(f64::MIN, f64::max);
         let right = |i: usize| lanes.clone().map(|l| edge(i, l, -1.0)).fold(f64::MAX, f64::min);
         out.roads.push(Strip { left: along(&left), right: along(&right) });
-        out.markings.push(Marking { points: along(&left), style: MarkingStyle::Edge });
-        out.markings.push(Marking { points: along(&right), style: MarkingStyle::Edge });
+        edges.push([along(&left), along(&right)]);
 
         // Between each lane and the next to its right, by offset at the start.
         let s0 = line.s[0];
@@ -129,6 +130,34 @@ pub(crate) fn build(
         }
     }
 
+    // A road's edges where they don't run over a road it forks from another
+    // with, or merges with into another, so a fork paints a gore where the two
+    // part, as at a freeway's exit, rather than one road's lines across the
+    // other.
+    let siblings = |r: usize| {
+        let joined = |&(from, to): &(crate::RoadId, crate::RoadId)| (from.0, to.0);
+        net.joins.iter().map(joined).flat_map(move |(from, to)| {
+            net.joins.iter().map(joined).filter_map(move |(other_from, other_to)| {
+                (other_from == from && to == r && other_to != r)
+                    .then_some(other_to)
+                    .or((other_to == to && from == r && other_from != r).then_some(other_from))
+            })
+        })
+    };
+    for (r, road_edges) in edges.into_iter().enumerate() {
+        let others: Vec<usize> = siblings(r).collect();
+        for edge in road_edges {
+            let mut pieces = vec![edge];
+            for &other in &others {
+                let surface = &out.roads[other];
+                pieces = pieces.iter().flat_map(|p| outside(p, surface)).collect();
+            }
+            let pieces = pieces.into_iter().filter(|p| p.len() >= 2);
+            out.markings
+                .extend(pieces.map(|points| Marking { points, style: MarkingStyle::Edge }));
+        }
+    }
+
     for (road, line) in net.roads.iter().zip(polylines) {
         for zone in &road.keep_clear {
             keep_clear(road, line, zone, &mut out);
@@ -143,6 +172,76 @@ pub(crate) fn build(
         approaches(net, polylines, intersection, turns, &mut out);
     }
     out
+}
+
+/// How far inside a surface, in meters, a line must be to count as over it,
+/// so lines along its edge, as a fork's shared outer edge is, stay.
+const OVER: f64 = 0.01;
+
+/// The pieces of `line` not over `surface`.
+fn outside(line: &[DVec2], surface: &Strip) -> Vec<Vec<DVec2>> {
+    let outline: Vec<DVec2> =
+        surface.left.iter().chain(surface.right.iter().rev()).copied().collect();
+    let edges = || outline.iter().zip(outline.iter().cycle().skip(1)).map(|(&a, &b)| (a, b));
+    let over = |p: DVec2| {
+        // Even-odd, and clear of the outline by more than [`OVER`].
+        let crossings = edges()
+            .filter(|&(a, b)| (a.y > p.y) != (b.y > p.y))
+            .filter(|&(a, b)| p.x < a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x))
+            .count();
+        crossings % 2 == 1 && edges().all(|(a, b)| segment_distance(p, a, b) > OVER)
+    };
+    let mut pieces = Vec::new();
+    let mut piece = Vec::new();
+    for w in line.windows(2) {
+        let (p, q) = (w[0], w[1]);
+        // Where the segment crosses the outline, in order along it.
+        let mut cuts: Vec<f64> = edges().filter_map(|(a, b)| crossing(p, q, a, b)).collect();
+        cuts.push(1.0);
+        cuts.sort_by(f64::total_cmp);
+        let mut from = 0.0;
+        for &to in &cuts {
+            if to <= from {
+                continue;
+            }
+            let (a, b) = (p.lerp(q, from), p.lerp(q, to));
+            if over(a.lerp(b, 0.5)) {
+                if piece.len() >= 2 {
+                    pieces.push(std::mem::take(&mut piece));
+                }
+                piece.clear();
+            } else {
+                if piece.last() != Some(&a) {
+                    piece.push(a);
+                }
+                piece.push(b);
+            }
+            from = to;
+        }
+    }
+    if piece.len() >= 2 {
+        pieces.push(piece);
+    }
+    pieces
+}
+
+/// Where along `p`–`q`, from 0 to 1, it crosses `a`–`b`, if it does.
+fn crossing(p: DVec2, q: DVec2, a: DVec2, b: DVec2) -> Option<f64> {
+    let (r, s) = (q - p, b - a);
+    let denom = r.perp_dot(s);
+    if denom.abs() < 1e-12 {
+        return None;
+    }
+    let t = (a - p).perp_dot(s) / denom;
+    let u = (a - p).perp_dot(r) / denom;
+    ((0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u)).then_some(t)
+}
+
+/// How far `p` is from the segment `a`–`b`.
+fn segment_distance(p: DVec2, a: DVec2, b: DVec2) -> f64 {
+    let ab = b - a;
+    let t = ((p - a).dot(ab) / ab.length_squared().max(1e-12)).clamp(0.0, 1.0);
+    p.distance(a + t * ab)
 }
 
 /// A keep-clear zone's outline, across the lanes of `road` going its way, and
@@ -357,4 +456,35 @@ fn intersection_surface(
         curbs.push(curb);
     }
     (surface, curbs)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::{compile, scenarios};
+
+    #[test]
+    fn no_edge_line_runs_over_a_road() {
+        let speed = 50.0 / 3.6;
+        for net in [
+            scenarios::ramps(100.0 / 3.6, 60.0 / 3.6),
+            scenarios::grid(2, 2, 2, 100.0, speed),
+            scenarios::signalised_crossroads(2, speed),
+        ] {
+            let render = compile(&net).unwrap().render;
+            let edges = render.markings.iter().filter(|m| m.style == MarkingStyle::Edge);
+            for marking in edges {
+                for road in &render.roads {
+                    let whole = outside(&marking.points, road);
+                    let kept: usize = whole.iter().map(Vec::len).sum();
+                    // Nothing of it is cut away: every piece is the whole line.
+                    assert!(
+                        whole.len() == 1 && kept >= marking.points.len(),
+                        "an edge line from {:?} runs over a road",
+                        marking.points[0]
+                    );
+                }
+            }
+        }
+    }
 }
