@@ -106,7 +106,9 @@ pub struct Vehicle {
     /// network sooner.
     pub(crate) path: Vec<LaneId>,
     /// How far `path` reaches, so it is extended only when it might need to be.
-    #[cfg_attr(feature = "serde", serde(default))]
+    /// Derived, so not saved: worked out afresh on the first step after a
+    /// restore. Saved, its infinities wrote as nulls and didn't read back.
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub(crate) path_reach: PathReach,
     /// The rear axle's position on `path[0]`.
     pub(crate) lane_pos: LanePos,

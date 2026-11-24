@@ -555,11 +555,16 @@ fn closes_cycle(
             let Some(from) = t.path.iter().position(|&l| l == until) else {
                 return mask;
             };
-            let crosses = v.path.iter().filter(inside).any(|&mine| {
-                t.path[from..]
-                    .iter()
-                    .filter(inside)
-                    .any(|&theirs| network.conflict_between(mine, theirs).is_some())
+            // Only where it has yet to clear: on the lane it is on, a conflict
+            // its rear is already past is behind it, and can't hold up `t`.
+            let rear = v.lane_pos.s - v.spec.rear_axle;
+            let ahead = |k: usize, mine: LaneId, theirs: LaneId| {
+                network
+                    .conflict_between(mine, theirs)
+                    .is_some_and(|c| k > 0 || c.mine.end > rear)
+            };
+            let crosses = v.path.iter().enumerate().filter(|(_, l)| inside(l)).any(|(k, &mine)| {
+                t.path[from..].iter().filter(inside).any(|&theirs| ahead(k, mine, theirs))
             });
             if crosses { mask | 1 << p } else { mask }
         })
