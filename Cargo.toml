@@ -33,3 +33,9 @@ opt-level = 3
 [profile.release]
 codegen-units = 1
 lto = "thin"
+
+# Release, with debug symbols, so profilers name functions and lines, and
+# inlined functions where they can: `cargo bench --profile profiling`.
+[profile.profiling]
+inherits = "release"
+debug = true
