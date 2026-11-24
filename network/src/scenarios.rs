@@ -42,7 +42,7 @@ pub fn oblique_crossroads(lanes: usize, speed_limit: f64, angle: f64) -> RoadNet
         [true; 4],
         0.0,
         JUNCTION_ROOM,
-        |_| {},
+        |_, _| {},
     )
 }
 
@@ -57,7 +57,7 @@ pub fn t_junction(lanes: [usize; 2], speed_limit: f64) -> RoadNetwork {
         [true, false, true, true],
         0.0,
         JUNCTION_ROOM,
-        |_| {},
+        |_, _| {},
     )
 }
 
@@ -78,7 +78,7 @@ fn junction(
     present: [bool; 4],
     median: f64,
     room: f64,
-    before_fitting: impl FnOnce(&mut Intersection),
+    before_fitting: impl FnOnce(&mut RoadNetwork, &mut Intersection),
 ) -> RoadNetwork {
     try_junction(
         lanes,
@@ -101,7 +101,7 @@ fn try_junction(
     present: [bool; 4],
     median: f64,
     room: f64,
-    before_fitting: impl FnOnce(&mut Intersection),
+    before_fitting: impl FnOnce(&mut RoadNetwork, &mut Intersection),
 ) -> Result<RoadNetwork, CompileError> {
     let mut net = RoadNetwork::default();
     // Each arm's road, the first or the second, and its lanes each way.
@@ -149,7 +149,7 @@ fn try_junction(
         let stop_line = (-across[road_of(k)] * skew.tan()).max(0.0);
         intersection.arms.push(Arm { stop_line, skew, ..Arm::new(road) });
     }
-    before_fitting(&mut intersection);
+    before_fitting(&mut net, &mut intersection);
     net.intersections.push(intersection);
     // Stop lines set back, and run outs, wherever turning vehicles sweep.
     crate::fit_arms(&mut net)?;
@@ -265,6 +265,32 @@ pub fn hook_turn_crossroads(speed_limit: f64) -> RoadNetwork {
         .expect("the hook-turn crossroads compiles once fitted")
 }
 
+/// How far a tram track's centre is from its road's centre line, in meters,
+/// and how wide it is: room for a tram, 2.67 m wide, and a little.
+const TRAM_TRACK: [f64; 2] = [1.75, 3.0];
+
+/// A tram track each way down the middle of each of the crossroads' `roads`,
+/// forward and backward, as their lanes 2 and 3, for trams alone, each running
+/// straight on through the intersection to the track opposite.
+fn add_tram_tracks(net: &mut RoadNetwork, intersection: &mut Intersection, roads: [RoadId; 4]) {
+    let [offset, width] = TRAM_TRACK;
+    for road in roads {
+        let lanes = &mut net.roads[road.0].lanes;
+        for (offset, direction) in [(offset, Direction::Forward), (-offset, Direction::Backward)] {
+            lanes.push(RoadLane {
+                allows: Classes::TRAMS,
+                ..RoadLane::new(offset, width, direction)
+            });
+        }
+    }
+    // The roads meet the intersection at their ends: forward lanes come in.
+    for k in 0..4 {
+        let from = LaneRef { road: roads[k], lane: 2 };
+        let to = LaneRef { road: roads[(k + 2) % 4], lane: 3 };
+        intersection.connections.push((from, to));
+    }
+}
+
 /// How [`hook_turn_crossroads_with`] lays out its crossroads.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HookLayout {
@@ -275,6 +301,8 @@ pub struct HookLayout {
     /// How far each arm ends beyond where its lanes clear the other road, in
     /// meters.
     pub room: f64,
+    /// Whether it has tram tracks down the middle of each road.
+    pub trams: bool,
 }
 
 impl Default for HookLayout {
@@ -283,6 +311,7 @@ impl Default for HookLayout {
             geometry: HookGeometry::default(),
             tram_room: TRAM_ROOM,
             room: HOOK_ROOM,
+            trams: true,
         }
     }
 }
@@ -301,10 +330,13 @@ pub fn hook_turn_crossroads_with(
         [true; 4],
         layout.tram_room,
         layout.room,
-        |intersection| {
+        |net, intersection| {
             intersection.hook_turns = roads.to_vec();
             intersection.hook_geometry = layout.geometry;
             intersection.control = signal_plan(roads, [30.0; 2]);
+            if layout.trams {
+                add_tram_tracks(net, intersection, roads);
+            }
         },
     )
 }
@@ -361,7 +393,7 @@ pub fn priority_crossroads(lanes: [usize; 2], speed_limit: f64, sign: Sign) -> R
         [true; 4],
         0.0,
         JUNCTION_ROOM,
-        |_| {},
+        |_, _| {},
     );
     prioritise(
         &mut net,

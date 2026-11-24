@@ -96,6 +96,7 @@ fn busy(flow: f64, seconds: f64) -> (usize, usize, usize) {
         .lanes()
         .filter(|(_, lane)| lane.predecessors().is_empty())
         .map(|(id, _)| id)
+        .filter(|&id| compiled.sim.lane(id).allows().contains(traffic_sim::VehicleClass::Car))
         .collect();
     let mut state = 1u64;
     let mut uniform = || {

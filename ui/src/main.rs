@@ -21,6 +21,9 @@ use traffic_sim::{
     Route, Side, Simulation, Vehicle, VehicleClass, VehicleId, VehicleSpec,
 };
 
+/// How long, on average, between trams on each track, in seconds.
+const TRAM_HEADWAY: f64 = 90.0;
+
 /// The hook-turn scenario's speed limit: 40 km/h, as Melbourne's CBD has.
 const HOOK_SPEED_LIMIT: f64 = 40.0 / 3.6;
 
@@ -525,6 +528,8 @@ struct Harness {
     despawned: u32,
     /// Draws drivers and their routes. Seeded, so every run spawns the same.
     rng: Xoshiro256PlusPlus,
+    /// Trams owed to the tracks.
+    tram_credit: f64,
 }
 
 impl Default for Harness {
@@ -536,6 +541,7 @@ impl Default for Harness {
             flow: 600.0,
             to_exits: true,
             exits: Vec::new(),
+            tram_credit: 0.0,
             credit: 0.0,
             spawned: 0,
             despawned: 0,
@@ -609,12 +615,28 @@ impl Harness {
 
     /// Spawns at the flow, each into a random entry lane, near its start.
     fn keep_flowing(&mut self, sim: &mut Recorded, dt: f64) {
-        let entries: Vec<LaneId> = sim
+        let (trams, entries): (Vec<LaneId>, Vec<LaneId>) = sim
             .network()
             .lanes()
             .filter(|(_, lane)| lane.predecessors().is_empty())
             .map(|(id, _)| id)
-            .collect();
+            .partition(|&id| !sim.network().lane(id).allows().contains(VehicleClass::Car));
+        // A tram on each track every TRAM_HEADWAY, on average; cars on the
+        // lanes cars may use.
+        if !trams.is_empty() {
+            self.tram_credit += trams.len() as f64 * dt / TRAM_HEADWAY;
+            if self.tram_credit >= 1.0 {
+                let lane = trams[self.rng.random_range(0..trams.len())];
+                let seed = self.rng.random();
+                let limit = sim.network().lane(lane).speed_limit();
+                let at = Placement { lane, s: 5.0, speed: limit, route: Route::random(seed) };
+                let driver = Driver { accel_noise: 0.0, seed, ..Driver::default() };
+                if sim.try_insert(VehicleSpec::tram(), driver, at).is_ok() {
+                    self.tram_credit -= 1.0;
+                    self.spawned += 1;
+                }
+            }
+        }
         if entries.is_empty() {
             return;
         }
@@ -1285,11 +1307,18 @@ fn draw_pretty(
         } else {
             Stroke::NONE
         };
-        let colour = body_colour(id, selected, related, VEHICLE);
+        let plain = match v.spec().class {
+            VehicleClass::Tram => TRAM,
+            _ => VEHICLE,
+        };
+        let colour = body_colour(id, selected, related, plain);
         painter.add(Shape::convex_polygon(corners, colour, outline));
         draw_indicators(painter, sim, v, drawn);
     }
 }
+
+/// A tram's colour, with none selected: purple.
+const TRAM: Color32 = Color32::from_rgb(140, 70, 190);
 
 /// Widens the last column of a grid to the edge of the panel, called in its
 /// last cell, so the table and its stripes span the panel's width. Inside a

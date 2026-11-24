@@ -96,7 +96,8 @@ fn a_car_sent_to_each_exit_of_a_grid_leaves_by_it() {
 #[test]
 fn a_car_sent_to_each_exit_of_a_hook_turn_crossroads_leaves_by_it() {
     let sent = every_car_leaves_by_its_exit(&scenarios::hook_turn_crossroads(SPEED));
-    // From each of the four lanes in, to each of the three roads out but its own.
+    // From each of the four lanes in, to each of the three roads out but its
+    // own; none from the tram tracks in, which cars may not use.
     assert_eq!(sent, 4 * 3);
 }
 
