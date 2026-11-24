@@ -5,7 +5,9 @@
 //! IDM does. Each term is a separate function here, so the simulation can take
 //! the minimum over the free-road term and one interaction term per leader.
 
-use crate::vehicle::VehicleSpec;
+use slotmap::SecondaryMap;
+
+use crate::vehicle::{VehicleId, VehicleSpec};
 
 /// The acceleration exponent δ.
 const DELTA: i32 = 4;
@@ -23,7 +25,7 @@ pub const SAFE_BRAKING: f64 = 4.0;
 /// A driver's own state under the longitudinal model, kept beside its vehicle.
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub(crate) struct Driver {
+struct Driver {
     /// Its acceleration noise now, added to its free-road term, in m/s² (see
     /// [`VehicleSpec::accel_noise`]).
     pub noise: f64,
@@ -40,7 +42,7 @@ pub(crate) struct Driver {
 
 impl Driver {
     /// A driver whose generator starts at `seed`, its gap to lines drawn.
-    pub fn new(spec: &VehicleSpec, seed: u64) -> Self {
+    fn new(spec: &VehicleSpec, seed: u64) -> Self {
         let mut driver = Self {
             noise: 0.0,
             rng: seed,
@@ -52,9 +54,66 @@ impl Driver {
     }
 }
 
+/// The longitudinal model's state for every vehicle, which it owns: each
+/// driver's [`Driver`], kept beside its vehicle.
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub(crate) struct Model {
+    drivers: SecondaryMap<VehicleId, Driver>,
+}
+
+impl Model {
+    /// Takes on a vehicle just inserted, its generator starting at `seed`.
+    pub fn insert(&mut self, id: VehicleId, spec: &VehicleSpec, seed: u64) {
+        self.drivers.insert(id, Driver::new(spec, seed));
+    }
+
+    /// Lets go of a vehicle removed.
+    pub fn remove(&mut self, id: VehicleId) {
+        self.drivers.remove(id);
+    }
+
+    /// The vehicle's acceleration noise now, added to its free-road term.
+    pub fn noise(&self, id: VehicleId) -> f64 {
+        self.drivers[id].noise
+    }
+
+    /// How far short of the barrier it is heading for the vehicle will stop.
+    pub fn line_gap(&self, id: VehicleId) -> f64 {
+        self.drivers[id].line_gap
+    }
+
+    /// Whether the vehicle is finishing a stop (see [`stopping`]).
+    pub fn stopping(&self, id: VehicleId) -> bool {
+        self.drivers[id].stopping
+    }
+
+    /// Heading for another barrier, the vehicle draws how far short of it it
+    /// will stop (see [`draw_line_gap`]).
+    pub fn new_barrier(&mut self, id: VehicleId, spec: &VehicleSpec) {
+        draw_line_gap(&mut self.drivers[id], spec);
+    }
+
+    /// Moves the vehicle's acceleration noise on by `step`.
+    pub fn advance_noise(&mut self, id: VehicleId, spec: &VehicleSpec, step: NoiseStep) {
+        let driver = &mut self.drivers[id];
+        driver.noise = noise(driver.noise, spec.accel_noise, step, &mut driver.rng);
+    }
+
+    /// Whether the vehicle, at `speed`, with every other term giving `accel`,
+    /// is finishing a stop now, and the term that finishes it if so (see
+    /// [`stopping`]).
+    pub fn finish_stop(&mut self, id: VehicleId, speed: f64, accel: f64) -> Option<f64> {
+        let driver = &mut self.drivers[id];
+        driver.stopping = stopping(driver.stopping, speed, accel);
+        driver.stopping.then_some(-STOPPING_DECEL)
+    }
+}
+
 /// Draws how far short of the next barrier it heads for a driver will stop,
 /// from its own generator, uniformly within its spec's spread of its mean.
-pub(crate) fn draw_line_gap(driver: &mut Driver, spec: &VehicleSpec) {
+fn draw_line_gap(driver: &mut Driver, spec: &VehicleSpec) {
     let draw = crate::models::routing::splitmix64(&mut driver.rng);
     let unit = (draw >> 11) as f64 / (1u64 << 53) as f64;
     driver.line_gap = (spec.line_gap + spec.line_gap_spread * (2.0 * unit - 1.0)).max(0.0);

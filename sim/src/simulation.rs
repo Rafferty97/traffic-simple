@@ -9,7 +9,7 @@ pub use state::{Config, SimState};
 use std::ops::ControlFlow;
 
 use glam::DVec2;
-use slotmap::{Key, SecondaryMap, SlotMap};
+use slotmap::{Key, SlotMap};
 
 use crate::debug::{DebugEvent, DebugSink};
 use crate::following::{self, Ahead, Along, Found, Lateral, Occupant, find_leaders};
@@ -88,9 +88,9 @@ impl Simulation {
         let state = SimState {
             network,
             vehicles: SlotMap::with_key(),
-            drivers: SecondaryMap::new(),
-            lane_changers: SecondaryMap::new(),
-            routes: SecondaryMap::new(),
+            longitudinal: Default::default(),
+            lane_changing: Default::default(),
+            routing: Default::default(),
             occupants: vec![Vec::new(); lane_count],
             queues: vec![Queue::default(); junction_count],
             caps: Vec::new(),
@@ -176,7 +176,7 @@ impl Simulation {
         spec: VehicleSpec,
         at: Placement,
     ) -> Result<VehicleId, InsertError> {
-        let (mut vehicle, route, driver) = self.build_vehicle(spec, at);
+        let (mut vehicle, route, seed) = self.build_vehicle(spec, at);
         // Leader and follower split the lane at its rear, so any vehicle alongside
         // is one or the other, with no gap, and refuses the insertion.
         let rear = vehicle.lane_pos.s - spec.rear_axle;
@@ -220,15 +220,11 @@ impl Simulation {
             }
         }
 
-        Ok(self.register((vehicle, route, driver)))
+        Ok(self.register((vehicle, route, seed)))
     }
 
     /// A vehicle placed on a lane's centerline, facing along it, not yet in the simulation.
-    fn build_vehicle(
-        &self,
-        spec: VehicleSpec,
-        at: Placement,
-    ) -> (Vehicle, Route, acceleration::Driver) {
+    fn build_vehicle(&self, spec: VehicleSpec, at: Placement) -> (Vehicle, Route, u64) {
         let lane = self.state.network.lane(at.lane);
         let lane_pos = lane.geometry().lane_pos(at.s, 0.0);
         let mut vehicle = Vehicle {
@@ -254,7 +250,6 @@ impl Simulation {
                 state ^ (at.s.to_bits()).rotate_left(17) ^ u64::from(at.lane.0)
             }
         };
-        let driver = acceleration::Driver::new(&spec, seed);
         let needed = reach(&vehicle, at.s, None);
         let mut route = at.route;
         extend_path(
@@ -264,12 +259,12 @@ impl Simulation {
             at.s,
             needed,
         );
-        (vehicle, route, driver)
+        (vehicle, route, seed)
     }
 
     /// Adds a built vehicle to the simulation and to its lane's occupants.
-    fn register(&mut self, built: (Vehicle, Route, acceleration::Driver)) -> VehicleId {
-        let (vehicle, route, driver) = built;
+    fn register(&mut self, built: (Vehicle, Route, u64)) -> VehicleId {
+        let (vehicle, route, seed) = built;
         raise_through(
             &self.state.network,
             &mut self.derived.through,
@@ -278,9 +273,9 @@ impl Simulation {
         let lane_id = vehicle.path[0];
         let lane_pos = vehicle.lane_pos;
         let id = self.state.vehicles.insert(vehicle);
-        self.state.drivers.insert(id, driver);
-        self.state.lane_changers.insert(id, lane_change::Driver::default());
-        self.state.routes.insert(id, route);
+        self.state.longitudinal.insert(id, &self.state.vehicles[id].spec, seed);
+        self.state.lane_changing.insert(id);
+        self.state.routing.insert(id, route);
         let occupant = Occupant::new(
             &self.state.network,
             lane_id,
@@ -338,9 +333,9 @@ impl Simulation {
             queue.held.retain(|&q| q != id);
         }
         self.state.caps.retain(|&(c, _)| c != id);
-        self.state.drivers.remove(id);
-        self.state.lane_changers.remove(id);
-        self.state.routes.remove(id);
+        self.state.longitudinal.remove(id);
+        self.state.lane_changing.remove(id);
+        self.state.routing.remove(id);
         sink.record(|| DebugEvent::VehicleRemoved { vehicle: id });
         self.state.vehicles.remove(id);
     }
@@ -348,18 +343,21 @@ impl Simulation {
     /// Whether a vehicle is finishing a stop, or staying at rest until it can
     /// move off properly.
     pub fn stopping(&self, id: VehicleId) -> bool {
-        self.state.drivers.get(id).is_some_and(|d| d.stopping)
+        self.state.vehicles.contains_key(id) && self.state.longitudinal.stopping(id)
     }
 
     /// How far short of the barrier it is heading for a vehicle will stop, in
     /// meters.
     pub fn line_gap(&self, id: VehicleId) -> Option<f64> {
-        self.state.drivers.get(id).map(|d| d.line_gap)
+        self.state
+            .vehicles
+            .contains_key(id)
+            .then(|| self.state.longitudinal.line_gap(id))
     }
 
     /// How a vehicle chooses its way at forks, as it is now.
     pub fn route(&self, id: VehicleId) -> Option<Route> {
-        self.state.routes.get(id).copied()
+        self.state.routing.get(id)
     }
 
     pub fn get(&self, id: VehicleId) -> Option<&Vehicle> {
@@ -479,9 +477,9 @@ impl Simulation {
         // Its barriers ahead are now others.
         vehicle.committed = 0;
         vehicle.stopped_at = None;
-        acceleration::draw_line_gap(&mut self.state.drivers[id], &vehicle.spec);
+        self.state.longitudinal.new_barrier(id, &vehicle.spec);
         let needed = reach(vehicle, lane_pos.s, Some(change));
-        let route = &mut self.state.routes[id];
+        let route = self.state.routing.route_mut(id);
         extend_path(
             &self.state.network,
             &mut vehicle.path,

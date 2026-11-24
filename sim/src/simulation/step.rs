@@ -115,7 +115,7 @@ impl Simulation {
 
         for i in 0..self.lane_decisions.len() {
             let (id, state, decision) = self.lane_decisions[i];
-            self.state.lane_changers[id].lc = state;
+            self.state.lane_changing.set_state(id, state);
             match decision {
                 Decision::Nothing => {}
                 Decision::Indicate(side) => self.indicate(id, side),
@@ -191,8 +191,8 @@ impl Simulation {
             if let AccelUpdate::Own { id, yielding, committed, arrived, .. } = *update {
                 let commits = committed.saturating_sub(self.state.vehicles[id].committed);
                 let released = committed < self.state.vehicles[id].committed;
-                let vehicle = &mut self.state.vehicles[id];
-                let driver = &mut self.state.drivers[id];
+                let SimState { vehicles, longitudinal, lane_changing, frame, .. } = &mut self.state;
+                let vehicle = &mut vehicles[id];
                 // Heading for another barrier now, it draws how far short it stops;
                 // past one it arrived at, it has yet to arrive at the next.
                 if vehicle.committed != committed {
@@ -200,23 +200,20 @@ impl Simulation {
                         vehicle.stopped_at = None;
                     }
                     vehicle.committed = committed;
-                    acceleration::draw_line_gap(driver, &vehicle.spec);
+                    longitudinal.new_barrier(id, &vehicle.spec);
                 }
                 if arrived {
-                    vehicle.stopped_at = Some(self.state.frame);
+                    vehicle.stopped_at = Some(*frame);
                 }
                 // Committed past a barrier, it may now arrive at a junction beyond,
                 // or be handed over further in one; released, handed back.
                 if commits > 0 || released {
                     self.arrivals.push(id);
                 }
-                let spread = vehicle.spec.accel_noise;
-                driver.noise =
-                    acceleration::noise(driver.noise, spread, noise_step, &mut driver.rng);
+                longitudinal.advance_noise(id, &vehicle.spec, noise_step);
                 vehicle.accel = f64::INFINITY;
-                let changer = &mut self.state.lane_changers[id];
-                changer.lc.set_yielding(yielding);
-                changer.old_follower = None;
+                lane_changing.set_yielding(id, yielding);
+                lane_changing.set_old_follower(id, None);
             }
         }
         for update in &self.decisions {
@@ -252,13 +249,12 @@ impl Simulation {
             }
         }
         // Each leader keeps the one it holds up most: the most it would gain.
-        let SimState { vehicles, drivers, lane_changers, .. } = &mut self.state;
+        let SimState { vehicles, longitudinal, lane_changing, .. } = &mut self.state;
         for &(leader, follower) in &self.held {
             let gain = |f: &OldFollower| f.without - vehicles[f.id].accel;
-            let changer = &mut lane_changers[leader];
-            let better = changer.old_follower.is_none_or(|kept| gain(&follower) > gain(&kept));
-            if better {
-                changer.old_follower = Some(follower);
+            let kept = lane_changing.old_follower(leader);
+            if kept.is_none_or(|kept| gain(&follower) > gain(&kept)) {
+                lane_changing.set_old_follower(leader, Some(follower));
             }
         }
         // Slow and slowing, it finishes its stop, or stays put until it can
@@ -266,10 +262,7 @@ impl Simulation {
         for update in &self.decisions {
             if let AccelUpdate::Own { id, .. } = *update {
                 let vehicle = &mut vehicles[id];
-                let driver = &mut drivers[id];
-                let (speed, accel) = (vehicle.speed, vehicle.accel);
-                driver.stopping = acceleration::stopping(driver.stopping, speed, accel);
-                if let Some(term) = driver.stopping.then_some(-acceleration::STOPPING_DECEL) {
+                if let Some(term) = longitudinal.finish_stop(id, vehicle.speed, vehicle.accel) {
                     let source = AccelSource::FinishingStop;
                     sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
                     vehicle.accel = vehicle.accel.min(term);
@@ -287,7 +280,16 @@ impl Simulation {
     /// the change's cubic, and the change ends where the cubic does.
     pub(super) fn update_motion<S: DebugSink>(&mut self, dt: f64, sink: &mut S) {
         let Self {
-            state: SimState { network, vehicles, occupants, routes, drivers, removals, .. },
+            state:
+                SimState {
+                    network,
+                    vehicles,
+                    occupants,
+                    routing,
+                    longitudinal,
+                    removals,
+                    ..
+                },
             derived: Derived { overlaps, merges, through },
             arrivals,
             ..
@@ -328,7 +330,7 @@ impl Simulation {
                 let s = vehicle.lane_pos.s;
                 let needed = reach(vehicle, s, vehicle.lane_change);
                 let lanes = vehicle.path.len();
-                extend_path(network, &mut vehicle.path, &mut routes[id], s, needed);
+                extend_path(network, &mut vehicle.path, routing.route_mut(id), s, needed);
                 arrives |= vehicle.path.len() > lanes;
                 // Carried over from the lane before, unless it enters a merge,
                 // where it joins another lane's traffic.
@@ -350,7 +352,7 @@ impl Simulation {
                 passed += barrier::between(network.lane(vehicle.path[0]), from, vehicle.lane_pos.s);
                 vehicle.committed = vehicle.committed.saturating_sub(passed.min(255) as u8);
                 if passed > 0 {
-                    acceleration::draw_line_gap(&mut drivers[id], &vehicle.spec);
+                    longitudinal.new_barrier(id, &vehicle.spec);
                     vehicle.stopped_at = None;
                 }
             }
@@ -359,7 +361,7 @@ impl Simulation {
             let s = vehicle.lane_pos.s;
             let needed = reach(vehicle, s, vehicle.lane_change);
             let lanes = vehicle.path.len();
-            extend_path(network, &mut vehicle.path, &mut routes[id], s, needed);
+            extend_path(network, &mut vehicle.path, routing.route_mut(id), s, needed);
             arrives |= vehicle.path.len() > lanes;
             if arrives {
                 raise_through(network, through, &vehicle.path);

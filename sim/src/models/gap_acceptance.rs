@@ -34,7 +34,7 @@ pub(crate) fn decide(
     let spec = &vehicle.spec;
     let speed = vehicle.speed;
     // Whether it can stop where it would like, a line gap short, at `decel`.
-    let line_gap = state.drivers[id].line_gap;
+    let line_gap = state.longitudinal.line_gap(id);
     let can_stop = |decel: f64| speed * speed / (2.0 * decel) <= gap - line_gap;
     let yields_to = std::cell::Cell::new(None);
     let room = || {
@@ -320,7 +320,7 @@ fn clear(
                 return false;
             }
             let length = network.lane(way.theirs).geometry().length();
-            let rear_at_rest = length - state.drivers[o.id].line_gap - other.spec.length;
+            let rear_at_rest = length - state.longitudinal.line_gap(o.id) - other.spec.length;
             rear_at_rest < way.conflict.theirs.end
         };
         let clears = if other.speed > 0.0 && !stops_in_it() {

@@ -79,7 +79,7 @@ pub(super) fn longitudinal<D: DebugSink>(
     let desired_speed = desired_speed.min(friction(state, speeds, vehicle));
     // Drivers don't hold a speed exactly: their noise wanders it.
     let free = acceleration::free_road(&vehicle.spec, vehicle.speed, desired_speed)
-        + state.drivers[id].noise;
+        + state.longitudinal.noise(id);
     let source = AccelSource::FreeRoad { desired_speed };
     sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: free });
     // The lowest of every term but the binding leader's, and that leader.
@@ -128,7 +128,7 @@ pub(super) fn longitudinal<D: DebugSink>(
             };
             if stops
                 && vehicle.speed == 0.0
-                && gap <= state.drivers[id].line_gap + barrier::AT_LINE
+                && gap <= state.longitudinal.line_gap(id) + barrier::AT_LINE
                 && vehicle.stopped_at.is_none()
             {
                 arrived = true;

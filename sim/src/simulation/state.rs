@@ -1,14 +1,14 @@
 //! What a simulation is at one instant: its configuration, its state, and
 //! what is derived from the state rather than saved.
 
-use slotmap::{SecondaryMap, SlotMap};
+use slotmap::SlotMap;
 
 use crate::following::{self, Occupant, Overlaps};
 use crate::junction::Queue;
 use crate::merge::{self, Merges};
 use crate::models::acceleration;
 use crate::models::lane_change;
-use crate::models::routing::Route;
+use crate::models::routing;
 use crate::models::signal::{MovementLight, SignalState};
 use crate::motion::path::{Through, recompute_through};
 use crate::network::SimNetwork;
@@ -45,13 +45,13 @@ pub struct Config {
 pub struct SimState {
     pub(crate) network: SimNetwork,
     pub(crate) vehicles: SlotMap<VehicleId, Vehicle>,
-    /// Each vehicle's state under the longitudinal model.
-    pub(crate) drivers: SecondaryMap<VehicleId, acceleration::Driver>,
-    /// Each vehicle's state under the lane-change model.
-    pub(crate) lane_changers: SecondaryMap<VehicleId, lane_change::Driver>,
-    /// How each vehicle chooses the lanes it adds to its path, with any state
-    /// that needs.
-    pub(crate) routes: SecondaryMap<VehicleId, Route>,
+    /// The longitudinal model, with its state for each vehicle.
+    pub(crate) longitudinal: acceleration::Model,
+    /// The lane-change model, with its state for each vehicle.
+    pub(crate) lane_changing: lane_change::Model,
+    /// The routing model: how each vehicle chooses the lanes it adds to its
+    /// path, with any state that needs.
+    pub(crate) routing: routing::Model,
     /// Each lane's occupants sorted by `s`, indexed by lane.
     pub(crate) occupants: Vec<Vec<Occupant>>,
     /// Each junction's queue, by junction.

@@ -26,6 +26,8 @@ pub(crate) use measure::kept_room;
 pub(crate) use measure::{check_gap, incentives};
 pub(crate) use update::{decide, terms};
 
+use slotmap::SecondaryMap;
+
 use crate::models::acceleration::SAFE_BRAKING;
 use crate::network::Side;
 use crate::vehicle::{Intent, VehicleId, VehicleSpec};
@@ -66,11 +68,66 @@ pub const ASSERTIVE: f64 = 0.5;
 /// What this model keeps for each driver, beside its vehicle.
 #[derive(Clone, Copy, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub(crate) struct Driver {
+struct Driver {
     pub lc: State,
     /// The vehicle behind it that it holds up most, as of the last
     /// longitudinal update: its old follower, if it changed lanes.
     pub old_follower: Option<crate::vehicle::OldFollower>,
+}
+
+/// The lane-change model's state for every vehicle, which it owns.
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub(crate) struct Model {
+    drivers: SecondaryMap<VehicleId, Driver>,
+}
+
+impl Model {
+    /// Takes on a vehicle just inserted, with no desire to change lanes.
+    pub fn insert(&mut self, id: VehicleId) {
+        self.drivers.insert(id, Driver::default());
+    }
+
+    /// Lets go of a vehicle removed.
+    pub fn remove(&mut self, id: VehicleId) {
+        self.drivers.remove(id);
+    }
+
+    /// The vehicle's lane-change state.
+    pub fn state(&self, id: VehicleId) -> State {
+        self.drivers[id].lc
+    }
+
+    /// Sets the vehicle's lane-change state, as [`decide`] left it.
+    pub fn set_state(&mut self, id: VehicleId, state: State) {
+        self.drivers[id].lc = state;
+    }
+
+    /// Records whom the vehicle is making room for, as [`terms`] chose.
+    pub fn set_yielding(&mut self, id: VehicleId, yielding: Option<VehicleId>) {
+        self.drivers[id].lc.set_yielding(yielding);
+    }
+
+    /// The vehicle behind `id` it holds up most, as of the last longitudinal
+    /// update.
+    pub fn old_follower(&self, id: VehicleId) -> Option<crate::vehicle::OldFollower> {
+        self.drivers[id].old_follower
+    }
+
+    /// Sets the vehicle behind `id` it holds up most.
+    pub fn set_old_follower(
+        &mut self,
+        id: VehicleId,
+        follower: Option<crate::vehicle::OldFollower>,
+    ) {
+        self.drivers[id].old_follower = follower;
+    }
+
+    #[cfg(test)]
+    pub fn state_mut(&mut self, id: VehicleId) -> &mut State {
+        &mut self.drivers[id].lc
+    }
 }
 
 /// A driver's lane-change state, owned by this model.

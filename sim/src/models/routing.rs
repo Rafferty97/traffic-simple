@@ -3,8 +3,41 @@
 //! route needs, which the lane-change model turns into desire. Replaced by
 //! editing this module.
 
+use slotmap::SecondaryMap;
+
 use crate::network::{LaneId, Leaving, Neighbor, Side, SimNetwork};
-use crate::vehicle::Vehicle;
+use crate::vehicle::{Vehicle, VehicleId};
+
+/// The routing model's state for every vehicle, which it owns: each one's
+/// route.
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub(crate) struct Model {
+    routes: SecondaryMap<VehicleId, Route>,
+}
+
+impl Model {
+    /// Takes on a vehicle just inserted, with the route it was given.
+    pub fn insert(&mut self, id: VehicleId, route: Route) {
+        self.routes.insert(id, route);
+    }
+
+    /// Lets go of a vehicle removed.
+    pub fn remove(&mut self, id: VehicleId) {
+        self.routes.remove(id);
+    }
+
+    /// The vehicle's route, if there is such a vehicle.
+    pub fn get(&self, id: VehicleId) -> Option<Route> {
+        self.routes.get(id).copied()
+    }
+
+    /// The vehicle's route, to choose the lanes it adds to its path.
+    pub fn route_mut(&mut self, id: VehicleId) -> &mut Route {
+        &mut self.routes[id]
+    }
+}
 
 /// How a vehicle chooses its way through the network.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
