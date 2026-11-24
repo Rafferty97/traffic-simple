@@ -175,7 +175,7 @@ fn three_lane_ring_occupancy_stays_consistent() {
                 let beside = |side| sim.network().lane(v.lane()).adj(side).map(|n| n.lane);
                 if o.is_ghost() {
                     // A ghost belongs to a vehicle indicating into this lane.
-                    let side = v.intent().expect("ghost without an intent").side;
+                    let side = v.intent().indicating().expect("ghost without an intent");
                     assert_eq!(beside(side), Some(lane_id), "stray ghost on {lane_id:?}");
                 } else {
                     // A record belongs to a vehicle following this lane, or

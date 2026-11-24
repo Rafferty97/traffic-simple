@@ -16,7 +16,7 @@ use crate::motion;
 use crate::motion::path::{extend_path, raise_through, reach, recompute_through};
 use crate::network::{JunctionId, LaneId};
 use crate::query::LaneSpeeds;
-use crate::vehicle::HeldUp;
+use crate::vehicle::{HeldUp, LaneChangeIntent};
 
 impl Simulation {
     /// Advances the simulation by `dt` seconds of wall time, a frame's: as many
@@ -114,7 +114,7 @@ impl Simulation {
         );
 
         for i in 0..self.lane_decisions.len() {
-            let (id, state, decision) = self.lane_decisions[i];
+            let (id, state, decision, wants) = self.lane_decisions[i];
             self.state.lane_changing.set_state(id, state);
             match decision {
                 Decision::Nothing => {}
@@ -122,6 +122,13 @@ impl Simulation {
                 Decision::Cancel => self.cancel_intent(id),
                 // Already checked: only permitted changes are asked about.
                 Decision::Change(side) => drop(self.change_lane(id, side)),
+            }
+            // Not indicating, it may still want to change, and keeps room to.
+            let vehicle = &mut self.state.vehicles[id];
+            if vehicle.intent.indicating().is_none() {
+                vehicle.intent = wants.map_or(LaneChangeIntent::None, |side| {
+                    LaneChangeIntent::Desire { side }
+                });
             }
         }
     }

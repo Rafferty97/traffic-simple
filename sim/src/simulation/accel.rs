@@ -91,7 +91,7 @@ pub(super) fn longitudinal<D: DebugSink>(
     let mut first = true;
     // Wanting to change lanes, it keeps room to get halfway through a change
     // from rest.
-    let halfway = lane_change::kept_room(state, id, vehicle);
+    let halfway = acceleration::kept_room(&state.network, vehicle);
     // How many barriers ahead it is committed to, in order: those it is released
     // from drop out, with all after them, and once one holds it, or one beyond is
     // found out of turn behind one shielded, the rest wait.

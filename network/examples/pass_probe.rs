@@ -775,7 +775,7 @@ fn merge_probe(flow: f64, minutes: f64, seed: u64) {
                     v.lane_pos().t,
                     v.speed(),
                     v.lane_change().map(|c| (c.s0 as i32, c.length as i32)),
-                    v.intent().map(|i| i.side),
+                    v.intent().indicating(),
                     b.unwrap_or_default()
                 );
             }

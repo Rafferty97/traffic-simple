@@ -99,7 +99,7 @@ fn search<B>(
 ) -> ControlFlow<B> {
     let v = &sim.state.vehicles[id];
     let own = crate::query::record_index(&sim.state, v.path[0], id);
-    let reach = lane_change::kept_room(&sim.state, id, v).map_or(0.0, |h| v.spec.min_gap + h);
+    let reach = acceleration::kept_room(&sim.state.network, v).map_or(0.0, |h| v.spec.min_gap + h);
     find_leaders(&sim.state, v, Along::Path(own), reach, f)
 }
 
@@ -172,7 +172,7 @@ fn decision(
                 lane_change::unchecked(side, incentive, lc.desire(side), Outcome::Cancel)
             }
             lane_change::Ask::Nothing => {
-                let outcome = match vehicle.intent {
+                let outcome = match vehicle.intent.indicating() {
                     Some(_) => Outcome::Wait,
                     None => Outcome::NotWorthIt,
                 };
@@ -1019,10 +1019,7 @@ fn an_indicating_car_takes_its_ghost_into_the_next_section() {
         !mine.iter().any(|r| r.0 == 0 && r.1),
         "ghost left behind: {mine:?}"
     );
-    assert_eq!(
-        sim.state.vehicles[id].intent.map(|i| i.side),
-        Some(Side::Left)
-    );
+    assert_eq!(sim.state.vehicles[id].intent.indicating(), Some(Side::Left));
 }
 
 #[test]
@@ -1044,7 +1041,7 @@ fn an_intent_ends_where_the_next_section_has_no_neighbour_there() {
     let id = sim.insert(car(), at(0, 97.0, 5.0));
     sim.indicate(id, Side::Right);
     advance_onto(&mut sim, id, 2);
-    assert!(sim.state.vehicles[id].intent.is_none());
+    assert!(sim.state.vehicles[id].intent.indicating().is_none());
     assert!(
         !records(&sim, id).iter().any(|r| r.1),
         "a ghost is left: {:?}",

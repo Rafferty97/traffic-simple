@@ -7,7 +7,9 @@
 
 use slotmap::SecondaryMap;
 
-use crate::vehicle::{VehicleId, VehicleSpec};
+use crate::motion::lateral::halfway_from_rest;
+use crate::network::SimNetwork;
+use crate::vehicle::{Vehicle, VehicleId, VehicleSpec};
 
 /// The acceleration exponent δ.
 const DELTA: i32 = 4;
@@ -109,6 +111,14 @@ impl Model {
         driver.stopping = stopping(driver.stopping, speed, accel);
         driver.stopping.then_some(-STOPPING_DECEL)
     }
+}
+
+/// The room a vehicle that wants to change lanes keeps behind its leaders, so
+/// it isn't boxed in: as far as its rear axle needs to get halfway through a
+/// change from rest. Its leader search along its own lanes looks at least that
+/// far, past its minimum gap. `None` if it doesn't want to change.
+pub(crate) fn kept_room(network: &SimNetwork, vehicle: &Vehicle) -> Option<f64> {
+    vehicle.intent.wants_change().then(|| halfway_from_rest(network, vehicle))
 }
 
 /// Draws how far short of the next barrier it heads for a driver will stop,

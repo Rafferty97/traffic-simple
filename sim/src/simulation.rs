@@ -23,7 +23,7 @@ use crate::motion::path::{extend_path, raise_through, reach};
 use crate::network::{JunctionId, LaneId, MovementId, Side, SimNetwork};
 use crate::query::find_follower;
 use crate::query::{LaneSpeeds, speed_of};
-use crate::vehicle::{HeldUp, Intent, Placement, Vehicle, VehicleId, VehicleSpec};
+use crate::vehicle::{HeldUp, LaneChangeIntent, Placement, Vehicle, VehicleId, VehicleSpec};
 
 /// The traffic simulation.
 pub struct Simulation {
@@ -46,7 +46,7 @@ pub struct Simulation {
     departed: Vec<VehicleId>,
     /// Scratch space for lane-change decisions, reused between steps: each
     /// vehicle's lane-change state afterwards, and what it decided.
-    lane_decisions: Vec<(VehicleId, lane_change::State, Decision)>,
+    lane_decisions: Vec<(VehicleId, lane_change::State, Decision, Option<Side>)>,
     /// Scratch space: the gaps asked for in a step, by the driver's place in
     /// `lane_decisions`.
     asks: Vec<(usize, Side)>,
@@ -239,7 +239,7 @@ impl Simulation {
             lane_pos,
             old_side: None,
             lane_change: None,
-            intent: None,
+            intent: LaneChangeIntent::None,
             committed: 0,
             stopped_at: None,
             held_up: None,
@@ -444,7 +444,7 @@ impl Simulation {
     /// If the vehicle was indicating a change to this side, its ghost becomes its
     /// record on the new lane. An intent to the other side is cancelled.
     pub fn change_lane(&mut self, id: VehicleId, side: Side) -> Result<(), LaneChangeError> {
-        let indicating = self.state.vehicles.get(id).and_then(|v| v.intent).map(|i| i.side);
+        let indicating = self.state.vehicles.get(id).and_then(|v| v.intent.indicating());
         if indicating.is_some_and(|s| s != side) {
             self.cancel_intent(id);
         }
@@ -474,7 +474,7 @@ impl Simulation {
         vehicle.lane_pos = lane_pos;
         vehicle.old_side = Some(side.opposite());
         vehicle.lane_change = Some(change);
-        vehicle.intent = None;
+        vehicle.intent = LaneChangeIntent::None;
         // Its barriers ahead are now others.
         vehicle.committed = 0;
         vehicle.stopped_at = None;
@@ -539,7 +539,7 @@ impl Simulation {
         let list = &mut self.state.occupants[neighbor.lane.0 as usize];
         let index = list.partition_point(|o| o.s() <= ghost.s());
         list.insert(index, ghost);
-        self.state.vehicles[id].intent = Some(Intent { side, since: self.time() });
+        self.state.vehicles[id].intent = LaneChangeIntent::Indicating { side, since: self.time() };
     }
 
     /// Stops a vehicle indicating, removing its ghost.
@@ -547,10 +547,11 @@ impl Simulation {
         let Some(vehicle) = self.state.vehicles.get_mut(id) else {
             return;
         };
-        let Some(intent) = vehicle.intent.take() else {
+        let Some(side) = vehicle.intent.indicating() else {
             return;
         };
-        if let Some(neighbor) = self.state.network.lane(vehicle.path[0]).adj(intent.side) {
+        vehicle.intent = LaneChangeIntent::None;
+        if let Some(neighbor) = self.state.network.lane(vehicle.path[0]).adj(side) {
             following::remove_ghost(&mut self.state.occupants, neighbor.lane, id);
         }
     }

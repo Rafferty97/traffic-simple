@@ -17,8 +17,8 @@ use traffic_network::{
 };
 use traffic_sim::{
     AccelSource, BarrierDecision, BarrierKind, ConflictKind, DebugEvent, LaneChangeError,
-    LaneChangeEval, LaneId, Leaving, Light, PassCheck, Placement, Route, Side, Simulation, Vehicle,
-    VehicleId, VehicleSpec,
+    LaneChangeEval, LaneChangeIntent, LaneId, Leaving, Light, PassCheck, Placement, Route, Side,
+    Simulation, Vehicle, VehicleId, VehicleSpec,
 };
 
 /// The inner lane's circumference: about 160 m across, roomy enough for
@@ -758,14 +758,14 @@ impl App {
                 None => row("changing", "no".into()),
             }
             match v.intent() {
-                Some(intent) => {
-                    let since = self.sim.time() - intent.since;
-                    row(
-                        "indicating",
-                        format!("{} for {since:.1} s", side(Some(intent.side))),
-                    );
+                LaneChangeIntent::Indicating { side: to, since } => {
+                    let since = self.sim.time() - since;
+                    row("indicating", format!("{} for {since:.1} s", side(Some(to))));
                 }
-                None => row("indicating", "no".into()),
+                LaneChangeIntent::Desire { side: to } => {
+                    row("indicating", format!("no, wants {}", side(Some(to))));
+                }
+                LaneChangeIntent::None => row("indicating", "no".into()),
             }
             let path: Vec<_> = v.path().iter().map(|l| l.0.to_string()).collect();
             row("path", path.join(" → "));
@@ -1152,7 +1152,7 @@ const INDICATOR_RADIUS: f32 = 0.28;
 fn draw_indicators(painter: &egui::Painter, sim: &Simulation, v: &Vehicle, corners: [DVec2; 4]) {
     let side = v
         .intent()
-        .map(|i| i.side)
+        .indicating()
         .or(v.lane_change().and(v.old_side()).map(Side::opposite));
     let Some(side) = side else {
         return;

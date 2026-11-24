@@ -14,13 +14,14 @@ use crate::models::acceleration;
 use crate::network::Side;
 use crate::query::LaneSpeeds;
 use crate::simulation::SimState;
-use crate::vehicle::{Vehicle, VehicleId};
+use crate::vehicle::{LaneChangeIntent, Vehicle, VehicleId};
 
 /// Lane changes, for every vehicle, `dt` seconds after the last: each driver's
 /// desires from its incentives, cheaply, and a check of the gap for those whose
-/// desire has reached their threshold. Fills `decisions` with each deciding driver's
-/// state afterwards and what it decided, in order, using `asks` as scratch
-/// space; the simulation applies them. `through` must be exact, for the
+/// desire has reached their threshold. Fills `decisions` with each deciding
+/// driver's state afterwards, what it decided, and the side it wants to change
+/// to, if any, in order, using `asks` as scratch space; the simulation applies
+/// them. `through` must be exact, for the
 /// follower searches.
 pub(crate) fn decide<D: DebugSink>(
     state: &SimState,
@@ -28,7 +29,7 @@ pub(crate) fn decide<D: DebugSink>(
     speeds: &[LaneSpeeds],
     sink: &mut D,
     dt: f64,
-    decisions: &mut Vec<(VehicleId, State, Decision)>,
+    decisions: &mut Vec<(VehicleId, State, Decision, Option<Side>)>,
     asks: &mut Vec<(usize, Side)>,
 ) {
     let time = state.time();
@@ -43,7 +44,7 @@ pub(crate) fn decide<D: DebugSink>(
         let incentives = incentives(state, speeds, id, vehicle);
         aim(&mut lc, incentives);
         // Nothing to weigh up: nowhere to change to, and nothing to fade.
-        if lc.idle() && vehicle.intent.is_none() {
+        if lc.idle() && vehicle.intent == LaneChangeIntent::None {
             continue;
         }
         let ask = step(&mut lc, vehicle.intent, &vehicle.spec, time, dt);
@@ -57,7 +58,7 @@ pub(crate) fn decide<D: DebugSink>(
                 Ask::Check(asked) if asked == side => continue,
                 Ask::Check(_) => Outcome::OtherSide,
                 Ask::Cancel => Outcome::Cancel,
-                Ask::Nothing if vehicle.intent.is_some() => Outcome::Wait,
+                Ask::Nothing if vehicle.intent.indicating().is_some() => Outcome::Wait,
                 Ask::Nothing => Outcome::NotWorthIt,
             };
             let eval = unchecked(side, incentive, lc.desire(side), outcome);
@@ -71,11 +72,12 @@ pub(crate) fn decide<D: DebugSink>(
             }
             Ask::Nothing => Decision::Nothing,
         };
-        decisions.push((id, lc, decision));
+        let wants = lc.wants(vehicle.spec.assertiveness);
+        decisions.push((id, lc, decision, wants));
     }
     // The gaps: drivers' own cooldowns spread them out.
     for &(slot, side) in &*asks {
-        let (id, mut lc, _) = decisions[slot];
+        let (id, mut lc, _, _) = decisions[slot];
         let vehicle = &state.vehicles[id];
         // Measured again, for the debug view: checks are few.
         let incentive = incentives(state, speeds, id, vehicle)[index(side)].unwrap_or_default();
@@ -91,7 +93,8 @@ pub(crate) fn decide<D: DebugSink>(
             dt,
         );
         sink.record(|| DebugEvent::LaneChangeEval { vehicle: id, eval });
-        decisions[slot] = (id, lc, decision);
+        let wants = lc.wants(vehicle.spec.assertiveness);
+        decisions[slot] = (id, lc, decision, wants);
     }
 }
 
@@ -113,7 +116,7 @@ pub(crate) fn terms<D: DebugSink>(
     let ghost = ghost.map(|(owner, gap)| {
         let o = &state.vehicles[owner];
         let lc = state.lane_changing.state(owner);
-        let desire = o.intent.map_or(0.0, |i| lc.desire(i.side));
+        let desire = o.intent.indicating().map_or(0.0, |side| lc.desire(side));
         let term = acceleration::interaction(&vehicle.spec, vehicle.speed, gap, o.speed);
         (owner, gap, desire, term)
     });
@@ -130,14 +133,14 @@ pub(crate) fn terms<D: DebugSink>(
     // LMRS's synchronisation: indicating with desire enough, it adjusts its
     // speed to the leader it would have in the target lane, no harder than
     // comfortably, with its headway shortened by its desire.
-    if let Some(intent) = vehicle.intent {
-        let desire = state.lane_changing.state(id).desire(intent.side);
+    if let Some(side) = vehicle.intent.indicating() {
+        let desire = state.lane_changing.state(id).desire(side);
         if desire >= D_SYNC {
             let headway = headway(desire);
             let _ = find_leaders(
                 state,
                 vehicle,
-                Along::Into(intent.side),
+                Along::Into(side),
                 0.0,
                 |found| match found {
                     Found::Ahead(Ahead::Vehicle(leader), gap, _) if leader != id => {

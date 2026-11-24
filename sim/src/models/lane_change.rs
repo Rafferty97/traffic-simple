@@ -21,7 +21,6 @@
 mod measure;
 mod update;
 
-pub(crate) use measure::kept_room;
 #[cfg(test)]
 pub(crate) use measure::{check_gap, incentives};
 pub(crate) use update::{decide, terms};
@@ -30,7 +29,7 @@ use slotmap::SecondaryMap;
 
 use crate::models::acceleration::SAFE_BRAKING;
 use crate::network::Side;
-use crate::vehicle::{Intent, VehicleId, VehicleSpec};
+use crate::vehicle::{LaneChangeIntent, VehicleId, VehicleSpec};
 
 /// Desire at which a driver changes lanes if the gap lets it, after indicating
 /// for [`MIN_INDICATING`].
@@ -150,11 +149,17 @@ impl State {
         self.desire[index(side)]
     }
 
-    /// Whether the driver wants to change lanes: its desire for a side has
-    /// reached half its threshold for changing, a lower bar, so the wish doesn't
-    /// flicker.
-    pub fn wants_change(&self, assertiveness: f64) -> bool {
-        self.desire.iter().any(|&d| d >= 0.5 * free(assertiveness))
+    /// The side the driver wants to change to, if any: the side whose desire is
+    /// stronger, once it has reached half its threshold for changing, a lower
+    /// bar, so the wish doesn't flicker.
+    pub fn wants(&self, assertiveness: f64) -> Option<Side> {
+        let [left, right] = self.desire;
+        let (side, d) = if left >= right {
+            (Side::Left, left)
+        } else {
+            (Side::Right, right)
+        };
+        (d >= 0.5 * free(assertiveness)).then_some(side)
     }
 }
 
@@ -276,7 +281,7 @@ pub fn aim(state: &mut State, incentives: [Option<Incentives>; 2]) {
 ///   stronger side if both, and it isn't cooling down, it asks for the gap.
 pub fn step(
     state: &mut State,
-    intent: Option<Intent>,
+    intent: LaneChangeIntent,
     spec: &VehicleSpec,
     now: f64,
     dt: f64,
@@ -289,17 +294,17 @@ pub fn step(
     let waiting = state.cooldown > 0;
     state.cooldown = state.cooldown.saturating_sub(1);
     match intent {
-        Some(intent) => {
-            let i = index(intent.side);
+        LaneChangeIntent::Indicating { side, since } => {
+            let i = index(side);
             if !permitted[i] || state.desire[i] < 0.5 * threshold {
                 return Ask::Cancel;
             }
-            if waiting || now - intent.since < MIN_INDICATING {
+            if waiting || now - since < MIN_INDICATING {
                 return Ask::Nothing;
             }
-            Ask::Check(intent.side)
+            Ask::Check(side)
         }
-        None => {
+        LaneChangeIntent::None | LaneChangeIntent::Desire { .. } => {
             let [left, right] = state.desire;
             let (side, d) = if left >= right {
                 (Side::Left, left)
@@ -429,7 +434,7 @@ pub fn unchecked(
 /// A change starts its desires afresh.
 pub fn resolve(
     state: &mut State,
-    intent: Option<Intent>,
+    intent: LaneChangeIntent,
     spec: &VehicleSpec,
     side: Side,
     incentives: Incentives,
@@ -441,12 +446,13 @@ pub fn resolve(
     let safe =
         prospect.own_after >= -accepted && prospect.new_follower.is_none_or(|a| a >= -accepted);
     let room = prospect.room || desire >= D_COOP;
-    let (decision, outcome) = match intent {
-        None if safe && room => (Decision::Indicate(side), Outcome::Indicate),
-        None if desire >= D_SYNC => (Decision::Indicate(side), Outcome::Request),
-        None => (Decision::Nothing, Outcome::Unsafe),
-        Some(_) if safe && room => (Decision::Change(side), Outcome::Change),
-        Some(_) => (Decision::Nothing, Outcome::Wait),
+    let indicating = intent.indicating().is_some();
+    let (decision, outcome) = match indicating {
+        false if safe && room => (Decision::Indicate(side), Outcome::Indicate),
+        false if desire >= D_SYNC => (Decision::Indicate(side), Outcome::Request),
+        false => (Decision::Nothing, Outcome::Unsafe),
+        true if safe && room => (Decision::Change(side), Outcome::Change),
+        true => (Decision::Nothing, Outcome::Wait),
     };
     match decision {
         Decision::Change(_) => {
@@ -566,13 +572,13 @@ mod test {
         let dt = 1.0 / 60.0;
         // A fleeting desire: one step doesn't get there.
         aim(&mut state, [Some(wants), None]);
-        let ask = step(&mut state, None, &spec(), 0.0, dt);
+        let ask = step(&mut state, LaneChangeIntent::None, &spec(), 0.0, dt);
         assert_eq!(ask, Ask::Nothing);
         assert!(state.desire(Side::Left) > 0.0 && state.desire(Side::Left) < D_FREE);
         // Lasting, it does, and asks for the gap.
         let mut ask = Ask::Nothing;
         for _ in 0..60 {
-            ask = step(&mut state, None, &spec(), 0.0, dt);
+            ask = step(&mut state, LaneChangeIntent::None, &spec(), 0.0, dt);
             if ask != Ask::Nothing {
                 break;
             }
@@ -583,7 +589,7 @@ mod test {
         assert_eq!(
             {
                 aim(&mut state, [None, None]);
-                step(&mut state, None, &spec(), 0.0, dt)
+                step(&mut state, LaneChangeIntent::None, &spec(), 0.0, dt)
             },
             Ask::Nothing
         );
@@ -595,7 +601,7 @@ mod test {
         let refused = Prospect { own_after: -5.0, new_follower: None, room: true };
         let (decision, eval) = resolve(
             &mut state,
-            None,
+            LaneChangeIntent::None,
             &spec(),
             Side::Left,
             Incentives::default(),
@@ -611,10 +617,10 @@ mod test {
         let wants = Some(Incentives { speed: 0.5, ..Incentives::default() });
         aim(&mut state, [wants, None]);
         for _ in 0..wait {
-            let ask = step(&mut state, None, &spec(), 0.0, DT);
+            let ask = step(&mut state, LaneChangeIntent::None, &spec(), 0.0, DT);
             assert_eq!(ask, Ask::Nothing);
         }
-        let ask = step(&mut state, None, &spec(), 0.0, DT);
+        let ask = step(&mut state, LaneChangeIntent::None, &spec(), 0.0, DT);
         assert_eq!(ask, Ask::Check(Side::Left));
         // Politer drivers wait longer, more assertive ones less.
         let polite = VehicleSpec { politeness: 0.5, ..spec() };
@@ -629,7 +635,7 @@ mod test {
         let mut state = State { desire: [D_SYNC, 0.0], ..State::default() };
         let (decision, _) = resolve(
             &mut state,
-            None,
+            LaneChangeIntent::None,
             &spec(),
             Side::Left,
             Incentives::default(),
@@ -638,7 +644,7 @@ mod test {
         );
         assert_eq!(decision, Decision::Indicate(Side::Left));
         let no_room = Prospect { own_after: 0.0, new_follower: None, room: false };
-        let intent = Some(Intent { side: Side::Left, since: 0.0 });
+        let intent = LaneChangeIntent::Indicating { side: Side::Left, since: 0.0 };
         let mut state = State { desire: [0.5, 0.0], ..State::default() };
         let (decision, _) = resolve(
             &mut state,

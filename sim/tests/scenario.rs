@@ -117,16 +117,18 @@ fn run_scenario(spawn_rate: f64, despawn_rate: f64, minutes: f64) -> Stats {
                         _ => stats.changes_right += 1,
                     }
                 }
-                if !indicating && v.intent().is_some() {
+                if !indicating && v.intent().indicating().is_some() {
                     stats.intents += 1;
                 }
             }
         }
         last.clear();
-        last.extend(
-            sim.vehicles()
-                .map(|(id, v)| (id, (v.lane_pos().s, v.lane(), v.intent().is_some()))),
-        );
+        last.extend(sim.vehicles().map(|(id, v)| {
+            (
+                id,
+                (v.lane_pos().s, v.lane(), v.intent().indicating().is_some()),
+            )
+        }));
         stats.most_on_road = stats.most_on_road.max(sim.vehicles().count());
 
         // No two bodies overlap. Checked every tenth frame, as it's quadratic.

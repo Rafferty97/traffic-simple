@@ -6,7 +6,7 @@ use arrayvec::ArrayVec;
 
 use super::{Lateral, Occupant, Overlaps, around, classify, record, same_record};
 use crate::network::{LaneId, MAX_SUCCESSORS, SimNetwork};
-use crate::vehicle::{Vehicle, VehicleId};
+use crate::vehicle::{LaneChangeIntent, Vehicle, VehicleId};
 
 /// Whether `id` has a record, not a ghost, on `lane` near `s` (see
 /// [`same_record`]). On a loop, a vehicle can have a second one,
@@ -155,20 +155,20 @@ pub(crate) fn advance(
     // What it knows of its course has grown: records that were
     // converging for want of it are classified again.
     reclassify(network, overlaps, occupants, id, vehicle, previous, true);
-    // Indicating: the ghost moves to the new lane's neighbor, or the
-    // intent is cancelled if there's none to change into.
-    if let Some(intent) = vehicle.intent {
-        if let Some(old) = network.lane(previous).adj(intent.side) {
+    // Indicating: the ghost moves to the new lane's neighbor, or it stops
+    // indicating if there's none to change into, still wanting to.
+    if let Some(side) = vehicle.intent.indicating() {
+        if let Some(old) = network.lane(previous).adj(side) {
             remove_ghost(occupants, old.lane, id);
         }
-        match network.lane(followed).adj(intent.side).filter(|n| n.can_change) {
+        match network.lane(followed).adj(side).filter(|n| n.can_change) {
             Some(n) => {
                 let target = network.lane(n.lane);
                 let hint = target.geometry().lane_pos(vehicle.lane_pos.s, 0.0);
                 occupants[n.lane.0 as usize]
                     .push(Occupant::ghost(network, n.lane, id, vehicle, hint));
             }
-            None => vehicle.intent = None,
+            None => vehicle.intent = LaneChangeIntent::Desire { side },
         }
     }
 }

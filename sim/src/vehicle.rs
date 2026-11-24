@@ -160,10 +160,10 @@ pub struct Vehicle {
     pub(crate) old_side: Option<Side>,
     /// The lane change in progress, if any.
     pub(crate) lane_change: Option<LaneChange>,
-    /// The lane change the vehicle is indicating, if any: its indicator, which
+    /// What it means to do about changing lanes: wanting to, or indicating, which
     /// other vehicles see. Only the simulation sets it, carrying out what the
     /// lane-change model decides.
-    pub(crate) intent: Option<Intent>,
+    pub(crate) intent: LaneChangeIntent,
     /// How many of the barriers ahead of its rear axle on its path it has
     /// committed to crossing (see `docs/DESIGN.md`, Barriers and signals).
     #[cfg_attr(feature = "serde", serde(default))]
@@ -192,15 +192,37 @@ pub(crate) struct HeldUp {
     pub without: f64,
 }
 
-/// A lane change a vehicle is indicating. It has a ghost record in the target
-/// lane's occupants until it is cancelled or carried out.
-#[derive(Clone, Copy, Debug)]
+/// What a vehicle means to do about changing lanes, as the lane-change model
+/// last decided.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Intent {
-    /// The side of the vehicle's lane it wants to move to.
-    pub side: Side,
-    /// When it started indicating, in simulated seconds.
-    pub since: f64,
+pub enum LaneChangeIntent {
+    /// Nothing: it is content where it is.
+    #[default]
+    None,
+    /// It wants to change to `side`, but isn't indicating: it keeps room behind
+    /// its leaders to change from rest (see the longitudinal model's
+    /// `kept_room`).
+    Desire { side: Side },
+    /// It is indicating to `side`, since `since`, in simulated seconds, keeping
+    /// room as when it wants to. It has a ghost record in the target lane's
+    /// occupants until the change is cancelled or carried out.
+    Indicating { side: Side, since: f64 },
+}
+
+impl LaneChangeIntent {
+    /// The side it is indicating to, if it is.
+    pub fn indicating(self) -> Option<Side> {
+        match self {
+            LaneChangeIntent::Indicating { side, .. } => Some(side),
+            _ => None,
+        }
+    }
+
+    /// Whether it wants to change lanes, indicating or not.
+    pub fn wants_change(self) -> bool {
+        self != LaneChangeIntent::None
+    }
 }
 
 impl Vehicle {
@@ -278,8 +300,8 @@ impl Vehicle {
         self.stopped_at
     }
 
-    /// The lane change the vehicle is indicating, if any.
-    pub fn intent(&self) -> Option<Intent> {
+    /// What the vehicle means to do about changing lanes.
+    pub fn intent(&self) -> LaneChangeIntent {
         self.intent
     }
 

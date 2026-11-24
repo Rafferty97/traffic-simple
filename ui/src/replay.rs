@@ -178,7 +178,7 @@ mod test {
                 ]
                 .map(f64::to_bits),
             );
-            out.push(v.intent().is_some() as u64);
+            out.push(v.intent().indicating().is_some() as u64);
         }
         for (lane, _) in sim.network().lanes() {
             for o in sim.occupants(lane) {

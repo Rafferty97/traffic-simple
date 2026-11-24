@@ -4,8 +4,8 @@ use glam::DVec2;
 use std::collections::HashMap;
 
 use traffic_sim::{
-    AccelSource, DebugEvent, Lane, LaneId, MIN_INDICATING, Placement, Route, SAFE_BRAKING,
-    SimNetwork, VehicleId,
+    AccelSource, DebugEvent, Lane, LaneChangeIntent, LaneId, MIN_INDICATING, Placement, Route,
+    SAFE_BRAKING, SimNetwork, VehicleId,
 };
 
 mod common;
@@ -54,8 +54,8 @@ fn overtakes_a_stopped_car_after_indicating() {
     run(&mut sim, 15.0, |sim| {
         time += DT;
         let v = sim.get(id).unwrap();
-        if let Some(intent) = v.intent() {
-            indicated_at.get_or_insert(intent.since);
+        if let LaneChangeIntent::Indicating { since, .. } = v.intent() {
+            indicated_at.get_or_insert(since);
         }
         if v.lane() == LaneId(0) {
             changed_at.get_or_insert(time);
@@ -115,7 +115,7 @@ fn ghosts_brake_nobody() {
 
     let mut indicating_frames = 0;
     run(&mut sim, 6.0, |sim| {
-        if sim.get(id).unwrap().intent().is_none() {
+        if sim.get(id).unwrap().intent().indicating().is_none() {
             return;
         }
         indicating_frames += 1;

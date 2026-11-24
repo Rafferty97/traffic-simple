@@ -71,7 +71,7 @@ fn trace(seed: u64, seconds: f64) -> Vec<u64> {
                 .map(f64::to_bits),
             );
             out.extend(v.path().iter().map(|l| l.0 as u64));
-            out.push(v.intent().is_some() as u64);
+            out.push(v.intent().indicating().is_some() as u64);
         }
         for &lane in &lanes {
             for o in sim.occupants(lane) {

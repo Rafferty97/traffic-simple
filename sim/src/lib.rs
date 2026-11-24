@@ -34,4 +34,4 @@ pub use network::{
     NetworkError, Phase, Side, SignalPlan, SimNetwork, YieldsId,
 };
 pub use simulation::{Config, InsertError, LaneChangeError, SimState, Simulation};
-pub use vehicle::{Intent, Placement, Vehicle, VehicleId, VehicleSpec};
+pub use vehicle::{LaneChangeIntent, Placement, Vehicle, VehicleId, VehicleSpec};

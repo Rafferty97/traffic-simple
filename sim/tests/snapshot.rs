@@ -27,7 +27,7 @@ fn state(sim: &Simulation) -> Vec<u64> {
             .map(f64::to_bits),
         );
         out.extend(v.path().iter().map(|l| l.0 as u64));
-        out.push(v.intent().is_some() as u64);
+        out.push(v.intent().indicating().is_some() as u64);
         out.push(v.lane_change().is_some() as u64);
     }
     for (lane, _) in sim.network().lanes() {

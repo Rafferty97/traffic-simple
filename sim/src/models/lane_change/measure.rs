@@ -128,7 +128,8 @@ pub(crate) fn check_gap(
     // Halfway through before it would have to stop behind its leader.
     let own = crate::query::record_index(state, vehicle.path[0], id);
     let mut stop = f64::INFINITY;
-    let reach = kept_room(state, id, vehicle).map_or(0.0, |h| vehicle.spec.min_gap + h);
+    // Checking a gap, it wants to change, so keeps room to.
+    let reach = vehicle.spec.min_gap + halfway_from_rest(network, vehicle);
     let _ = find_leaders(
         state,
         vehicle,
@@ -148,21 +149,6 @@ pub(crate) fn check_gap(
     );
     let room = stop >= halfway(network, vehicle);
     lane_change::Prospect { own_after, new_follower, room }
-}
-
-/// The room a vehicle that wants to change lanes keeps behind its leaders, so
-/// it isn't boxed in: as far as its rear axle needs to get halfway through a
-/// change from rest. Its leader search along its own lanes looks at least that
-/// far, past its minimum gap. `None` if it doesn't want to change.
-pub(crate) fn kept_room(state: &SimState, id: VehicleId, vehicle: &Vehicle) -> Option<f64> {
-    wants_change(state, id, vehicle).then(|| halfway_from_rest(&state.network, vehicle))
-}
-
-/// Whether a vehicle wants to change lanes: it is indicating, or has built up
-/// enough advantage for a side to keep indicating to it.
-pub(crate) fn wants_change(state: &SimState, id: VehicleId, vehicle: &Vehicle) -> bool {
-    vehicle.intent.is_some()
-        || state.lane_changing.state(id).wants_change(vehicle.spec.assertiveness)
 }
 
 /// How far a vehicle with `spec` could go before it had to stop behind
