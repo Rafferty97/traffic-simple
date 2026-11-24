@@ -299,6 +299,8 @@ Visual realism comes first, but traffic flow mustn't break down in ways real tra
   - Gap acceptance at give-way and stop signs: critical headways of about 4–7 s by movement, and follow-up headways of about 2–3.5 s (Highway Capacity Manual).
 - **Reading it:** each measure prints with its reference range, so a change that moves a capacity shows up; ranges are references, not pass or fail. A measure far outside its range is a bug or a model fault to look into, and the reason goes into this document.
 
+**Suggestion:** the same scenarios and demand run on the old simulator, on the `master` branch, side by side with this one (see [Comparing with the old simulator](legacy-comparison.md)).
+
 **Suggestion:** later, the same scenarios exported to SUMO, at road level through netconvert's plain XML, as a second reference for network-wide behaviour such as spillback and gridlock.
 
 ## Debug instrumentation
