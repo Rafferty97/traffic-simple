@@ -29,9 +29,6 @@ const SPEED_LIMIT: f64 = 50.0 / 3.6;
 
 /// Most spawns or despawns per simulated second, while the count is off target.
 const CHANGE_RATE: f64 = 2.0;
-/// How wide the inspector's column of acceleration values is, in points.
-const TERM_WIDTH: f32 = 80.0;
-
 /// The speed the inspector's slow button imposes, in m/s: 20 km/h.
 const SLOW_CAP: f64 = 20.0 / 3.6;
 /// How far outside a vehicle a click still selects it, in screen points.
@@ -56,6 +53,43 @@ const RELATED: [Color32; 8] = [
 /// vehicles there at once.
 fn number(id: VehicleId) -> String {
     id.index().to_string()
+}
+
+/// How an acceleration term is described in the inspector, and the gap it
+/// keeps, if any; the vehicle it names is [`named`]'s.
+fn describe(source: AccelSource) -> (String, Option<f64>) {
+    match source {
+        AccelSource::FreeRoad { desired_speed } => (
+            format!("free road, v0 {:.0} km/h", desired_speed * 3.6),
+            None,
+        ),
+        AccelSource::Leader { gap, headway, .. } if headway < 1.0 => {
+            (format!("leader, headway ×{headway:.2}"), Some(gap))
+        }
+        AccelSource::Leader { gap, .. } => ("leader".into(), Some(gap)),
+        AccelSource::Cap { max_speed: 0.0 } => ("held to a stop".into(), None),
+        AccelSource::Cap { max_speed } => (format!("capped at {:.0} km/h", max_speed * 3.6), None),
+        AccelSource::FinishingStop => (
+            format!(
+                "finishing a stop, below {:.0} km/h",
+                traffic_sim::STOPPING_SPEED * 3.6
+            ),
+            None,
+        ),
+        AccelSource::PathEnd { gap } => ("end of known path".into(), Some(gap)),
+        AccelSource::Barrier { lane, gap, .. } => {
+            (format!("barrier on lane {}", lane.0), Some(gap))
+        }
+        AccelSource::Junction { kind: ConflictKind::Cross, gap, .. } => {
+            ("crossing after".into(), Some(gap))
+        }
+        AccelSource::Junction { kind: ConflictKind::Merge, gap, .. } => {
+            ("merging after".into(), Some(gap))
+        }
+        AccelSource::JunctionHold { gap } => ("held out of junction queue".into(), Some(gap)),
+        AccelSource::Merge { gap, .. } => ("merge order after".into(), Some(gap)),
+        AccelSource::Model { model, term, gap, .. } => (format!("{model}: {term}"), gap),
+    }
 }
 
 /// The vehicle an acceleration term is for, if any.
@@ -723,7 +757,8 @@ impl App {
             return;
         };
         let pos = v.lane_pos();
-        egui::Grid::new("inspector").num_columns(2).show(ui, |ui| {
+        ui.strong("Vehicle");
+        egui::Grid::new("inspector").num_columns(2).striped(true).show(ui, |ui| {
             ui.label("id");
             ui.label(egui::RichText::new(number(id)).monospace().color(SELECTED));
             ui.end_row();
@@ -790,6 +825,42 @@ impl App {
             row("curvature", format!("{:+.4} /m", v.curvature()));
         });
 
+        ui.separator();
+        ui.strong("Acceleration terms (the lowest binds)");
+        let related = related(&self.debug, id);
+        let colour_of = |other: VehicleId| {
+            related.iter().find(|&&(v, _)| v == other).map_or(SELECTED, |&(_, c)| c)
+        };
+        let terms: Vec<_> = self.debug.terms(id).collect();
+        egui::Grid::new("accel terms").num_columns(4).striped(true).show(ui, |ui| {
+            for heading in ["term", "vehicle", "gap", "m/s²"] {
+                ui.strong(heading);
+            }
+            ui.end_row();
+            for &(source, accel) in &terms {
+                let (term, gap) = describe(source);
+                ui.label(term);
+                match named(source) {
+                    Some(other) => {
+                        ui.label(egui::RichText::new(number(other)).color(colour_of(other)))
+                    }
+                    None => ui.label(""),
+                };
+                ui.monospace(gap.map_or(String::new(), |gap| format!("{gap:.2} m")));
+                let value = egui::RichText::new(format!("{accel:+.2}")).monospace();
+                ui.label(match accel == v.accel() {
+                    true => value.strong().color(SELECTED),
+                    false => value,
+                });
+                ui.end_row();
+            }
+        });
+        // The vehicle's acceleration is the minimum of its terms, so if none
+        // matches, an input to the model wasn't recorded.
+        if !terms.is_empty() && !terms.iter().any(|&(_, accel)| accel == v.accel()) {
+            ui.colored_label(Color32::RED, "No recorded term matches the acceleration.");
+        }
+
         // What the models last weighed up for it, a table for each model: a
         // row for each field, a column for each thing it weighed up.
         let evals = self.debug.decisions.get(&id).cloned().unwrap_or_default();
@@ -801,40 +872,41 @@ impl App {
         }
         for model in models {
             ui.separator();
-            ui.label(format!("Model: {model}"));
-            let columns: Vec<_> = evals.iter().filter(|e| e.0 == model).map(|e| &e.1).collect();
-            let mut names: Vec<&'static str> = Vec::new();
-            for &(name, _) in columns.iter().flat_map(|c| c.iter()) {
-                if !names.contains(&name) {
-                    names.push(name);
-                }
-            }
-            egui::Grid::new(("model", model))
-                .num_columns(columns.len() + 1)
-                .striped(true)
+            egui::CollapsingHeader::new(egui::RichText::new(format!("Model: {model}")).strong())
+                .id_salt(("model", model))
+                .default_open(false)
                 .show(ui, |ui| {
-                    for name in names {
-                        ui.label(name);
-                        for column in &columns {
-                            let value = column.iter().find(|f| f.0 == name).map(|f| f.1);
-                            ui.label(match value {
-                                Some(Field::Num(x)) => format!("{x:+.2}"),
-                                Some(Field::Flag(b)) => if b { "yes" } else { "no" }.into(),
-                                Some(Field::Text(t)) => t.into(),
-                                Some(Field::None) | None => "–".into(),
-                            });
+                    let columns: Vec<_> =
+                        evals.iter().filter(|e| e.0 == model).map(|e| &e.1).collect();
+                    let mut names: Vec<&'static str> = Vec::new();
+                    for &(name, _) in columns.iter().flat_map(|c| c.iter()) {
+                        if !names.contains(&name) {
+                            names.push(name);
                         }
-                        ui.end_row();
                     }
+                    egui::Grid::new(("model", model))
+                        .num_columns(columns.len() + 1)
+                        .striped(true)
+                        .show(ui, |ui| {
+                            for name in names {
+                                ui.label(name);
+                                for column in &columns {
+                                    let value = column.iter().find(|f| f.0 == name).map(|f| f.1);
+                                    ui.label(match value {
+                                        Some(Field::Num(x)) => format!("{x:+.2}"),
+                                        Some(Field::Flag(b)) => if b { "yes" } else { "no" }.into(),
+                                        Some(Field::Text(t)) => t.into(),
+                                        Some(Field::None) | None => "–".into(),
+                                    });
+                                }
+                                ui.end_row();
+                            }
+                        });
                 });
         }
 
         ui.separator();
         ui.label(format!("Committed to {} barriers ahead", v.committed()));
-        let related = related(&self.debug, id);
-        let colour_of = |other: VehicleId| {
-            related.iter().find(|&&(v, _)| v == other).map_or(SELECTED, |&(_, c)| c)
-        };
         let decisions = self.debug.barriers.iter().filter(|b| b.0 == id);
         for &(_, lane, index, gap, decision, yields_to) in decisions {
             let what = match decision {
@@ -856,98 +928,6 @@ impl App {
                 );
             }
             ui.add(egui::Label::new(text).wrap());
-        }
-
-        ui.separator();
-        ui.label("Acceleration terms (minimum binds)");
-        let terms: Vec<_> = self.debug.terms(id).collect();
-        for &(source, accel) in &terms {
-            // Its description, either side of the vehicle it names, if any.
-            let (before, after): (String, String) = match source {
-                AccelSource::FreeRoad { desired_speed } => (
-                    format!(
-                        "free road, v0 {:.0} km/h ({desired_speed:.1} m/s)",
-                        desired_speed * 3.6
-                    ),
-                    String::new(),
-                ),
-                AccelSource::Leader { gap, headway, .. } if headway < 1.0 => (
-                    "leader ".into(),
-                    format!(", gap {gap:.2} m, headway ×{headway:.2}"),
-                ),
-                AccelSource::Leader { gap, .. } => ("leader ".into(), format!(", gap {gap:.2} m")),
-                AccelSource::Cap { max_speed: 0.0 } => ("held to a stop".into(), String::new()),
-                AccelSource::FinishingStop => (
-                    format!(
-                        "stopping or staying put, below {:.0} km/h",
-                        traffic_sim::STOPPING_SPEED * 3.6
-                    ),
-                    String::new(),
-                ),
-                AccelSource::Cap { max_speed } => (
-                    format!("capped at {:.0} km/h", max_speed * 3.6),
-                    String::new(),
-                ),
-                AccelSource::PathEnd { gap } => {
-                    (format!("end of known path, gap {gap:.2} m"), String::new())
-                }
-                AccelSource::Barrier { lane, gap, .. } => (
-                    format!("held at a barrier on lane {}, gap {gap:.2} m", lane.0),
-                    String::new(),
-                ),
-                AccelSource::Junction { kind: ConflictKind::Cross, gap, .. } => {
-                    ("crossing after ".into(), format!(", gap {gap:.2} m"))
-                }
-                AccelSource::JunctionHold { gap } => (
-                    format!("held out of the junction's queue, gap {gap:.2} m"),
-                    String::new(),
-                ),
-                AccelSource::Junction { kind: ConflictKind::Merge, gap, .. } => {
-                    ("merging after ".into(), format!(", gap {gap:.2} m"))
-                }
-                AccelSource::Model { model, term, gap, .. } => (
-                    format!("{model}: {term} "),
-                    gap.map_or(String::new(), |gap| format!(", gap {gap:.2} m")),
-                ),
-                AccelSource::Merge { gap, .. } => {
-                    ("merge order after ".into(), format!(", gap {gap:.2} m"))
-                }
-            };
-            let font = egui::TextStyle::Body.resolve(ui.style());
-            let plain = egui::TextFormat::simple(font.clone(), ui.visuals().text_color());
-            let mut name = egui::text::LayoutJob::default();
-            name.append(&before, 0.0, plain.clone());
-            if let Some(other) = named(source) {
-                name.append(
-                    &number(other),
-                    0.0,
-                    egui::TextFormat::simple(font, colour_of(other)),
-                );
-            }
-            name.append(&after, 0.0, plain);
-            let text = egui::RichText::new(format!("{accel:+.2} m/s²")).monospace();
-            let text = match accel == v.accel() {
-                true => text.strong().color(SELECTED),
-                false => text,
-            };
-            // Its description wrapped on the left, its value aligned on the
-            // right, so neither runs out of the panel.
-            ui.horizontal_top(|ui| {
-                let value = egui::Label::new(text);
-                let width = ui.available_width() - TERM_WIDTH - ui.spacing().item_spacing.x;
-                ui.allocate_ui(egui::vec2(width, 0.0), |ui| {
-                    ui.set_width(width);
-                    ui.add(egui::Label::new(name).wrap());
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                    ui.add(value);
-                });
-            });
-        }
-        // The vehicle's acceleration is the minimum of its terms, so if none
-        // matches, an input to the model wasn't recorded.
-        if !terms.is_empty() && !terms.iter().any(|&(_, accel)| accel == v.accel()) {
-            ui.colored_label(Color32::RED, "No recorded term matches the acceleration.");
         }
     }
 
@@ -1021,7 +1001,7 @@ impl eframe::App for App {
         // Always shown at a fixed width, so selecting a vehicle doesn't move the scene.
         egui::Panel::right("inspector")
             .resizable(false)
-            .exact_size(320.0)
+            .exact_size(480.0)
             .show(ui, |ui| {
                 // Content that is too wide scrolls instead of widening the panel,
                 // which would shift the scene.
