@@ -180,7 +180,7 @@ The models are apart from the core, each behind a module boundary and replaced b
 - [**Signals**](models/signals.md): fixed-time plans.
 - [**Driver model**](models/driver.md): each driver's traits, given at insertion beside its vehicle: its desired speed, dawdling, gap to lines and how it changes lanes, and the state they vary with.
 
-Each owns its per-vehicle state, and the core asks it for what it needs (see Simulation state and data layout). Known limitations, oddities and performance worth chasing are collected in [Known issues](known-issues.md).
+Each owns its per-vehicle state, and the core asks it for what it needs (see Simulation state and data layout). Known limitations, oddities and performance worth chasing are collected in [Known issues](known-issues.md). Step times, measured over time, are in [Performance](performance.md).
 
 ## Lane membership, lane changes and diverging
 
