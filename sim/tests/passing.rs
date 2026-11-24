@@ -30,7 +30,7 @@ impl common::Collect for Checks {
 fn checks_against_a_held_car(ahead: f64) -> usize {
     let lane = |y: f64| {
         let points = [glam::DVec2::new(0.0, y), glam::DVec2::new(600.0, y)];
-        Lane::new(&points, 3.5, SPEED_LIMIT).unwrap()
+        Lane::new(&points, 3.5, SPEED_LIMIT, common::alone()).unwrap()
     };
     // Lane 0 is on the left of lane 1.
     let mut network = SimNetwork::new(vec![lane(3.5), lane(0.0)]);
@@ -43,6 +43,7 @@ fn checks_against_a_held_car(ahead: f64) -> usize {
             s: 100.0,
             speed: 10.0,
             route: Route::default(),
+            seed: 0,
         },
     );
     let held = sim.insert(
@@ -52,6 +53,7 @@ fn checks_against_a_held_car(ahead: f64) -> usize {
             s: 100.0 + ahead,
             speed: 0.0,
             route: Route::default(),
+            seed: 0,
         },
     );
     sim.hold(held);

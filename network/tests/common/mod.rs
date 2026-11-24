@@ -261,7 +261,7 @@ pub fn flood(net: &traffic_network::RoadNetwork, seconds: f64) {
             if step % 20 == 0 {
                 let lane = entries[(step / 20 * 7) as usize % entries.len()];
                 let speed = sim.network().lane(lane).speed_limit();
-                let at = Placement { lane, s: 5.0, speed, route: Route::random(step) };
+                let at = Placement { lane, s: 5.0, speed, route: Route::random(step), seed: step };
                 let _ = sim.try_insert(car, at);
             }
             sim.step_variable(1.0 / 60.0);

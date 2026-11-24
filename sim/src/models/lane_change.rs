@@ -26,12 +26,13 @@ mod update;
 
 #[cfg(test)]
 pub(crate) use measure::incentives;
-pub(crate) use update::{Decided, decide, terms};
+pub(crate) use update::{Decided, View, decide, terms};
 
 use slotmap::SecondaryMap;
 
 use crate::debug::Field;
 use crate::models::acceleration::SAFE_BRAKING;
+use crate::models::routing::Need;
 use crate::network::Side;
 use crate::query::Gap;
 use crate::vehicle::{LaneChangeIntent, VehicleId, VehicleSpec};
@@ -238,6 +239,26 @@ pub fn route_desire(distance: f64, speed: f64, changes: u32) -> f64 {
     let by_distance = 1.0 - distance / (n * ROUTE_DISTANCE);
     let by_time = 1.0 - distance / speed.max(0.1) / (n * ROUTE_TIME);
     by_distance.max(by_time).clamp(0.0, 1.0)
+}
+
+/// LMRS's route incentive to change from a lane from which a route needs
+/// `here` to the lane beside it, from which it needs `there`, each `None` where
+/// it has no way, at `speed`: toward a lane it needs fewer changes from, by
+/// how soon it must have made them from here, and away from one it needs more
+/// from, by how soon it would have to make them from there, as LMRS weighs
+/// leaving a lane against staying (Schakel, Knoop and van Arem, 2012). Away
+/// from one with no way at all, wholly; with no way from here, nothing.
+pub(crate) fn route_incentive(here: Option<Need>, there: Option<Need>, speed: f64) -> f64 {
+    match (here, there) {
+        (Some(here), Some(there)) if there.changes < here.changes => {
+            route_desire(here.distance, speed, here.changes)
+        }
+        (Some(here), Some(there)) if there.changes > here.changes => {
+            -route_desire(there.distance, speed, there.changes)
+        }
+        (Some(_), None) => -1.0,
+        _ => 0.0,
+    }
 }
 
 /// What a step of the model asks of the simulation.

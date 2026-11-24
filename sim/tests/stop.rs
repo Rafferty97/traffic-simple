@@ -20,7 +20,7 @@ fn p(x: f64, y: f64) -> DVec2 {
 /// and 5. Connector 3, from the south, starts with a stop line giving way to
 /// connector 2.
 fn stop() -> SimNetwork {
-    let lane = |points: &[DVec2]| Lane::new(points, 3.5, LIMIT).unwrap();
+    let lane = |points: &[DVec2]| Lane::new(points, 3.5, LIMIT, common::alone()).unwrap();
     let lanes = vec![
         lane(&[p(-100.0, 0.0), p(-10.0, 0.0)]),
         lane(&[p(0.0, -100.0), p(0.0, -10.0)]),
@@ -43,7 +43,13 @@ fn stop() -> SimNetwork {
 }
 
 fn at(lane: u32, s: f64, speed: f64) -> Placement {
-    Placement { lane: LaneId(lane), s, speed, route: Route::random(0) }
+    Placement {
+        lane: LaneId(lane),
+        s,
+        speed,
+        route: Route::random(0),
+        seed: 0,
+    }
 }
 
 /// At rest, from the south, where a car stops for its line.

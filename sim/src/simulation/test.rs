@@ -40,15 +40,31 @@ pub(crate) fn car() -> VehicleSpec {
     }
 }
 
+/// A road no other lane is part of, for a lane that stands alone: each call
+/// gives another.
+pub(crate) fn alone() -> crate::network::RoadId {
+    thread_local! {
+        static NEXT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+    NEXT.with(|next| {
+        next.set(next.get() + 1);
+        crate::network::RoadId(next.get() - 1)
+    })
+}
+
 /// A straight road along x in sections, each `lanes` lanes wide, lane 0 on
 /// the left. Section `k`'s lane `i` is `LaneId(k * lanes + i)` and runs on to
 /// section `k + 1`'s lane `i`.
 pub(crate) fn road(sections: &[(f64, f64)], lanes: u32) -> SimNetwork {
     let mut all = Vec::new();
     for &(x0, x1) in sections {
+        // The lanes of a section side by side are one road.
+        let road = alone();
         for i in 0..lanes {
             let y = -WIDTH * i as f64;
-            all.push(Lane::new(&[DVec2::new(x0, y), DVec2::new(x1, y)], WIDTH, LIMIT).unwrap());
+            all.push(
+                Lane::new(&[DVec2::new(x0, y), DVec2::new(x1, y)], WIDTH, LIMIT, road).unwrap(),
+            );
         }
     }
     let mut network = SimNetwork::new(all);
@@ -95,7 +111,13 @@ pub(crate) fn two_lanes() -> Simulation {
 }
 
 pub(crate) fn at(lane: u32, s: f64, speed: f64) -> Placement {
-    Placement { lane: LaneId(lane), s, speed, route: Route::default() }
+    Placement {
+        lane: LaneId(lane),
+        s,
+        speed,
+        route: Route::default(),
+        seed: 0,
+    }
 }
 
 /// A vehicle's rear, where both searches split its lane.
@@ -201,7 +223,13 @@ fn the_follower_search_stops_at_the_followers_horizon() {
 fn the_follower_search_wraps_round_a_loop() {
     // A lane that is its own successor: the vehicle at 970, its front at
     // 973.6, is 76.4 m behind a point at 50, round the seam.
-    let lane = Lane::new(&[DVec2::ZERO, DVec2::new(1000.0, 0.0)], WIDTH, LIMIT).unwrap();
+    let lane = Lane::new(
+        &[DVec2::ZERO, DVec2::new(1000.0, 0.0)],
+        WIDTH,
+        LIMIT,
+        alone(),
+    )
+    .unwrap();
     let mut network = SimNetwork::new(vec![lane]);
     network.connect(LaneId(0), LaneId(0));
     let mut sim = new_sim(network);
@@ -215,7 +243,13 @@ fn the_follower_search_wraps_round_a_loop() {
 fn on_lanes_leading_in_only_vehicles_headed_this_way_count() {
     // Lane 0 splits into lane 1, straight on, and lane 2, bearing left.
     let lane = |x0: f64, x1: f64, y1: f64| {
-        Lane::new(&[DVec2::new(x0, 0.0), DVec2::new(x1, y1)], WIDTH, LIMIT).unwrap()
+        Lane::new(
+            &[DVec2::new(x0, 0.0), DVec2::new(x1, y1)],
+            WIDTH,
+            LIMIT,
+            alone(),
+        )
+        .unwrap()
     };
     let mut network = SimNetwork::new(vec![
         lane(0.0, 100.0, 0.0),
@@ -300,7 +334,7 @@ fn a_ghost_is_in_the_lane_it_indicates_into() {
 /// crossed 10 m along by lane 3, and runs on as lane 4; the network makes
 /// lane 5 its neighbor, as at the ramps' lane drop.
 pub(crate) fn two_lanes_into_a_junction() -> Simulation {
-    let lane = |a: DVec2, b: DVec2| Lane::new(&[a, b], WIDTH, 25.0).unwrap();
+    let lane = |a: DVec2, b: DVec2| Lane::new(&[a, b], WIDTH, 25.0, alone()).unwrap();
     let p = DVec2::new;
     let mut network = SimNetwork::new(vec![
         lane(p(0.0, 0.0), p(500.0, 0.0)),
@@ -325,7 +359,7 @@ pub(crate) fn two_lanes_into_a_junction() -> Simulation {
 /// side and leads into lane 2 as well, without starting with them.
 pub(crate) fn a_taper() -> Simulation {
     let p = DVec2::new;
-    let lane = |points: &[DVec2]| Lane::new(points, WIDTH, 25.0).unwrap();
+    let lane = |points: &[DVec2]| Lane::new(points, WIDTH, 25.0, alone()).unwrap();
     let mut network = SimNetwork::new(vec![
         lane(&[p(0.0, 0.0), p(100.0, 0.0)]),
         lane(&[p(0.0, -WIDTH), p(20.0, -WIDTH), p(100.0, 0.0)]),
@@ -366,7 +400,13 @@ fn lanes_that_start_to_overlap_are_a_merge_and_branches_of_a_fork_are_not() {
 
     // Lane 0 forks at 100 m into lanes 1 and 2, which overlap where they part.
     let lane = |x0: f64, x1: f64, y1: f64| {
-        Lane::new(&[DVec2::new(x0, 0.0), DVec2::new(x1, y1)], WIDTH, LIMIT).unwrap()
+        Lane::new(
+            &[DVec2::new(x0, 0.0), DVec2::new(x1, y1)],
+            WIDTH,
+            LIMIT,
+            alone(),
+        )
+        .unwrap()
     };
     let mut network = SimNetwork::new(vec![
         lane(0.0, 100.0, 0.0),
@@ -659,7 +699,13 @@ pub(crate) fn advance_onto(sim: &mut Simulation, id: VehicleId, lane: u32) {
 fn at_a_fork_it_joins_every_branch_and_leaves_those_it_doesnt_take() {
     // Lane 0 forks at 100 m into lane 1, straight on, and lane 2, bearing left.
     let lane = |x0: f64, x1: f64, y1: f64| {
-        Lane::new(&[DVec2::new(x0, 0.0), DVec2::new(x1, y1)], WIDTH, LIMIT).unwrap()
+        Lane::new(
+            &[DVec2::new(x0, 0.0), DVec2::new(x1, y1)],
+            WIDTH,
+            LIMIT,
+            alone(),
+        )
+        .unwrap()
     };
     let mut network = SimNetwork::new(vec![
         lane(0.0, 100.0, 0.0),
@@ -742,7 +788,13 @@ fn an_indicating_car_takes_its_ghost_into_the_next_section() {
 fn an_intent_ends_where_the_next_section_has_no_neighbour_there() {
     // Lane 1, on the right, ends at 100 m: lane 0 runs on as lane 2, alone.
     let straight = |x0: f64, x1: f64, y: f64| {
-        Lane::new(&[DVec2::new(x0, y), DVec2::new(x1, y)], WIDTH, LIMIT).unwrap()
+        Lane::new(
+            &[DVec2::new(x0, y), DVec2::new(x1, y)],
+            WIDTH,
+            LIMIT,
+            alone(),
+        )
+        .unwrap()
     };
     let lanes = vec![
         straight(0.0, 100.0, 0.0),
@@ -812,7 +864,13 @@ fn a_straddling_car_carries_its_old_side_into_the_next_section() {
 fn at_a_lane_drop_the_old_side_clears_only_when_the_last_old_lane_record_goes() {
     // Lane 1, on the right, ends at 100 m; lane 0 runs on as lane 2.
     let straight = |x0: f64, x1: f64, y: f64| {
-        Lane::new(&[DVec2::new(x0, y), DVec2::new(x1, y)], WIDTH, LIMIT).unwrap()
+        Lane::new(
+            &[DVec2::new(x0, y), DVec2::new(x1, y)],
+            WIDTH,
+            LIMIT,
+            alone(),
+        )
+        .unwrap()
     };
     let lanes = vec![
         straight(0.0, 100.0, 0.0),
@@ -860,7 +918,15 @@ pub(crate) fn behind_a_stopped_car(gap: f64) -> (Simulation, VehicleId) {
 /// lanes set as `lanes` says.
 pub(crate) fn two_lanes_with(lanes: impl Fn(Lane) -> Lane) -> Simulation {
     let lane = |y: f64| {
-        lanes(Lane::new(&[DVec2::new(0.0, y), DVec2::new(500.0, y)], WIDTH, LIMIT).unwrap())
+        lanes(
+            Lane::new(
+                &[DVec2::new(0.0, y), DVec2::new(500.0, y)],
+                WIDTH,
+                LIMIT,
+                alone(),
+            )
+            .unwrap(),
+        )
     };
     let mut network = SimNetwork::new(vec![lane(0.0), lane(-WIDTH)]);
     network.set_adjacent(LaneId(0), LaneId(1), true, true);
@@ -918,7 +984,7 @@ fn a_car_sees_a_diverging_car_its_leader_has_passed() {
 fn a_leader_turning_off_doesnt_hide_the_queue_beyond() {
     // Lane 0 splits: lane 2 bears away, lane 1 runs straight on. B turns onto
     // lane 2; A goes straight on, where a car is held stopped.
-    let lane = |points: &[DVec2]| Lane::new(points, WIDTH, LIMIT).unwrap();
+    let lane = |points: &[DVec2]| Lane::new(points, WIDTH, LIMIT, alone()).unwrap();
     let lanes = vec![
         lane(&[DVec2::ZERO, DVec2::new(100.0, 0.0)]),
         lane(&[DVec2::new(100.0, 0.0), DVec2::new(200.0, 0.0)]),
@@ -1123,7 +1189,7 @@ fn the_follower_search_goes_back_as_far_as_paths_reach() {
 fn a_car_at_rest_short_of_a_stop_line_is_released_unless_queued_past_it() {
     // A connector from the south, starting with a stop line, crosses one from
     // the west.
-    let lane = |a: DVec2, b: DVec2| Lane::new(&[a, b], WIDTH, LIMIT).unwrap();
+    let lane = |a: DVec2, b: DVec2| Lane::new(&[a, b], WIDTH, LIMIT, alone()).unwrap();
     let p = DVec2::new;
     let mut network = SimNetwork::new(vec![
         lane(p(0.0, -100.0), p(0.0, -10.0)),

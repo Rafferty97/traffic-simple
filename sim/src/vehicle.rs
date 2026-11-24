@@ -126,6 +126,10 @@ pub struct Placement {
     pub speed: f64,
     /// How it chooses its way at forks.
     pub route: Route,
+    /// Seeds the driver's own generator, for its acceleration noise and its
+    /// gaps to lines, mixed with where it starts, so drivers placed alike still
+    /// differ.
+    pub seed: u64,
 }
 
 /// A vehicle in the simulation.
@@ -276,6 +280,12 @@ impl Vehicle {
     /// The lane the vehicle is following, then the lanes it will take next.
     pub fn path(&self) -> &[LaneId] {
         &self.path
+    }
+
+    /// How far along its path its front axle is, in meters along
+    /// [`Vehicle::lane`], beyond its end if the front axle is on a lane after it.
+    pub fn front_s(&self) -> f64 {
+        self.front_s
     }
 
     /// The rear axle's position on [`Vehicle::lane`].

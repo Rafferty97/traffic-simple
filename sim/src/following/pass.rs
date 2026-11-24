@@ -275,6 +275,7 @@ mod test {
                 s,
                 speed: 10.0,
                 route: crate::models::routing::Route::default(),
+                seed: 0,
             },
         );
         sim.get(id).unwrap().clone()
@@ -285,7 +286,13 @@ mod test {
         // Straight along x, changing from 3.5 m left of the centerline back onto
         // it, from rest, as sharply as it can steer: halfway, it is 1.75 m left
         // and heading right of x.
-        let lane = Lane::new(&[DVec2::ZERO, DVec2::new(100.0, 0.0)], 3.5, 14.0).unwrap();
+        let lane = Lane::new(
+            &[DVec2::ZERO, DVec2::new(100.0, 0.0)],
+            3.5,
+            14.0,
+            crate::simulation::test::alone(),
+        )
+        .unwrap();
         let network = SimNetwork::new(vec![lane]);
         let mut vehicle = car_at(&network, 0, 0.0);
         let change = LaneChange::new(0.0, 3.5, 0.0, 0.0);
@@ -330,7 +337,7 @@ mod test {
                     radius * DVec2::new(a.cos(), a.sin())
                 })
                 .collect();
-            Lane::new(&points, 3.5, 14.0).unwrap()
+            Lane::new(&points, 3.5, 14.0, crate::simulation::test::alone()).unwrap()
         };
         let mut network = SimNetwork::new(vec![arc(150.0), arc(153.5)]);
         network.set_adjacent(LaneId(0), LaneId(1), true, true);

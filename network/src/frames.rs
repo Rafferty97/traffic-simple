@@ -80,7 +80,8 @@ fn turner_cycle_with_x() -> (Frame, VehicleId) {
         }
         panic!("the turner cycle never came about");
     };
-    let at_rest = |lane: LaneId, s: f64| Placement { lane, s, speed: 0.0, route: Route::random(0) };
+    let at_rest =
+        |lane: LaneId, s: f64| Placement { lane, s, speed: 0.0, route: Route::random(0), seed: 0 };
     // Just past its line, short of its conflicts, so the junction queues it.
     let inside = car.rear_axle + 0.5;
     // On T's green, an oncoming car held just inside the junction, queued, so T
@@ -96,6 +97,7 @@ fn turner_cycle_with_x() -> (Frame, VehicleId) {
                 s: approach_length - 40.0,
                 speed: 8.0,
                 route: Route::random(seed),
+                seed,
             };
             let id = sim.insert(car, at);
             if sim.get(id).unwrap().path().contains(&t_first) {

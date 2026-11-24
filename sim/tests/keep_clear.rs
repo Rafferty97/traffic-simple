@@ -16,7 +16,13 @@ const LENGTH: f64 = 20.0;
 
 /// One straight lane, 300 m long, with a keep-clear zone 100 to 120 m along.
 fn road() -> SimNetwork {
-    let lane = Lane::new(&[DVec2::ZERO, DVec2::new(300.0, 0.0)], 3.5, LIMIT).unwrap();
+    let lane = Lane::new(
+        &[DVec2::ZERO, DVec2::new(300.0, 0.0)],
+        3.5,
+        LIMIT,
+        common::alone(),
+    )
+    .unwrap();
     let mut net = SimNetwork::new(vec![lane]);
     let kind = BarrierKind::KeepClear { length: LENGTH };
     net.add_barrier(LaneId(0), Barrier::new(START, kind));
@@ -24,7 +30,7 @@ fn road() -> SimNetwork {
 }
 
 fn at(s: f64, speed: f64) -> Placement {
-    Placement { lane: LaneId(0), s, speed, route: Route::random(0) }
+    Placement { lane: LaneId(0), s, speed, route: Route::random(0), seed: 0 }
 }
 
 fn rear(sim: &Simulation, id: VehicleId) -> f64 {

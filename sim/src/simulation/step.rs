@@ -108,15 +108,13 @@ impl Simulation {
         // For the lane-change model to judge now, and for its terms at the
         // longitudinal update after.
         measure_prospects(state, &derived.through, prospects);
-        lane_change::decide(
+        let view = lane_change::View {
             state,
+            routes: &derived.routes,
             prospects,
-            lane_speeds,
-            sink,
-            dt,
-            lane_decisions,
-            asks,
-        );
+            speeds: lane_speeds,
+        };
+        lane_change::decide(view, sink, dt, lane_decisions, asks);
 
         for i in 0..self.lane_decisions.len() {
             let Decided { id, state, decision, wants, look } = self.lane_decisions[i];
@@ -324,7 +322,7 @@ impl Simulation {
                     removals,
                     ..
                 },
-            derived: Derived { overlaps, merges, through },
+            derived: Derived { overlaps, merges, through, routes },
             arrivals,
             ..
         } = self;
@@ -364,7 +362,14 @@ impl Simulation {
                 let s = vehicle.lane_pos.s;
                 let needed = reach(vehicle, s, vehicle.lane_change);
                 let lanes = vehicle.path.len();
-                extend_path(network, &mut vehicle.path, routing.route_mut(id), s, needed);
+                extend_path(
+                    network,
+                    &mut vehicle.path,
+                    routing.route_mut(id),
+                    routes,
+                    s,
+                    needed,
+                );
                 arrives |= vehicle.path.len() > lanes;
                 // Carried over from the lane before, unless it enters a merge,
                 // where it joins another lane's traffic.
@@ -395,7 +400,14 @@ impl Simulation {
             let s = vehicle.lane_pos.s;
             let needed = reach(vehicle, s, vehicle.lane_change);
             let lanes = vehicle.path.len();
-            extend_path(network, &mut vehicle.path, routing.route_mut(id), s, needed);
+            extend_path(
+                network,
+                &mut vehicle.path,
+                routing.route_mut(id),
+                routes,
+                s,
+                needed,
+            );
             arrives |= vehicle.path.len() > lanes;
             if arrives {
                 raise_through(network, through, &vehicle.path);

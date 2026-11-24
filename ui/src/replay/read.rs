@@ -13,7 +13,9 @@
 //! // …step on from the captured moment and assert what should happen.
 //! ```
 
-use traffic_sim::{LaneId, Placement, Route, Side, SimNetwork, Simulation, VehicleId, VehicleSpec};
+use traffic_sim::{
+    DestinationId, LaneId, Placement, Route, Side, SimNetwork, Simulation, VehicleId, VehicleSpec,
+};
 
 /// A replayed simulation at the moment it was captured.
 pub struct Replay {
@@ -86,11 +88,26 @@ pub fn replay(log: &str) -> Replay {
                     lane,
                     s: f.get("s"),
                     speed: f.get("speed"),
-                    route: Route::random(f.get_u64("seed")),
+                    // Before drivers had their own seed, a random route's seed
+                    // was the driver's too.
+                    route: match f.has("destination") {
+                        true => Route::to(DestinationId(f.get_u64("destination") as u32)),
+                        false if f.has("route") => Route::random(f.get_u64("route")),
+                        false => Route::random(f.get_u64("seed")),
+                    },
+                    seed: f.get_u64("seed"),
                 };
                 let result = sim.try_insert(spec, at_);
                 assert_eq!(result.is_ok(), outcome == "ok", "diverged at {}", at());
                 ids.extend(result.ok());
+            }
+            "add_destination" => {
+                let lanes = words.next().unwrap_or_else(|| panic!("malformed {}", at()));
+                let lanes: Vec<LaneId> = lanes
+                    .split(',')
+                    .map(|l| LaneId(l.parse().unwrap_or_else(|_| panic!("malformed {}", at()))))
+                    .collect();
+                sim.add_destination(&lanes);
             }
             "remove" => {
                 let id = vehicle();
@@ -152,6 +169,10 @@ impl<'a> Fields<'a> {
         found.map_or(default, |(_, value)| {
             value.parse().unwrap_or_else(|_| panic!("bad {key}: {value}"))
         })
+    }
+
+    fn has(&self, key: &str) -> bool {
+        self.0.iter().any(|(k, _)| *k == key)
     }
 
     fn get_u64(&self, key: &str) -> u64 {

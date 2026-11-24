@@ -20,6 +20,16 @@ pub const MAX_PREDECESSORS: usize = 8;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LaneId(pub u32);
 
+/// Identifies a road, for routing: lanes of the same road are equal for
+/// finding a way, as a road's lanes are to a driver choosing a route, but for
+/// the lane changes they need. Opaque to the simulation, and the network's to
+/// set: a road's two directions are different roads, and so are the ways
+/// through an intersection from one road into another. A lane that stands
+/// alone is a road of its own, with an id no other lane has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RoadId(pub u32);
+
 /// A side of a lane, relative to its direction of travel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -122,6 +132,8 @@ pub struct Lane {
     /// if it doesn't.
     #[cfg_attr(feature = "serde", serde(default))]
     pub(super) leaving: Option<Leaving>,
+    /// The road it is part of, for routing.
+    pub(super) road: RoadId,
     /// Its barriers, sorted by `s`.
     #[cfg_attr(feature = "serde", serde(default))]
     pub(super) barriers: Vec<Barrier>,
@@ -132,18 +144,28 @@ pub struct Lane {
 }
 
 impl Lane {
-    /// Builds a lane from its centerline polyline, a constant width in meters,
-    /// centered on it, and a speed limit in meters per second.
+    /// Builds a lane of `road` from its centerline polyline, a constant width
+    /// in meters, centered on it, and a speed limit in meters per second.
     ///
     /// Points are snapped to the nearest millimeter, then consecutive duplicate
     /// points are removed.
-    pub fn new(points: &[DVec2], width: f64, speed_limit: f64) -> Result<Self, LaneError> {
-        Self::with_half_widths(points, &vec![[0.5 * width; 2]; points.len()], speed_limit)
+    pub fn new(
+        points: &[DVec2],
+        width: f64,
+        speed_limit: f64,
+        road: RoadId,
+    ) -> Result<Self, LaneError> {
+        Self::with_half_widths(
+            points,
+            &vec![[0.5 * width; 2]; points.len()],
+            speed_limit,
+            road,
+        )
     }
 
-    /// Builds a lane from its centerline polyline, how far its left and right
-    /// edges lie from it at each point, in meters, and a speed limit in meters
-    /// per second. Between points, the half-widths vary linearly.
+    /// Builds a lane of `road` from its centerline polyline, how far its left
+    /// and right edges lie from it at each point, in meters, and a speed limit
+    /// in meters per second. Between points, the half-widths vary linearly.
     ///
     /// Points and half-widths are snapped to the nearest millimeter, then
     /// consecutive duplicate points are removed.
@@ -151,6 +173,7 @@ impl Lane {
         points: &[DVec2],
         half_widths: &[[f64; 2]],
         speed_limit: f64,
+        road: RoadId,
     ) -> Result<Self, LaneError> {
         let geometry = LaneGeometry::new(points, half_widths)?;
         Ok(Self {
@@ -163,6 +186,7 @@ impl Lane {
             junction: None,
             keep: Keep::NoPreference,
             leaving: None,
+            road,
             barriers: Vec::new(),
             keep_clear: false,
         })
@@ -186,6 +210,11 @@ impl Lane {
     /// As [`Lane::leaving`], to set.
     pub fn with_leaving(self, leaving: Option<Leaving>) -> Self {
         Self { leaving, ..self }
+    }
+
+    /// The road it is part of, for routing.
+    pub fn road(&self) -> RoadId {
+        self.road
     }
 
     /// Its shape, and the mapping between world positions and lane coordinates.

@@ -5,13 +5,20 @@ use std::fmt;
 use glam::DVec2;
 use traffic_sim::{
     ALIGNED, AMBER_DECEL, Barrier, BarrierKind, Keep, Lane, LaneError, LaneId, Line, Movement,
-    MovementId, NetworkError, Phase, SAME_POINT, SignalPlan, SimNetwork, VehicleSpec,
+    MovementId, NetworkError, Phase, RoadId as SimRoadId, SAME_POINT, SignalPlan, SimNetwork,
+    VehicleSpec,
 };
 
 use crate::arms::{self, StopLine};
 use crate::reference::{self, Polyline};
 use crate::render;
 use crate::{Compiled, Control, Direction, Intersection, LaneRef, RoadId, RoadNetwork, Sign, Turn};
+
+/// The road, for routing, of a road's lanes running in `direction`: each of a
+/// road's two ways is a road of its own.
+fn road_way(road: RoadId, direction: Direction) -> SimRoadId {
+    SimRoadId(2 * road.0 as u32 + u32::from(direction == Direction::Backward))
+}
 
 /// The sideways acceleration a connector's speed limit allows on its tightest
 /// bend, in m/s²: drivers accept more at the low speeds of a turn than at
@@ -367,7 +374,12 @@ fn assemble(
             } else {
                 Keep::NoPreference
             };
-            let built_lane = build(&b, road.speed_limit, what)?;
+            let built_lane = build(
+                &b,
+                road.speed_limit,
+                road_way(RoadId(r), lane.direction),
+                what,
+            )?;
             lanes.push(built_lane.with_keep(keep).with_leaving(lane.leaving));
             ids.push(LaneId(built.len() as u32));
             built.push(b);
@@ -376,6 +388,9 @@ fn assemble(
         polylines.push(line);
     }
 
+    // Each way through an intersection from one road into another, a road of
+    // its own for routing, numbered after the roads' ways.
+    let mut ways_through = std::collections::HashMap::new();
     let mut connectors = Vec::new();
     // Each connection's lanes in its junction, more than one where it is split.
     let mut pieces = Vec::new();
@@ -446,9 +461,13 @@ fn assemble(
                 rest = after;
             }
             cut.push(rest);
+            let way_of = |l: LaneRef| road_way(l.road, net.roads[l.road.0].lanes[l.lane].direction);
+            let next = (2 * net.roads.len() + ways_through.len()) as u32;
+            let through =
+                *ways_through.entry((k, way_of(from), way_of(to))).or_insert(SimRoadId(next));
             let mut lanes_of = Vec::new();
             for piece in cut {
-                lanes.push(build(&piece, limit, what)?);
+                lanes.push(build(&piece, limit, through, what)?);
                 lanes_of.push(LaneId(built.len() as u32));
                 built.push(piece);
             }
@@ -975,8 +994,13 @@ fn level(priority_road: bool, turn: Turn, drives_on: traffic_sim::Side) -> u8 {
 }
 
 /// A simulation lane from a built one.
-fn build(b: &Built, speed_limit: f64, what: impl Fn() -> String) -> Result<Lane, CompileError> {
-    Lane::with_half_widths(&b.points, &b.half_widths, speed_limit)
+fn build(
+    b: &Built,
+    speed_limit: f64,
+    road: SimRoadId,
+    what: impl Fn() -> String,
+) -> Result<Lane, CompileError> {
+    Lane::with_half_widths(&b.points, &b.half_widths, speed_limit, road)
         .map_err(|error| CompileError::Lane { what: what(), error })
 }
 
@@ -1188,7 +1212,9 @@ fn check_sweeps(
         for (c, &id) in ids.iter().enumerate() {
             let sweep = body.next().expect("a body for each connector");
             let b = &sweep.body;
-            let swept = Lane::with_half_widths(&b.points, &b.half_widths, 1.0)
+            // Lanes only for their geometry, never in the network, so of no road.
+            let no_road = SimRoadId(u32::MAX);
+            let swept = Lane::with_half_widths(&b.points, &b.half_widths, 1.0, no_road)
                 .expect("a connector's sweep is a valid lane");
             let geometry = swept.geometry();
             let (lo, hi) = bounds(&mut geometry.outline());
@@ -1197,9 +1223,13 @@ fn check_sweeps(
             // still turning: onto no lane there but its own, junction lane or
             // road lane.
             let end = b.points.len() - sweep.overhang;
-            let ahead =
-                Lane::with_half_widths(&b.points[end - 1..], &b.half_widths[end - 1..], 1.0)
-                    .expect("an overhang is a valid lane");
+            let ahead = Lane::with_half_widths(
+                &b.points[end - 1..],
+                &b.half_widths[end - 1..],
+                1.0,
+                no_road,
+            )
+            .expect("an overhang is a valid lane");
             // Those going into the same lane overhang it too, and end there.
             let others = ids
                 .iter()

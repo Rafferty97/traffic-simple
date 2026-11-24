@@ -16,7 +16,7 @@ use crate::following::{self, Ahead, Along, Found, Lateral, Occupant, find_leader
 use crate::junction::{Entry, Queue, arrive};
 use crate::models::acceleration;
 use crate::models::lane_change;
-use crate::models::routing::Route;
+use crate::models::routing::{DestinationId, Route, Table};
 use crate::models::signal::{self, MovementLight};
 use crate::motion::lateral::plan_change;
 use crate::motion::path::{extend_path, raise_through, reach};
@@ -106,6 +106,7 @@ impl Simulation {
             residual: 0.0,
             signals: Vec::new(),
             lights: Vec::new(),
+            destinations: Vec::new(),
         };
         Self::restore(state)
     }
@@ -251,19 +252,22 @@ impl Simulation {
             stopped_at: None,
             held_up: None,
         };
-        // Its own generator, from its route's seed and where it starts, so
+        // Its own generator, from its seed and where it starts, so
         // drivers don't wander in step.
-        let seed = match at.route {
-            Route::Random { state } => {
-                state ^ (at.s.to_bits()).rotate_left(17) ^ u64::from(at.lane.0)
-            }
-        };
+        let seed = at.seed ^ (at.s.to_bits()).rotate_left(17) ^ u64::from(at.lane.0);
+        if let Route::Destination(destination) = at.route {
+            assert!(
+                (destination.0 as usize) < self.state.destinations.len(),
+                "no {destination:?}"
+            );
+        }
         let needed = reach(&vehicle, at.s, None);
         let mut route = at.route;
         extend_path(
             &self.state.network,
             &mut vehicle.path,
             &mut route,
+            &self.derived.routes,
             at.s,
             needed,
         );
@@ -366,6 +370,36 @@ impl Simulation {
     /// How a vehicle chooses its way at forks, as it is now.
     pub fn route(&self, id: VehicleId) -> Option<Route> {
         self.state.routing.get(id)
+    }
+
+    /// Registers a destination, a set of lanes that vehicles may be routed to
+    /// (see [`Route::to`]), and returns its id. Its route table is worked out
+    /// now, so this is for setting up, not for every frame.
+    pub fn add_destination(&mut self, lanes: &[LaneId]) -> DestinationId {
+        let table = Table::build(&self.state.network, lanes);
+        self.state.destinations.push(lanes.to_vec());
+        self.derived.routes.push(table);
+        DestinationId(self.state.destinations.len() as u32 - 1)
+    }
+
+    /// Each destination's route table, for tests that measure incentives.
+    #[cfg(test)]
+    pub(crate) fn routes(&self) -> &crate::models::routing::Tables {
+        &self.derived.routes
+    }
+
+    /// A destination's lanes.
+    pub fn destination(&self, id: DestinationId) -> &[LaneId] {
+        &self.state.destinations[id.0 as usize]
+    }
+
+    /// How long a vehicle takes from the start of `lane` to `destination` at the
+    /// speed limits, each road counted once, in seconds, and how many lane
+    /// changes it needs from there: `None` if there is no way.
+    pub fn time_to(&self, destination: DestinationId, lane: LaneId) -> Option<(f64, u32)> {
+        let entry = self.derived.routes[destination.0 as usize].get(lane);
+        let changes = entry.changes_at(0.0)?;
+        entry.time.is_finite().then_some((f64::from(entry.time), changes))
     }
 
     pub fn get(&self, id: VehicleId) -> Option<&Vehicle> {
@@ -492,6 +526,7 @@ impl Simulation {
             &self.state.network,
             &mut vehicle.path,
             route,
+            &self.derived.routes,
             lane_pos.s,
             needed,
         );

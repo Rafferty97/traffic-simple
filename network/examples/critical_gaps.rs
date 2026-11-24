@@ -95,7 +95,7 @@ fn insert_going(sim: &mut Simulation, lane: LaneId, s: f64, connector: LaneId) -
         .find_map(|seed| {
             let id = sim.insert(
                 spec,
-                Placement { lane, s, speed, route: Route::random(seed) },
+                Placement { lane, s, speed, route: Route::random(seed), seed },
             );
             match sim.get(id).unwrap().path().contains(&connector) {
                 true => Some(id),

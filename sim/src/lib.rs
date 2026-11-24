@@ -21,7 +21,7 @@ pub use following::{Lateral, Occupant, PASSING_CLEARANCE};
 pub use junction::Entry;
 pub use models::acceleration::{SAFE_BRAKING, STOPPING_DECEL, STOPPING_SPEED};
 pub use models::lane_change::MIN_INDICATING;
-pub use models::routing::Route;
+pub use models::routing::{DestinationId, Route};
 pub use models::signal::{Light, MovementLight};
 pub use motion::kinematics::trail;
 pub use motion::lateral::LaneChange;
@@ -29,7 +29,7 @@ pub use network::geometry::{GRID, LaneError, LaneGeometry, LanePos, ParseLaneErr
 pub use network::{
     ALIGNED, Barrier, BarrierKind, Conflict, ConflictKind, End, Junction, JunctionId, Keep, Lane,
     LaneId, Leaving, Line, MAX_PREDECESSORS, MAX_SUCCESSORS, Movement, MovementId, Neighbor,
-    NetworkError, Phase, Side, SignalPlan, SimNetwork, YieldsId,
+    NetworkError, Phase, RoadId, Side, SignalPlan, SimNetwork, YieldsId,
 };
 pub use simulation::{Config, InsertError, LaneChangeError, SimState, Simulation};
 pub use vehicle::{LaneChangeIntent, Placement, Vehicle, VehicleId, VehicleSpec};

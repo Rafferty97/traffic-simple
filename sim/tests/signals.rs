@@ -36,7 +36,7 @@ fn crossroads() -> (SimNetwork, [MovementId; 2]) {
 
 /// As [`crossroads`], with `plan` for its signals.
 fn crossroads_with(plan: SignalPlan) -> (SimNetwork, [MovementId; 2]) {
-    let lane = |points: &[DVec2]| Lane::new(points, 3.5, LIMIT).unwrap();
+    let lane = |points: &[DVec2]| Lane::new(points, 3.5, LIMIT, common::alone()).unwrap();
     let mut net = SimNetwork::new(vec![
         lane(&[p(-100.0, 0.0), p(-10.0, 0.0)]),
         lane(&[p(0.0, -100.0), p(0.0, -10.0)]),
@@ -59,7 +59,13 @@ fn crossroads_with(plan: SignalPlan) -> (SimNetwork, [MovementId; 2]) {
 }
 
 fn at(lane: u32, s: f64, speed: f64) -> Placement {
-    Placement { lane: LaneId(lane), s, speed, route: Route::random(0) }
+    Placement {
+        lane: LaneId(lane),
+        s,
+        speed,
+        route: Route::random(0),
+        seed: 0,
+    }
 }
 
 /// How far a vehicle's front is along its heading: past the line at the
@@ -245,7 +251,7 @@ fn a_green_light_with_no_room_beyond_holds_it_until_there_is() {
 /// The crossroads without signals: connector 3, from the south, gives way to
 /// connector 2, from the west, at a line where they start to conflict.
 fn give_way() -> SimNetwork {
-    let lane = |points: &[DVec2]| Lane::new(points, 3.5, LIMIT).unwrap();
+    let lane = |points: &[DVec2]| Lane::new(points, 3.5, LIMIT, common::alone()).unwrap();
     let mut net = SimNetwork::new(vec![
         lane(&[p(-100.0, 0.0), p(-10.0, 0.0)]),
         lane(&[p(0.0, -100.0), p(0.0, -10.0)]),
@@ -421,8 +427,8 @@ fn drivers_stop_short_of_a_line_by_a_gap_drawn_for_it() {
     let mut gaps = Vec::new();
     for i in 0..6 {
         // A few meters short of its line, slow, so it settles there in time.
-        // Each its own driver, its generator seeded as its route is.
-        let place = Placement { route: Route::random(i), ..at(1, 80.0, 2.0) };
+        // Each its own driver.
+        let place = Placement { route: Route::random(i), seed: i, ..at(1, 80.0, 2.0) };
         let id = sim.insert(VehicleSpec::passenger_car(), place);
         let drawn = sim.line_gap(id).unwrap();
         let spec = VehicleSpec::passenger_car();

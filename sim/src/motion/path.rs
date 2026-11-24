@@ -3,7 +3,7 @@
 //! in `docs/DESIGN.md`).
 
 use crate::models::acceleration;
-use crate::models::routing::Route;
+use crate::models::routing::{Route, Tables};
 use crate::motion::lateral::LaneChange;
 use crate::network::{LaneId, SimNetwork};
 use crate::vehicle::Vehicle;
@@ -27,7 +27,8 @@ pub(crate) fn reach(vehicle: &Vehicle, axle_s: f64, change: Option<LaneChange>) 
 /// search stays within its horizon, however far its path reaches.
 pub(crate) const PATH_TIME: f64 = 15.0;
 
-/// Extends `path` by the lanes `route` chooses until it reaches `needed`
+/// Extends `path` by the lanes `route` chooses, by `tables` if it is toward a
+/// destination, until it reaches `needed`
 /// beyond the rear axle, at `axle_s` on its first lane, and [`PATH_TIME`] at
 /// the lanes' speed limits, or reaches a lane that leads nowhere. Returns how
 /// far beyond the rear axle it then reaches.
@@ -41,6 +42,7 @@ pub(crate) fn extend_path(
     network: &SimNetwork,
     path: &mut Vec<LaneId>,
     route: &mut Route,
+    tables: &Tables,
     axle_s: f64,
     needed: f64,
 ) -> f64 {
@@ -62,7 +64,7 @@ pub(crate) fn extend_path(
         if enough && !through {
             break;
         }
-        let Some(next) = route.choose(network.lane(last).successors()) else {
+        let Some(next) = route.choose(tables, network.lane(last).successors()) else {
             break;
         };
         if enough {

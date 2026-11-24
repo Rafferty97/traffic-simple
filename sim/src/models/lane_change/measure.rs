@@ -1,11 +1,12 @@
 //! What the lane-change model measures for each driver, cheaply, from what
 //! the core keeps: its incentives.
 
+use super::update::View;
 use crate::models::lane_change;
 use crate::models::routing;
 use crate::motion::lateral::room_to_change;
 use crate::network::{LaneId, Side};
-use crate::query::{ANTICIPATION, LaneSpeeds};
+use crate::query::ANTICIPATION;
 use crate::simulation::SimState;
 use crate::vehicle::{Vehicle, VehicleId};
 
@@ -19,17 +20,19 @@ use crate::vehicle::{Vehicle, VehicleId};
 ///   than it would like to go there, and as fast as it would like where nobody
 ///   is.
 /// - Keeping to the side its lane says.
-/// - Its route: toward the lane changes it needs (see [`routing::needed`]),
-///   the more the nearer the point by which they must be done.
+/// - Its route: toward a lane it needs fewer lane changes from, and away from
+///   one it needs more from (see [`routing::needs`]), by its destination's
+///   route table, if it has one, the more the nearer the point by which they
+///   must be done.
 /// - Courtesy: letting by the follower it holds up most, by what that follower
 ///   would gain, weighed by its politeness, in units of its comfortable
 ///   deceleration.
 pub(crate) fn incentives(
-    state: &SimState,
-    speeds: &[LaneSpeeds],
+    view: View,
     id: VehicleId,
     vehicle: &Vehicle,
 ) -> [Option<lane_change::Incentives>; 2] {
+    let View { state, routes, speeds, .. } = view;
     let SimState { network, vehicles, .. } = state;
     let lane_id = vehicle.path[0];
     let lane = network.lane(lane_id);
@@ -55,15 +58,14 @@ pub(crate) fn incentives(
     let own_s =
         state.occupants[lane_id.0 as usize][crate::query::record_index(state, lane_id, id)].s();
     let own = anticipated(lane_id, own_s);
-    // Toward the side its route needs, and away from the other.
-    let route = match routing::needed(network, vehicle, permitted) {
-        Some(needed) => {
-            let desire = lane_change::route_desire(needed.distance, vehicle.speed, needed.changes);
-            let mut route = [-desire; 2];
-            route[lane_change::index(needed.side)] = desire;
-            route
-        }
-        None => [0.0; 2],
+    // Toward a lane its route needs fewer changes from, and away from one it
+    // needs more from.
+    let way = state.routing.get(id).unwrap_or_default();
+    let needs = routing::needs(network, routes, way, vehicle, permitted);
+    let route = |side: Side| {
+        needs.map_or(0.0, |n| {
+            lane_change::route_incentive(n.here, n.beside(side), vehicle.speed)
+        })
     };
     let courtesy = vehicle.held_up.and_then(|held| {
         let follower = vehicles.get(held.id)?;
@@ -81,7 +83,7 @@ pub(crate) fn incentives(
             0.0
         };
         Some(lane_change::Incentives {
-            route: route[lane_change::index(side)],
+            route: route(side),
             speed,
             keep,
             courtesy: courtesy.unwrap_or(0.0).min(1.0),

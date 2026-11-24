@@ -32,7 +32,13 @@ fn a_car_keeps_its_body_within_every_connector_it_takes() {
             // faster it goes.
             for speed in [limit, 2.0] {
                 let mut sim = common::sim(net.clone());
-                let at = Placement { lane: connector, s: 0.0, speed, route: Route::random(0) };
+                let at = Placement {
+                    lane: connector,
+                    s: 0.0,
+                    speed,
+                    route: Route::random(0),
+                    seed: 0,
+                };
                 let id = sim.insert(car, at);
                 sim.cap_speed(id, speed);
                 while sim.get(id).is_some_and(|v| v.lane() == connector) {

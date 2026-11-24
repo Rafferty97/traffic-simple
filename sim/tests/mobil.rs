@@ -25,7 +25,7 @@ fn two_lanes() -> Sim {
 fn two_lanes_with<C: common::Collect>(sink: C) -> common::Watched<C> {
     let lane = |y: f64| {
         let points = [DVec2::new(0.0, y), DVec2::new(500.0, y)];
-        Lane::new(&points, 3.5, SPEED_LIMIT).unwrap()
+        Lane::new(&points, 3.5, SPEED_LIMIT, common::alone()).unwrap()
     };
     let mut network = SimNetwork::new(vec![lane(3.5), lane(0.0)]);
     network.set_adjacent(LaneId(0), LaneId(1), true, true);
@@ -33,7 +33,13 @@ fn two_lanes_with<C: common::Collect>(sink: C) -> common::Watched<C> {
 }
 
 fn place(lane: u32, s: f64, speed: f64) -> Placement {
-    Placement { lane: LaneId(lane), s, speed, route: Route::default() }
+    Placement {
+        lane: LaneId(lane),
+        s,
+        speed,
+        route: Route::default(),
+        seed: 0,
+    }
 }
 
 fn run(sim: &mut Sim, seconds: f64, mut each: impl FnMut(&Sim)) {

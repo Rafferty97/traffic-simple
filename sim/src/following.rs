@@ -285,7 +285,13 @@ mod test {
     #[test]
     fn insertion_sort_orders_by_s() {
         let mut ids = SlotMap::<VehicleId, ()>::with_key();
-        let lane = Lane::new(&[glam::DVec2::ZERO, glam::DVec2::X * 10.0], 3.5, 14.0).unwrap();
+        let lane = Lane::new(
+            &[glam::DVec2::ZERO, glam::DVec2::X * 10.0],
+            3.5,
+            14.0,
+            crate::simulation::test::alone(),
+        )
+        .unwrap();
         let mut list: Vec<_> = [3.0, 1.0, 2.0, 0.5]
             .into_iter()
             .map(|s| Occupant {

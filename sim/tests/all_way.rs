@@ -38,7 +38,7 @@ fn all_way_stop() -> SimNetwork {
 
 /// The four ways in, with no barriers.
 fn four_ways() -> SimNetwork {
-    let lane = |a: DVec2, b: DVec2| Lane::new(&[a, b], 3.5, LIMIT).unwrap();
+    let lane = |a: DVec2, b: DVec2| Lane::new(&[a, b], 3.5, LIMIT, common::alone()).unwrap();
     let h = 1.75;
     // (approach start, line, far side, exit end) for west, east, south, north.
     let ways = [
@@ -69,6 +69,7 @@ fn arrive(sim: &mut Simulation, way: u32) -> VehicleId {
         s,
         speed: 0.0,
         route: Route::random(way.into()),
+        seed: u64::from(way),
     };
     sim.insert(spec, at)
 }

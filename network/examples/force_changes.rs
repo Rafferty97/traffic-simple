@@ -52,10 +52,17 @@ fn main() {
                     s: uniform() * 900.0,
                     speed: 10.0,
                     route: Route::random(step),
+                    seed: step,
                 }
             } else {
                 let lane = entries[(uniform() * entries.len() as f64) as usize];
-                Placement { lane, s: 5.0, speed: 25.0, route: Route::random(step) }
+                Placement {
+                    lane,
+                    s: 5.0,
+                    speed: 25.0,
+                    route: Route::random(step),
+                    seed: step,
+                }
             };
             if !entries.is_empty() || sim.vehicles().count() < 200 {
                 let _ = sim.try_insert(car, at);

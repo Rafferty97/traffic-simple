@@ -14,7 +14,7 @@ use common::DT;
 const WIDTH: f64 = 3.5;
 
 fn lane(points: &[DVec2]) -> Lane {
-    Lane::new(points, WIDTH, 14.0).unwrap()
+    Lane::new(points, WIDTH, 14.0, common::alone()).unwrap()
 }
 
 fn p(x: f64, y: f64) -> DVec2 {
@@ -61,7 +61,13 @@ fn merge() -> (SimNetwork, JunctionId) {
 }
 
 fn at(lane: u32, s: f64, speed: f64) -> Placement {
-    Placement { lane: LaneId(lane), s, speed, route: Route::default() }
+    Placement {
+        lane: LaneId(lane),
+        s,
+        speed,
+        route: Route::default(),
+        seed: 0,
+    }
 }
 
 /// Steps until every vehicle has left, checking after each step that no two

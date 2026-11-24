@@ -236,7 +236,7 @@ fn all_way_stops_keep_traffic_flowing() {
             if step % common::steps(2.0 / 3.0) == 0 {
                 let lane = entries[(step / common::steps(2.0 / 3.0) * 7) as usize % entries.len()];
                 let speed = sim.network().lane(lane).speed_limit();
-                let at = Placement { lane, s: 5.0, speed, route: Route::random(step) };
+                let at = Placement { lane, s: 5.0, speed, route: Route::random(step), seed: step };
                 if sim.try_insert(VehicleSpec::passenger_car(), at).is_ok() {
                     spawned += 1;
                 }
@@ -384,7 +384,7 @@ fn at_signals_nobody_crosses_a_line_on_red_and_traffic_keeps_flowing() {
                 ..VehicleSpec::passenger_car()
             };
             let speed = sim.network().lane(lane).speed_limit() * car.speed_factor;
-            let at = Placement { lane, s: 5.0, speed, route: Route::random(step) };
+            let at = Placement { lane, s: 5.0, speed, route: Route::random(step), seed: step };
             if sim.try_insert(car, at).is_ok() {
                 spawned += 1;
             }
@@ -477,7 +477,7 @@ fn at_signals_straight_traffic_never_stops_or_brakes_hard_for_right_turners_on_i
         if step % common::steps(0.5) == 0 {
             let lane = entries[(step / common::steps(0.5)) as usize % entries.len()];
             let speed = sim.network().lane(lane).speed_limit();
-            let at = Placement { lane, s: 5.0, speed, route: Route::random(step) };
+            let at = Placement { lane, s: 5.0, speed, route: Route::random(step), seed: step };
             let _ = sim.try_insert(VehicleSpec::passenger_car(), at);
         }
         sim.step();
@@ -552,7 +552,7 @@ fn at_signals_a_right_turner_at_its_line_turns_on_its_next_green() {
         if step % common::steps(0.75) == 0 {
             let lane = entries[(step / common::steps(0.75)) as usize % entries.len()];
             let speed = sim.network().lane(lane).speed_limit();
-            let at = Placement { lane, s: 5.0, speed, route: Route::random(step) };
+            let at = Placement { lane, s: 5.0, speed, route: Route::random(step), seed: step };
             let _ = sim.try_insert(VehicleSpec::passenger_car(), at);
         }
         sim.step();
@@ -636,7 +636,7 @@ fn at_signals_every_way_is_taken_right_turns_included() {
         if step % common::steps(3.0) == 0 {
             let lane = entries[(step / common::steps(3.0)) as usize % entries.len()];
             let speed = sim.network().lane(lane).speed_limit();
-            let at = Placement { lane, s: 5.0, speed, route: Route::random(step) };
+            let at = Placement { lane, s: 5.0, speed, route: Route::random(step), seed: step };
             if sim.try_insert(VehicleSpec::passenger_car(), at).is_ok() {
                 spawned += 1;
             }
@@ -736,6 +736,7 @@ fn ramps_traffic(flow: f64, seconds: f64) {
                 s: 5.0,
                 speed: car.desired_speed(limit),
                 route: Route::random(seed),
+                seed,
             };
             if sim.try_insert(car, at).is_ok() {
                 credit -= 1.0;
@@ -782,7 +783,7 @@ fn at_signals_a_car_waits_behind_its_line_for_a_turner_in_its_way() {
     let s = waits - (car.length - car.rear_axle) - 1.0;
     let turner = sim.insert(
         car,
-        Placement { lane: right, s, speed: 0.0, route: Route::random(0) },
+        Placement { lane: right, s, speed: 0.0, route: Route::random(0), seed: 0 },
     );
     sim.hold(turner);
     let length = sim.network().lane(from).geometry().length();
@@ -790,7 +791,7 @@ fn at_signals_a_car_waits_behind_its_line_for_a_turner_in_its_way() {
     let follower = (0..)
         .find_map(|seed| {
             let route = Route::random(seed);
-            let at = Placement { lane: from, s: length - 60.0, speed: 10.0, route };
+            let at = Placement { lane: from, s: length - 60.0, speed: 10.0, route, seed };
             let id = sim.insert(car, at);
             if sim.get(id).unwrap().path().get(1) == Some(&straight) {
                 return Some(id);

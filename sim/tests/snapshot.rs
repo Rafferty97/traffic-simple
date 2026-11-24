@@ -62,6 +62,7 @@ fn busy() -> Simulation {
                 s: 600.0 * roll * 20.0,
                 speed: 12.0,
                 route: Route::default(),
+                seed: 0,
             };
             let _ = sim.try_insert(spec, at);
         } else if roll < 0.06 {

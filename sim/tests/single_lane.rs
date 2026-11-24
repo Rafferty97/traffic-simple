@@ -19,7 +19,7 @@ fn lane(turn: f64) -> Lane {
         pts.push(p);
     }
     pts.push(p + 100.0 * DVec2::from_angle(turn));
-    Lane::new(&pts, 3.5, SPEED_LIMIT).unwrap()
+    Lane::new(&pts, 3.5, SPEED_LIMIT, common::alone()).unwrap()
 }
 
 /// Runs a vehicle from rest at the start of the lane until it is removed.
@@ -27,7 +27,13 @@ fn lane(turn: f64) -> Lane {
 fn drive(lane: Lane) -> (f64, f64) {
     let length = lane.geometry().length();
     let mut sim = common::sim(SimNetwork::new(vec![lane]));
-    let at = Placement { lane: LaneId(0), s: 0.0, speed: 0.0, route: Route::default() };
+    let at = Placement {
+        lane: LaneId(0),
+        s: 0.0,
+        speed: 0.0,
+        route: Route::default(),
+        seed: 0,
+    };
     let id = sim.insert(car(), at);
 
     let (mut time, mut max_t, mut last_s) = (0.0, 0.0f64, 0.0);
@@ -69,7 +75,13 @@ fn drivers_settle_at_their_share_of_the_limit() {
     for factor in [0.8, 1.2] {
         // Alone on a ring, so nothing gets in the way.
         let mut sim = common::sim(common::ring(230.0, SPEED_LIMIT));
-        let at = Placement { lane: LaneId(0), s: 0.0, speed: 0.0, route: Route::default() };
+        let at = Placement {
+            lane: LaneId(0),
+            s: 0.0,
+            speed: 0.0,
+            route: Route::default(),
+            seed: 0,
+        };
         let id = sim.insert(
             traffic_sim::VehicleSpec { speed_factor: factor, ..car() },
             at,
@@ -90,7 +102,7 @@ fn drivers_settle_at_their_share_of_the_limit() {
 fn a_capped_car_slows_to_its_cap_and_goes_on_once_released() {
     // A lone car on a long straight lane, so nothing but the cap holds it back.
     let points: Vec<_> = (0..=10).map(|i| DVec2::new(100.0 * i as f64, 0.0)).collect();
-    let lane = Lane::new(&points, 3.5, SPEED_LIMIT).unwrap();
+    let lane = Lane::new(&points, 3.5, SPEED_LIMIT, common::alone()).unwrap();
     let mut sim = common::sim(SimNetwork::new(vec![lane]));
     let id = sim.insert(
         car(),
@@ -99,6 +111,7 @@ fn a_capped_car_slows_to_its_cap_and_goes_on_once_released() {
             s: 0.0,
             speed: SPEED_LIMIT,
             route: Route::default(),
+            seed: 0,
         },
     );
     let cap = 20.0 / 3.6;
@@ -128,10 +141,16 @@ fn a_capped_car_slows_to_its_cap_and_goes_on_once_released() {
 fn a_queue_comes_to_rest_at_the_minimum_gap() {
     // Two cars arrive at a stopped one. Each keeps its leader in view all the way
     // in, so none creeps closer than the minimum gap, and they come to rest there.
-    let lane = Lane::new(&[DVec2::ZERO, DVec2::new(1000.0, 0.0)], 3.5, SPEED_LIMIT).unwrap();
+    let lane = Lane::new(
+        &[DVec2::ZERO, DVec2::new(1000.0, 0.0)],
+        3.5,
+        SPEED_LIMIT,
+        common::alone(),
+    )
+    .unwrap();
     let mut sim = common::sim(SimNetwork::new(vec![lane]));
     let spec = car();
-    let at = |s, speed| Placement { lane: LaneId(0), s, speed, route: Route::default() };
+    let at = |s, speed| Placement { lane: LaneId(0), s, speed, route: Route::default(), seed: 0 };
     let stopped = sim.insert(spec, at(500.0, 0.0));
     sim.hold(stopped);
     let a = sim.insert(spec, at(300.0, SPEED_LIMIT));

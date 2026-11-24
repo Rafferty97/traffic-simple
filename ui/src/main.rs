@@ -16,9 +16,9 @@ use traffic_network::{
     Arrow, MarkingStyle, RenderGeometry, RoadNetwork, Sign, Strip, compile, scenarios,
 };
 use traffic_sim::{
-    AccelSource, BarrierDecision, BarrierKind, ConflictKind, DebugEvent, Field, LaneChangeError,
-    LaneChangeIntent, LaneId, Leaving, Light, PassCheck, Placement, Route, Side, Simulation,
-    Vehicle, VehicleId, VehicleSpec,
+    AccelSource, BarrierDecision, BarrierKind, ConflictKind, DebugEvent, DestinationId, Field,
+    LaneChangeError, LaneChangeIntent, LaneId, Leaving, Light, PassCheck, Placement, RoadId, Route,
+    Side, Simulation, Vehicle, VehicleId, VehicleSpec,
 };
 
 /// The inner lane's circumference: about 160 m across, roomy enough for
@@ -35,6 +35,8 @@ const SLOW_CAP: f64 = 20.0 / 3.6;
 const PICK_TOLERANCE: f32 = 6.0;
 
 const SELECTED: Color32 = Color32::from_rgb(250, 210, 60);
+/// The selected vehicle's path, translucent so the road shows through.
+const PATH: Color32 = Color32::from_rgba_premultiplied(40, 90, 140, 140);
 /// With a vehicle selected, those it doesn't relate to.
 const UNRELATED: Color32 = Color32::from_gray(235);
 /// The colours of the vehicles the selected one relates to, in turn.
@@ -363,6 +365,42 @@ struct App {
     poses: Poses,
     /// How long the last fixed steps took to simulate.
     step_times: StepTimes,
+    /// How far the selected vehicle has gone, for its path's dashes.
+    travelled: Travelled,
+}
+
+/// How far a vehicle has gone along its lanes since it was selected, kept so
+/// its path's dashes stay put on the road as it moves on from one lane to the
+/// next, where its distance along its lane starts afresh.
+#[derive(Default)]
+struct Travelled {
+    /// The vehicle, and the lane it was on when last seen.
+    seen: Option<(VehicleId, LaneId)>,
+    /// How far along the lanes before that one it had gone, in meters.
+    before: f64,
+}
+
+impl Travelled {
+    /// How far `id` has gone, now that it is as `v` is: the lanes it has moved
+    /// on from, and how far along the one it is on. A lane change keeps the
+    /// distance, since its new lane runs beside its old one.
+    fn update(&mut self, sim: &Simulation, id: VehicleId, v: &Vehicle) -> f64 {
+        match self.seen {
+            Some((seen, lane)) if seen == id && lane != v.lane() => {
+                let old = sim.network().lane(lane);
+                let beside = [Side::Left, Side::Right]
+                    .into_iter()
+                    .any(|side| old.adj(side).is_some_and(|n| n.lane == v.lane()));
+                if !beside {
+                    self.before += old.geometry().length();
+                }
+            }
+            Some((seen, _)) if seen == id => {}
+            _ => self.before = 0.0,
+        }
+        self.seen = Some((id, v.lane()));
+        self.before + v.lane_pos().s
+    }
 }
 
 /// How many fixed steps the step time is averaged over: a second of simulated
@@ -433,6 +471,13 @@ struct Harness {
     target: usize,
     /// Vehicles per hour into each entry lane of an open network.
     flow: f64,
+    /// Whether vehicles on an open network are routed to an exit, drawn at
+    /// random from those they can reach, rather than choosing at random at
+    /// each fork.
+    to_exits: bool,
+    /// Each exit of the network, the lanes leading out at the end of a road,
+    /// registered as a destination.
+    exits: Vec<DestinationId>,
     /// Spawns or despawns owed: grows at [`CHANGE_RATE`], or at the flow, and a
     /// refused spawn waits here.
     credit: f64,
@@ -449,6 +494,8 @@ impl Default for Harness {
             closed: true,
             target: 60,
             flow: 600.0,
+            to_exits: true,
+            exits: Vec::new(),
             credit: 0.0,
             spawned: 0,
             despawned: 0,
@@ -458,6 +505,25 @@ impl Default for Harness {
 }
 
 impl Harness {
+    /// Registers each exit of an open network as a destination: the lanes
+    /// leading nowhere, grouped by road.
+    fn register_exits(&mut self, sim: &mut Recorded) {
+        if self.closed || self.still {
+            return;
+        }
+        let mut roads: Vec<(RoadId, Vec<LaneId>)> = Vec::new();
+        for (id, lane) in sim.network().lanes() {
+            if !lane.successors().is_empty() {
+                continue;
+            }
+            match roads.iter_mut().find(|(road, _)| *road == lane.road()) {
+                Some((_, lanes)) => lanes.push(id),
+                None => roads.push((lane.road(), vec![id])),
+            }
+        }
+        self.exits = roads.iter().map(|(_, lanes)| sim.add_destination(lanes)).collect();
+    }
+
     /// Runs after each simulation step of `dt` simulated seconds.
     fn step(&mut self, sim: &mut Recorded, selected: Option<VehicleId>, dt: f64) {
         if self.still {
@@ -535,12 +601,17 @@ impl Harness {
             ..demo_car()
         };
         let limit = sim.network().lane(lane).speed_limit();
-        let at = Placement {
-            lane,
-            s,
-            speed: car.desired_speed(limit),
-            route: Route::random(self.rng.random()),
+        let seed = self.rng.random();
+        // To an exit it can reach from where it starts, if it is to go to one.
+        let reachable: Vec<_> = match self.to_exits {
+            true => self.exits.iter().filter(|&&d| sim.time_to(d, lane).is_some()).collect(),
+            false => Vec::new(),
         };
+        let route = match reachable.len() {
+            0 => Route::random(seed),
+            n => Route::to(*reachable[self.rng.random_range(0..n)]),
+        };
+        let at = Placement { lane, s, speed: car.desired_speed(limit), route, seed };
         // Refused where there is no safe room: the credit waits for another try.
         if sim.try_insert(car, at).is_ok() {
             self.credit -= 1.0;
@@ -565,6 +636,7 @@ impl Harness {
             } else {
                 let slider = egui::Slider::new(&mut self.flow, 0.0..=1800.0);
                 ui.add(slider.text("vehicles per hour per entry lane"));
+                ui.checkbox(&mut self.to_exits, "routed to exits");
             }
             ui.separator();
             ui.label(format!(
@@ -595,6 +667,7 @@ impl App {
             harness: Harness::default(),
             poses: Poses::default(),
             step_times: StepTimes::default(),
+            travelled: Travelled::default(),
         };
         app.load(scenario);
         app
@@ -614,14 +687,16 @@ impl App {
         }
         self.capture_status = None;
         self.poses = Poses::default();
-        let Harness { target, flow, .. } = self.harness;
+        let Harness { target, flow, to_exits, .. } = self.harness;
         self.harness = Harness {
             still: scenario.frame(),
             closed: scenario.closed(),
             target,
             flow,
+            to_exits,
             ..Harness::default()
         };
+        self.harness.register_exits(&mut self.sim);
         let road_points = self.render.roads.iter().flat_map(|r| r.left.iter().chain(&r.right));
         let points: Vec<Pos2> = road_points.map(|&p| to_scene(p)).collect();
         self.scene_rect = Rect::from_points(&points).expand(10.0);
@@ -811,6 +886,21 @@ impl App {
             }
             let path: Vec<_> = v.path().iter().map(|l| l.0.to_string()).collect();
             row("path", path.join(" → "));
+            match self.sim.route(id) {
+                Some(Route::Destination(destination)) => {
+                    let lanes: Vec<_> =
+                        self.sim.destination(destination).iter().map(|l| l.0.to_string()).collect();
+                    row("route", format!("to lanes {}", lanes.join(", ")));
+                    let way = match self.sim.time_to(destination, v.lane()) {
+                        Some((time, changes)) => {
+                            format!("{time:.0} s from this lane's start, {changes} lane changes")
+                        }
+                        None => "none from here".into(),
+                    };
+                    row("way", way);
+                }
+                _ => row("route", "random".into()),
+            }
             row("s", format!("{:.2} m", pos.s));
             row("t", format!("{:+.3} m", pos.t));
             row(
@@ -1041,6 +1131,17 @@ impl eframe::App for App {
             ui.painter().rect_filled(ui.max_rect(), 0.0, background);
             let scene = egui::Scene::new().zoom_range(0.1..=200.0).scroll_zooms(true);
             let related = self.selected.map(|id| related(&self.debug, id)).unwrap_or_default();
+            // Wall-clock time, so a selected vehicle's path flows even while paused.
+            let time = ui.input(|i| i.time);
+            if self.selected.is_some() {
+                ui.ctx().request_repaint();
+            }
+            // Where the path's dashes are: flowing on, and staying put on the
+            // road as the vehicle moves.
+            let selected = self.selected.and_then(|id| Some((id, self.sim.get(id)?)));
+            let march = selected.map_or(0.0, |(id, v)| {
+                PATH_FLOW * time - self.travelled.update(&self.sim, id, v)
+            });
             let response = scene
                 .show(ui, &mut self.scene_rect, |ui| match self.view {
                     View::Pretty => draw_pretty(
@@ -1050,6 +1151,7 @@ impl eframe::App for App {
                         self.selected,
                         &related,
                         &self.poses,
+                        march,
                     ),
                     View::Debug => draw_debug(
                         ui.painter(),
@@ -1059,6 +1161,7 @@ impl eframe::App for App {
                         &related,
                         &self.layers,
                         &self.poses,
+                        march,
                     ),
                 })
                 .response;
@@ -1080,6 +1183,7 @@ fn draw_pretty(
     selected: Option<VehicleId>,
     related: &[(VehicleId, Color32)],
     poses: &Poses,
+    march: f64,
 ) {
     let asphalt = Color32::from_gray(60);
     for surface in &render.intersections {
@@ -1087,6 +1191,9 @@ fn draw_pretty(
     }
     for strip in &render.roads {
         painter.add(strip_mesh(strip, asphalt));
+    }
+    if let Some(id) = selected {
+        draw_path(painter, sim, id, march);
     }
     let white = Stroke::new(0.15, Color32::from_gray(230));
     let yellow = Stroke::new(0.15, Color32::from_rgb(240, 200, 40));
@@ -1123,6 +1230,73 @@ fn draw_pretty(
     }
 }
 
+/// How fast the dashes of a selected vehicle's path flow along it, in meters
+/// a second of wall-clock time, and the lengths of its dashes and gaps.
+const PATH_FLOW: f64 = 2.5;
+const PATH_DASH: f32 = 3.0;
+const PATH_GAP: f32 = 1.0;
+/// How wide a selected vehicle's path is drawn, in meters.
+const PATH_WIDTH: f32 = 1.0;
+
+/// A vehicle's path, along its lanes' centerlines from its rear axle to the
+/// end of the last lane it knows it will take, as a thick dashed line, its
+/// first dash starting `march` meters along it, as far as the dashes have
+/// flowed less how far the vehicle has gone, so they flow slowly the way it
+/// goes and stay put on the road as it moves.
+fn draw_path(painter: &egui::Painter, sim: &Simulation, id: VehicleId, march: f64) {
+    let Some(v) = sim.get(id) else {
+        return;
+    };
+    // From its rear axle to its front axle, then along its front axle's course:
+    // its lanes' centerlines, offset along the quintic of a lane change in
+    // progress, so the line runs smoothly onto its new lane.
+    let front = v.front_s();
+    let change = v.lane_change();
+    let mut points = vec![
+        to_scene(v.pos()),
+        to_scene(v.pos() + v.dir() * v.spec().wheelbase()),
+    ];
+    // How far along its path each lane starts.
+    let mut base = 0.0;
+    let mut along = Vec::new();
+    for &lane in v.path() {
+        let geometry = sim.network().lane(lane).geometry();
+        // Its vertices, and every meter through a lane change, ahead of the front axle.
+        along.clear();
+        let mut s = 0.0;
+        let mut last: Option<DVec2> = None;
+        for p in geometry.centerline() {
+            s += last.map_or(0.0, |q| p.distance(q));
+            last = Some(p);
+            along.push(s);
+        }
+        if let Some(c) = change {
+            let (from, to) = (
+                (c.s0 - base).max(0.0),
+                (c.end() - base).min(geometry.length()),
+            );
+            along.extend((0..).map(|k| from + k as f64).take_while(|&s| s < to));
+        }
+        along.retain(|&s| base + s > front);
+        along.sort_by(f64::total_cmp);
+        for &s in &along {
+            let t = change.map_or(0.0, |c| c.offset_at(base + s));
+            points.push(to_scene(geometry.lane_to_world(geometry.lane_pos(s, t))));
+        }
+        base += geometry.length();
+    }
+    let period = f64::from(PATH_DASH + PATH_GAP);
+    let offset = march.rem_euclid(period) as f32;
+    let stroke = Stroke::new(PATH_WIDTH, PATH);
+    painter.extend(Shape::dashed_line_with_offset(
+        &points,
+        stroke,
+        &[PATH_DASH],
+        &[PATH_GAP],
+        offset,
+    ));
+}
+
 /// How far in from the body's front and rear ends the indicators sit, in
 /// meters, and their radius.
 const INDICATOR_INSET: f64 = 0.4;
@@ -1155,6 +1329,7 @@ fn draw_indicators(painter: &egui::Painter, sim: &Simulation, v: &Vehicle, corne
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_debug(
     painter: &egui::Painter,
     sim: &Simulation,
@@ -1163,10 +1338,14 @@ fn draw_debug(
     related: &[(VehicleId, Color32)],
     layers: &Layers,
     poses: &Poses,
+    march: f64,
 ) {
     // With a vehicle selected, only its own marks are drawn; otherwise everyone's.
     // Vehicle bodies and the network are always drawn.
     let shown = |id: VehicleId| selected.is_none_or(|s| s == id);
+    if let Some(id) = selected.filter(|_| layers.on(Layer::Path)) {
+        draw_path(painter, sim, id, march);
+    }
     let thin = Stroke::new(0.08, OUTLINE);
     for (_, lane) in sim.network().lanes() {
         if layers.on(Layer::LaneOutlines) {
@@ -1459,6 +1638,7 @@ const PASS_BLOCKED: Color32 = Color32::from_rgb(230, 60, 60);
 /// A debug view layer that can be turned on and off.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Layer {
+    Path,
     LaneOutlines,
     Centerlines,
     Ticks,
@@ -1473,7 +1653,8 @@ enum Layer {
 }
 
 impl Layer {
-    const ALL: [Layer; 11] = [
+    const ALL: [Layer; 12] = [
+        Layer::Path,
         Layer::LaneOutlines,
         Layer::Centerlines,
         Layer::Ticks,
@@ -1490,6 +1671,11 @@ impl Layer {
     /// Its name, its colors, and what they mean, for the legend.
     fn legend(self) -> (&'static str, &'static [Color32], &'static str) {
         match self {
+            Layer::Path => (
+                "Path",
+                &[PATH],
+                "The selected vehicle's path, the lanes it knows it will take, flowing the way it goes; under everything else",
+            ),
             Layer::LaneOutlines => (
                 "Lane outlines",
                 &[OUTLINE],
@@ -1560,6 +1746,7 @@ impl Default for Layers {
     fn default() -> Self {
         let mut layers = [false; Layer::ALL.len()];
         for layer in [
+            Layer::Path,
             Layer::LaneOutlines,
             Layer::Occupants,
             Layer::Vehicles,

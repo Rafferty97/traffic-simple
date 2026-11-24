@@ -24,7 +24,8 @@ const HALF_WIDTH: f64 = 1.75;
 /// red: its `s` where the line crosses the lane's edge furthest back, as far
 /// as any vehicle on the lane could reach.
 fn red_line(skew: f64) -> (SimNetwork, Line) {
-    let lane = |a: DVec2, b: DVec2| Lane::new(&[a, b], 2.0 * HALF_WIDTH, LIMIT).unwrap();
+    let lane =
+        |a: DVec2, b: DVec2| Lane::new(&[a, b], 2.0 * HALF_WIDTH, LIMIT, common::alone()).unwrap();
     let mut net = SimNetwork::new(vec![
         lane(DVec2::new(-100.0, 0.0), DVec2::ZERO),
         lane(DVec2::ZERO, DVec2::new(100.0, 0.0)),
@@ -60,6 +61,7 @@ fn stop(skew: f64, spec: VehicleSpec) -> (f64, f64) {
         s: 40.0,
         speed: LIMIT,
         route: Route::random(0),
+        seed: 0,
     };
     let id = sim.insert(spec, at);
     let short = |sim: &Simulation| {

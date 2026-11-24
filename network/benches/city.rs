@@ -73,7 +73,13 @@ impl Flooded {
         if self.n.is_multiple_of(self.every) {
             let lane = self.entries[(self.n / self.every) as usize % self.entries.len()];
             let speed = self.sim.network().lane(lane).speed_limit();
-            let at = Placement { lane, s: 5.0, speed, route: Route::random(self.n) };
+            let at = Placement {
+                lane,
+                s: 5.0,
+                speed,
+                route: Route::random(self.n),
+                seed: self.n,
+            };
             let _ = self.sim.try_insert(VehicleSpec::passenger_car(), at);
         }
         self.n += 1;
@@ -118,8 +124,8 @@ impl Kept {
             let lane = self.roads[i as usize];
             let length = self.sim.network().lane(lane).geometry().length();
             let s = (self.next() % 1000) as f64 / 1000.0 * length;
-            let route = Route::random(self.next());
-            let at = Placement { lane, s, speed: 0.0, route };
+            let seed = self.next();
+            let at = Placement { lane, s, speed: 0.0, route: Route::random(seed), seed };
             let _ = self.sim.try_insert(VehicleSpec::passenger_car(), at);
         }
         self.sim.step_variable(black_box(DT));

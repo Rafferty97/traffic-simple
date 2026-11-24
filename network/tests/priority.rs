@@ -116,7 +116,13 @@ fn priority_intersections_keep_traffic_flowing_every_way() {
         for step in 1..=common::steps(300.0) {
             if step % common::steps(5.0) == 0 {
                 let lane = entries[(step / common::steps(5.0) * 7) as usize % entries.len()];
-                let at = Placement { lane, s: 5.0, speed: LIMIT, route: Route::random(step) };
+                let at = Placement {
+                    lane,
+                    s: 5.0,
+                    speed: LIMIT,
+                    route: Route::random(step),
+                    seed: step,
+                };
                 if sim.try_insert(VehicleSpec::passenger_car(), at).is_ok() {
                     spawned += 1;
                 }
@@ -199,7 +205,13 @@ fn major_road_traffic_never_brakes_hard_for_minor_road_traffic() {
         for step in 0..common::steps(300.0) {
             if step % common::steps(0.5) == 0 {
                 let lane = entries[(step / common::steps(0.5) * 7) as usize % entries.len()];
-                let at = Placement { lane, s: 5.0, speed: LIMIT, route: Route::random(step) };
+                let at = Placement {
+                    lane,
+                    s: 5.0,
+                    speed: LIMIT,
+                    route: Route::random(step),
+                    seed: step,
+                };
                 let _ = sim.try_insert(VehicleSpec::passenger_car(), at);
             }
             sim.step();
@@ -243,7 +255,13 @@ fn at_a_stop_sign_every_car_comes_to_rest_at_the_line_before_it_goes() {
         for step in 0..common::steps(300.0) {
             if step % common::steps(5.0) == 0 {
                 let lane = entries[(step / common::steps(5.0) * 7) as usize % entries.len()];
-                let at = Placement { lane, s: 5.0, speed: LIMIT, route: Route::random(step) };
+                let at = Placement {
+                    lane,
+                    s: 5.0,
+                    speed: LIMIT,
+                    route: Route::random(step),
+                    seed: step,
+                };
                 let _ = sim.try_insert(VehicleSpec::passenger_car(), at);
             }
             sim.step();

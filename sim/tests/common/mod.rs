@@ -11,6 +11,18 @@ use traffic_sim::{
     Config, DebugEvent, Lane, LaneId, Placement, Route, SimNetwork, Simulation, VehicleSpec,
 };
 
+/// A road no other lane is part of, for a lane that stands alone: each call
+/// gives another.
+pub fn alone() -> traffic_sim::RoadId {
+    thread_local! {
+        static NEXT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+    NEXT.with(|next| {
+        next.set(next.get() + 1);
+        traffic_sim::RoadId(next.get() - 1)
+    })
+}
+
 /// The length of a step in the tests' standard simulation, in seconds: 30 Hz.
 pub const DT: f64 = 1.0 / 30.0;
 
@@ -133,7 +145,7 @@ pub fn ring_road(circumference: f64, lanes: usize, speed_limit: f64) -> SimNetwo
         let mut points = vec![seam];
         points.extend((0..n).map(vertex));
         points.push(seam);
-        Lane::new(&points, WIDTH, speed_limit).unwrap()
+        Lane::new(&points, WIDTH, speed_limit, alone()).unwrap()
     };
     let inner = circumference / TAU;
     let mut network = SimNetwork::new((0..lanes).map(|i| lane(inner + WIDTH * i as f64)).collect());
@@ -159,7 +171,7 @@ pub fn fill_lane(sim: &mut Simulation, lane: LaneId, count: usize) {
         let s = length * i as f64 / count as f64;
         sim.insert(
             car(),
-            Placement { lane, s, speed: 0.0, route: Route::default() },
+            Placement { lane, s, speed: 0.0, route: Route::default(), seed: 0 },
         );
     }
 }

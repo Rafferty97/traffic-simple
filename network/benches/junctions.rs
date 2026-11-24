@@ -39,7 +39,7 @@ fn step(sim: &mut Simulation, entries: &[LaneId], every: u64, n: &mut u64) {
     if n.is_multiple_of(every) {
         let lane = entries[(*n / every) as usize % entries.len()];
         let speed = sim.network().lane(lane).speed_limit();
-        let at = Placement { lane, s: 5.0, speed, route: Route::random(*n) };
+        let at = Placement { lane, s: 5.0, speed, route: Route::random(*n), seed: *n };
         let _ = sim.try_insert(VehicleSpec::passenger_car(), at);
     }
     *n += 1;

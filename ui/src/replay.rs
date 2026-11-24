@@ -15,10 +15,12 @@
 //! # traffic-sim replay v3
 //! network {"lanes":[{"geometry":"0,0,1750 100000,0", ...}], ...}
 //! step 0.016666666666666666
-//! try_insert ok length=4.6 width=1.9 ... lane=2 s=255.4 speed=14.18 seed=3
+//! try_insert ok length=4.6 width=1.9 ... lane=2 s=255.4 speed=14.18 seed=3 route=3
 //! cap 3 0.0
 //! cap 4 5.555555555555555
 //! change_lane 7 left refused
+//! add_destination 12,13
+//! try_insert ok length=4.6 ... lane=2 s=5.0 speed=13.9 seed=8 destination=0
 //! ```
 
 #[cfg(test)]
@@ -29,8 +31,8 @@ use std::fmt::Write;
 use std::ops::Deref;
 
 use traffic_sim::{
-    DebugEvent, InsertError, LaneChangeError, Placement, Route, Side, Simulation, VehicleId,
-    VehicleSpec,
+    DebugEvent, DestinationId, InsertError, LaneChangeError, LaneId, Placement, Route, Side,
+    Simulation, VehicleId, VehicleSpec,
 };
 
 /// A simulation that logs every call that changes it.
@@ -95,8 +97,11 @@ impl Recorded {
             line_gap,
             line_gap_spread,
         } = spec;
-        let Placement { lane, s, speed, route } = at;
-        let Route::Random { state: seed } = route;
+        let Placement { lane, s, speed, route, seed } = at;
+        let route = match route {
+            Route::Random { state } => format!("route={state}"),
+            Route::Destination(destination) => format!("destination={}", destination.0),
+        };
         writeln!(
             self.log,
             "try_insert {outcome} length={length:?} width={width:?} max_speed={max_speed:?} \
@@ -104,7 +109,7 @@ impl Recorded {
              time_headway={time_headway:?} min_gap={min_gap:?} rear_axle={rear_axle:?} \
              front_axle={front_axle:?} courtesy={courtesy:?} politeness={politeness:?} \
              assertiveness={assertiveness:?} accel_noise={accel_noise:?} \
-             line_gap={line_gap:?} line_gap_spread={line_gap_spread:?} lane={} s={s:?} speed={speed:?} seed={seed}",
+             line_gap={line_gap:?} line_gap_spread={line_gap_spread:?} lane={} s={s:?} speed={speed:?} seed={seed} {route}",
             lane.0
         )
         .unwrap();
@@ -113,6 +118,12 @@ impl Recorded {
             self.index.insert(id, next);
         }
         result
+    }
+
+    pub fn add_destination(&mut self, lanes: &[LaneId]) -> DestinationId {
+        let lanes_text: Vec<_> = lanes.iter().map(|l| l.0.to_string()).collect();
+        writeln!(self.log, "add_destination {}", lanes_text.join(",")).unwrap();
+        self.sim.add_destination(lanes)
     }
 
     pub fn remove(&mut self, id: VehicleId) -> bool {
@@ -205,11 +216,13 @@ mod test {
                 let speed_factor = 0.8 + 0.4 * rng.random::<f64>();
                 let spec = VehicleSpec { speed_factor, ..VehicleSpec::passenger_car() };
                 let s = 600.0 * rng.random::<f64>();
+                let seed = rng.random();
                 let at = Placement {
                     lane: LaneId(2),
                     s,
                     speed: spec.desired_speed(speed_limit),
-                    route: Route::random(rng.random()),
+                    route: Route::random(seed),
+                    seed,
                 };
                 ids.extend(sim.try_insert(spec, at).ok());
             } else if roll < 0.07 && !ids.is_empty() {

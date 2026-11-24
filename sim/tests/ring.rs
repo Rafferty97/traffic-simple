@@ -37,7 +37,13 @@ fn lone_car_laps_forever_without_a_leader() {
     let mut sim = common::watched(ring(230.0, SPEED_LIMIT), Terms::default());
     let id = sim.insert(
         car(),
-        Placement { lane: LaneId(0), s: 0.0, speed: 0.0, route: Route::default() },
+        Placement {
+            lane: LaneId(0),
+            s: 0.0,
+            speed: 0.0,
+            route: Route::default(),
+            seed: 0,
+        },
     );
     let mut max_t = 0.0f64;
     run(&mut sim, 120.0, |sim| {

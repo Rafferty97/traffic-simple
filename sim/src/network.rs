@@ -15,7 +15,7 @@ pub use conflict::{Conflict, ConflictKind, Junction, JunctionId};
 pub use control::{Barrier, BarrierKind, Line, Movement, MovementId, Phase, SignalPlan, YieldsId};
 use geometry::{LanePos, SAME_POINT};
 pub use lane::{
-    ALIGNED, Keep, Lane, LaneId, Leaving, MAX_PREDECESSORS, MAX_SUCCESSORS, Neighbor, Side,
+    ALIGNED, Keep, Lane, LaneId, Leaving, MAX_PREDECESSORS, MAX_SUCCESSORS, Neighbor, RoadId, Side,
 };
 
 /// Why a network breaks an assumption the simulation makes about it.
@@ -608,7 +608,15 @@ mod test {
     use super::*;
 
     fn network(lanes: usize) -> SimNetwork {
-        let lane = || Lane::new(&[DVec2::ZERO, DVec2::X * 10.0], 3.5, 14.0).unwrap();
+        let lane = || {
+            Lane::new(
+                &[DVec2::ZERO, DVec2::X * 10.0],
+                3.5,
+                14.0,
+                crate::simulation::test::alone(),
+            )
+            .unwrap()
+        };
         SimNetwork::new((0..lanes).map(|_| lane()).collect())
     }
 
@@ -634,7 +642,9 @@ mod test {
     fn successors_are_ordered_left_to_right_and_predecessors_as_connected() {
         // Lane 0 forks three ways at x = 10: lane 1 bears left, lane 2 runs
         // straight on and lane 3 bears right. Connected out of order.
-        let lane = |points: &[DVec2]| Lane::new(points, 3.5, 14.0).unwrap();
+        let lane = |points: &[DVec2]| {
+            Lane::new(points, 3.5, 14.0, crate::simulation::test::alone()).unwrap()
+        };
         let from = DVec2::new(10.0, 0.0);
         let mut net = SimNetwork::new(vec![
             lane(&[DVec2::ZERO, from]),
@@ -664,7 +674,13 @@ mod test {
 
     /// A straight lane along y, from x0 to x1.
     fn straight(x0: f64, x1: f64, y: f64) -> Lane {
-        Lane::new(&[DVec2::new(x0, y), DVec2::new(x1, y)], 3.5, 14.0).unwrap()
+        Lane::new(
+            &[DVec2::new(x0, y), DVec2::new(x1, y)],
+            3.5,
+            14.0,
+            crate::simulation::test::alone(),
+        )
+        .unwrap()
     }
 
     /// Two lanes side by side in two sections: lanes 0 and 1 from x = 0 to 50, 2

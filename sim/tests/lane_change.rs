@@ -37,6 +37,7 @@ fn cruising() -> (Simulation, VehicleId) {
             s: 0.0,
             speed: SPEED_LIMIT,
             route: Route::default(),
+            seed: 0,
         },
     );
     run(&mut sim, 5.0, |_| {});
@@ -127,7 +128,7 @@ fn refuses_impossible_changes() {
 fn respects_one_way_permissions() {
     let lane = |y: f64| {
         let points = [glam::DVec2::new(0.0, y), glam::DVec2::new(500.0, y)];
-        Lane::new(&points, 3.5, SPEED_LIMIT).unwrap()
+        Lane::new(&points, 3.5, SPEED_LIMIT, common::alone()).unwrap()
     };
     // Lane 0 is on the left of lane 1; changing right is allowed, left isn't.
     let mut network = SimNetwork::new(vec![lane(3.5), lane(0.0)]);
@@ -140,6 +141,7 @@ fn respects_one_way_permissions() {
             s: 10.0,
             speed: 10.0,
             route: Route::default(),
+            seed: 0,
         },
     );
     let b = sim.insert(
@@ -149,6 +151,7 @@ fn respects_one_way_permissions() {
             s: 30.0,
             speed: 10.0,
             route: Route::default(),
+            seed: 0,
         },
     );
     assert_eq!(
@@ -170,6 +173,7 @@ fn a_change_across_the_seam_keeps_followers_on_the_old_side_informed() {
             s: length - 3.0,
             speed: SPEED_LIMIT,
             route: Route::default(),
+            seed: 0,
         },
     );
     sim.change_lane(id, Side::Right).unwrap();
@@ -223,7 +227,7 @@ fn clearance(a: &traffic_sim::Vehicle, b: &traffic_sim::Vehicle) -> f64 {
 fn changing_out_of_a_queue_keeps_clear_of_the_old_leader() {
     let lane = |y: f64| {
         let points = [glam::DVec2::new(0.0, y), glam::DVec2::new(300.0, y)];
-        Lane::new(&points, 3.5, SPEED_LIMIT).unwrap()
+        Lane::new(&points, 3.5, SPEED_LIMIT, common::alone()).unwrap()
     };
     // Lane 0 is on the left of lane 1.
     let mut network = SimNetwork::new(vec![lane(3.5), lane(0.0)]);
@@ -239,6 +243,7 @@ fn changing_out_of_a_queue_keeps_clear_of_the_old_leader() {
             s: 60.0,
             speed: 0.0,
             route: Route::default(),
+            seed: 0,
         },
     );
     sim.hold(leader);
@@ -249,6 +254,7 @@ fn changing_out_of_a_queue_keeps_clear_of_the_old_leader() {
             s: 53.4,
             speed: 0.0,
             route: Route::default(),
+            seed: 0,
         },
     );
 
@@ -283,7 +289,7 @@ fn followers_pass_a_car_mostly_out_of_their_lane() {
     // still a member of the old lane.
     let lane = |y: f64| {
         let points = [glam::DVec2::new(0.0, y), glam::DVec2::new(400.0, y)];
-        Lane::new(&points, 5.0, SPEED_LIMIT).unwrap()
+        Lane::new(&points, 5.0, SPEED_LIMIT, common::alone()).unwrap()
     };
     // Lane 0 is on the left of lane 1.
     let mut network = SimNetwork::new(vec![lane(5.0), lane(0.0)]);
@@ -298,6 +304,7 @@ fn followers_pass_a_car_mostly_out_of_their_lane() {
             s: 60.0,
             speed: 2.0,
             route: Route::default(),
+            seed: 0,
         },
     );
     let follower = sim.insert(
@@ -307,6 +314,7 @@ fn followers_pass_a_car_mostly_out_of_their_lane() {
             s: 10.0,
             speed: 6.0,
             route: Route::default(),
+            seed: 0,
         },
     );
     sim.change_lane(id, Side::Left).unwrap();
@@ -339,7 +347,7 @@ fn followers_pass_where_they_will_be_not_where_they_are() {
     // Three wide lanes, 0 on the left of 1 on the left of 2.
     let lane = |y: f64| {
         let points = [glam::DVec2::new(0.0, y), glam::DVec2::new(600.0, y)];
-        Lane::new(&points, 5.0, SPEED_LIMIT).unwrap()
+        Lane::new(&points, 5.0, SPEED_LIMIT, common::alone()).unwrap()
     };
     let mut network = SimNetwork::new(vec![lane(10.0), lane(5.0), lane(0.0)]);
     network.set_adjacent(LaneId(0), LaneId(1), true, true);
@@ -359,6 +367,7 @@ fn followers_pass_where_they_will_be_not_where_they_are() {
             s: 300.0,
             speed: 2.0,
             route: Route::default(),
+            seed: 0,
         },
     );
     sim.change_lane(ahead, Side::Left).unwrap();
@@ -387,6 +396,7 @@ fn followers_pass_where_they_will_be_not_where_they_are() {
             s,
             speed: SPEED_LIMIT,
             route: Route::default(),
+            seed: 0,
         },
     );
     sim.change_lane(fast, Side::Left).unwrap();
@@ -418,7 +428,7 @@ fn followers_pass_where_they_will_be_not_where_they_are() {
 fn change_away_from_a_held_car(gap: f64, speed: f64) -> (f64, f64, bool) {
     let lane = |y: f64| {
         let points = [glam::DVec2::new(0.0, y), glam::DVec2::new(400.0, y)];
-        Lane::new(&points, 3.5, SPEED_LIMIT).unwrap()
+        Lane::new(&points, 3.5, SPEED_LIMIT, common::alone()).unwrap()
     };
     // Lane 0 is on the left of lane 1.
     let mut network = SimNetwork::new(vec![lane(3.5), lane(0.0)]);
@@ -431,6 +441,7 @@ fn change_away_from_a_held_car(gap: f64, speed: f64) -> (f64, f64, bool) {
             s: 100.0,
             speed: 0.0,
             route: Route::default(),
+            seed: 0,
         },
     );
     sim.hold(held);
@@ -439,7 +450,7 @@ fn change_away_from_a_held_car(gap: f64, speed: f64) -> (f64, f64, bool) {
     let s = 100.0 - spec.rear_axle - gap - (spec.length - spec.rear_axle);
     let changer = sim.insert(
         car(),
-        Placement { lane: LaneId(1), s, speed, route: Route::default() },
+        Placement { lane: LaneId(1), s, speed, route: Route::default(), seed: 0 },
     );
     sim.change_lane(changer, Side::Left).unwrap();
     let mut closest = f64::INFINITY;
@@ -478,7 +489,7 @@ fn a_car_changing_in_behind_a_slower_one_follows_it() {
     // Two straight lanes, 0 on the left of 1.
     let lane = |y: f64| {
         let points = [glam::DVec2::new(0.0, y), glam::DVec2::new(600.0, y)];
-        Lane::new(&points, 3.5, SPEED_LIMIT).unwrap()
+        Lane::new(&points, 3.5, SPEED_LIMIT, common::alone()).unwrap()
     };
     let mut network = SimNetwork::new(vec![lane(3.5), lane(0.0)]);
     // Changes are only permitted rightward, so the slower car stays in lane 1
@@ -496,13 +507,20 @@ fn a_car_changing_in_behind_a_slower_one_follows_it() {
             s: 100.0,
             speed: 11.2,
             route: Route::default(),
+            seed: 0,
         },
     );
     let spec = car();
     let s = 100.0 - spec.length - 1.0;
     let fast = sim.insert(
         spec,
-        Placement { lane: LaneId(0), s, speed: 14.0, route: Route::default() },
+        Placement {
+            lane: LaneId(0),
+            s,
+            speed: 14.0,
+            route: Route::default(),
+            seed: 0,
+        },
     );
     sim.change_lane(fast, Side::Right).unwrap();
     let (mut closest, mut drew_level) = (f64::INFINITY, false);
@@ -525,7 +543,7 @@ fn a_car_changing_in_behind_a_slower_one_follows_it() {
 fn held_partway_out_of_lane_1() -> (Simulation, VehicleId) {
     let lane = |y: f64| {
         let points = [glam::DVec2::new(0.0, y), glam::DVec2::new(600.0, y)];
-        Lane::new(&points, 3.5, SPEED_LIMIT).unwrap()
+        Lane::new(&points, 3.5, SPEED_LIMIT, common::alone()).unwrap()
     };
     let mut network = SimNetwork::new(vec![lane(7.0), lane(3.5), lane(0.0)]);
     network.set_adjacent(LaneId(0), LaneId(1), true, true);
@@ -539,6 +557,7 @@ fn held_partway_out_of_lane_1() -> (Simulation, VehicleId) {
             s: 300.0,
             speed: 2.0,
             route: Route::default(),
+            seed: 0,
         },
     );
     sim.change_lane(ahead, Side::Left).unwrap();
@@ -559,7 +578,13 @@ fn change_behind(mut sim: Simulation, ahead: VehicleId, side: Side) -> (f64, f64
     let s = rear - 12.0 - (spec.length - spec.rear_axle);
     let follower = sim.insert(
         car(),
-        Placement { lane: LaneId(1), s, speed: 3.0, route: Route::default() },
+        Placement {
+            lane: LaneId(1),
+            s,
+            speed: 3.0,
+            route: Route::default(),
+            seed: 0,
+        },
     );
     sim.change_lane(follower, side).unwrap();
     let mut closest = f64::INFINITY;
@@ -604,7 +629,7 @@ fn changes_in_the_same_direction_never_pass() {
 fn a_slow_lane_change_keeps_the_car_at_its_speed() {
     let lane = |y: f64| {
         let points = [glam::DVec2::new(0.0, y), glam::DVec2::new(2000.0, y)];
-        Lane::new(&points, 3.5, 2.0).unwrap()
+        Lane::new(&points, 3.5, 2.0, common::alone()).unwrap()
     };
     let mut network = SimNetwork::new(vec![lane(3.5), lane(0.0)]);
     network.set_adjacent(LaneId(0), LaneId(1), true, true);
@@ -615,6 +640,7 @@ fn a_slow_lane_change_keeps_the_car_at_its_speed() {
         s: 100.0,
         speed: 2.0,
         route: Route::default(),
+        seed: 0,
     };
     let id = sim.insert(spec, at);
     for _ in 0..90 {

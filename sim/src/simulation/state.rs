@@ -11,7 +11,7 @@ use crate::models::lane_change;
 use crate::models::routing;
 use crate::models::signal::{MovementLight, SignalState};
 use crate::motion::path::{Through, recompute_through};
-use crate::network::SimNetwork;
+use crate::network::{LaneId, SimNetwork};
 use crate::vehicle::{Vehicle, VehicleId};
 
 /// How a simulation steps, fixed when it is made.
@@ -78,6 +78,10 @@ pub struct SimState {
     /// Every signal movement's light, by [`MovementId`](crate::network::MovementId).
     #[cfg_attr(feature = "serde", serde(default))]
     pub(crate) lights: Vec<MovementLight>,
+    /// The destinations registered, each a set of lanes, by
+    /// [`DestinationId`](routing::DestinationId).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) destinations: Vec<Vec<LaneId>>,
 }
 
 impl SimState {
@@ -111,6 +115,8 @@ pub(crate) struct Derived {
     pub merges: Merges,
     /// How far beyond each lane's end the paths through it reach (see [`Through`]).
     pub through: Through,
+    /// Each destination's route table, by destination.
+    pub routes: routing::Tables,
 }
 
 impl Derived {
@@ -121,6 +127,7 @@ impl Derived {
         let mut through = Through::new();
         let paths = state.vehicles.values().map(|v| v.path.as_slice());
         recompute_through(network, &mut through, paths);
-        Self { overlaps, merges, through }
+        let routes = routing::tables(network, &state.destinations);
+        Self { overlaps, merges, through, routes }
     }
 }

@@ -84,6 +84,7 @@ fn run_scenario(spawn_rate: f64, despawn_rate: f64, minutes: f64) -> Stats {
                 s: spawn_s,
                 speed: car.desired_speed(SPEED_LIMIT),
                 route: Route::default(),
+                seed: 0,
             };
             if sim.try_insert(car, at).is_ok() {
                 spawn_credit -= 1.0;

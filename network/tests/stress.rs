@@ -63,7 +63,13 @@ fn run(net: &RoadNetwork, seed: u64, every: f64) -> Result<usize, String> {
                 ..VehicleSpec::passenger_car()
             };
             let speed = sim.network().lane(lane).speed_limit() * car.speed_factor;
-            let at = Placement { lane, s: 5.0, speed, route: Route::random(step ^ seed) };
+            let at = Placement {
+                lane,
+                s: 5.0,
+                speed,
+                route: Route::random(step ^ seed),
+                seed: step ^ seed,
+            };
             let _ = sim.try_insert(car, at);
         }
         sim.step();

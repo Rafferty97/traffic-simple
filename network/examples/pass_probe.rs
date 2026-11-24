@@ -128,11 +128,13 @@ impl Harness {
     fn spawn(&mut self, sim: &mut Simulation, lane: LaneId, s: f64) {
         let spec = car(&mut self.rng);
         let limit = sim.network().lane(lane).speed_limit();
+        let seed = self.rng.next();
         let at = Placement {
             lane,
             s,
             speed: spec.desired_speed(limit),
-            route: Route::random(self.rng.next()),
+            route: Route::random(seed),
+            seed,
         };
         if sim.try_insert(spec, at).is_ok() {
             self.credit -= 1.0;
@@ -443,11 +445,23 @@ fn targeted(
     };
     let a = sim.insert(
         spec(),
-        Placement { lane: la, s: 100.0, speed: va, route: Route::default() },
+        Placement {
+            lane: la,
+            s: 100.0,
+            speed: va,
+            route: Route::default(),
+            seed: 0,
+        },
     );
     let b = sim.insert(
         spec(),
-        Placement { lane: lb, s: 100.0 + d, speed: vb, route: Route::default() },
+        Placement {
+            lane: lb,
+            s: 100.0 + d,
+            speed: vb,
+            route: Route::default(),
+            seed: 0,
+        },
     );
     sim.cap_speed(a, va);
     sim.cap_speed(b, vb);
@@ -548,11 +562,23 @@ fn at_the_drop(va: f64, vb: f64, d: f64, x: f64, tb: Option<f64>) -> (bool, u64)
     let spec = VehicleSpec { speed_factor: 1.0, ..car(&mut Rng(7)) };
     let b = sim.insert(
         spec,
-        Placement { lane: left, s: x, speed: vb, route: Route::default() },
+        Placement {
+            lane: left,
+            s: x,
+            speed: vb,
+            route: Route::default(),
+            seed: 0,
+        },
     );
     let a = sim.insert(
         spec,
-        Placement { lane: accel, s: x - d, speed: va, route: Route::default() },
+        Placement {
+            lane: accel,
+            s: x - d,
+            speed: va,
+            route: Route::default(),
+            seed: 0,
+        },
     );
     sim.cap_speed(a, va);
     sim.cap_speed(b, vb);

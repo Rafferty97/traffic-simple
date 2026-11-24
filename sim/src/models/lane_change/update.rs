@@ -9,6 +9,7 @@ use super::{
 };
 use crate::debug::{AccelSource, DebugEvent, DebugSink};
 use crate::models::acceleration;
+use crate::models::routing;
 use crate::network::Side;
 use crate::query::{LaneSpeeds, Prospect};
 use crate::simulation::SimState;
@@ -30,22 +31,34 @@ pub(crate) struct Decided {
     pub look: Option<f64>,
 }
 
-/// Lane changes, for every vehicle, `dt` seconds after the last: each driver's
-/// desires from its incentives, cheaply, and, for those whose desire has
-/// reached their threshold, a judgement of the gap the core has just measured
-/// for them, `prospects`, sorted by vehicle, as their intents asked at the last
-/// update. One that hasn't asked for its gap yet asks for it. Fills `decisions` with what each
+/// What the lane-change model decides from: the state, read only, and what
+/// the core has measured and derived for it.
+#[derive(Clone, Copy)]
+pub(crate) struct View<'a> {
+    pub state: &'a SimState,
+    /// Each destination's route table, for the route incentive.
+    pub routes: &'a routing::Tables,
+    /// The gaps the core has just measured, sorted by vehicle, as drivers'
+    /// intents asked at the last update.
+    pub prospects: &'a [(VehicleId, Prospect)],
+    /// Each lane's speeds, for averages over stretches ahead.
+    pub speeds: &'a [LaneSpeeds],
+}
+
+/// Lane changes, for every vehicle, `dt` seconds after the last, from `view`:
+/// each driver's desires from its incentives, cheaply, and, for those whose
+/// desire has reached their threshold, a judgement of the gap the core has
+/// just measured for them, as their intents asked at the last update. One that hasn't asked for its gap yet asks for it. Fills `decisions` with what each
 /// deciding driver decided, in order, using `asks` as scratch space; the
 /// simulation applies them.
 pub(crate) fn decide<D: DebugSink>(
-    state: &SimState,
-    prospects: &[(VehicleId, Prospect)],
-    speeds: &[LaneSpeeds],
+    view: View,
     sink: &mut D,
     dt: f64,
     decisions: &mut Vec<Decided>,
     asks: &mut Vec<(usize, Side)>,
 ) {
+    let View { state, prospects, .. } = view;
     let time = state.time();
     decisions.clear();
     asks.clear();
@@ -58,7 +71,7 @@ pub(crate) fn decide<D: DebugSink>(
             continue;
         }
         let mut lc = state.lane_changing.state(id);
-        let incentives = incentives(state, speeds, id, vehicle);
+        let incentives = incentives(view, id, vehicle);
         aim(&mut lc, incentives);
         // Nothing to weigh up: nowhere to change to, and nothing to fade.
         if lc.idle() && vehicle.intent == LaneChangeIntent::None {
@@ -95,7 +108,7 @@ pub(crate) fn decide<D: DebugSink>(
         let Decided { id, state: mut lc, .. } = decisions[slot];
         let vehicle = &state.vehicles[id];
         // Measured again, for the debug view: checks are few.
-        let incentive = incentives(state, speeds, id, vehicle)[index(side)].unwrap_or_default();
+        let incentive = incentives(view, id, vehicle)[index(side)].unwrap_or_default();
         let measured = prospects
             .binary_search_by_key(&id, |&(id, _)| id)
             .ok()

@@ -219,7 +219,16 @@ fn decision(
     }
     let mut speeds = Vec::new();
     LaneSpeeds::refresh(&mut speeds, sim.state());
-    let incentives = incentives(sim.state(), &speeds, id, vehicle);
+    let incentives = incentives(
+        View {
+            state: sim.state(),
+            routes: sim.routes(),
+            prospects: &[],
+            speeds: &speeds,
+        },
+        id,
+        vehicle,
+    );
     let mut lc = sim.state().lane_changing.state(id);
     let dt = sim.state().macro_step_dt();
     lane_change::aim(&mut lc, incentives);
@@ -581,7 +590,14 @@ fn a_lane_left_early_makes_drivers_want_to_leave_it_more_near_its_end() {
     // Lane 1 ends by merging into lane 0, and drivers leave it early.
     let early = Some(crate::network::Leaving::Early);
     let mut network = {
-        let lane = |y: f64| Lane::new(&[DVec2::new(0.0, y), DVec2::new(500.0, y)], WIDTH, LIMIT);
+        let lane = |y: f64| {
+            Lane::new(
+                &[DVec2::new(0.0, y), DVec2::new(500.0, y)],
+                WIDTH,
+                LIMIT,
+                crate::simulation::test::alone(),
+            )
+        };
         SimNetwork::new(vec![
             lane(0.0).unwrap(),
             lane(-WIDTH).unwrap().with_leaving(early),
@@ -701,8 +717,15 @@ fn evals_after(
 #[test]
 fn a_driver_with_nothing_left_to_weigh_up_keeps_no_stale_evaluations() {
     // Changes allowed only from left to right.
-    let lane =
-        |y: f64| Lane::new(&[DVec2::new(0.0, y), DVec2::new(500.0, y)], WIDTH, LIMIT).unwrap();
+    let lane = |y: f64| {
+        Lane::new(
+            &[DVec2::new(0.0, y), DVec2::new(500.0, y)],
+            WIDTH,
+            LIMIT,
+            crate::simulation::test::alone(),
+        )
+        .unwrap()
+    };
     let mut network = SimNetwork::new(vec![lane(0.0), lane(-WIDTH)]);
     network.set_adjacent(LaneId(0), LaneId(1), true, false);
     let mut sim = new_sim(network);
@@ -724,4 +747,25 @@ fn a_driver_with_nothing_left_to_weigh_up_keeps_no_stale_evaluations() {
     );
     assert!(sim.state().vehicles[id].old_side.is_none());
     assert!(after.is_empty(), "stale evaluations: {after:?}");
+}
+
+#[test]
+fn a_route_draws_a_driver_toward_a_lane_needing_fewer_changes_and_away_from_one_needing_more() {
+    use crate::models::routing::Need;
+    let need = |changes, distance| Some(Need { changes, distance });
+    let none = need(0, f64::INFINITY);
+    let speed = 50.0 / 3.6;
+    // Toward the lane it needs, the more the nearer it must be done.
+    let near = lane_change::route_incentive(need(1, 50.0), none, speed);
+    let far = lane_change::route_incentive(need(1, 250.0), none, speed);
+    assert!(near > far && far > 0.0, "{near} {far}");
+    // Away from one it would need a change from, and wholly from one with no way.
+    assert!(lane_change::route_incentive(none, need(1, 50.0), speed) < 0.0);
+    assert_eq!(lane_change::route_incentive(none, None, speed), -1.0);
+    // Nothing between lanes needing as many, or with no way from here.
+    assert_eq!(
+        lane_change::route_incentive(need(1, 50.0), need(1, 80.0), speed),
+        0.0
+    );
+    assert_eq!(lane_change::route_incentive(None, none, speed), 0.0);
 }

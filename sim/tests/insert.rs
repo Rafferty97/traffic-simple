@@ -8,7 +8,7 @@ use common::{car, ring};
 const SPEED_LIMIT: f64 = 14.0;
 
 fn at(s: f64, speed: f64) -> Placement {
-    Placement { lane: LaneId(0), s, speed, route: Route::default() }
+    Placement { lane: LaneId(0), s, speed, route: Route::default(), seed: 0 }
 }
 
 #[test]
