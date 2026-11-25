@@ -9,7 +9,10 @@ pub(crate) use table::Table;
 
 use slotmap::SecondaryMap;
 
-use crate::network::{LaneId, Leaving, Neighbor, Side, SimNetwork};
+use arrayvec::ArrayVec;
+
+use crate::class::VehicleClass;
+use crate::network::{LaneId, Leaving, MAX_SUCCESSORS, Neighbor, Side, SimNetwork};
 use crate::vehicle::{Vehicle, VehicleId};
 
 /// Identifies a destination registered with the simulation (see
@@ -18,13 +21,51 @@ use crate::vehicle::{Vehicle, VehicleId};
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DestinationId(pub u32);
 
-/// Each destination's route table, by destination: derived from the network
+/// Each destination's route tables, by destination: derived from the network
 /// and the destinations' lanes, rather than saved.
-pub(crate) type Tables = Vec<Table>;
+pub(crate) type Tables = Vec<Routes>;
 
 /// The route tables for `destinations`, each a set of lanes.
 pub(crate) fn tables(network: &SimNetwork, destinations: &[Vec<LaneId>]) -> Tables {
-    destinations.iter().map(|lanes| Table::build(network, lanes)).collect()
+    destinations.iter().map(|lanes| Routes::build(network, lanes)).collect()
+}
+
+/// A destination's route tables: one for each class, over the lanes it may
+/// use, shared by classes that may use the same lanes, as cars, trucks and
+/// buses do but for bus lanes.
+#[derive(Clone, Debug)]
+pub(crate) struct Routes {
+    tables: ArrayVec<Table, { VehicleClass::ALL.len() }>,
+    /// Each class's table, by its index.
+    of: [u8; VehicleClass::ALL.len()],
+}
+
+impl Routes {
+    pub fn build(network: &SimNetwork, lanes: &[LaneId]) -> Self {
+        let mut tables = ArrayVec::new();
+        let mut of = [0; VehicleClass::ALL.len()];
+        // Each class's lanes, to share a table between classes alike.
+        let mut alike: ArrayVec<(Vec<bool>, u8), { VehicleClass::ALL.len() }> = ArrayVec::new();
+        for class in VehicleClass::ALL {
+            let allowed: Vec<bool> =
+                network.lanes().map(|(_, lane)| lane.allows().contains(class)).collect();
+            of[class.index()] = match alike.iter().find(|(a, _)| *a == allowed) {
+                Some(&(_, i)) => i,
+                None => {
+                    let i = tables.len() as u8;
+                    tables.push(Table::build(network, lanes, class));
+                    alike.push((allowed, i));
+                    i
+                }
+            };
+        }
+        Self { tables, of }
+    }
+
+    /// The table for `class`.
+    pub fn get(&self, class: VehicleClass) -> &Table {
+        &self.tables[usize::from(self.of[class.index()])]
+    }
 }
 
 /// The routing model's state for every vehicle, which it owns: each one's
@@ -80,11 +121,24 @@ impl Route {
         Route::Destination(destination)
     }
 
-    /// The successor to take next, if there is one. Only a fork, with more than
-    /// one, draws from a random route's generator. Toward a destination, the
-    /// quickest, then the one needing the fewest lane changes from its start,
-    /// ties going to the first, so runs repeat; with no way from any, the first.
-    pub(crate) fn choose(&mut self, tables: &Tables, successors: &[LaneId]) -> Option<LaneId> {
+    /// The successor to take next, of those a vehicle of `class` may use, if
+    /// there is one. Only a fork, with more than one, draws from a random
+    /// route's generator. Toward a destination, the quickest, then the one
+    /// needing the fewest lane changes from its start, ties going to the first,
+    /// so runs repeat; with no way from any, the first.
+    pub(crate) fn choose(
+        &mut self,
+        network: &SimNetwork,
+        tables: &Tables,
+        class: VehicleClass,
+        successors: &[LaneId],
+    ) -> Option<LaneId> {
+        let allowed: ArrayVec<LaneId, MAX_SUCCESSORS> = successors
+            .iter()
+            .copied()
+            .filter(|&lane| network.lane(lane).allows().contains(class))
+            .collect();
+        let successors = &allowed[..];
         match (self, successors) {
             (_, []) => None,
             (_, &[only]) => Some(only),
@@ -93,7 +147,7 @@ impl Route {
                 Some(successors[(draw % successors.len() as u64) as usize])
             }
             (Route::Destination(destination), _) => {
-                let table = &tables[destination.0 as usize];
+                let table = tables[destination.0 as usize].get(class);
                 let key = |&lane: &LaneId| {
                     let entry = table.get(lane);
                     (entry.time, entry.changes_at(0.0).unwrap_or(u32::MAX))
@@ -169,7 +223,7 @@ pub(crate) fn needs(
     if let Route::Destination(destination) = route {
         return Some(needs_toward(
             network,
-            &tables[destination.0 as usize],
+            tables[destination.0 as usize].get(vehicle.spec.class),
             vehicle,
             permitted,
         ));
@@ -244,16 +298,49 @@ pub(crate) fn splitmix64(state: &mut u64) -> u64 {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::class::Classes;
 
     const FORK: [LaneId; 3] = [LaneId(4), LaneId(5), LaneId(6)];
+
+    /// Seven lanes, those `tracks` for trams alone, the rest for any class but
+    /// trams.
+    fn network_with(tracks: &[u32]) -> SimNetwork {
+        use crate::network::{Lane, RoadId};
+        let lane = |i: u32| {
+            let y = f64::from(i) * 10.0;
+            let ends = [glam::DVec2::new(0.0, y), glam::DVec2::new(10.0, y)];
+            let lane = Lane::new(&ends, 3.5, 14.0, RoadId(i)).unwrap();
+            match tracks.contains(&i) {
+                true => lane.with_allows(Classes::TRAMS),
+                false => lane,
+            }
+        };
+        SimNetwork::new((0..7).map(lane).collect())
+    }
+
+    fn network() -> SimNetwork {
+        network_with(&[])
+    }
+
+    #[test]
+    fn a_route_takes_only_a_branch_its_class_may_use() {
+        let network = network_with(&[5, 6]);
+        for seed in 0..50 {
+            let mut route = Route::random(seed);
+            let car = route.choose(&network, &Tables::new(), VehicleClass::Car, &FORK);
+            assert_eq!(car, Some(LaneId(4)));
+            let tram = route.choose(&network, &Tables::new(), VehicleClass::Tram, &FORK);
+            assert!(matches!(tram, Some(LaneId(5 | 6))), "{tram:?}");
+        }
+    }
 
     #[test]
     fn the_same_seed_takes_the_same_way() {
         let (mut a, mut b) = (Route::random(7), Route::random(7));
         for _ in 0..20 {
             assert_eq!(
-                a.choose(&Tables::new(), &FORK),
-                b.choose(&Tables::new(), &FORK)
+                a.choose(&network(), &Tables::new(), VehicleClass::Car, &FORK),
+                b.choose(&network(), &Tables::new(), VehicleClass::Car, &FORK)
             );
         }
     }
@@ -264,12 +351,18 @@ mod test {
         for seed in 0..300 {
             let mut route = Route::random(seed);
             // A lone successor is taken without drawing.
-            assert_eq!(route.choose(&Tables::new(), &[LaneId(1)]), Some(LaneId(1)));
+            assert_eq!(
+                route.choose(&network(), &Tables::new(), VehicleClass::Car, &[LaneId(1)]),
+                Some(LaneId(1))
+            );
             assert_eq!(route, Route::random(seed));
-            let lane = route.choose(&Tables::new(), &FORK).unwrap();
+            let lane = route.choose(&network(), &Tables::new(), VehicleClass::Car, &FORK).unwrap();
             taken[(lane.0 - 4) as usize] += 1;
         }
         assert!(taken.iter().all(|&n| n > 50), "{taken:?}");
-        assert_eq!(Route::random(0).choose(&Tables::new(), &[]), None);
+        assert_eq!(
+            Route::random(0).choose(&network(), &Tables::new(), VehicleClass::Car, &[]),
+            None
+        );
     }
 }

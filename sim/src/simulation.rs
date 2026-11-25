@@ -11,13 +11,14 @@ use std::ops::ControlFlow;
 use glam::DVec2;
 use slotmap::{Key, SlotMap};
 
+use crate::class::VehicleClass;
 use crate::debug::{DebugEvent, DebugSink};
 use crate::following::{self, Ahead, Along, Found, Lateral, Occupant, find_leaders};
 use crate::junction::{Queue, arrive};
 use crate::models::acceleration;
 use crate::models::driver::Driver;
 use crate::models::lane_change;
-use crate::models::routing::{DestinationId, Route, Table};
+use crate::models::routing::{DestinationId, Route, Routes};
 use crate::models::signal::{self, MovementLight};
 use crate::motion::lateral::plan_change;
 use crate::motion::path::{extend_path, raise_through, reach};
@@ -68,6 +69,8 @@ pub struct Simulation {
 pub enum InsertError {
     #[error("no safe room at that position")]
     NoRoom,
+    #[error("its class may not use that lane")]
+    NotAllowed,
 }
 
 /// Why [`Simulation::change_lane`] refused.
@@ -79,7 +82,7 @@ pub enum LaneChangeError {
     InProgress,
     #[error("no lane on that side")]
     NoNeighbor,
-    #[error("changing into that lane isn't permitted")]
+    #[error("changing into that lane isn't permitted, or the vehicle is on rails")]
     NotPermitted,
 }
 
@@ -190,6 +193,9 @@ impl Simulation {
         driver: Driver,
         at: Placement,
     ) -> Result<VehicleId, InsertError> {
+        if !self.state.network.lane(at.lane).allows().contains(spec.class) {
+            return Err(InsertError::NotAllowed);
+        }
         let (mut vehicle, route, driver, seed) = self.build_vehicle(spec, driver, at);
         // Leader and follower split the lane at its rear, so any vehicle alongside
         // is one or the other, with no gap, and refuses the insertion.
@@ -280,6 +286,7 @@ impl Simulation {
             &mut vehicle.path,
             &mut route,
             &self.derived.routes,
+            vehicle.spec.class,
             at.s,
             needed,
         );
@@ -390,9 +397,9 @@ impl Simulation {
     /// (see [`Route::to`]), and returns its id. Its route table is worked out
     /// now, so this is for setting up, not for every frame.
     pub fn add_destination(&mut self, lanes: &[LaneId]) -> DestinationId {
-        let table = Table::build(&self.state.network, lanes);
+        let routes = Routes::build(&self.state.network, lanes);
         self.state.destinations.push(lanes.to_vec());
-        self.derived.routes.push(table);
+        self.derived.routes.push(routes);
         DestinationId(self.state.destinations.len() as u32 - 1)
     }
 
@@ -407,11 +414,17 @@ impl Simulation {
         &self.state.destinations[id.0 as usize]
     }
 
-    /// How long a vehicle takes from the start of `lane` to `destination` at the
-    /// speed limits, each road counted once, in seconds, and how many lane
-    /// changes it needs from there: `None` if there is no way.
-    pub fn time_to(&self, destination: DestinationId, lane: LaneId) -> Option<(f64, u32)> {
-        let entry = self.derived.routes[destination.0 as usize].get(lane);
+    /// How long a vehicle of `class` takes from the start of `lane` to
+    /// `destination` at the speed limits, each road counted once, in seconds,
+    /// and how many lane changes it needs from there: `None` if there is no way
+    /// on lanes it may use.
+    pub fn time_to(
+        &self,
+        destination: DestinationId,
+        class: VehicleClass,
+        lane: LaneId,
+    ) -> Option<(f64, u32)> {
+        let entry = self.derived.routes[destination.0 as usize].get(class).get(lane);
         let changes = entry.changes_at(0.0)?;
         entry.time.is_finite().then_some((f64::from(entry.time), changes))
     }
@@ -515,7 +528,7 @@ impl Simulation {
             .lane(vehicle.path[0])
             .adj(side)
             .ok_or(LaneChangeError::NoNeighbor)?;
-        if !neighbor.can_change {
+        if !vehicle.may_change_into(&self.state.network, &neighbor) {
             return Err(LaneChangeError::NotPermitted);
         }
 
@@ -543,6 +556,7 @@ impl Simulation {
             &mut vehicle.path,
             route,
             &self.derived.routes,
+            vehicle.spec.class,
             lane_pos.s,
             needed,
         );

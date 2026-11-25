@@ -19,7 +19,7 @@ pub mod scenarios;
 mod turns;
 
 use glam::DVec2;
-use traffic_sim::{Keep, LaneId, Leaving, Side, SimNetwork};
+use traffic_sim::{Classes, Keep, LaneId, Leaving, Side, SimNetwork};
 
 pub use compile::{CompileError, compile, fit_arms};
 pub use render::{Arrow, Marking, MarkingStyle, RenderGeometry, Strip};
@@ -105,6 +105,10 @@ pub struct RoadLane {
     /// How drivers leave it, if it ends by merging into its neighbour, as an
     /// acceleration lane does: `None` if it doesn't.
     pub leaving: Option<Leaving>,
+    /// The vehicle classes that may use it, as SUMO's `allow` and `disallow`
+    /// have it: all but trams by default, trams alone on a tram track of its
+    /// own, or every class on one shared with general traffic.
+    pub allows: Classes,
 }
 
 impl RoadLane {
@@ -118,6 +122,7 @@ impl RoadLane {
             change_left: true,
             change_right: true,
             leaving: None,
+            allows: Classes::ALL_BUT_TRAMS,
         }
     }
 }

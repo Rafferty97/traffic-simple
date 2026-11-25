@@ -75,6 +75,9 @@ pub fn replay(log: &str) -> Replay {
                     min_gap: f.get("min_gap"),
                     rear_axle: f.get("rear_axle"),
                     front_axle: f.get("front_axle"),
+                    // Replays don't record classes: every vehicle a car.
+                    class: traffic_sim::VehicleClass::Car,
+                    rail: false,
                 };
                 let driver = Driver {
                     speed_factor: f.get("speed_factor"),

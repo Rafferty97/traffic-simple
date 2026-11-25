@@ -30,6 +30,8 @@ pub(crate) fn car() -> VehicleSpec {
         min_gap: 1.5,
         rear_axle: 1.0,
         front_axle: 3.7,
+        class: crate::VehicleClass::Car,
+        rail: false,
     }
 }
 

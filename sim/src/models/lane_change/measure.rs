@@ -41,8 +41,9 @@ pub(crate) fn incentives(
     // again until they do, so a driver gives up wanting to.
     // Worked out once a side, as finding the room walks its path.
     let sides = [Side::Left, Side::Right].map(|side| {
-        lane.adj(side)
-            .filter(|n| n.can_change && room_to_change(network, vehicle, side))
+        lane.adj(side).filter(|n| {
+            vehicle.may_change_into(network, n) && room_to_change(network, vehicle, side)
+        })
     });
     let permitted = |side: Side| sides[lane_change::index(side)];
     if sides == [None, None] {

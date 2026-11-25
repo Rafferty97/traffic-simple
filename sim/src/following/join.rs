@@ -161,7 +161,7 @@ pub(crate) fn advance(
         if let Some(old) = network.lane(previous).adj(side) {
             remove_ghost(occupants, old.lane, id);
         }
-        match network.lane(followed).adj(side).filter(|n| n.can_change) {
+        match network.lane(followed).adj(side).filter(|n| vehicle.may_change_into(network, n)) {
             Some(n) => {
                 let target = network.lane(n.lane);
                 let hint = target.geometry().lane_pos(vehicle.lane_pos.s, 0.0);

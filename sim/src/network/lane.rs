@@ -5,6 +5,7 @@ use glam::DVec2;
 
 use super::geometry::{LaneError, LaneGeometry};
 use super::{Barrier, JunctionId};
+use crate::class::Classes;
 
 /// The most successors a lane can have: enough for a lane into a large
 /// intersection that goes straight on, turns into up to three lanes either
@@ -141,6 +142,9 @@ pub struct Lane {
     /// it is committed to its junction (see `docs/DESIGN.md`, Committing).
     #[cfg_attr(feature = "serde", serde(default))]
     pub(super) keep_clear: bool,
+    /// The vehicle classes that may use it: all but trams by default.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(super) allows: Classes,
 }
 
 impl Lane {
@@ -189,6 +193,7 @@ impl Lane {
             road,
             barriers: Vec::new(),
             keep_clear: false,
+            allows: Classes::default(),
         })
     }
 
@@ -210,6 +215,16 @@ impl Lane {
     /// As [`Lane::leaving`], to set.
     pub fn with_leaving(self, leaving: Option<Leaving>) -> Self {
         Self { leaving, ..self }
+    }
+
+    /// The vehicle classes that may use it.
+    pub fn allows(&self) -> Classes {
+        self.allows
+    }
+
+    /// It, allowing `allows`: a tram track allows trams.
+    pub fn with_allows(self, allows: Classes) -> Self {
+        Self { allows, ..self }
     }
 
     /// The road it is part of, for routing.

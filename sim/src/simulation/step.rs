@@ -359,6 +359,7 @@ impl Simulation {
                     &mut vehicle.path,
                     routing.route_mut(id),
                     routes,
+                    vehicle.spec.class,
                     s,
                     needed,
                 );
@@ -398,6 +399,7 @@ impl Simulation {
                     &mut vehicle.path,
                     routing.route_mut(id),
                     routes,
+                    vehicle.spec.class,
                     s,
                     needed,
                 );

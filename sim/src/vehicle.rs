@@ -1,10 +1,11 @@
 use glam::DVec2;
 
+use crate::class::VehicleClass;
 use crate::models::routing::Route;
 use crate::motion::lateral::LaneChange;
 use crate::motion::path::PathReach;
 use crate::network::geometry::LanePos;
-use crate::network::{LaneId, Side};
+use crate::network::{LaneId, Neighbor, Side, SimNetwork};
 
 slotmap::new_key_type! {
     /// Identifies a vehicle in the simulation.
@@ -43,6 +44,14 @@ pub struct VehicleSpec {
     pub rear_axle: f64,
     /// Distance from the rear bumper to the front axle.
     pub front_axle: f64,
+    /// Its class, for which lanes it may use.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub class: VehicleClass,
+    /// Whether it runs on rails: its rear axle, or bogie, kept on its track a
+    /// wheelbase behind its front, rather than trailing it; and it never
+    /// changes lanes.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub rail: bool,
 }
 
 impl VehicleSpec {
@@ -60,6 +69,27 @@ impl VehicleSpec {
             min_gap: 3.0,
             rear_axle: 1.0,
             front_axle: 3.7,
+            class: VehicleClass::Car,
+            rail: false,
+        }
+    }
+
+    /// A Melbourne Z3-class tram, a single body on rails: 16.64 m long and
+    /// 2.67 m wide, its bogie centres 8.5 m apart, so 4.07 m in from each end;
+    /// IDM's parameters gentler than a car's, as passengers stand.
+    pub const fn tram() -> Self {
+        Self {
+            length: 16.64,
+            width: 2.67,
+            max_speed: 20.0,
+            max_accel: 1.0,
+            comfy_decel: 1.3,
+            time_headway: 2.0,
+            min_gap: 4.0,
+            rear_axle: 4.07,
+            front_axle: 12.57,
+            class: VehicleClass::Tram,
+            rail: true,
         }
     }
 
@@ -188,6 +218,14 @@ impl LaneChangeIntent {
 }
 
 impl Vehicle {
+    /// Whether it may change lanes into `neighbor`: the network permits it, its
+    /// class may use the lane, and it isn't on rails, as nothing on rails ever
+    /// changes lanes.
+    pub(crate) fn may_change_into(&self, network: &SimNetwork, neighbor: &Neighbor) -> bool {
+        neighbor.can_change
+            && !self.spec.rail
+            && network.lane(neighbor.lane).allows().contains(self.spec.class)
+    }
     pub fn spec(&self) -> &VehicleSpec {
         &self.spec
     }

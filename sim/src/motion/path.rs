@@ -2,6 +2,7 @@
 //! its path by the lanes its route chooses (see "Vehicle state" and "Routing"
 //! in `docs/DESIGN.md`).
 
+use crate::class::VehicleClass;
 use crate::models::acceleration;
 use crate::models::routing::{Route, Tables};
 use crate::motion::lateral::LaneChange;
@@ -72,6 +73,7 @@ pub(crate) fn extend_path(
     path: &mut Vec<LaneId>,
     route: &mut Route,
     tables: &Tables,
+    class: VehicleClass,
     axle_s: f64,
     needed: f64,
 ) -> PathReach {
@@ -93,7 +95,8 @@ pub(crate) fn extend_path(
         if enough && !through {
             break;
         }
-        let Some(next) = route.choose(tables, network.lane(last).successors()) else {
+        let Some(next) = route.choose(network, tables, class, network.lane(last).successors())
+        else {
             // It can't grow, until it moves on.
             return PathReach { end: f64::INFINITY, timed: f64::INFINITY };
         };

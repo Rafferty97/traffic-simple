@@ -2,7 +2,9 @@
 //! route needs, and leaves the network where it was sent.
 
 use traffic_network::{Sign, compile, scenarios};
-use traffic_sim::{DestinationId, Driver, LaneId, Placement, Route, Simulation, VehicleSpec};
+use traffic_sim::{
+    DestinationId, Driver, LaneId, Placement, Route, Simulation, VehicleClass, VehicleSpec,
+};
 
 mod common;
 
@@ -38,7 +40,7 @@ fn every_car_leaves_by_its_exit(net: &traffic_network::RoadNetwork) -> usize {
     let mut sent = 0;
     for &entry in &entries {
         for &exit in &exits {
-            if sim.time_to(exit, entry).is_none() {
+            if sim.time_to(exit, VehicleClass::Car, entry).is_none() {
                 continue;
             }
             let at = Placement { lane: entry, s: 5.0, speed: SPEED, route: Route::to(exit) };
@@ -128,7 +130,10 @@ fn busy(net: &traffic_network::RoadNetwork) -> (usize, usize) {
     for step in 0..(900.0 / common::DT) as usize {
         if step % 45 == 0 {
             let entry = entries[draw(entries.len())];
-            let ways: Vec<_> = exits.iter().filter(|&&e| sim.time_to(e, entry).is_some()).collect();
+            let ways: Vec<_> = exits
+                .iter()
+                .filter(|&&e| sim.time_to(e, VehicleClass::Car, entry).is_some())
+                .collect();
             let exit = *ways[draw(ways.len())];
             let route = Route::to(exit);
             let at = Placement { lane: entry, s: 5.0, speed: SPEED, route };

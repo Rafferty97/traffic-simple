@@ -32,6 +32,8 @@ fn demo_car() -> VehicleSpec {
         min_gap: 1.5,
         rear_axle: 1.0,
         front_axle: 3.7,
+        class: traffic_sim::VehicleClass::Car,
+        rail: false,
     }
 }
 

@@ -18,7 +18,7 @@ use traffic_network::{
 use traffic_sim::{
     AccelSource, BarrierDecision, BarrierKind, ConflictKind, DebugEvent, DestinationId, Driver,
     Field, LaneChangeError, LaneChangeIntent, LaneId, Leaving, Light, PassCheck, Placement, RoadId,
-    Route, Side, Simulation, Vehicle, VehicleId, VehicleSpec,
+    Route, Side, Simulation, Vehicle, VehicleClass, VehicleId, VehicleSpec,
 };
 
 /// The hook-turn scenario's speed limit: 40 km/h, as Melbourne's CBD has.
@@ -646,7 +646,11 @@ impl Harness {
         driver.seed = seed;
         // To an exit it can reach from where it starts, if it is to go to one.
         let reachable: Vec<_> = match self.to_exits {
-            true => self.exits.iter().filter(|&&d| sim.time_to(d, lane).is_some()).collect(),
+            true => self
+                .exits
+                .iter()
+                .filter(|&&d| sim.time_to(d, VehicleClass::Car, lane).is_some())
+                .collect(),
             false => Vec::new(),
         };
         let route = match reachable.len() {
@@ -934,7 +938,7 @@ impl App {
                     let lanes: Vec<_> =
                         self.sim.destination(destination).iter().map(|l| l.0.to_string()).collect();
                     row("route", format!("to lanes {}", lanes.join(", ")));
-                    let way = match self.sim.time_to(destination, v.lane()) {
+                    let way = match self.sim.time_to(destination, v.spec().class, v.lane()) {
                         Some((time, changes)) => {
                             format!("{time:.0} s from this lane's start, {changes} lane changes")
                         }

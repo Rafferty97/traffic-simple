@@ -4,6 +4,7 @@
 //! the workspace.
 
 mod barrier;
+mod class;
 mod debug;
 mod following;
 mod junction;
@@ -16,6 +17,7 @@ mod simulation;
 mod vehicle;
 
 pub use barrier::{AMBER_DECEL, Decision as BarrierDecision};
+pub use class::{Classes, VehicleClass};
 pub use debug::{AccelSource, DebugEvent, Field, PassCheck};
 pub use following::{Lateral, Occupant, PASSING_CLEARANCE};
 pub use models::acceleration::{MOVING_OFF, SAFE_BRAKING, STOPPING_DECEL, STOPPING_SPEED};

@@ -90,6 +90,7 @@ impl Recorded {
             min_gap,
             rear_axle,
             front_axle,
+            ..
         } = spec;
         let Driver {
             speed_factor,

@@ -2,7 +2,7 @@
 
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
-use traffic_sim::{Keep, Leaving};
+use traffic_sim::{Classes, Keep, Leaving};
 
 use crate::{
     Arm, CompileError, Control, Direction, HookGeometry, Intersection, KeepClear, LaneRef, Piece,
@@ -605,6 +605,7 @@ pub fn ramps_leaving(speed_limit: f64, ramp_limit: f64, leaving: Leaving) -> Roa
             change_left: true,
             change_right: true,
             leaving: None,
+            allows: Classes::ALL_BUT_TRAMS,
         },
     );
     let drop = net.add_road(straight(200.0, 80.0, taper));

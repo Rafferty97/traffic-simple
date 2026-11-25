@@ -6,6 +6,7 @@
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap};
 
+use crate::class::VehicleClass;
 use crate::models::driver::Driver;
 use crate::motion::lateral::change_length;
 use crate::network::{LaneId, Leaving, Neighbor, RoadId, Side, SimNetwork};
@@ -69,13 +70,17 @@ impl Table {
     /// vehicle wants the lane changes that take it the quickest way, and where
     /// it can no longer make them, the table says it has no way from where it
     /// is, and it takes the quickest way from wherever its lanes go.
-    pub fn build(network: &SimNetwork, lanes: &[LaneId]) -> Self {
+    ///
+    /// Only over the lanes `class` may use: a way that takes any other isn't
+    /// one.
+    pub fn build(network: &SimNetwork, lanes: &[LaneId], class: VehicleClass) -> Self {
         let count = network.lanes().count();
         let mut best = vec![(f64::INFINITY, u32::MAX); count];
         let mut reach = vec![[f64::NEG_INFINITY; MAX_CHANGES]; count];
         let mut done = vec![false; count];
         let mut heap = BinaryHeap::new();
-        for &lane in lanes {
+        let allowed = |lane: LaneId| network.lane(lane).allows().contains(class);
+        for &lane in lanes.iter().filter(|&&lane| allowed(lane)) {
             best[lane.0 as usize] = (0.0, 0);
             heap.push(Reverse(Label { time: 0.0, changes: 0, lane }));
         }
@@ -97,7 +102,7 @@ impl Table {
 
             let mut relax = |from: LaneId, label: (f64, u32), heap: &mut BinaryHeap<_>| {
                 let j = from.0 as usize;
-                if !done[j] && cmp(label, best[j]) == Ordering::Less {
+                if allowed(from) && !done[j] && cmp(label, best[j]) == Ordering::Less {
                     best[j] = label;
                     let (time, changes) = label;
                     heap.push(Reverse(Label { time, changes, lane: from }));
@@ -341,7 +346,7 @@ mod test {
     #[test]
     fn a_lane_leading_elsewhere_must_be_left_with_room_before_the_lanes_beside_end() {
         let network = split(300.0, LIMIT, true);
-        let table = Table::build(&network, &[LaneId(2)]);
+        let table = Table::build(&network, &[LaneId(2)], VehicleClass::Car);
         let (left, right) = (table.get(LaneId(0)), table.get(LaneId(1)));
         assert_eq!(left.changes_at(0.0), Some(0));
         assert_eq!(right.changes_at(0.0), Some(1));
@@ -361,7 +366,7 @@ mod test {
     #[test]
     fn too_short_a_road_to_change_lanes_along_is_no_way() {
         let network = split(30.0, LIMIT, true);
-        let table = Table::build(&network, &[LaneId(2)]);
+        let table = Table::build(&network, &[LaneId(2)], VehicleClass::Car);
         assert_eq!(table.get(LaneId(1)).changes_at(0.0), None);
         assert_eq!(table.get(LaneId(1)).time, f32::INFINITY);
     }
@@ -370,11 +375,11 @@ mod test {
     fn lanes_of_one_road_are_equal_however_quick_each_is() {
         // Both lanes lead to the destination, the right a little slower.
         let both = [LaneId(2), LaneId(3)];
-        let table = Table::build(&split(300.0, 0.95 * LIMIT, true), &both);
+        let table = Table::build(&split(300.0, 0.95 * LIMIT, true), &both, VehicleClass::Car);
         assert_eq!(table.get(LaneId(1)).changes_at(0.0), Some(0));
         assert_eq!(table.get(LaneId(0)).time, table.get(LaneId(1)).time);
         // Without roads, the quicker lane is the only way.
-        let table = Table::build(&split(300.0, 0.95 * LIMIT, false), &both);
+        let table = Table::build(&split(300.0, 0.95 * LIMIT, false), &both, VehicleClass::Car);
         assert_eq!(table.get(LaneId(1)).changes_at(0.0), Some(1));
     }
 
@@ -393,7 +398,7 @@ mod test {
         network.set_adjacent(LaneId(1), LaneId(2), true, true);
         network.connect(LaneId(0), LaneId(3));
         network.validate().unwrap();
-        let table = Table::build(&network, &[LaneId(3)]);
+        let table = Table::build(&network, &[LaneId(3)], VehicleClass::Car);
         let right = table.get(LaneId(2));
         let room = change_room(&network, LaneId(0));
         assert_eq!(right.changes_at(0.0), Some(2));
@@ -414,16 +419,26 @@ mod test {
         network.connect(LaneId(0), LaneId(1));
         network.connect(LaneId(0), LaneId(2));
         network.connect(LaneId(2), LaneId(3));
-        let tables = vec![Table::build(&network, &[LaneId(3)])];
+        let tables = vec![super::super::Routes::build(&network, &[LaneId(3)])];
         let mut route = super::super::Route::to(super::super::DestinationId(0));
         assert_eq!(
-            route.choose(&tables, network.lane(LaneId(0)).successors()),
+            route.choose(
+                &network,
+                &tables,
+                VehicleClass::Car,
+                network.lane(LaneId(0)).successors()
+            ),
             Some(LaneId(2))
         );
         // With no way from any branch, the first.
-        let tables = vec![Table::build(&network, &[])];
+        let tables = vec![super::super::Routes::build(&network, &[])];
         assert_eq!(
-            route.choose(&tables, network.lane(LaneId(0)).successors()),
+            route.choose(
+                &network,
+                &tables,
+                VehicleClass::Car,
+                network.lane(LaneId(0)).successors()
+            ),
             Some(LaneId(1))
         );
     }

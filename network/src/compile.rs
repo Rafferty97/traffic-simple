@@ -284,7 +284,9 @@ fn assemble(net: &RoadNetwork) -> Result<(Compiled, Vec<CompileError>), CompileE
                 road_way(RoadId(r), lane.direction),
                 what,
             )?;
-            lanes.push(built_lane.with_keep(keep).with_leaving(lane.leaving));
+            lanes.push(
+                built_lane.with_keep(keep).with_leaving(lane.leaving).with_allows(lane.allows),
+            );
             ids.push(LaneId(built.len() as u32));
             built.push(b);
         }
@@ -439,7 +441,10 @@ fn assemble(net: &RoadNetwork) -> Result<(Compiled, Vec<CompileError>), CompileE
             let next = (2 * net.roads.len() + ways_through.len()) as u32;
             let through =
                 *ways_through.entry((k, way_of(from), way_of(to))).or_insert(SimRoadId(next));
-            lanes.push(build(&connector, limit, through, what)?);
+            // Open to the classes both its lanes are.
+            let allows = |l: LaneRef| net.roads[l.road.0].lanes[l.lane].allows;
+            let allowed = allows(from).and(allows(to));
+            lanes.push(build(&connector, limit, through, what)?.with_allows(allowed));
             let id = LaneId(built.len() as u32);
             built.push(connector);
             links.extend([(lane_id(from), id), (id, lane_id(to))]);
