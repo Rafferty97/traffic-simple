@@ -20,7 +20,7 @@ The old simulator is built through calls, `add_link`, `add_link_connection` and 
 | Junction conflicts and merges | `add_link_convergance` for each conflicting pair; it finds the conflict point from the curves itself | Good |
 | Signal plans, amber, clearance | `TrafficLight`: movements, phases as masks, amber time, and how long a conflicting movement waits | Good |
 | Give-way and stop lines | `TrafficControl::Yield { distance, must_stop, priority }` on the connector's link | Fair: needs the priority levels compilation works out, which `network` would have to report |
-| Far-side turners waiting inside a junction | `Yield` on the second lane of the split connector, as old links yield where they are entered | Fair |
+| Far-side turners waiting inside a junction | `Yield` on a link from the turner's give-way line along its connector, as old links yield where they are entered | Fair |
 | Destinations | `set_vehicle_destination`, a link, with its own Dijkstra's algorithm and lane choice | Fair |
 | All-way stops, keep-clear zones, turning on red, room beyond | Nothing | Missing |
 | Lane widths, keeping to a side, lane changes for speed, merge ordering | Nothing: it changes lanes only for its route | Missing |
