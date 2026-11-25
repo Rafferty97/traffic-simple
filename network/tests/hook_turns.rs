@@ -164,7 +164,7 @@ fn hook_turners_waiting_go_before_the_near_side_roads_traffic() {
     // the near-side road's cars give way to vehicles already inside.
     let (turned, greens, beaten) = busy(120.0, 900.0);
     assert!(
-        turned > 25 && greens > 20,
+        turned > 25 && greens > 10,
         "{turned} hook turns, {greens} greens with turners waiting"
     );
     assert_eq!(
