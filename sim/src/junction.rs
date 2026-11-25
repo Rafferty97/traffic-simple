@@ -1,7 +1,17 @@
 //! The junction backstop (see "Conflicts, merging and junctions" in
-//! `docs/DESIGN.md`): each junction's queue of the vehicles committed there,
-//! which can no longer stop short of their conflicts, who arrives, commits and
-//! is released, and the terms committed vehicles impose on those behind them.
+//! `docs/DESIGN.md`): each junction's queue of the vehicles that can no longer
+//! stop comfortably short of their first conflict there, who arrives, joins and
+//! leaves it, the order it keeps, and the terms that order imposes.
+//!
+//! **Prototype.** Two vehicles in a queue whose ways through the junction
+//! conflict are a pair. A pair is decided once either of them can no longer
+//! stop comfortably short of their conflict, and the lower in the queue then
+//! gives way to the higher. Until then the queue's order is only a tiebreak, and
+//! neither holds the other back. A vehicle that would need clearly more braking
+//! to give way to the one above it than that one would to give way to it is
+//! lifted above it, with whatever it waits on, unless that would close a cycle
+//! among decided pairs and vehicles following one another. So the queue is
+//! always an order those agree with, and its first vehicle can always move.
 
 use arrayvec::ArrayVec;
 use slotmap::{Key, SlotMap};
@@ -10,86 +20,60 @@ use crate::barrier;
 use crate::debug::{AccelSource, DebugEvent, DebugSink};
 use crate::following::Occupant;
 use crate::models::acceleration;
-use crate::models::signal::MovementLight;
-use crate::network::{Conflict, JunctionId, LaneId, SimNetwork};
+use crate::network::{Conflict, ConflictKind, JunctionId, LaneId, SimNetwork};
 use crate::simulation::SimState;
 use crate::vehicle::{Vehicle, VehicleId};
 
-/// A vehicle's place in a junction's queue, for a stretch of its way through:
-/// the stretch its barriers have handed it over for (see `handed_over`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Entry {
-    pub id: VehicleId,
-    /// The lane, by its place among the junction's lanes, from which this
-    /// entry no longer covers it, where its next barrier is: `None` if it
-    /// covers it right through.
-    pub until: Option<u16>,
-}
-
-impl Entry {
-    /// The lane it stops covering its vehicle at, if any.
-    pub fn until(&self, network: &SimNetwork, junction: JunctionId) -> Option<LaneId> {
-        self.until.map(|i| network.junction(junction).lanes()[usize::from(i)])
-    }
-
-    /// Whether it covers its vehicle on `lane`: anywhere but the lane it stops
-    /// at and the lanes of the same connector after it, found from the
-    /// junction alone.
-    pub(crate) fn covers(&self, network: &SimNetwork, lane: LaneId) -> bool {
-        let (Some(i), Some(junction)) = (self.until, network.lane(lane).junction()) else {
-            return true;
-        };
-        let until = network.junction(junction).lanes()[usize::from(i)];
-        lane != until && !network.leads_to(lane, until)
-    }
-}
-
-/// A junction's queue: the vehicles committed there, which can no longer stop
-/// short of their conflicts, in the order they committed, and the lanes that
-/// vehicles not yet committed may be approaching it along.
+/// A junction's queue: the vehicles that can no longer stop comfortably short
+/// of their first conflict there, in an order every decided pair agrees with,
+/// and the lanes that vehicles not yet in it may be approaching it along.
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct Queue {
-    /// Each holds back every vehicle committed after it, on the lanes it
-    /// covers. A vehicle handed over in two stretches, as a turner waiting
-    /// inside the junction for a gap is, has an entry for each, the second
-    /// joining at the back when it commits to the barrier between them.
-    pub committed: Vec<Entry>,
+    /// Highest first. Of each decided pair, the lower gives way to the higher;
+    /// a vehicle following another is always below it.
+    pub order: Vec<VehicleId>,
     /// Every lane on the way of a vehicle that has arrived, from the lane it
     /// was on to the first of the junction's lanes with a conflict on its path,
     /// that lane included, sorted and without repeats. The junction's scans
-    /// for vehicles to commit start from its own lanes here and follow only
+    /// for vehicles to queue start from its own lanes here and follow only
     /// lanes here (see [`commit_along`]). Vehicles only add lanes; the scans
     /// drop those they find no one on.
     pub approaching: Vec<LaneId>,
-    /// The vehicles not yet committed that the last scans stopped at, each
-    /// headed onto the lane scanned, so the first on its way: the committed
-    /// vehicles hold these back too (see [`junction_term`]). Those behind them
-    /// follow them. Refilled every step.
-    pub fronts: Vec<VehicleId>,
-    /// The vehicles that must commit but that the junction holds out of its
-    /// queue, short of their first conflicts, as they would be both blocked by
-    /// a vehicle queued only part of its way and block its next stretch (see
-    /// [`closes_cycle`]). Refilled every step.
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub held: Vec<VehicleId>,
+}
+
+/// Scratch space for the junctions' updates, reused between them.
+#[derive(Default)]
+pub(crate) struct Scratch {
+    /// Each queued vehicle's place in the queue being updated.
+    places: Places,
+    /// The queue's order as the update's walk over its pairs began.
+    snapshot: Vec<VehicleId>,
+    /// For lifting a vehicle: the search's stack, the places found below the
+    /// one it goes above and above itself, which of the places between were
+    /// found, and the vehicles in their new order.
+    stack: Vec<usize>,
+    below: Vec<usize>,
+    above: Vec<usize>,
+    seen: Vec<bool>,
+    lifted: Vec<VehicleId>,
 }
 
 /// Brings the junctions' queues up to date after a step's motion and
 /// occupancy: vehicles whose path grew or that entered a junction arrive
-/// where nothing holds them back (see [`arrive`]), committed vehicles clear
-/// of a junction leave its queue, those that can plainly stop are released
-/// (see [`may_release`]), and each lane approached is scanned for vehicles
-/// to commit (see [`commit_along`]).
+/// where nothing holds them back (see [`arrive`]), queued vehicles clear of a
+/// junction leave its queue, those that can plainly stop comfortably are
+/// released (see [`may_release`]), each lane approached is scanned for vehicles
+/// to queue (see [`commit_along`]), and each queue is reordered (see
+/// [`reorder`]).
 pub(crate) fn update(
     state: &mut SimState,
     arrivals: &mut Vec<VehicleId>,
     scan_empty: &mut Vec<LaneId>,
     scan_kept: &mut Vec<LaneId>,
-    last_entries: &mut LastEntries,
+    scratch: &mut Scratch,
 ) {
-    let SimState { network, vehicles, occupants, queues, lights, .. } = state;
+    let SimState { network, vehicles, occupants, queues, .. } = state;
     // Some may have left the network since.
     for &id in arrivals.iter() {
         if let Some(vehicle) = vehicles.get(id) {
@@ -100,19 +84,15 @@ pub(crate) fn update(
     for (j, queue) in queues.iter_mut().enumerate() {
         let junction = JunctionId(j as u32);
         // Headed into it, or still on it.
-        queue.committed.retain(|e| {
-            headed(network, &vehicles[e.id], junction)
-                || entered(network, occupants, junction, e.id)
+        queue.order.retain(|&id| {
+            headed(network, &vehicles[id], junction) || entered(network, occupants, junction, id)
         });
         // From the back, so a lane's vehicles are released back to front in
-        // one pass. A released vehicle's way in is marked again, as the
-        // scans passed it over while it was committed.
-        for k in (0..queue.committed.len()).rev() {
-            if k < queue.committed.len()
-                && may_release(network, vehicles, occupants, junction, &queue.committed, k)
-            {
-                let id = queue.committed[k].id;
-                queue.committed.retain(|e| e.id != id);
+        // one pass. A released vehicle's way in is marked again, as the scans
+        // passed it over while it was queued.
+        for k in (0..queue.order.len()).rev() {
+            if may_release(network, vehicles, occupants, junction, &queue.order, k) {
+                let id = queue.order.remove(k);
                 mark_way(
                     network,
                     &mut queue.approaching,
@@ -122,37 +102,32 @@ pub(crate) fn update(
                 );
             }
         }
-        queue.fronts.clear();
-        queue.held.clear();
-        if queue.approaching.is_empty() {
-            continue;
-        }
-        let Queue { committed, approaching, fronts, held } = queue;
-        last_entries.fill(committed);
-        let mut scan = Scan {
-            network,
-            vehicles,
-            occupants,
-            lights,
-            junction,
-            approaching,
-            empty: scan_empty,
-            kept: scan_kept,
-            fronts,
-            held,
-            last_entries,
-        };
-        scan.empty.clear();
-        scan.kept.clear();
-        for &lane in scan.approaching {
-            if network.lane(lane).junction() == Some(junction) {
-                commit_along(&mut scan, lane, committed);
+        let Queue { order, approaching } = queue;
+        scratch.places.fill(order);
+        if !approaching.is_empty() {
+            let mut scan = Scan {
+                network,
+                vehicles,
+                occupants,
+                junction,
+                approaching,
+                empty: scan_empty,
+                kept: scan_kept,
+                places: &mut scratch.places,
+            };
+            scan.empty.clear();
+            scan.kept.clear();
+            for &lane in scan.approaching {
+                if network.lane(lane).junction() == Some(junction) {
+                    commit_along(&mut scan, lane, order);
+                }
             }
+            // A lane stays while some scan found someone on it or beyond, or
+            // none reached it, so whoever is on it is behind someone found.
+            approaching.retain(|lane| !scan_empty.contains(lane) || scan_kept.contains(lane));
         }
-        scan.last_entries.clear(committed);
-        // A lane stays while some scan found someone on it or beyond, or none
-        // reached it, so whoever is on it is behind someone found.
-        approaching.retain(|lane| !scan_empty.contains(lane) || scan_kept.contains(lane));
+        reorder(network, vehicles, occupants, junction, order, scratch);
+        scratch.places.clear(order);
     }
 }
 
@@ -160,9 +135,10 @@ pub(crate) fn update(
 /// back from: up to and including the first junction it hasn't physically
 /// entered (see [`entered`]), and short of any junction a barrier it hasn't
 /// committed to holds it back from, at or before the junction's first conflict
-/// on its path: it arrives there once it commits. At each, the lanes of its path up to the first of the
-/// junction's lanes with a conflict, that lane included, join those it is
-/// approached along, so the junction's scans find it.
+/// on its path: it arrives there once it commits. At each, the lanes of its
+/// path up to the first of the junction's lanes with a conflict, that lane
+/// included, join those it is approached along, so the junction's scans find
+/// it.
 pub(crate) fn arrive(
     network: &SimNetwork,
     occupants: &[Vec<Occupant>],
@@ -178,18 +154,7 @@ pub(crate) fn arrive(
         if last == Some(j) {
             continue;
         }
-        // In its queue already, it is handed over afresh; and the lanes up to
-        // the first conflict of what it isn't yet queued for join those the
-        // junction is approached along, so its scans queue the rest of its way
-        // as they would a vehicle arriving, or hold it.
-        let Queue { committed, approaching, .. } = &mut queues[j.0 as usize];
-        if committed.iter().any(|e| e.id == id) {
-            hand_over(network, committed, id, vehicle, j);
-            let last_entry = committed.iter().rev().find(|e| e.id == id);
-            let until = last_entry.and_then(|e| e.until(network, j));
-            if let Some(from) = until.and_then(|u| vehicle.path.iter().position(|&l| l == u)) {
-                mark_way(network, approaching, &vehicle.path, j, from);
-            }
+        if queues[j.0 as usize].order.contains(&id) {
             last = Some(j);
             continue;
         }
@@ -219,54 +184,16 @@ pub(crate) fn arrive(
     }
 }
 
-/// Brings `id`'s entries in a junction's queue, `queue`, up to date with a
-/// barrier it had committed to releasing it (see `handed_over`): the entries
-/// from there on go. Handed over further instead, having committed to the
-/// barrier its last entry stops at, it is queued for the rest by the scans, as
-/// a vehicle arriving is, which hold it if that would close a cycle.
-fn hand_over(
+/// The lane of `junction` where `vehicle`'s next barrier it hasn't committed to
+/// is, if that is in the junction: where it will wait, inside it.
+pub(crate) fn waits_at(
     network: &SimNetwork,
-    queue: &mut Vec<Entry>,
-    id: VehicleId,
     vehicle: &Vehicle,
     junction: JunctionId,
-) {
-    let until = handed_over(network, vehicle, junction);
-    let mine = || queue.iter().enumerate().filter(|(_, e)| e.id == id).map(|(k, _)| k);
-    let Some(last) = mine().next_back() else {
-        return;
-    };
-    // Released short of where an entry of it starts: that one goes, and those
-    // after it.
-    let mut start = None;
-    let starts = mine().find(|&k| {
-        let at = start;
-        start = queue[k].until;
-        at.is_some() && at == until
-    });
-    if let Some(k) = starts {
-        let mut i = 0;
-        queue.retain(|e| {
-            i += 1;
-            i <= k || e.id != id
-        });
-        return;
-    }
-    // Released short of the end of its last entry, which covered it right
-    // through: it covers it only so far now.
-    if let (None, Some(_)) = (queue[last].until, until) {
-        queue[last].until = until;
-    }
-}
-
-/// How far `vehicle`'s barriers hand it over to `junction`: up to the lane
-/// of its path where the next barrier it hasn't committed to is, if that is in
-/// the junction, or right through (`None`).
-fn handed_over(network: &SimNetwork, vehicle: &Vehicle, junction: JunctionId) -> Option<u16> {
+) -> Option<LaneId> {
     barrier::nth(network, vehicle, usize::from(vehicle.committed))
-        .map(|(lane, _)| network.lane(lane))
-        .filter(|lane| lane.junction() == Some(junction))
-        .and_then(|lane| lane.junction_slot())
+        .map(|(lane, _)| lane)
+        .filter(|&lane| network.lane(lane).junction() == Some(junction))
 }
 
 /// Adds the lanes of `path` up to the first of `junction`'s lanes on it with a
@@ -292,14 +219,12 @@ fn mark_way(
     }
 }
 
-/// What a junction's scans for vehicles to commit read, and where they note
+/// What a junction's scans for vehicles to queue read, and where they note
 /// which lanes they found anyone on.
 struct Scan<'a> {
     network: &'a SimNetwork,
     vehicles: &'a SlotMap<VehicleId, Vehicle>,
     occupants: &'a [Vec<Occupant>],
-    /// The signals' lights, for whether one holds a vehicle back.
-    lights: &'a [MovementLight],
     junction: JunctionId,
     /// The lanes vehicles approach the junction along, sorted.
     approaching: &'a [LaneId],
@@ -307,29 +232,24 @@ struct Scan<'a> {
     empty: &'a mut Vec<LaneId>,
     /// Lanes a scan found someone on, or beyond.
     kept: &'a mut Vec<LaneId>,
-    /// The vehicles not yet committed the scans stopped at, headed onto the
-    /// lane scanned.
-    fronts: &'a mut Vec<VehicleId>,
-    /// The vehicles held out of the queue (see [`Queue::held`]).
-    held: &'a mut Vec<VehicleId>,
-    /// Each queued vehicle's last entry in the queue scanned.
-    last_entries: &'a mut LastEntries,
+    /// Each queued vehicle's place in the queue.
+    places: &'a mut Places,
 }
 
-/// Each vehicle's last entry in one junction's queue, by its slot, so a scan
-/// passing a vehicle finds its place in the queue at once rather than
-/// searching the queue for it: scratch space, filled for a junction before its
-/// scans, kept up as they queue vehicles, and cleared after.
+/// Each vehicle's place in one junction's queue, by its slot, so a scan passing
+/// a vehicle, or a pair's walk, finds its place at once rather than searching
+/// the queue for it: scratch space, filled for a junction before its update,
+/// kept up as it queues and reorders vehicles, and cleared after.
 #[derive(Default)]
-pub(crate) struct LastEntries(Vec<Option<(VehicleId, u32)>>);
+struct Places(Vec<Option<(VehicleId, u32)>>);
 
-impl LastEntries {
+impl Places {
     fn slot(id: VehicleId) -> usize {
         // The slot's index is the key's low half.
         (id.data().as_ffi() & 0xffff_ffff) as usize
     }
 
-    /// Notes that `id`'s last entry is the `k`th.
+    /// Notes that `id` is `k`th.
     fn set(&mut self, id: VehicleId, k: usize) {
         let slot = Self::slot(id);
         if slot >= self.0.len() {
@@ -338,21 +258,21 @@ impl LastEntries {
         self.0[slot] = Some((id, k as u32));
     }
 
-    /// The place of `id`'s last entry in the queue, if it is queued.
+    /// The place of `id` in the queue, if it is queued.
     fn get(&self, id: VehicleId) -> Option<usize> {
         let (queued, k) = (*self.0.get(Self::slot(id))?)?;
         (queued == id).then_some(k as usize)
     }
 
-    fn fill(&mut self, queue: &[Entry]) {
-        for (k, entry) in queue.iter().enumerate() {
-            self.set(entry.id, k);
+    fn fill(&mut self, order: &[VehicleId]) {
+        for (k, &id) in order.iter().enumerate() {
+            self.set(id, k);
         }
     }
 
-    fn clear(&mut self, queue: &[Entry]) {
-        for entry in queue {
-            self.0[Self::slot(entry.id)] = None;
+    fn clear(&mut self, order: &[VehicleId]) {
+        for &id in order {
+            self.0[Self::slot(id)] = None;
         }
     }
 }
@@ -361,33 +281,32 @@ impl LastEntries {
 /// and those it has come back through.
 const SCAN_DEPTH: usize = 32;
 
-/// Commits the vehicles approaching `lane`, one of the scan's junction's lanes
-/// with a conflict, that must commit now, nearest first, noting on the way
-/// which lanes it found anyone on.
+/// Queues the vehicles approaching `lane`, one of the scan's junction's lanes
+/// with a conflict, that can no longer stop comfortably short of it, nearest
+/// first, at the back, noting on the way which lanes it found anyone on.
 ///
 /// It scans back from the start of the lane's conflict, a lane being in at most
 /// one junction and so having at most one conflict zone: along its occupants,
 /// then the lanes leading into it, branch by branch, following only lanes
 /// vehicles approach the junction along. On each branch it passes over ghosts,
-/// committed vehicles and vehicles whose path has left the way to `lane` and
-/// goes nowhere in the junction. At the first other one:
+/// queued vehicles and vehicles whose path has left the way to `lane` and goes
+/// nowhere in the junction. At the first other one:
 ///
-/// - one headed onto `lane` commits if it must (see [`must_commit`]) and the
-///   scan goes on behind it; if it needn't yet, the scan stops there, since
-///   nobody behind it may commit before it;
+/// - one headed onto `lane` is queued if it must be (see [`must_commit`]) and
+///   the scan goes on behind it; if it needn't be yet, the scan stops there,
+///   since nobody behind it may be queued above it;
 /// - one headed elsewhere in the junction, or whose path ends before it could
 ///   leave the way to `lane`, stops the scan: it may yet go in ahead of those
-///   behind it, and another lane's scan, or a later one, commits it.
+///   behind it, and another lane's scan, or a later one, queues it.
 ///
-/// So vehicles commit in their order along each lane. IDM keeps a follower able
-/// to stop behind its leader only roughly: one closing fast on a slow leader
-/// could otherwise commit first.
-fn commit_along(scan: &mut Scan, lane: LaneId, committed: &mut Vec<Entry>) {
+/// So vehicles are queued in their order along each lane, and one following
+/// another is below it.
+fn commit_along(scan: &mut Scan, lane: LaneId, order: &mut Vec<VehicleId>) {
     let Some(start) = scan.network.conflict_start(lane) else {
         return;
     };
     let mut way = ArrayVec::<LaneId, SCAN_DEPTH>::new();
-    scan_back(scan, lane, lane, start, &mut way, committed);
+    scan_back(scan, lane, lane, start, &mut way, order);
 }
 
 /// [`commit_along`]'s scan of `on`, from `s` back, having come back through
@@ -399,19 +318,19 @@ fn scan_back(
     on: LaneId,
     s: f64,
     way: &mut ArrayVec<LaneId, SCAN_DEPTH>,
-    committed: &mut Vec<Entry>,
+    order: &mut Vec<VehicleId>,
 ) -> bool {
     // So long a way back is unheard of: stop, as if at someone, to be safe.
     if way.try_push(on).is_err() {
         scan.kept.push(on);
         return true;
     }
-    let stopped = stops_on(scan, target, on, s, way, committed) || {
+    let stopped = stops_on(scan, target, on, s, way, order) || {
         let mut stopped = false;
         for &p in scan.network.lane(on).predecessors() {
             if scan.approaching.binary_search_by_key(&p.0, |l| l.0).is_ok() {
                 let length = scan.network.lane(p).geometry().length();
-                stopped |= scan_back(scan, target, p, length, way, committed);
+                stopped |= scan_back(scan, target, p, length, way, order);
             }
         }
         stopped
@@ -425,77 +344,29 @@ fn scan_back(
 }
 
 /// Whether [`scan_back`] stops on `on`, scanning its occupants from `s` back
-/// and committing those that must as it goes. A vehicle headed onto `target`
-/// that it stops at is noted as a front.
+/// and queuing those that must be as it goes.
 fn stops_on(
     scan: &mut Scan,
     target: LaneId,
     on: LaneId,
     s: f64,
     way: &[LaneId],
-    committed: &mut Vec<Entry>,
+    order: &mut Vec<VehicleId>,
 ) -> bool {
     let list = &scan.occupants[on.0 as usize];
     let end = list.partition_point(|o| o.s() < s);
     for o in list[..end].iter().rev() {
-        if o.is_ghost() {
+        if o.is_ghost() || scan.places.get(o.id).is_some() {
             continue;
         }
         let vehicle = &scan.vehicles[o.id];
-        // Committed for the way to `target`, it is passed over; handed over
-        // only part way, short of it, it may yet go on ahead of those behind
-        // it, as a turner waiting for a gap may, so stops the scan.
-        let last = scan.last_entries.get(o.id).map(|k| committed[k]);
-        if let Some(last) = last
-            && handed_over_for(scan.network, scan.junction, &last, vehicle, target)
-        {
-            continue;
-        }
-        let until = handed_over(scan.network, vehicle, scan.junction);
-        let next = Entry { id: o.id, until };
-        // Queued already short of `target`, but handed over for it now: the
-        // rest of its way goes in the queue as a vehicle arriving does.
-        let further = last.is_some_and(|last| {
-            last.until.is_some()
-                && last.until != until
-                && handed_over_for(scan.network, scan.junction, &next, vehicle, target)
-        });
-        if last.is_some() && !further {
-            return true;
-        }
-        if let Some(k) = vehicle.path.iter().position(|&l| l == target) {
-            if further || must_commit(scan.network, scan.junction, vehicle) {
-                // Held out of the queue, short of its next conflict, so nobody
-                // behind it commits before it either.
-                if closes_cycle(
-                    scan.network,
-                    scan.vehicles,
-                    scan.occupants,
-                    scan.junction,
-                    committed,
-                    o.id,
-                    vehicle,
-                ) {
-                    if !scan.held.contains(&o.id) {
-                        scan.held.push(o.id);
-                    }
-                    return true;
-                }
-                scan.last_entries.set(o.id, committed.len());
-                committed.push(next);
-                continue;
-            }
-            // A red or amber light holds it short of the conflict, so it will
-            // surely stop there: the junction's terms can't matter to it, nor to
-            // those behind it.
-            let at = scan.network.conflict_start(target).unwrap_or(0.0);
-            if barrier::held_by(scan.network, scan.lights, vehicle, k, at) {
+        if vehicle.path.contains(&target) {
+            if !must_commit(scan.network, scan.junction, vehicle) {
                 return true;
             }
-            if !scan.fronts.contains(&o.id) {
-                scan.fronts.push(o.id);
-            }
-            return true;
+            scan.places.set(o.id, order.len());
+            order.push(o.id);
+            continue;
         }
         let into = |&l: &LaneId| scan.network.lane(l).junction() == Some(scan.junction);
         let undecided = vehicle.path.last().is_some_and(|last| way.contains(last));
@@ -506,241 +377,351 @@ fn stops_on(
     false
 }
 
-/// How long a queue [`closes_cycle`] reasons about: one longer is unheard of, and
-/// holds anyone it would otherwise check, to be safe.
-const QUEUE_DEPTH: usize = 256;
+/// How much more braking a vehicle must need to give way to the one above it
+/// than that one would to give way to it, for it to be lifted above it, in
+/// m/s²: the hysteresis that keeps two needing about the same from swapping
+/// back and forth.
+const LIFT_MARGIN: f64 = 0.5;
 
-/// Whether queuing `vehicle`, `id`, at `junction`, after `committed`, would let
-/// its order hold a cycle: the fourth queue invariant (see `docs/DESIGN.md`,
-/// Queue invariants). It may be queued part of its way already, and be being
-/// queued for the rest.
-///
-/// Each vehicle queued only part of its way, T, has a next stretch still to be
-/// queued, at the back. A vehicle is blocked by T if it would wait on T, its way
-/// crossing the stretch T is queued for where T hasn't cleared it, or following
-/// it, or would wait on a queued vehicle itself blocked by T; it blocks T if its
-/// way crosses T's next stretch, which will then wait on it. One blocked by `a`
-/// and blocking `b` makes `b`'s next stretch wait on `a`'s. It is queued unless
-/// that would close a cycle among the next stretches: unless `b` is `a`, or `a`'s
-/// next stretch already waits, through queued vehicles, on `b`'s.
-fn closes_cycle(
+/// Walks the pairs of `junction`'s queue, `order`, in the order it had as the
+/// walk began, each vehicle's from the nearest above it up, so that it is lifted
+/// above a nearer one before a further one that may lead to it, lifting each vehicle above the one above it where it needs
+/// clearly more braking to give way to it than that one would to give way to
+/// it, once either can no longer stop comfortably short of their conflict, and
+/// where that closes no cycle (see [`lift`]). Each pair is seen once, by where
+/// its two are now, so one lift may make a later pair's lift fail, and that
+/// pair's is tried again at the next update.
+fn reorder(
     network: &SimNetwork,
     vehicles: &SlotMap<VehicleId, Vehicle>,
     occupants: &[Vec<Occupant>],
     junction: JunctionId,
-    committed: &[Entry],
-    id: VehicleId,
-    vehicle: &Vehicle,
-) -> bool {
-    // The vehicles queued only part of their way, by the entry they last have.
-    let mut partial = ArrayVec::<usize, 64>::new();
-    for (i, e) in committed.iter().enumerate() {
-        let last = !committed[i + 1..].iter().any(|later| later.id == e.id);
-        if e.until.is_some() && last && partial.try_push(i).is_err() {
-            // So many is unheard of: hold it, to be safe.
-            return true;
-        }
-    }
-    if partial.is_empty() {
-        return false;
-    }
-    let inside = |l: &&LaneId| network.lane(**l).junction() == Some(junction);
-    let entry_of = |p: usize| &committed[partial[p]];
-    // Which of them `v` blocks, as a mask by their place in `partial`.
-    let blocks = |v: &Vehicle| {
-        (0..partial.len()).fold(0u64, |mask, p| {
-            let e = entry_of(p);
-            let t = &vehicles[e.id];
-            let until = e.until(network, junction).expect("queued only part of its way");
-            let Some(from) = t.path.iter().position(|&l| l == until) else {
-                return mask;
+    order: &mut [VehicleId],
+    scratch: &mut Scratch,
+) {
+    let view = View { network, vehicles, occupants, junction };
+    scratch.snapshot.clear();
+    scratch.snapshot.extend_from_slice(order);
+    let n = scratch.snapshot.len();
+    for j in 1..n {
+        for i in (0..j).rev() {
+            let (a, b) = (scratch.snapshot[i], scratch.snapshot[j]);
+            let place = |id| scratch.places.get(id).expect("queued");
+            let (upper, lower) = if place(a) < place(b) { (a, b) } else { (b, a) };
+            let Some([nu, nl]) = view.needs(upper, lower) else {
+                continue;
             };
-            // Only where it has yet to clear: on the lane it is on, a conflict
-            // its rear is already past is behind it, and can't hold up `t`.
-            let rear = v.lane_pos.s - v.spec.rear_axle;
-            let ahead = |k: usize, mine: LaneId, theirs: LaneId| {
-                network
-                    .conflict_between(mine, theirs)
-                    .is_some_and(|c| k > 0 || c.mine.end > rear)
-            };
-            let crosses = v.path.iter().enumerate().filter(|(_, l)| inside(l)).any(|(k, &mine)| {
-                t.path[from..].iter().filter(inside).any(|&theirs| ahead(k, mine, theirs))
-            });
-            if crosses { mask | 1 << p } else { mask }
-        })
-    };
-    let waits = |v: &Vehicle, id: VehicleId, e: &Entry| {
-        waits_on(network, occupants, junction, v, id, &vehicles[id], e)
-    };
-    // Which of them each queued vehicle is blocked by, until no more are found.
-    if committed.len() > QUEUE_DEPTH {
-        return true;
-    }
-    let mut blocked: ArrayVec<u64, QUEUE_DEPTH> = committed
-        .iter()
-        .map(|w| {
-            let v = &vehicles[w.id];
-            (0..partial.len()).fold(0u64, |mask, p| {
-                let e = entry_of(p);
-                if e.id != w.id && waits(v, e.id, e) {
-                    mask | 1 << p
-                } else {
-                    mask
-                }
-            })
-        })
-        .collect();
-    loop {
-        let mut changed = false;
-        for a in 0..committed.len() {
-            let v = &vehicles[committed[a].id];
-            for b in 0..committed.len() {
-                let (w, u) = (&committed[a], &committed[b]);
-                if w.id == u.id || blocked[b] & !blocked[a] == 0 || !waits(v, u.id, u) {
-                    continue;
-                }
-                blocked[a] |= blocked[b];
-                changed = true;
+            let (u, l) = (&vehicles[upper], &vehicles[lower]);
+            if nu <= u.spec.comfy_decel && nl <= l.spec.comfy_decel {
+                continue;
             }
-        }
-        if !changed {
-            break;
-        }
-    }
-    // What each next stretch waits on: `b` on `a` for each queued vehicle
-    // blocked by `a` that blocks `b`; then through each other.
-    let mut waits_for = [0u64; 64];
-    for (w, &by) in committed.iter().zip(&blocked) {
-        let mask = blocks(&vehicles[w.id]);
-        for (b, slot) in waits_for.iter_mut().enumerate().take(partial.len()) {
-            if mask & 1 << b != 0 {
-                *slot |= by;
+            if nl > nu + LIFT_MARGIN {
+                view.lift(order, scratch, lower, upper);
             }
         }
     }
-    for k in 0..partial.len() {
-        for a in 0..partial.len() {
-            if waits_for[a] & 1 << k != 0 {
-                waits_for[a] |= waits_for[k];
-            }
-        }
-    }
-    // The vehicle's own: blocked by those it waits on, directly or through
-    // queued vehicles, and blocking those its way crosses. Queued part of its
-    // way already, it is not blocked by itself.
-    let mut by = (0..partial.len()).fold(0u64, |mask, p| {
-        let e = entry_of(p);
-        if e.id != id && waits(vehicle, e.id, e) {
-            mask | 1 << p
-        } else {
-            mask
-        }
-    });
-    for (u, &mask) in committed.iter().zip(&blocked) {
-        if u.id != id && waits(vehicle, u.id, u) {
-            by |= mask;
-        }
-    }
-    let blocking = blocks(vehicle);
-    // `b` would wait on each `a` it is blocked by: a cycle if `a` is `b`, or
-    // `a` waits on `b` already.
-    (0..partial.len())
-        .any(|a| by & 1 << a != 0 && (blocking & 1 << a != 0 || waits_for[a] & blocking != 0))
 }
 
-/// Whether `follower` would wait on `leader`, `id`, queued as `entry`: its path
-/// running onto the lane `leader` is on, or onto one where `leader` has a record
-/// ahead of it, as a vehicle forking off just ahead has; or crossing a lane of
-/// `junction` that the entry covers where `leader` hasn't cleared it, its rear
-/// short of the conflict's end.
-fn waits_on(
+impl View<'_> {
+    /// Whether the vehicle `k`th in `order` must stay above the `m`th, below
+    /// it: they are a decided pair, or the `m`th follows the `k`th.
+    fn edge(self, order: &[VehicleId], k: usize, m: usize) -> bool {
+        let (upper, lower) = (order[k], order[m]);
+        let (u, l) = (&self.vehicles[upper], &self.vehicles[lower]);
+        follows(self.network, self.occupants, l, upper, u) || self.decided(upper, lower)
+    }
+
+    /// Lifts `lower` above `upper` in `order`, with every vehicle between them
+    /// that it must stay below, above `upper` and every vehicle between them
+    /// that must stay below that, unless one of those is `lower` itself, so
+    /// that the lift would close a cycle, or `lower` follows `upper`. Only the
+    /// vehicles found move, among the places they had, so every other pair
+    /// keeps its order: Pearce and Kelly's dynamic topological sort (2006).
+    /// Returns whether it lifted it.
+    fn lift(
+        self,
+        order: &mut [VehicleId],
+        scratch: &mut Scratch,
+        lower: VehicleId,
+        upper: VehicleId,
+    ) -> bool {
+        let Scratch { places, stack, below, above, seen, lifted, .. } = scratch;
+        let (top, bottom) = (
+            places.get(upper).expect("queued"),
+            places.get(lower).expect("queued"),
+        );
+        if follows(
+            self.network,
+            self.occupants,
+            &self.vehicles[lower],
+            upper,
+            &self.vehicles[upper],
+        ) {
+            return false;
+        }
+        // The pair's own edge is the one the lift reverses.
+        let direct = |k: usize, m: usize| k == top && m == bottom;
+        // Down from `upper`, no lower than `lower`: reaching it closes a cycle.
+        let span = bottom - top + 1;
+        seen.clear();
+        seen.resize(span, false);
+        stack.clear();
+        below.clear();
+        stack.push(top);
+        seen[0] = true;
+        while let Some(k) = stack.pop() {
+            below.push(k);
+            for m in k + 1..=bottom {
+                if seen[m - top] || direct(k, m) || !self.edge(order, k, m) {
+                    continue;
+                }
+                if m == bottom {
+                    return false;
+                }
+                seen[m - top] = true;
+                stack.push(m);
+            }
+        }
+        // Up from `lower`, no higher than `upper`, which it can't reach, or the
+        // search down would have reached `lower`.
+        seen.fill(false);
+        above.clear();
+        stack.push(bottom);
+        seen[span - 1] = true;
+        while let Some(m) = stack.pop() {
+            above.push(m);
+            for k in top..m {
+                if seen[k - top] || direct(k, m) || !self.edge(order, k, m) {
+                    continue;
+                }
+                seen[k - top] = true;
+                stack.push(k);
+            }
+        }
+        // Those found going up first, then those found going down, each in
+        // their order, into the places they had between them.
+        above.sort_unstable();
+        below.sort_unstable();
+        lifted.clear();
+        lifted.extend(above.iter().chain(below.iter()).map(|&k| order[k]));
+        stack.clear();
+        stack.extend(above.iter().chain(below.iter()));
+        stack.sort_unstable();
+        for (&k, &id) in stack.iter().zip(lifted.iter()) {
+            order[k] = id;
+            places.set(id, k);
+        }
+        true
+    }
+}
+
+/// How far a vehicle is from where its way conflicts with another's, along its
+/// path: its front back from the start, negative once in it, and its rear back
+/// from the end, negative once clear of it; and whether a barrier it hasn't
+/// committed to holds it back before it would clear it.
+#[derive(Clone, Copy, Debug)]
+struct Reach {
+    to_start: f64,
+    to_clear: f64,
+    held: bool,
+}
+
+impl Reach {
+    /// The braking a vehicle needs to give way to the other, from `accel`, the
+    /// term the junction would give it for the other (see [`pair_accel`]),
+    /// worked out only if needed: infinite once its front is in their conflict;
+    /// none while a barrier holds it back before it would clear it, as it will
+    /// stop there rather than go through, as at a red light, even where the
+    /// conflict starts a little short of its line; and `None` once it has
+    /// cleared it.
+    fn need(self, accel: impl FnOnce() -> f64) -> Option<f64> {
+        if self.to_clear <= 0.0 {
+            return None;
+        }
+        if self.to_start <= 0.0 {
+            return Some(f64::INFINITY);
+        }
+        if self.held {
+            return Some(0.0);
+        }
+        Some((-accel()).max(0.0))
+    }
+}
+
+/// How many of a junction's lanes [`zone`] reasons about for one vehicle: more
+/// is unheard of, and those beyond are left out.
+const WAY_DEPTH: usize = 8;
+
+/// Each of the junction's lanes `vehicle`'s body or way is on, how far that
+/// lane's start is ahead of its front, and its place on its path: the lanes of
+/// its path in the junction, and any it is leaving behind, its rear still on
+/// it, which aren't on its path.
+type Way = ArrayVec<(LaneId, f64, Option<usize>), WAY_DEPTH>;
+
+/// [`Way`]'s lanes for `vehicle`.
+fn way(
     network: &SimNetwork,
     occupants: &[Vec<Occupant>],
     junction: JunctionId,
+    id: VehicleId,
+    vehicle: &Vehicle,
+) -> Way {
+    let mut lanes = ArrayVec::new();
+    let front = vehicle.lane_pos.s - vehicle.spec.rear_axle + vehicle.spec.length;
+    let first = vehicle.path[0];
+    if vehicle.lane_pos.s - vehicle.spec.rear_axle < 0.0 {
+        for &p in network.lane(first).predecessors() {
+            let on = || occupants[p.0 as usize].iter().any(|o| o.is_record_of(id));
+            if network.lane(p).junction() == Some(junction) && on() {
+                let start = -front - network.lane(p).geometry().length();
+                let _ = lanes.try_push((p, start, None));
+            }
+        }
+    }
+    let mut start = -front;
+    for (k, &lane) in vehicle.path.iter().enumerate() {
+        let l = network.lane(lane);
+        if l.junction() == Some(junction) {
+            let _ = lanes.try_push((lane, start, Some(k)));
+        }
+        start += l.geometry().length();
+    }
+    lanes
+}
+
+/// Where two vehicles' ways through `junction` conflict, as each one's
+/// [`Reach`] to it: from the first start to the last end, along each one's path,
+/// of every conflict between a lane of one's way and a lane of the other's.
+/// `None` if they don't conflict.
+fn zone(
+    network: &SimNetwork,
+    occupants: &[Vec<Occupant>],
+    junction: JunctionId,
+    [(ia, a), (ib, b)]: [(VehicleId, &Vehicle); 2],
+) -> Option<[Reach; 2]> {
+    let (way_a, way_b) = (
+        way(network, occupants, junction, ia, a),
+        way(network, occupants, junction, ib, b),
+    );
+    // Each one's first start, last end, and the lane the end is on and where
+    // along it.
+    type Span = (f64, f64, Option<(usize, f64)>);
+    let mut ra: Span = (f64::INFINITY, f64::NEG_INFINITY, None);
+    let mut rb: Span = (f64::INFINITY, f64::NEG_INFINITY, None);
+    let widen = |r: &mut Span, start: f64, end: f64, k: Option<usize>, s: f64| {
+        r.0 = r.0.min(start);
+        if end > r.1 {
+            (r.1, r.2) = (end, k.map(|k| (k, s)));
+        }
+    };
+    for &(la, sa, ka) in &way_a {
+        for &(lb, sb, kb) in &way_b {
+            if let Some(c) = network.conflict_between(la, lb) {
+                let (mine, theirs) = (&c.mine, &c.theirs);
+                widen(&mut ra, sa + mine.start, sa + mine.end, ka, mine.end);
+                widen(&mut rb, sb + theirs.start, sb + theirs.end, kb, theirs.end);
+            }
+        }
+    }
+    let reach = |(start, end, at): Span, v: &Vehicle| Reach {
+        to_start: start,
+        to_clear: end + v.spec.length,
+        held: at.is_some_and(|(k, s)| barrier::holds_before(network, v, k, s)),
+    };
+    (ra.0 < f64::INFINITY).then(|| [reach(ra, a), reach(rb, b)])
+}
+
+/// What the junction's pair rules read.
+#[derive(Clone, Copy)]
+struct View<'a> {
+    network: &'a SimNetwork,
+    vehicles: &'a SlotMap<VehicleId, Vehicle>,
+    occupants: &'a [Vec<Occupant>],
+    junction: JunctionId,
+}
+
+impl View<'_> {
+    /// The braking each of two vehicles whose ways conflict needs to give way
+    /// to the other (see [`Reach::need`]): `None` if their ways don't conflict
+    /// or either has cleared their conflict.
+    fn needs(self, a: VehicleId, b: VehicleId) -> Option<[f64; 2]> {
+        let (va, vb) = (&self.vehicles[a], &self.vehicles[b]);
+        let [ra, rb] = zone(
+            self.network,
+            self.occupants,
+            self.junction,
+            [(a, va), (b, vb)],
+        )?;
+        let na = ra.need(|| self.pair_accel(a, b))?;
+        let nb = rb.need(|| self.pair_accel(b, a))?;
+        Some([na, nb])
+    }
+
+    /// Whether two queued vehicles are a decided pair: their ways conflict,
+    /// neither has cleared it, and either can no longer give way to the other
+    /// braking comfortably.
+    fn decided(self, a: VehicleId, b: VehicleId) -> bool {
+        self.needs(a, b).is_some_and(|[na, nb]| {
+            na > self.vehicles[a].spec.comfy_decel || nb > self.vehicles[b].spec.comfy_decel
+        })
+    }
+
+    /// The lowest of the terms the junction would give `id` to keep out of the
+    /// way of `other` (see [`pair_terms`]): infinite if none.
+    fn pair_accel(self, id: VehicleId, other: VehicleId) -> f64 {
+        let mut accel = f64::INFINITY;
+        pair_terms(self, id, other, |term, _, _| accel = accel.min(term));
+        accel
+    }
+}
+
+/// Whether `a` and `b`, both in `junction`'s queue, are a decided pair (see
+/// [`View::decided`]).
+pub(crate) fn decided(state: &SimState, junction: JunctionId, a: VehicleId, b: VehicleId) -> bool {
+    let SimState { network, vehicles, occupants, .. } = state;
+    View { network, vehicles, occupants, junction }.decided(a, b)
+}
+
+/// Whether `other`, in `junction`'s queue, holds `id` back: `id` is in the
+/// queue below it and they are a decided pair, or `id` isn't queued, so would
+/// join below it, and `other` can no longer give way to it braking comfortably.
+pub(crate) fn holds_back(
+    state: &SimState,
+    junction: JunctionId,
+    other: VehicleId,
+    id: VehicleId,
+) -> bool {
+    let SimState { network, vehicles, occupants, queues, .. } = state;
+    let view = View { network, vehicles, occupants, junction };
+    let order = &queues[junction.0 as usize].order;
+    let place = |v: VehicleId| order.iter().position(|&q| q == v);
+    let Some(theirs) = place(other) else {
+        return false;
+    };
+    match place(id) {
+        Some(mine) => theirs < mine && view.decided(other, id),
+        None => view.needs(other, id).is_some_and(|[n, _]| n > vehicles[other].spec.comfy_decel),
+    }
+}
+
+/// Whether `follower` follows `leader`, `id`: the leader's body is ahead of it
+/// on a lane of its path, one the leader is headed along or is leaving behind,
+/// so the follower can't pass it.
+fn follows(
+    network: &SimNetwork,
+    occupants: &[Vec<Occupant>],
     follower: &Vehicle,
     id: VehicleId,
     leader: &Vehicle,
-    entry: &Entry,
 ) -> bool {
-    if follower.path.contains(&leader.path[0]) {
-        return true;
-    }
-    let own_s = follower.lane_pos.s - follower.spec.rear_axle;
-    let ahead = follower.path.iter().enumerate().any(|(k, &lane)| {
-        occupants[lane.0 as usize]
-            .iter()
-            .any(|o| o.is_record_of(id) && !o.is_ghost() && (k > 0 || o.s() > own_s))
-    });
-    if ahead {
-        return true;
-    }
-    // The leader's rear, back from the start of each lane of its path.
-    let mut before = 0.0;
-    for &theirs in &leader.path {
-        let length = network.lane(theirs).geometry().length();
-        let rear = leader.lane_pos.s - leader.spec.rear_axle - before;
-        before += length;
-        if network.lane(theirs).junction() != Some(junction) || !entry.covers(network, theirs) {
-            continue;
-        }
-        let crosses = follower.path.iter().any(|&mine| {
-            network.lane(mine).junction() == Some(junction)
-                && network.conflict_between(mine, theirs).is_some_and(|c| rear < c.theirs.end)
-        });
-        if crosses {
-            return true;
-        }
-    }
-    false
-}
-
-/// The term holding a vehicle the junction holds out of its queue, `queue`,
-/// short of the first conflict on its path there that it isn't queued for, as
-/// at a stationary vehicle at its start, and the gap to it: its first, or,
-/// queued part of its way, the first on the rest of it. `None` if it has none.
-pub(crate) fn hold_term(
-    network: &SimNetwork,
-    junction: JunctionId,
-    queue: &[Entry],
-    id: VehicleId,
-    vehicle: &Vehicle,
-) -> Option<(f64, f64)> {
-    let last = queue.iter().rev().find(|e| e.id == id);
-    let until = last.and_then(|e| e.until(network, junction));
-    let from = until.and_then(|u| vehicle.path.iter().position(|&l| l == u)).unwrap_or(0);
-    let front = vehicle.lane_pos.s - vehicle.spec.rear_axle + vehicle.spec.length;
-    let mut start = -front;
-    for (k, &lane) in vehicle.path.iter().enumerate() {
-        if k >= from
-            && network.lane(lane).junction() == Some(junction)
-            && let Some(conflict) = network.conflict_start(lane)
-        {
-            let gap = start + conflict;
-            let term = acceleration::interaction(&vehicle.spec, vehicle.speed, gap, 0.0);
-            return Some((term, gap));
-        }
-        start += network.lane(lane).geometry().length();
-    }
-    None
-}
-
-/// Whether `vehicle`, its last entry in a junction's queue `last`, is handed
-/// over for `lane`: right through, or for a stretch of its way that `lane` comes
-/// before. One handed over only part way, short of `lane`, or not headed onto it
-/// at all, may wait there, in the way of others coming onto it.
-fn handed_over_for(
-    network: &SimNetwork,
-    junction: JunctionId,
-    last: &Entry,
-    vehicle: &Vehicle,
-    lane: LaneId,
-) -> bool {
-    let at = |l: LaneId| vehicle.path.iter().position(|&p| p == l);
-    match (last.until(network, junction), at(lane)) {
-        (None, _) => true,
-        (Some(until), Some(t)) => at(until).is_none_or(|u| t < u),
-        (Some(_), None) => false,
-    }
+    let rear = follower.lane_pos.s - follower.spec.rear_axle;
+    follower.path.iter().enumerate().any(|(k, &lane)| {
+        let along = leader.path.contains(&lane) || network.left_behind(leader.path[0], lane);
+        along
+            && occupants[lane.0 as usize]
+                .iter()
+                .any(|o| o.is_record_of(id) && (k > 0 || o.s() > rear))
+    })
 }
 
 /// Whether a vehicle has physically entered a junction: it has a record, not a
@@ -757,16 +738,10 @@ fn entered(
         .any(|&lane| occupants[lane.0 as usize].iter().any(|o| o.is_record_of(id)))
 }
 
-/// How far a vehicle needs to stop from its speed, braking at `SAFE_BRAKING`:
-/// whether it can stop, for committing to a junction and being released.
-fn stopping_distance(vehicle: &Vehicle) -> f64 {
-    vehicle.speed * vehicle.speed / (2.0 * acceleration::SAFE_BRAKING)
-}
-
-/// How far a vehicle's front is from where it commits to a junction, negative
-/// once past it, if its path has such a point there: the start of the first
-/// of the junction's lanes on its path that is to be kept clear, or the start
-/// of the first conflict, whichever comes first.
+/// How far a vehicle's front is from where it joins a junction's queue,
+/// negative once past it, if its path has such a point there: the start of the
+/// first of the junction's lanes on its path that is to be kept clear, or the
+/// start of the first conflict, whichever comes first.
 fn commit_distance(network: &SimNetwork, junction: JunctionId, vehicle: &Vehicle) -> Option<f64> {
     let front = vehicle.lane_pos.s - vehicle.spec.rear_axle + vehicle.spec.length;
     // From its front to the start of each lane on its path.
@@ -786,46 +761,39 @@ fn commit_distance(network: &SimNetwork, junction: JunctionId, vehicle: &Vehicle
     None
 }
 
-/// Whether a vehicle approaching a junction must commit there: it can no
-/// longer stop, braking at `SAFE_BRAKING`, before the first of the junction's
-/// lanes on its path to be kept clear, or before its first conflict there,
-/// or its front is past that already (see [`commit_distance`]). So a vehicle
-/// inside the junction, past its stop line, is always in the queue, never
-/// unseen. One with neither on its path never needs to.
-///
-/// Vehicles at the front of the ways in already slow for committed vehicles in
-/// their way, so committing late costs no harder braking, and keeps the order
-/// vehicles commit in close to the order they reach the junction.
+/// Whether a vehicle approaching a junction must join its queue: it can no
+/// longer stop comfortably before the first of the junction's lanes on its path
+/// to be kept clear, or before its first conflict there, or its front is past
+/// that already (see [`commit_distance`]). So a vehicle inside the junction,
+/// past its stop line, is always in the queue, never unseen, and one not yet in
+/// it can always stop comfortably for anything in it. One with neither on its
+/// path never needs to.
 fn must_commit(network: &SimNetwork, junction: JunctionId, vehicle: &Vehicle) -> bool {
     commit_distance(network, junction, vehicle)
-        .is_some_and(|distance| distance <= stopping_distance(vehicle))
+        .is_some_and(|distance| distance <= vehicle.comfortable_stop())
 }
 
-/// Whether the vehicle committed at `index` in a junction's committed list may
-/// be released: it could now stop, at `SAFE_BRAKING`, a car length short of
-/// where it commits (see [`commit_distance`]), so it plainly can stop, and no vehicle that committed after it is
-/// behind it on its way in. The car length is the hysteresis against
-/// [`must_commit`], and keeps a vehicle held at the line committed.
-///
-/// A vehicle committed while it couldn't stop may since have been stopped,
-/// by the junction itself, with the margin it has up to `MAX_BRAKING`, or by
-/// traffic ahead. Released, it no longer holds back those committed after it,
-/// which breaks any cycle of waiting it was part of. Releasing from the back of
-/// each lane keeps vehicles committed in their order along it.
+/// Whether the vehicle `index`th in a junction's queue may be released: it
+/// could now stop comfortably a car length short of where it joins the queue
+/// (see [`commit_distance`]), so it plainly can stop, and no vehicle queued
+/// after it is behind it on its way in. The car length is the hysteresis
+/// against [`must_commit`], and keeps a vehicle held at the line queued.
+/// Releasing from the back of each lane keeps vehicles queued in their order
+/// along it.
 fn may_release(
     network: &SimNetwork,
     vehicles: &SlotMap<VehicleId, Vehicle>,
     occupants: &[Vec<Occupant>],
     junction: JunctionId,
-    committed: &[Entry],
+    order: &[VehicleId],
     index: usize,
 ) -> bool {
-    let id = committed[index].id;
+    let id = order[index];
     let vehicle = &vehicles[id];
     let Some(distance) = commit_distance(network, junction, vehicle) else {
         return false;
     };
-    if stopping_distance(vehicle) > distance - vehicle.spec.length {
+    if vehicle.comfortable_stop() > distance - vehicle.spec.length {
         return false;
     }
     let lane = vehicle.path[0];
@@ -837,11 +805,7 @@ fn may_release(
         Some(o) => o.s() < rear,
         None => vehicles[later].path.contains(&lane),
     };
-    !committed[index + 1..]
-        .iter()
-        .map(|e| e.id)
-        .filter(|&e| e != id)
-        .any(|e| behind(&e))
+    !order[index + 1..].iter().any(behind)
 }
 
 /// Whether a vehicle's path takes it onto any of a junction's lanes.
@@ -849,64 +813,66 @@ fn headed(network: &SimNetwork, vehicle: &Vehicle, junction: JunctionId) -> bool
     vehicle.path.iter().any(|&lane| network.lane(lane).junction() == Some(junction))
 }
 
-/// The lowest of the terms the vehicles `ahead` of `id` in a junction impose on
-/// it, on the lanes their entries cover, each recorded to the debug sink:
-/// infinite if none does. Only on its own lanes in `stretch`, the lanes of its
-/// path from the first, if any, up to the second, if any: those its entry
-/// behind them was handed over for. An earlier entry of its own covers the
-/// lanes before, from its own place in the queue.
-pub(crate) fn junction_term<D: DebugSink>(
+/// The lowest of the terms `other`, above `id` in a junction's queue and a
+/// decided pair with it, imposes on it, each recorded to the debug sink:
+/// infinite if none does (see [`pair_terms`]).
+pub(crate) fn term<D: DebugSink>(
     state: &SimState,
     sink: &mut D,
     junction: JunctionId,
     id: VehicleId,
-    ahead: &[Entry],
-    stretch: [Option<LaneId>; 2],
+    other: VehicleId,
 ) -> f64 {
-    let network = &state.network;
-    let lanes = network.junction(junction).lanes();
-    let follower = &state.vehicles[id];
-    let at = |lane: Option<LaneId>| lane.and_then(|l| follower.path.iter().position(|&p| p == l));
-    let (from, until) = (at(stretch[0]), at(stretch[1]));
+    let SimState { network, vehicles, occupants, .. } = state;
+    let view = View { network, vehicles, occupants, junction };
     let mut accel = f64::INFINITY;
+    pair_terms(view, id, other, |term, gap, kind| {
+        let source = AccelSource::Junction { id: other, kind, gap };
+        sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
+        accel = accel.min(term);
+    });
+    accel
+}
+
+/// Calls `each` with every term the junction would give `id` to keep out of
+/// the way of `other`, with the gap it is for and the conflict's kind: one for
+/// every conflict between a lane of its path in the junction and a lane of the
+/// junction's (see [`conflict_term`]).
+fn pair_terms(
+    view: View,
+    id: VehicleId,
+    other: VehicleId,
+    mut each: impl FnMut(f64, f64, ConflictKind),
+) {
+    let network = view.network;
+    let lanes = network.junction(view.junction).lanes();
+    let follower = &view.vehicles[id];
     let front = follower.lane_pos.s - follower.spec.rear_axle + follower.spec.length;
     // From its front to the start of each lane on its path.
     let mut start = -front;
-    for (j, &mine) in follower.path.iter().enumerate() {
+    for &mine in &follower.path {
         let length = network.lane(mine).geometry().length();
-        let within = from.is_none_or(|f| j >= f) && until.is_none_or(|u| j < u);
-        if within && network.lane(mine).junction() == Some(junction) {
+        if network.lane(mine).junction() == Some(view.junction) {
             for &theirs in lanes {
                 let Some(conflict) = network.conflict_between(mine, theirs) else {
                     continue;
                 };
-                for entry in ahead {
-                    let other = entry.id;
-                    if other == id || !entry.covers(network, theirs) {
-                        continue;
-                    }
-                    let Some((term, gap)) =
-                        conflict_term(state, follower, mine, conflict, theirs, other, start)
-                    else {
-                        continue;
-                    };
-                    let kind = conflict.kind;
-                    let source = AccelSource::Junction { id: other, kind, gap };
-                    sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
-                    accel = accel.min(term);
+                if let Some((term, gap)) =
+                    conflict_term(view, follower, mine, conflict, theirs, other, start)
+                {
+                    each(term, gap, conflict.kind);
                 }
             }
         }
         start += length;
     }
-    accel
 }
 
-/// The term a junction imposes on `follower` for `other`, committed before it,
-/// where `mine`, a lane of its path whose start is `start` meters from its front,
-/// conflicts with `theirs`, and the gap that term is for: `None` once `other`
-/// has cleared the conflict on its lane, its rear past the end of it, or, not
-/// headed onto `theirs`, while its body isn't in it.
+/// The term a junction imposes on `follower` for `other`, above it in its
+/// queue, where `mine`, a lane of its path whose start is `start` meters from
+/// its front, conflicts with `theirs`, and the gap that term is for: `None` once
+/// `other` has cleared the conflict on its lane, its rear past the end of it,
+/// or, not headed onto `theirs`, while its body isn't in it.
 ///
 /// Until then, the follower takes the gentlest of three ways of keeping out of
 /// the other's way, each safe on its own:
@@ -931,7 +897,7 @@ pub(crate) fn junction_term<D: DebugSink>(
 /// it should not be there before the other has cleared, and at a merge, where
 /// driving on never clears the way, dropping back is the only way out.
 fn conflict_term(
-    state: &SimState,
+    view: View,
     follower: &Vehicle,
     mine: LaneId,
     conflict: &Conflict,
@@ -939,8 +905,8 @@ fn conflict_term(
     other: VehicleId,
     start: f64,
 ) -> Option<(f64, f64)> {
-    let network = &state.network;
-    let leader = &state.vehicles[other];
+    let network = view.network;
+    let leader = &view.vehicles[other];
     // The other one's rear along `theirs`, if its path takes it there.
     let rear = leader.path.iter().position(|&l| l == theirs).map(|i| {
         let before: f64 =
@@ -953,7 +919,7 @@ fn conflict_term(
         // it, can be in the way. Beside it, overlapping it only where it runs
         // alongside its own, it is in the way only where its own lanes are.
         None if !network.left_behind(leader.path[0], theirs) => true,
-        None => state.occupants[theirs.0 as usize]
+        None => view.occupants[theirs.0 as usize]
             .iter()
             .find(|o| o.is_record_of(other))
             .is_none_or(|o| {

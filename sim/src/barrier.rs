@@ -12,7 +12,7 @@ use crate::models::acceleration;
 use crate::models::signal::{Light, MovementLight};
 use crate::network::{Barrier, BarrierKind, JunctionId, Lane, LaneId, SimNetwork};
 use crate::simulation::SimState;
-use crate::vehicle::{Vehicle, VehicleId};
+use crate::vehicle::Vehicle;
 
 /// How many of `lane`'s barriers lie after `from` and at or before `to`, along it.
 pub(crate) fn between(lane: &Lane, from: f64, to: f64) -> usize {
@@ -194,34 +194,14 @@ pub(crate) fn gap_to(vehicle: &Vehicle, barrier: &Barrier, along: f64) -> f64 {
 /// ahead or a junction, as a driver who could stop does, unless it may turn on
 /// red, when it is released as at a stop line; at a give-way or stop
 /// line, or a keep-clear zone, it has come to rest short of the line, so the
-/// gap it took, or the room it saw beyond the zone, is stale, unless its
-/// junction has queued it past the line already, so that others are queued
-/// behind it on that footing (see `docs/DESIGN.md`, Queue invariants). On amber,
+/// gap it took, or the room it saw beyond the zone, is stale. On amber,
 /// a committed vehicle goes on, one caught in the dilemma zone, or a turner
 /// waiting past its line for a gap, which comes as the oncoming traffic stops,
 /// unless it has come to rest short of the line, held there by traffic ahead,
 /// when it is released as at a stop line: a driver standing at the line
 /// doesn't move off into an amber light.
-pub(crate) fn released(
-    state: &SimState,
-    id: VehicleId,
-    vehicle: &Vehicle,
-    lane: LaneId,
-    barrier: Barrier,
-    gap: f64,
-) -> bool {
+pub(crate) fn released(state: &SimState, vehicle: &Vehicle, barrier: Barrier, gap: f64) -> bool {
     let speed = vehicle.speed;
-    let queued_past = || {
-        let Some(junction) = state.network.lane(lane).junction() else {
-            return false;
-        };
-        let queue = &state.queues[junction.0 as usize].committed;
-        queue
-            .iter()
-            .rev()
-            .find(|e| e.id == id)
-            .is_some_and(|last| last.covers(&state.network, lane))
-    };
     gap > 0.0
         && match barrier.kind {
             // Turning on red, once it has come to rest, as at a stop line: a
@@ -230,12 +210,12 @@ pub(crate) fn released(
             BarrierKind::Signal { movement, on_red } => {
                 match (state.lights[movement.0 as usize].light, on_red) {
                     (Light::Red, None) => speed * speed / (2.0 * acceleration::SAFE_BRAKING) <= gap,
-                    (Light::Red, Some(_)) | (Light::Amber, _) => speed == 0.0 && !queued_past(),
+                    (Light::Red, Some(_)) | (Light::Amber, _) => speed == 0.0,
                     (Light::Green, _) => false,
                 }
             }
             BarrierKind::GiveWay | BarrierKind::Stop | BarrierKind::KeepClear { .. } => {
-                speed == 0.0 && !queued_past()
+                speed == 0.0
             }
         }
 }

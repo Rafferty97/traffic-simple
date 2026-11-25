@@ -13,7 +13,7 @@ use slotmap::{Key, SlotMap};
 
 use crate::debug::{DebugEvent, DebugSink};
 use crate::following::{self, Ahead, Along, Found, Lateral, Occupant, find_leaders};
-use crate::junction::{Entry, Queue, arrive};
+use crate::junction::{Queue, arrive};
 use crate::models::acceleration;
 use crate::models::driver::Driver;
 use crate::models::lane_change;
@@ -44,9 +44,8 @@ pub struct Simulation {
     /// beyond, and those they found someone on, or beyond. Reused.
     scan_empty: Vec<LaneId>,
     scan_kept: Vec<LaneId>,
-    /// Scratch space for a junction's scans: each vehicle's last entry in its
-    /// queue. Reused.
-    last_entries: crate::junction::LastEntries,
+    /// Scratch space for the junctions' updates. Reused.
+    junction_scratch: crate::junction::Scratch,
     /// Scratch space for vehicles that lost a record on a lane they had left.
     departed: Vec<VehicleId>,
     /// Scratch space for lane-change decisions, reused between steps: each
@@ -144,7 +143,7 @@ impl Simulation {
             arrivals: Vec::new(),
             scan_empty: Vec::new(),
             scan_kept: Vec::new(),
-            last_entries: Default::default(),
+            junction_scratch: Default::default(),
             departed: Vec::new(),
             lane_decisions: Vec::new(),
             asks: Vec::new(),
@@ -354,9 +353,7 @@ impl Simulation {
             list.retain(|o| o.id != id);
         }
         for queue in &mut self.state.queues {
-            queue.committed.retain(|e| e.id != id);
-            queue.fronts.retain(|&q| q != id);
-            queue.held.retain(|&q| q != id);
+            queue.order.retain(|&q| q != id);
         }
         self.state.caps.retain(|&(c, _)| c != id);
         self.state.drivers.remove(id);
@@ -432,10 +429,12 @@ impl Simulation {
         &self.state.occupants[lane.0 as usize]
     }
 
-    /// The vehicles committed at a junction, in the order they committed: an
-    /// entry for each stretch of its way a vehicle was handed over for.
-    pub fn queue(&self, junction: JunctionId) -> &[Entry] {
-        &self.state.queues[junction.0 as usize].committed
+    /// The vehicles in a junction's queue, those that can no longer stop
+    /// comfortably short of their first conflict there, highest first: of two
+    /// whose ways conflict, once either can't stop comfortably short of it, the
+    /// lower gives way to the higher.
+    pub fn queue(&self, junction: JunctionId) -> &[VehicleId] {
+        &self.state.queues[junction.0 as usize].order
     }
 
     /// The lanes of a junction that vehicles not yet committed may be

@@ -315,48 +315,32 @@ fn clear(
         if rear <= 0.0 {
             continue;
         }
-        // One in the junction's queue for the conflict can't be gone ahead of:
-        // going, this one joins the queue behind it, for its way from here, so
-        // would stop for it in the conflict, whatever their levels. Committing
-        // late, only once it can't stop safely, a vehicle that is still
-        // approaching can stop, if this one couldn't clear as it meant to.
-        let queued = || {
-            let queue = &state.queues[way.junction.0 as usize].committed;
-            queue.iter().any(|e| e.id == o.id && e.covers(&state.network, way.theirs))
-        };
-        // Queued only as far as where it waits, with the conflict where it will
-        // stop, it won't clear it until it is queued on, so can't be gone behind.
-        let stops_in_it = || {
-            let queue = &state.queues[way.junction.0 as usize].committed;
-            let Some(last) = queue.iter().rev().find(|e| e.id == o.id) else {
-                return false;
-            };
-            let Some(until) = last.until(network, way.junction) else {
-                return false;
-            };
-            if !network.lane(way.theirs).successors().contains(&until) {
-                return false;
-            }
-            let length = network.lane(way.theirs).geometry().length();
-            let rear_at_rest = length - state.drivers.line_gap(o.id) - other.spec.length;
-            rear_at_rest < way.conflict.theirs.end
-        };
-        let clears = if other.speed > 0.0 && !stops_in_it() {
+        // One the junction has decided goes after this one is no matter: it
+        // gives way to this one.
+        let order = &state.queues[way.junction.0 as usize].order;
+        let place = |v: VehicleId| order.iter().position(|&q| q == v);
+        if let (Some(mine), Some(theirs)) = (place(id), place(o.id))
+            && mine < theirs
+            && crate::junction::decided(state, way.junction, id, o.id)
+        {
+            continue;
+        }
+        // One that holds this one back, or would once it joined the queue below
+        // it, can't be gone ahead of, whatever their levels: only behind.
+        let holds = || crate::junction::holds_back(state, way.junction, o.id, id);
+        let clears = if other.speed > 0.0 {
             rear / other.speed
         } else {
             f64::INFINITY
         };
         let behind_margin = GAP_MARGIN + way.headway;
         // On a lane not given way to, only those that have committed count:
-        // queued, or moving past every barrier before the conflict, as one
-        // moving off an all-way stop line is; and those only to go behind. At
-        // rest and not queued, it can stop, as one stuck behind a vehicle
-        // released from its line, having committed behind it, is.
+        // holding it back, or moving past every barrier before the conflict, as
+        // one moving off an all-way stop line is; and those only to go behind.
+        // At rest and not holding it back, it can stop, as one stuck behind a
+        // vehicle released from its line, having committed behind it, is.
         let committed = || {
-            queued()
-                || other.speed > 0.0
-                    && k.is_some_and(|k| !holds_before(network, other, k, at))
-                    && !state.queues[way.junction.0 as usize].held.contains(&o.id)
+            holds() || other.speed > 0.0 && k.is_some_and(|k| !holds_before(network, other, k, at))
         };
         // Of equal priority and not yet committed to its own line, it gives way
         // to this one if this one came to rest at its line first: earlier, or
@@ -368,7 +352,7 @@ fn clear(
         {
             continue;
         }
-        if queued() || way.queued_only && committed() {
+        if holds() || way.queued_only && committed() {
             if way.arrives < clears + behind_margin {
                 return Err(o.id);
             }
@@ -377,11 +361,8 @@ fn clear(
         if way.queued_only {
             continue;
         }
-        // Held short of the conflict by a light, or by the junction, it will
-        // surely stop there.
-        let held = k.is_some_and(|k| held_by_light(state, other, k, at))
-            || state.queues[way.junction.0 as usize].held.contains(&o.id);
-        if held {
+        // Held short of the conflict by a light, it will surely stop there.
+        if k.is_some_and(|k| held_by_light(state, other, k, at)) {
             return Ok(());
         }
         let limit = network.lane(way.theirs).speed_limit();
@@ -436,7 +417,7 @@ fn waits_in_lane(network: &SimNetwork, vehicle: &Vehicle, o: &crate::following::
 /// way to vehicles in an intersection: one waiting to take a lane the barrier
 /// gives way to, a turner's next stretch, which compilation lists for the
 /// turners whose way on crosses this one's (see `docs/DESIGN.md`, Barriers from
-/// control). That is one in the junction's queue only as far as that lane, or
+/// control). That is one in the junction's queue about to wait at that lane, or
 /// one committed to its barrier into the junction but not yet in the queue, on
 /// a lane the junction is approached along, whose next barrier is at that lane.
 /// Driver behaviour: the junction doesn't rely on it. Never, for a vehicle in
@@ -455,15 +436,14 @@ fn yields_inside(
     }
     let (junction, _) = into_junction(network, &vehicle.path, k)?;
     let queue = &state.queues[junction.0 as usize];
-    let committed = &queue.committed;
-    if committed.iter().any(|e| e.id == id) {
+    let order = &queue.order;
+    if order.contains(&id) {
         return None;
     }
-    // In the queue only as far as such a lane, and no further since.
-    let queued = committed.iter().enumerate().find_map(|(i, e)| {
-        let until = e.until(network, junction)?;
-        let last = !committed[i + 1..].iter().any(|later| later.id == e.id);
-        (last && yields.contains(&until)).then_some(e.id)
+    // In the queue, and about to wait at such a lane.
+    let queued = order.iter().copied().find(|&q| {
+        crate::junction::waits_at(network, &state.vehicles[q], junction)
+            .is_some_and(|at| yields.contains(&at))
     });
     // Committed to its barrier into the junction, not yet in the queue, and
     // next held at such a lane.
@@ -475,7 +455,7 @@ fn yields_inside(
                 o.id != id
                     && !o.is_ghost()
                     && other.committed > 0
-                    && !committed.iter().any(|e| e.id == o.id)
+                    && !order.contains(&o.id)
                     && next.is_some_and(|(at, _)| yields.contains(&at))
             })
         })

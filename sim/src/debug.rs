@@ -147,10 +147,6 @@ pub enum AccelSource {
     /// which it waits short of; at a merge, the gap to the other vehicle as if it
     /// were on the vehicle's own lane.
     Junction { id: VehicleId, kind: ConflictKind, gap: f64 },
-    /// Held out of a junction's queue, short of its first conflict there, with
-    /// the gap to it: it would be both blocked by a vehicle queued only part of
-    /// its way and block its next stretch.
-    JunctionHold { gap: f64 },
     /// A term a model adds, named by the model, as the lane-change model's
     /// synchronisation is: the vehicle it is for and the gap to it, if any.
     Model {

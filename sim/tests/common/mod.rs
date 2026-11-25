@@ -250,5 +250,5 @@ pub fn overlap(a: [glam::DVec2; 4], b: [glam::DVec2; 4]) -> bool {
 /// over for.
 #[allow(dead_code)]
 pub fn queued(sim: &Simulation, junction: traffic_sim::JunctionId) -> Vec<traffic_sim::VehicleId> {
-    sim.queue(junction).iter().map(|e| e.id).collect()
+    sim.queue(junction).to_vec()
 }

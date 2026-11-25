@@ -262,11 +262,6 @@ impl Lane {
         self.junction.map(|(id, _)| id)
     }
 
-    /// Its place among its junction's lanes, if it is in one.
-    pub(crate) fn junction_slot(&self) -> Option<u16> {
-        self.junction.map(|(_, i)| i)
-    }
-
     /// The lane beside this one on the given side, if any.
     pub fn adj(&self, side: Side) -> Option<Neighbor> {
         match side {

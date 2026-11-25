@@ -113,7 +113,6 @@ fn describe(source: AccelSource) -> (String, Option<Entity>, Option<f64>) {
         AccelSource::Junction { id, kind: ConflictKind::Merge, gap } => {
             ("merging after".into(), Some(Entity::Vehicle(id)), Some(gap))
         }
-        AccelSource::JunctionHold { gap } => ("held out of junction queue".into(), None, Some(gap)),
         AccelSource::Merge { id, gap } => (
             "merge order after".into(),
             Some(Entity::Vehicle(id)),

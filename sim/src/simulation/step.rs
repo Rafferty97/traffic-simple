@@ -427,13 +427,14 @@ impl Simulation {
     /// Brings the junctions' queues up to date at the start of a macro step,
     /// just before the decisions that read them, from the motion and occupancy
     /// since the last: vehicles whose path grew or that entered a junction arrive
-    /// where nothing holds them back (see [`arrive`](crate::junction::arrive)), committed vehicles clear
+    /// where nothing holds them back (see [`arrive`](crate::junction::arrive)), queued vehicles clear
     /// of a junction leave its queue, those that can plainly stop are released
-    /// (see `junction::may_release`), and each lane approached is scanned for vehicles
-    /// to commit (see `junction::commit_along`).
+    /// (see `junction::may_release`), each lane approached is scanned for vehicles
+    /// to queue (see `junction::commit_along`), and each queue is reordered (see
+    /// `junction::reorder`).
     pub(super) fn update_queues(&mut self) {
-        let Self { state, arrivals, scan_empty, scan_kept, last_entries, .. } = self;
-        junction::update(state, arrivals, scan_empty, scan_kept, last_entries);
+        let Self { state, arrivals, scan_empty, scan_kept, junction_scratch, .. } = self;
+        junction::update(state, arrivals, scan_empty, scan_kept, junction_scratch);
     }
 
     /// Refreshes the occupant lists, and clears the old side of vehicles that have

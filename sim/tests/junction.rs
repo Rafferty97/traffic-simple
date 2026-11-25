@@ -310,7 +310,7 @@ fn a_vehicle_that_cuts_in_ahead_commits_first() {
 }
 
 #[test]
-fn a_vehicle_not_yet_committed_stops_gently_for_a_committed_one_in_its_way() {
+fn a_vehicle_stops_gently_for_a_queued_one_in_its_way() {
     let (net, junction) = crossroads();
     let mut sim = common::sim(net);
     // Its front past the start of the overlap, 8.25 m along lane 3, so it
@@ -323,7 +323,11 @@ fn a_vehicle_not_yet_committed_stops_gently_for_a_committed_one_in_its_way() {
     let mut hardest = 0.0f64;
     for _ in 0..(20.0 / DT) as usize {
         sim.step_variable(DT);
-        assert_eq!(queued(&sim, junction), [blocker], "it never commits");
+        assert_eq!(
+            queued(&sim, junction)[0],
+            blocker,
+            "the blocker stays first"
+        );
         let v = sim.get(id).unwrap();
         hardest = hardest.min(v.accel());
         let front = v.lane_pos().s - spec.rear_axle + spec.length;

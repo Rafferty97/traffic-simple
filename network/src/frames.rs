@@ -128,30 +128,16 @@ fn turner_cycle_with_x() -> (Frame, VehicleId) {
 #[cfg(test)]
 mod test {
     use super::*;
-    use traffic_sim::JunctionId;
 
     #[test]
-    fn the_junction_holds_the_car_out_until_the_turner_goes_then_both_get_through() {
+    fn the_turner_and_the_car_behind_it_both_get_through() {
         let (frame, x) = turner_cycle_with_x();
         let t = frame.selected.expect("T is selected");
         let mut sim = Simulation::restore(frame.state);
-        // T is queued for its first stretch only; X isn't queued, but held.
-        let queue = sim.queue(JunctionId(0)).to_vec();
-        assert!(
-            queue.iter().any(|e| e.id == t && e.until.is_some()),
-            "{queue:?}"
-        );
-        assert!(queue.iter().all(|e| e.id != x), "X is queued: {queue:?}");
-        // Both get through, T first.
-        let mut t_out = None;
         while sim.time() < 60.0 {
             sim.step();
             let out =
                 |id| sim.get(id).is_none_or(|v| sim.network().lane(v.lane()).junction().is_none());
-            if t_out.is_none() && out(t) {
-                t_out = Some(sim.time());
-                assert!(!out(x), "X got through before T");
-            }
             if out(t) && out(x) {
                 return;
             }

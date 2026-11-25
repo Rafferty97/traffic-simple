@@ -1197,7 +1197,7 @@ fn the_follower_search_goes_back_as_far_as_paths_reach() {
 }
 
 #[test]
-fn a_car_at_rest_short_of_a_stop_line_is_released_unless_queued_past_it() {
+fn a_car_at_rest_short_of_a_stop_line_is_released() {
     // A connector from the south, starting with a stop line, crosses one from
     // the west.
     let lane = |a: DVec2, b: DVec2| Lane::new(&[a, b], WIDTH, LIMIT, alone()).unwrap();
@@ -1215,24 +1215,7 @@ fn a_car_at_rest_short_of_a_stop_line_is_released_unless_queued_past_it() {
     let mut sim = new_sim(network);
     let id = sim.insert(car(), crate::simulation::test::driver(), at(0, 80.0, 0.0));
     let vehicle = &sim.state.vehicles[id];
-    assert!(barrier::released(
-        &sim.state,
-        id,
-        vehicle,
-        LaneId(1),
-        line,
-        5.0
-    ));
-    sim.state.queues[0].committed.push(Entry { id, until: None });
-    let vehicle = &sim.state.vehicles[id];
-    assert!(!barrier::released(
-        &sim.state,
-        id,
-        vehicle,
-        LaneId(1),
-        line,
-        5.0
-    ));
+    assert!(barrier::released(&sim.state, vehicle, line, 5.0));
 }
 
 #[test]

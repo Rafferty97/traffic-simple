@@ -2,7 +2,7 @@
 
 #![allow(dead_code)]
 
-use traffic_sim::{Config, ConflictKind, DebugEvent, Driver, LaneId, SimNetwork, Simulation};
+use traffic_sim::{Config, ConflictKind, DebugEvent, Driver, SimNetwork, Simulation};
 
 /// The length of a step in the tests' standard simulation, in seconds: 30 Hz.
 pub const DT: f64 = 1.0 / 30.0;
@@ -95,30 +95,14 @@ const ENTERED: f64 = 0.5;
 /// 2. No queued vehicle is well into a crossing conflict with one queued above
 ///    it that hasn't cleared it, unless following it the same general way, as
 ///    the junction lets it.
-/// 3. A vehicle's entries run in the order of its path, none after one that
-///    covers it right through.
 ///
-/// The fourth, that the queue closes no cycle, shows as a lockup.
+/// A cycle shows as a lockup.
 #[allow(dead_code)]
 pub fn queue_violation(sim: &Simulation) -> Option<String> {
     let net = sim.network();
     for (junction, _) in net.junctions() {
         let queue = sim.queue(junction);
-        let place = |id| queue.iter().position(|e| e.id == id);
-        // 3.
-        for (id, v) in sim.vehicles() {
-            let at = |l: LaneId| v.path().iter().position(|&p| p == l);
-            let entries: Vec<_> = queue.iter().filter(|e| e.id == id).collect();
-            for pair in entries.windows(2) {
-                match (pair[0].until(net, junction), pair[1].until(net, junction)) {
-                    (None, _) => return Some(format!("{id:?} queued again after its whole way")),
-                    (Some(a), Some(b)) if at(a).zip(at(b)).is_some_and(|(a, b)| a >= b) => {
-                        return Some(format!("{id:?} queued out of its path's order"));
-                    }
-                    _ => {}
-                }
-            }
-        }
+        let place = |id| queue.iter().position(|&q| q == id);
         // 1.
         for (lane, _) in net.lanes() {
             let mut on: Vec<_> = sim
@@ -138,21 +122,15 @@ pub fn queue_violation(sim: &Simulation) -> Option<String> {
                 }
             }
         }
-        // 2. Each by the entry that covers the lane it is on: the first that
-        // covers it right through, or stops at a lane after it on its path.
-        let covering = |id, v: &traffic_sim::Vehicle| {
-            let at = |l: LaneId| v.path().iter().position(|&p| p == l);
-            queue.iter().position(|e| {
-                e.id == id && e.until(net, junction).is_none_or(|u| at(u).is_none_or(|u| u > 0))
-            })
-        };
-        let queued: Vec<_> = sim
-            .vehicles()
-            .filter_map(|(id, v)| covering(id, v).map(|p| (p, id, v)))
+        // 2.
+        let queued: Vec<_> = queue
+            .iter()
+            .enumerate()
+            .filter_map(|(p, &id)| sim.get(id).map(|v| (p, id, v)))
             .collect();
         for &(p_b, b, vb) in &queued {
             for &(p_a, a, va) in &queued {
-                if p_a >= p_b || a == b {
+                if p_a >= p_b {
                     continue;
                 }
                 let (mine, theirs) = (vb.lane(), va.lane());
@@ -172,12 +150,11 @@ pub fn queue_violation(sim: &Simulation) -> Option<String> {
                 let same_way = glam::DVec2::from_angle(va.heading()).dot(along) > 0.0;
                 if entered && !cleared && !same_way {
                     return Some(format!(
-                        "{b:?} is in its conflict with {a:?}, queued above it, before it has cleared: {b:?} on {mine:?} front {front:.2} in {:?} at {:.2} m/s, {a:?} on {theirs:?} rear {rear:.2} of {:?} at {:.2} m/s; queue {:?}",
+                        "{b:?} is in its conflict with {a:?}, queued above it, before it has cleared: {b:?} on {mine:?} front {front:.2} in {:?} at {:.2} m/s, {a:?} on {theirs:?} rear {rear:.2} of {:?} at {:.2} m/s; queue {queue:?}",
                         conflict.mine,
                         vb.speed(),
                         conflict.theirs,
                         va.speed(),
-                        queue.iter().map(|e| (e.id, e.until(net, junction))).collect::<Vec<_>>()
                     ));
                 }
             }

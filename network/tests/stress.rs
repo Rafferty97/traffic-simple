@@ -111,8 +111,8 @@ fn backed_up(sim: &Simulation, j: usize) -> bool {
     let net = sim.network();
     let junction = traffic_sim::JunctionId(j as u32);
     // On its way out, its path's lanes in the junction behind it, not ahead.
-    let stuck_leaving = sim.queue(junction).iter().any(|e| {
-        sim.get(e.id).is_some_and(|v| {
+    let stuck_leaving = sim.queue(junction).iter().any(|&id| {
+        sim.get(id).is_some_and(|v| {
             let ahead = v.path().iter().any(|&l| net.lane(l).junction() == Some(junction));
             v.speed() <= 0.05 && net.lane(v.lane()).junction().is_none() && !ahead
         })

@@ -12,7 +12,7 @@ use crate::debug::{AccelSource, DebugEvent, DebugSink};
 use std::ops::ControlFlow;
 
 use crate::following::{Ahead, Along, Found, find_leaders, for_each_leader};
-use crate::junction::{self, Entry, Queue, junction_term};
+use crate::junction::{self, Queue};
 use crate::merge::{self, Merges};
 use crate::models::acceleration;
 use crate::models::gap_acceptance::{self, Answer};
@@ -152,7 +152,7 @@ pub(super) fn longitudinal<D: DebugSink>(
             let barrier = state.network.lane(lane).barriers()[usize::from(index)];
             let gap = barrier::gap_to(vehicle, &barrier, gap);
             if rank < u16::from(committed) {
-                if !barrier::released(state, id, vehicle, lane, barrier, gap) {
+                if !barrier::released(state, vehicle, barrier, gap) {
                     return ControlFlow::Continue(());
                 }
                 committed = rank as u8;
@@ -264,16 +264,14 @@ pub(super) fn longitudinal<D: DebugSink>(
     AccelUpdate::Own { id, accel, binding, ghost, committed, arrived }
 }
 
-/// The terms the vehicles committed at a junction impose on each one committed
-/// after them, and on the vehicles at the front of the ways in, not yet
-/// committed, at most one per follower, the lowest, each recorded to the debug
-/// sink.
+/// The terms the vehicles in a junction's queue impose on those below them,
+/// at most one per vehicle, the lowest, each recorded to the debug sink: from
+/// each one above it that it is a decided pair with (see
+/// `junction::decided`), for every conflict between a lane of its path in the
+/// junction and a lane of the junction's, crossing or merging alike (see
+/// `junction::conflict_term`).
 ///
-/// For each pair, ahead and behind, every conflict between a lane of the
-/// follower's path in the junction and a lane of the junction's counts, crossing
-/// or merging alike: see `junction::conflict_term`.
-///
-/// O(c·(c + f)) in the numbers committed and at the fronts, which are small.
+/// O(q²) in the number queued, which is small.
 pub(super) fn junction_terms<D: DebugSink>(
     state: &SimState,
     sink: &mut D,
@@ -281,31 +279,15 @@ pub(super) fn junction_terms<D: DebugSink>(
     queue: &Queue,
     decisions: &mut Vec<AccelUpdate>,
 ) {
-    let committed = &queue.committed;
-    // Each entry for the stretch it covers: from where the vehicle's entry
-    // before it stops covering it.
-    let followers = committed.iter().enumerate().map(|(k, e)| {
-        let lane = |b: &Entry| b.until(&state.network, junction);
-        let from = committed[..k].iter().rev().find(|b| b.id == e.id).and_then(lane);
-        (e.id, &committed[..k], [from, lane(e)])
-    });
-    // The vehicles at the front of the ways in, not yet committed, are behind
-    // every committed one.
-    let fronts = queue.fronts.iter().map(|&id| (id, &committed[..], [None; 2]));
-    for (id, ahead, stretch) in followers.chain(fronts) {
-        let accel = junction_term(state, sink, junction, id, ahead, stretch);
-        if accel < f64::INFINITY {
-            decisions.push(AccelUpdate::Junction { id, accel });
+    let order = &queue.order;
+    for (k, &id) in order.iter().enumerate() {
+        let mut accel = f64::INFINITY;
+        for &other in &order[..k] {
+            if junction::decided(state, junction, other, id) {
+                accel = accel.min(junction::term(state, sink, junction, id, other));
+            }
         }
-    }
-    // Those it holds out of its queue, short of their next conflicts.
-    for &id in &queue.held {
-        let vehicle = &state.vehicles[id];
-        if let Some((accel, gap)) =
-            junction::hold_term(&state.network, junction, committed, id, vehicle)
-        {
-            let source = AccelSource::JunctionHold { gap };
-            sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel });
+        if accel < f64::INFINITY {
             decisions.push(AccelUpdate::Junction { id, accel });
         }
     }
