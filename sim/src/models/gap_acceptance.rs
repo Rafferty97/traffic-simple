@@ -12,7 +12,7 @@
 //! means to go; a replacement must keep to that.
 
 use crate::barrier::{held_by_light, holds_before, into_junction, nth};
-use crate::models::acceleration::reach_time;
+use crate::models::acceleration::{Profiles, reach_time};
 use crate::models::signal::Light;
 use crate::network::{Barrier, BarrierKind, Conflict, JunctionId, LaneId, SimNetwork};
 use crate::simulation::SimState;
@@ -37,9 +37,11 @@ pub(crate) enum Answer {
 
 /// What `vehicle`, the head on its way to `barrier`, the `k`th lane of its path,
 /// `gap` from its front to the line, does about it.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn decide(
     state: &SimState,
     through: &[f64],
+    profiles: &Profiles,
     id: VehicleId,
     vehicle: &Vehicle,
     k: usize,
@@ -62,7 +64,7 @@ pub(crate) fn decide(
                 None => true,
             }
     };
-    let has_gap = |b: &Barrier| match has_gap(state, through, id, vehicle, k, b) {
+    let has_gap = |b: &Barrier| match has_gap(state, through, profiles, id, vehicle, k, b) {
         Ok(()) => true,
         Err(other) => {
             yields_to.set(Some(other));
@@ -154,6 +156,7 @@ fn impatience(state: &SimState, id: VehicleId, vehicle: &Vehicle) -> f64 {
 fn has_gap(
     state: &SimState,
     through: &[f64],
+    profiles: &Profiles,
     id: VehicleId,
     vehicle: &Vehicle,
     k: usize,
@@ -194,7 +197,7 @@ fn has_gap(
                     continue;
                 }
                 // It clears a crossing once its rear is past it.
-                let desired = state.drivers.desired_speed(id, spec, lane.speed_limit());
+                let desired = state.drivers.desired_speed(id, spec, profiles.lowest(mine));
                 let to_clear = start + conflict.mine.end + spec.length;
                 let clears = reach_time(vehicle.speed, spec.max_accel, desired, to_clear);
                 let to_start = start + conflict.mine.start;
@@ -218,7 +221,9 @@ fn has_gap(
                 };
                 let between = -network.lane(theirs).geometry().length();
                 let (from, ahead) = (conflict.theirs.end, conflict.theirs.start);
-                clear(state, through, id, &way, theirs, from, ahead, between)?;
+                clear(
+                    state, through, profiles, id, &way, theirs, from, ahead, between,
+                )?;
             }
         }
         start += lane.geometry().length();
@@ -274,6 +279,7 @@ struct Way<'a> {
 fn clear(
     state: &SimState,
     through: &[f64],
+    profiles: &Profiles,
     id: VehicleId,
     way: &Way,
     lane: LaneId,
@@ -361,7 +367,7 @@ fn clear(
         if k.is_some_and(|k| held_by_light(state, other, k, at)) {
             return Ok(());
         }
-        let limit = network.lane(way.theirs).speed_limit();
+        let limit = profiles.lowest(way.theirs);
         let desired = state.drivers.desired_speed(o.id, &other.spec, limit);
         // As fast as it can, or, to an impatient driver, giving way to it: at
         // full impatience braking at `IMPATIENT_DECEL` of its comfortable
@@ -393,7 +399,17 @@ fn clear(
     let reaches = |p: &&LaneId| through[p.0 as usize] > between;
     for &p in network.lane(lane).predecessors().iter().filter(reaches) {
         let length = network.lane(p).geometry().length();
-        clear(state, through, id, way, p, length, ahead + length, between)?;
+        clear(
+            state,
+            through,
+            profiles,
+            id,
+            way,
+            p,
+            length,
+            ahead + length,
+            between,
+        )?;
     }
     Ok(())
 }

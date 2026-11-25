@@ -34,7 +34,8 @@ fn check_occupancy(sim: &Sim) {
 
 #[test]
 fn lone_car_laps_forever_without_a_leader() {
-    let mut sim = common::watched(ring(230.0, SPEED_LIMIT), Terms::default());
+    // Big enough that it needn't slow for the bend.
+    let mut sim = common::watched(ring(1000.0, SPEED_LIMIT), Terms::default());
     let id = sim.insert(
         car(),
         common::driver(),
@@ -47,11 +48,11 @@ fn lone_car_laps_forever_without_a_leader() {
         max_t = max_t.max(v.lane_pos().t.abs());
         check_occupancy(sim);
     });
-    // At the speed limit for most of two minutes: about seven laps.
+    // At the speed limit for most of two minutes: about two laps.
     assert!((sim.get(id).unwrap().speed() - SPEED_LIMIT).abs() < 0.1);
     // Its rear axle trails inside the bend, as a car's rear wheels do: on a
     // circle of radius r, at √(r² − L²) for wheelbase L.
-    let r = 230.0 / std::f64::consts::TAU;
+    let r = 1000.0 / std::f64::consts::TAU;
     let inside = r - (r * r - car().wheelbase().powi(2)).sqrt();
     // Its front axle rounds each corner of the lane's polyline, inside it by up
     // to the polyline's sagitta, a centimetre.

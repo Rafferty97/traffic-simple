@@ -175,6 +175,7 @@ impl Simulation {
                     decisions.push(longitudinal(
                         state,
                         &derived.through,
+                        &derived.profiles,
                         lane_speeds,
                         sink,
                         o.id,
@@ -313,7 +314,7 @@ impl Simulation {
     pub(super) fn update_motion<S: DebugSink>(&mut self, dt: f64, sink: &mut S) {
         let Self {
             state: SimState { network, vehicles, occupants, routing, drivers, removals, .. },
-            derived: Derived { overlaps, merges, through, routes },
+            derived: Derived { overlaps, merges, through, routes, .. },
             arrivals,
             ..
         } = self;

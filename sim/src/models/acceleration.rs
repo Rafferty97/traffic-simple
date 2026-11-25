@@ -11,6 +11,10 @@ use crate::motion::lateral::halfway_from_rest;
 use crate::network::SimNetwork;
 use crate::vehicle::{Vehicle, VehicleId, VehicleSpec};
 
+mod profile;
+
+pub use profile::Profiles;
+
 /// The acceleration exponent δ.
 const DELTA: i32 = 4;
 
@@ -96,8 +100,8 @@ pub fn free_road(spec: &VehicleSpec, speed: f64, desired_speed: f64) -> f64 {
     -spec.comfy_decel * (1.0 - (desired_speed / speed).powf(exponent))
 }
 
-/// The term for a lower speed limit `gap` ahead of the vehicle's front, where
-/// it would go no faster than `limit`: braking to be down to it there,
+/// The term for a lower speed `gap` ahead of the vehicle's front on its lanes'
+/// speed profiles (see [`Profiles`]), where it would go no faster than `limit`: braking to be down to it there,
 /// `(limit² − v²) / 2·gap`, once that is harsher than its comfortable
 /// deceleration, and never harsher than twice that, so it slows ahead of the
 /// limit rather than once on it, and brakes at about its comfortable
@@ -107,7 +111,7 @@ pub fn limit_ahead(spec: &VehicleSpec, speed: f64, gap: f64, limit: f64) -> Opti
     (needed > spec.comfy_decel).then(|| -needed.min(2.0 * spec.comfy_decel))
 }
 
-/// How far ahead of its front a lower speed limit can matter to a vehicle: any
+/// How far ahead of its front a lower speed can matter to a vehicle: any
 /// further, slowing to a stop there takes no more than comfortable braking.
 pub fn limit_reach(spec: &VehicleSpec, speed: f64) -> f64 {
     speed * speed / (2.0 * spec.comfy_decel)

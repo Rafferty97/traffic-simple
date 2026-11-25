@@ -64,11 +64,54 @@ fn bent_lane_is_tracked_closely() {
     assert!(max_t < 0.1, "drifted {max_t} m off the centerline");
 }
 
+/// A car slows ahead of a bend tighter than its limit allows, to the speed
+/// that turns it at 3.5 m/s² sideways, and holds that round it, braking no
+/// harder than twice comfortably.
+#[test]
+fn a_car_slows_ahead_of_a_tight_bend_and_takes_it_at_its_speed() {
+    // Half a turn over 100 m of bend: a radius of about 32 m, for about
+    // 10.6 m/s, under the 14 m/s limit.
+    let lane = lane(std::f64::consts::PI);
+    let radius = 100.0 / std::f64::consts::PI;
+    let bend_speed = (3.5 * radius).sqrt();
+    let mut sim = common::sim(SimNetwork::new(vec![lane]));
+    let at = Placement {
+        lane: LaneId(0),
+        s: 0.0,
+        speed: SPEED_LIMIT,
+        route: Route::default(),
+    };
+    let id = sim.insert(car(), common::driver(), at);
+    let spec = car();
+    let mut hardest = 0.0f64;
+    while let Some(v) = sim.get(id) {
+        let front = v.lane_pos().s - spec.rear_axle + spec.length;
+        if front > 200.0 {
+            break;
+        }
+        hardest = hardest.min(v.accel());
+        // Into the bend, past its first few metres, it is down to its speed.
+        if (110.0..190.0).contains(&front) {
+            assert!(
+                v.speed() < bend_speed + 0.5,
+                "{:.2} m/s at {front:.0} m, over the bend's {bend_speed:.2}",
+                v.speed()
+            );
+        }
+        sim.step_variable(DT);
+    }
+    assert!(
+        hardest >= -2.0 * spec.comfy_decel - 1e-9,
+        "it braked at {hardest:.2} m/s²"
+    );
+}
+
 #[test]
 fn drivers_settle_at_their_share_of_the_limit() {
     for factor in [0.8, 1.2] {
-        // Alone on a ring, so nothing gets in the way.
-        let mut sim = common::sim(common::ring(230.0, SPEED_LIMIT));
+        // Alone on a ring, so nothing gets in the way, big enough that it
+        // needn't slow for the bend.
+        let mut sim = common::sim(common::ring(1000.0, SPEED_LIMIT));
         let at = Placement { lane: LaneId(0), s: 0.0, speed: 0.0, route: Route::default() };
         let id = sim.insert(
             car(),

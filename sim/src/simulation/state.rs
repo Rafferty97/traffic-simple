@@ -121,6 +121,9 @@ pub(crate) struct Derived {
     pub through: Through,
     /// Each destination's route table, by destination.
     pub routes: routing::Tables,
+    /// Each lane's speed profile, its limit lowered for its bends, from the
+    /// network.
+    pub profiles: acceleration::Profiles,
 }
 
 impl Derived {
@@ -132,6 +135,7 @@ impl Derived {
         let paths = state.vehicles.values().map(|v| v.path.as_slice());
         recompute_through(network, &mut through, paths);
         let routes = routing::tables(network, &state.destinations);
-        Self { overlaps, merges, through, routes }
+        let profiles = acceleration::Profiles::new(network);
+        Self { overlaps, merges, through, routes, profiles }
     }
 }

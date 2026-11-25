@@ -20,14 +20,6 @@ fn road_way(road: RoadId, direction: Direction) -> SimRoadId {
     SimRoadId(2 * road.0 as u32 + u32::from(direction == Direction::Backward))
 }
 
-/// The sideways acceleration a connector's speed limit allows on its tightest
-/// bend, in m/s²: drivers accept more at the low speeds of a turn than at
-/// speed, as AASHTO's side friction factors for intersection curves, about
-/// 0.32 to 0.40 at 15 to 25 km/h, have it.
-const TURN_ACCEL: f64 = 3.5;
-/// The lowest speed limit a connector gets, however tight, in m/s.
-const MIN_TURN_SPEED: f64 = 3.0;
-
 /// Why a road network doesn't compile.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CompileError {
@@ -363,7 +355,6 @@ fn assemble(net: &RoadNetwork) -> Result<(Compiled, Vec<CompileError>), CompileE
             bodies.push(body);
             let limit = net.roads[from.road.0].speed_limit.min(net.roads[to.road.0].speed_limit);
             let what = || format!("intersection {k} connection {c}");
-            let limit = turn_limit(&connector.points, limit);
             let way_of = |l: LaneRef| road_way(l.road, net.roads[l.road.0].lanes[l.lane].direction);
             let next = (2 * net.roads.len() + ways_through.len()) as u32;
             let through =
@@ -1209,23 +1200,3 @@ const TRAIL_STEP: f64 = 0.25;
 
 /// How fast a connector's swept width may change along it: 1 m sideways in 4 m.
 const TAPER: f64 = 0.25;
-
-/// The tightest bend of `points` each way, as curvatures bending left and
-/// right.
-fn tightest(points: &[DVec2]) -> [f64; 2] {
-    points.windows(3).fold([0.0; 2], |[left, right], w| {
-        let (a, b) = (w[1] - w[0], w[2] - w[1]);
-        let k = a.angle_to(b) / (0.5 * (a.length() + b.length()));
-        [left.max(k), right.max(-k)]
-    })
-}
-
-/// `limit`, lowered so that a vehicle on the tightest bend of `points` turns
-/// with at most [`TURN_ACCEL`] sideways.
-fn turn_limit(points: &[DVec2], limit: f64) -> f64 {
-    let curvature = tightest(points).into_iter().fold(0.0, f64::max);
-    if curvature <= 0.0 {
-        return limit;
-    }
-    limit.min((TURN_ACCEL / curvature).sqrt().max(MIN_TURN_SPEED))
-}

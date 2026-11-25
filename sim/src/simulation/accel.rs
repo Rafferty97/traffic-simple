@@ -62,12 +62,12 @@ pub(super) struct Binding {
     pub(super) rest: f64,
 }
 
-/// The harshest of a vehicle's terms for lower speed limits on the lanes ahead
-/// along its path (see [`acceleration::limit_ahead`]), as far ahead as they can
-/// matter, each recorded; infinite if there are none. On a lane its front is
-/// already on, but its rear axle isn't, as the free road's.
+/// The harshest of a vehicle's terms for lower speeds ahead along its path, on
+/// its lanes' speed profiles (see [`acceleration::limit_ahead`]), as far ahead
+/// as they can matter, each recorded; infinite if there are none.
 fn limits_ahead<D: DebugSink>(
     state: &SimState,
+    profiles: &acceleration::Profiles,
     sink: &mut D,
     id: VehicleId,
     vehicle: &Vehicle,
@@ -75,31 +75,55 @@ fn limits_ahead<D: DebugSink>(
     let network = &state.network;
     let spec = &vehicle.spec;
     let reach = acceleration::limit_reach(spec, vehicle.speed);
-    let front = vehicle.lane_pos.s + spec.length - spec.rear_axle;
-    // Where each lane after the one it follows starts, along that one.
-    let mut start = network.lane(vehicle.path[0]).geometry().length();
+    let front = front_along(vehicle);
     let driver = state.drivers.traits(id);
-    let own = driver.desired_speed(spec, network.lane(vehicle.path[0]).speed_limit());
     let mut harshest = f64::INFINITY;
-    for &lane in &vehicle.path[1..] {
-        let gap = start - front;
-        if gap > reach {
+    // Where each lane of its path starts, along the first.
+    let mut start = 0.0;
+    for &lane in &vehicle.path {
+        if start - front > reach {
             break;
         }
-        let limit = driver.desired_speed(spec, network.lane(lane).speed_limit());
-        let term = match gap > 0.0 {
-            true => acceleration::limit_ahead(spec, vehicle.speed, gap, limit),
-            false if limit < own => Some(acceleration::free_road(spec, vehicle.speed, limit)),
-            false => None,
-        };
-        if let Some(accel) = term {
-            let source = AccelSource::LimitAhead { lane, limit, gap: gap.max(0.0) };
-            sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel });
-            harshest = harshest.min(accel);
+        for &(s, speed) in profiles.of(lane) {
+            let gap = start + s - front;
+            if gap <= 0.0 || gap > reach {
+                continue;
+            }
+            let limit = driver.desired_speed(spec, speed);
+            if let Some(accel) = acceleration::limit_ahead(spec, vehicle.speed, gap, limit) {
+                let source = AccelSource::LimitAhead { lane, limit, gap };
+                sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel });
+                harshest = harshest.min(accel);
+            }
         }
         start += network.lane(lane).geometry().length();
     }
     harshest
+}
+
+/// How far along its path a vehicle's front is, from the start of the lane it
+/// follows.
+fn front_along(vehicle: &Vehicle) -> f64 {
+    vehicle.lane_pos.s - vehicle.spec.rear_axle + vehicle.spec.length
+}
+
+/// The speed a vehicle's lanes' profiles allow at its front (see
+/// [`acceleration::Profiles`]), or at the end of its path, beyond it.
+fn speed_at_front(
+    network: &SimNetwork,
+    profiles: &acceleration::Profiles,
+    vehicle: &Vehicle,
+) -> f64 {
+    let mut s = front_along(vehicle);
+    for &lane in &vehicle.path {
+        let length = network.lane(lane).geometry().length();
+        if s <= length {
+            return profiles.at(lane, s);
+        }
+        s -= length;
+    }
+    let last = *vehicle.path.last().expect("a path has a lane");
+    profiles.at(last, f64::INFINITY)
 }
 
 /// A vehicle's acceleration under the longitudinal model along its own lanes,
@@ -110,17 +134,18 @@ fn limits_ahead<D: DebugSink>(
 /// the free road, each leader along its path, the end of its path and the
 /// barriers on it. While it straddles, its old side adds more (see [`old_side`]). Each
 /// term is recorded to the debug sink as it is computed.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn longitudinal<D: DebugSink>(
     state: &SimState,
     through: &[f64],
+    profiles: &acceleration::Profiles,
     speeds: &[LaneSpeeds],
     sink: &mut D,
     id: VehicleId,
     vehicle: &Vehicle,
     own: usize,
 ) -> AccelUpdate {
-    let lane = vehicle.path[0];
-    let limit = state.network.lane(lane).speed_limit();
+    let limit = speed_at_front(&state.network, profiles, vehicle);
     let desired_speed = state.drivers.desired_speed(id, &vehicle.spec, limit);
     let desired_speed = desired_speed.min(friction(state, speeds, vehicle));
     // Drivers don't hold a speed exactly: their noise wanders it.
@@ -129,7 +154,7 @@ pub(super) fn longitudinal<D: DebugSink>(
     let source = AccelSource::FreeRoad { desired_speed };
     sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: free });
     // The lowest of every term but the binding leader's, and that leader.
-    let mut rest = free.min(limits_ahead(state, sink, id, vehicle));
+    let mut rest = free.min(limits_ahead(state, profiles, sink, id, vehicle));
     let mut binding: Option<Binding> = None;
 
     // The nearest ghost, if it comes before anything else ahead.
@@ -210,7 +235,7 @@ pub(super) fn longitudinal<D: DebugSink>(
     let mut arrived = false;
     if let Some((lane, index, barrier, gap)) = head {
         let k = vehicle.path.iter().position(|&l| l == lane).unwrap_or(0);
-        let answer = gap_acceptance::decide(state, through, id, vehicle, k, barrier, gap);
+        let answer = gap_acceptance::decide(state, through, profiles, id, vehicle, k, barrier, gap);
         let light = match barrier.kind {
             BarrierKind::Signal { movement, .. } => Some(state.lights[movement.0 as usize].light),
             _ => None,
