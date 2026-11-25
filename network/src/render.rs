@@ -73,12 +73,36 @@ pub enum MarkingStyle {
 /// How far apart a keep-clear zone's hatches are, along its road, in meters.
 const HATCH_SPACING: f64 = 2.0;
 
+/// Where a hook turn waits, for its box: its waiting line's middle, the way it
+/// faces there, and which way it turns.
+pub(crate) struct HookBox {
+    pub at: DVec2,
+    pub dir: DVec2,
+    pub turn: Turn,
+}
+
+/// How wide a hook turn's box is, in meters: a little narrower than a lane.
+const HOOK_BOX_WIDTH: f64 = 3.2;
+/// How far back from its stop line a hook turn's box's sides run, in meters:
+/// a car and its gap to the line, with room for its arrow.
+const HOOK_BOX_LENGTH: f64 = 7.0;
+/// How far a turn arrow reaches on from its anchor, in meters: one going
+/// straight on, to its tip; one only turning, to its head, which turns aside
+/// sooner (see `ui/assets/lane-glyphs.svg`).
+const ARROW_REACH: [f64; 2] = [6.0, 4.0];
+/// How far short of a hook turn's stop line its arrow's tip is, in meters.
+const HOOK_ARROW_GAP: f64 = 1.0;
+
 pub(crate) fn build(
     net: &RoadNetwork,
     polylines: &[Polyline],
     turns: &[Vec<Turn>],
+    hooks: &[HookBox],
 ) -> RenderGeometry {
     let mut out = RenderGeometry::default();
+    for hook in hooks {
+        hook_box(hook, &mut out);
+    }
     let ends = arms::road_ends(net);
     // Each road's edge lines, by road, before they are cut where siblings overlap.
     let mut edges = Vec::new();
@@ -177,6 +201,33 @@ pub(crate) fn build(
 /// How far inside a surface, in meters, a line must be to count as over it,
 /// so lines along its edge, as a fork's shared outer edge is, stay.
 const OVER: f64 = 0.01;
+
+/// A hook turn's box where it waits: its stop line across its way, its far
+/// edge on the waiting line, two lines back from it either side, and a turn
+/// arrow inside, as a lane coming into an intersection has.
+fn hook_box(hook: &HookBox, out: &mut RenderGeometry) {
+    let HookBox { at, dir, turn } = *hook;
+    let side = 0.5 * HOOK_BOX_WIDTH * DVec2::new(-dir.y, dir.x);
+    let line = at - 0.5 * STOP_LINE_WIDTH * dir;
+    out.markings.push(Marking {
+        points: vec![line + side, line - side],
+        style: MarkingStyle::Stop,
+    });
+    for edge in [side, -side] {
+        let points = vec![at + edge, at + edge - HOOK_BOX_LENGTH * dir];
+        out.markings.push(Marking { points, style: MarkingStyle::Edge });
+    }
+    // Its tip just short of the line.
+    let reach = ARROW_REACH[usize::from(turn != Turn::Straight)];
+    let back = reach + HOOK_ARROW_GAP;
+    out.arrows.push(Arrow {
+        pos: at - back * dir,
+        heading: dir.to_angle(),
+        left: turn == Turn::Left,
+        straight: turn == Turn::Straight,
+        right: turn == Turn::Right,
+    });
+}
 
 /// The pieces of `line` not over `surface`.
 fn outside(line: &[DVec2], surface: &Strip) -> Vec<Vec<DVec2>> {

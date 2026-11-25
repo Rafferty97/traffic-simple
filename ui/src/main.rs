@@ -21,6 +21,9 @@ use traffic_sim::{
     Route, Side, Simulation, Vehicle, VehicleId, VehicleSpec,
 };
 
+/// The hook-turn scenario's speed limit: 40 km/h, as Melbourne's CBD has.
+const HOOK_SPEED_LIMIT: f64 = 40.0 / 3.6;
+
 /// The inner lane's circumference: about 160 m across, roomy enough for
 /// vehicles to accelerate, settle into gaps and change lanes.
 const RING_CIRCUMFERENCE: f64 = 1000.0;
@@ -223,10 +226,13 @@ enum Scenario {
     /// A grid of 4 by 4 crossroads 100 m apart, of roads with two lanes each
     /// way, signalised and controlled by priority in turn.
     Grid,
+    /// A Melbourne crossroads, one lane each way and room for tram tracks,
+    /// signalised, its right turns hook turns.
+    HookTurns,
 }
 
 impl Scenario {
-    const ALL: [Scenario; 25] = [
+    const ALL: [Scenario; 26] = [
         Scenario::Ring,
         Scenario::Crossroads(1),
         Scenario::Crossroads(2),
@@ -251,6 +257,7 @@ impl Scenario {
         Scenario::Ramps(Leaving::Zipper),
         Scenario::Ramps(Leaving::Early),
         Scenario::Grid,
+        Scenario::HookTurns,
         Scenario::TurnerCycle,
     ];
 
@@ -281,6 +288,7 @@ impl Scenario {
             Scenario::Ramps(Leaving::Zipper) => "ramps-zipper",
             Scenario::Ramps(Leaving::Early) => "ramps-early",
             Scenario::Grid => "grid",
+            Scenario::HookTurns => "hook-turns",
             Scenario::TurnerCycle => "turner-cycle",
         }
     }
@@ -319,6 +327,7 @@ impl Scenario {
             Scenario::Ramps(Leaving::Zipper) => "Freeway with ramps, zipper merge",
             Scenario::Ramps(Leaving::Early) => "Freeway with ramps, early merge",
             Scenario::Grid => "Grid of 4 by 4 crossroads of 4-lane roads, signals and priority",
+            Scenario::HookTurns => "Melbourne crossroads with hook turns, 1 lane each way",
             Scenario::TurnerCycle => {
                 "Freeze frame: a turner and a car that would wait on each other"
             }
@@ -344,6 +353,7 @@ impl Scenario {
             }
             Scenario::Ramps(leaving) => scenarios::ramps_leaving(100.0 / 3.6, 80.0 / 3.6, leaving),
             Scenario::Grid => scenarios::grid(4, 4, 2, 100.0, SPEED_LIMIT),
+            Scenario::HookTurns => scenarios::hook_turn_crossroads(HOOK_SPEED_LIMIT),
             Scenario::TurnerCycle => unreachable!("a freeze frame is restored, not built"),
         }
     }
@@ -2001,23 +2011,27 @@ fn draw_lights(painter: &egui::Painter, sim: &Simulation) {
         painter.add(Shape::line(points, Stroke::new(0.6, colour)));
     };
     let giving_way = Color32::from_rgba_unmultiplied(240, 240, 240, 170);
-    // Along `lane` from `from` on, in white from a give-way line past it.
+    // Along `lane` from `from` on: in white from a give-way line past it, and
+    // only up to a light past it, as a hook turn's where it waits, which shows
+    // its own. With the colour it ends in, if it reaches the lane's end.
     let rest = |lane: &traffic_sim::Lane, from: f64, colour: Color32| {
         let end = lane.geometry().length();
-        let give_way = lane
-            .barriers()
-            .iter()
-            .find(|b| b.s > from && b.kind == BarrierKind::GiveWay)
-            .map(|b| b.s);
-        match give_way {
-            Some(at) => {
-                line(lane, from, at, colour);
-                line(lane, at, end, giving_way);
-                giving_way
+        let next = lane.barriers().iter().find(|b| {
+            b.s > from && matches!(b.kind, BarrierKind::GiveWay | BarrierKind::Signal { .. })
+        });
+        match next {
+            Some(b) if b.kind == BarrierKind::GiveWay => {
+                line(lane, from, b.s, colour);
+                line(lane, b.s, end, giving_way);
+                Some(giving_way)
+            }
+            Some(b) => {
+                line(lane, from, b.s, colour);
+                None
             }
             None => {
                 line(lane, from, end, colour);
-                colour
+                Some(colour)
             }
         }
     };
@@ -2032,7 +2046,9 @@ fn draw_lights(painter: &egui::Painter, sim: &Simulation) {
                 Light::Red if on_red.is_some() => giving_way,
                 Light::Red => continue,
             };
-            let mut colour = rest(lane, barrier.s, colour);
+            let Some(mut colour) = rest(lane, barrier.s, colour) else {
+                continue;
+            };
             // On through the rest of its connector, the lanes after it in the
             // junction, each the only way on from the last.
             let mut on = lane;
@@ -2042,7 +2058,10 @@ fn draw_lights(painter: &egui::Painter, sim: &Simulation) {
                 if next_lane.junction().is_none() || !on_through {
                     break;
                 }
-                colour = rest(next_lane, 0.0, colour);
+                let Some(next_colour) = rest(next_lane, 0.0, colour) else {
+                    break;
+                };
+                colour = next_colour;
                 on = next_lane;
             }
         }

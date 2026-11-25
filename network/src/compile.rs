@@ -5,7 +5,7 @@ use std::fmt;
 use glam::DVec2;
 use traffic_sim::{
     ALIGNED, AMBER_DECEL, Barrier, BarrierKind, Keep, Lane, LaneError, LaneId, Line, Movement,
-    MovementId, NetworkError, Phase, RoadId as SimRoadId, SAME_POINT, SignalPlan, SimNetwork,
+    MovementId, NetworkError, Phase, RoadId as SimRoadId, SAME_POINT, Side, SignalPlan, SimNetwork,
     VehicleSpec,
 };
 
@@ -304,21 +304,51 @@ fn assemble(net: &RoadNetwork) -> Result<(Compiled, Vec<CompileError>), CompileE
     let mut stops = Vec::new();
     let mut bodies = Vec::new();
     let mut links = Vec::new();
+    // Each hook turn's road on the near side, whose traffic goes straight on
+    // into the road it turns into, and how far along it it waits, by
+    // intersection and connection.
+    let mut hooks: Vec<Vec<Option<(RoadId, f64)>>> = Vec::new();
+    // Each hook turn's box where it waits, to paint.
+    let mut hook_boxes = Vec::new();
     for (k, intersection) in net.intersections.iter().enumerate() {
         let mut ids = Vec::new();
         let mut parts = Vec::new();
         let mut firsts = Vec::new();
         let mut ways = Vec::new();
         let mut lines = Vec::new();
+        let mut hooked = Vec::new();
+        let lane_id = |l: LaneRef| road_lanes[l.road.0][l.lane];
+        // Which way each connection goes, found first, as a hook turn's way
+        // depends on another's.
+        let all_turns: Vec<Turn> = intersection
+            .connections
+            .iter()
+            .map(|&(from, to)| {
+                let (a, b) = (
+                    &built[lane_id(from).0 as usize],
+                    &built[lane_id(to).0 as usize],
+                );
+                Turn::between(a.end_dir(), b.start_dir())
+            })
+            .collect();
         for (c, &(from, to)) in intersection.connections.iter().enumerate() {
-            let lane_id = |l: LaneRef| road_lanes[l.road.0][l.lane];
             let (a, b) = (
                 &built[lane_id(from).0 as usize],
                 &built[lane_id(to).0 as usize],
             );
-            let turn = Turn::between(a.end_dir(), b.start_dir());
+            let turn = all_turns[c];
             ways.push(turn);
-            let straight = match turn.far_side(net.drives_on.side()) {
+            let far_side = turn.far_side(net.drives_on.side());
+            // A hook turn: the lane on the near side whose traffic goes straight
+            // on into the same road.
+            let near = (far_side && intersection.hook_turns.contains(&from.road))
+                .then(|| {
+                    let mut ways = intersection.connections.iter().zip(&all_turns);
+                    ways.find(|&(&(_, t), &turn)| t.road == to.road && turn == Turn::Straight)
+                })
+                .flatten()
+                .map(|(&(near, _), _)| near);
+            let straight = match far_side && near.is_none() {
                 true => intersection.far_side_straight,
                 false => 0.0,
             };
@@ -341,15 +371,65 @@ fn assemble(net: &RoadNetwork) -> Result<(Compiled, Vec<CompileError>), CompileE
                 ),
                 _ => (b.start(), b.start_dir(), &[][..]),
             };
-            let (connector, body) = connect(
+            // Where a hook turn waits: moved over toward the near side, facing
+            // the way it came in, its nose just short of the near-side road's
+            // lane, after a straight run as long as a car waiting there.
+            let hook = intersection.hook_geometry;
+            let via = near.map(|near| {
+                let lane = &built[lane_id(near).0 as usize];
+                let along = lane.end_dir();
+                // Toward the road's middle: the side away from the side
+                // traffic keeps to.
+                let inward = match net.drives_on.side() {
+                    Side::Left => DVec2::new(along.y, -along.x),
+                    Side::Right => DVec2::new(-along.y, along.x),
+                };
+                let half = lane.half_widths.last().expect("a lane has points");
+                let inner = match net.drives_on.side() {
+                    Side::Left => half[1],
+                    Side::Right => half[0],
+                };
+                let corner = lane.end() + inner * inward;
+                let mouth = *start.last().expect("a connector starts somewhere");
+                // Toward the near side, square to the way it came in.
+                let near_side = match net.drives_on.side() {
+                    Side::Left => DVec2::new(-dir.y, dir.x),
+                    Side::Right => DVec2::new(dir.y, -dir.x),
+                };
+                // Over by `shift`, but no nearer the near-side road's stop
+                // line than `along`.
+                let to_line = (corner - mouth).dot(near_side);
+                let over = hook.shift.min(to_line - hook.along).max(0.0);
+                let ahead = (corner + hook.across * inward - mouth).dot(dir);
+                let at = mouth + ahead * dir + over * near_side;
+                // Turning sharply: onto the line of its way out, `turn_run` on.
+                let rise = (end - at).dot(dir);
+                let turned = at + rise * dir + hook.turn_run * end_dir;
+                // Moving over over `drift`, as late as it can before its run
+                // straight on to where it waits, so it stays clear of the
+                // corner it comes in by.
+                let straight_from = at - hook.queue * dir;
+                let room = (straight_from - mouth).dot(dir);
+                let drift_from = mouth + (room - hook.drift).max(0.0) * dir;
+                (drift_from, straight_from, at, turned)
+            });
+            if let Some((_, _, at, _)) = via {
+                hook_boxes.push(render::HookBox { at, dir, turn });
+            }
+            let (mut connector, body, via_s) = connect(
                 &start,
                 dir,
                 straight,
+                via,
                 end,
                 end_dir,
                 tail,
                 intersection.connector_width,
             );
+            hooked.push(near.zip(via_s).map(|(near, s)| (near.road, s)));
+            // Narrowed on the inside of any bend too tight for its width, as a
+            // hook turn's is, rather than refused for folding over.
+            unfold(&mut connector);
             let (safe, line) = stop(net, &polylines, &ends, from);
             lines.push((safe, line));
             bodies.push(body);
@@ -373,6 +453,7 @@ fn assemble(net: &RoadNetwork) -> Result<(Compiled, Vec<CompileError>), CompileE
         turns.push(ways);
         stops.push(lines);
         entries.push(firsts);
+        hooks.push(hooked);
     }
 
     let mut sim = SimNetwork::new(lanes);
@@ -456,6 +537,7 @@ fn assemble(net: &RoadNetwork) -> Result<(Compiled, Vec<CompileError>), CompileE
                 &entries[k],
                 &turns[k],
                 &stops[k],
+                &hooks[k],
             );
             waiting.extend(waits.into_iter().map(|(c, at)| (k, c, at)));
         }
@@ -485,7 +567,7 @@ fn assemble(net: &RoadNetwork) -> Result<(Compiled, Vec<CompileError>), CompileE
     sim.validate().map_err(CompileError::Network)?;
     let swept = check_sweeps(&sim, &road_lanes, &connectors, &bodies);
 
-    let render = render::build(net, &polylines, &turns);
+    let render = render::build(net, &polylines, &turns, &hook_boxes);
     Ok((
         Compiled { sim, render, road_lanes, connectors, turns },
         swept,
@@ -609,6 +691,12 @@ pub fn fit_arms(net: &mut RoadNetwork) -> Result<Compiled, CompileError> {
 /// A far-side turn's give-way barrier goes on its connector where it first
 /// meets traffic it gives way to (see [`add_far_side_waits`], whose places it
 /// returns).
+///
+/// A hook turn, by `hooks`, crosses no oncoming traffic, so gives way to none:
+/// it waits along its connector, where `hooks` says, at a signal barrier for the
+/// light of the near-side road's traffic going straight on into the road it
+/// turns into.
+#[allow(clippy::too_many_arguments)]
 fn add_signals(
     net: &RoadNetwork,
     sim: &mut SimNetwork,
@@ -617,6 +705,7 @@ fn add_signals(
     entries: &[LaneId],
     turns: &[Turn],
     stops: &[(f64, Option<Line>)],
+    hooks: &[Option<(RoadId, f64)>],
 ) -> Vec<(usize, f64)> {
     let Control::Signals(phases) = &intersection.control else {
         return Vec::new();
@@ -678,7 +767,17 @@ fn add_signals(
     // Every road has priority at signals.
     let drives_on = net.drives_on.side();
     let levels: Vec<u8> = turns.iter().map(|&turn| level(true, turn, drives_on)).collect();
-    let waiting = add_far_side_waits(sim, pieces, &levels, |c, o| together(of[c], of[o]));
+    let together_c = |c: usize, o: usize| together(of[c], of[o]);
+    let mut waiting = add_far_side_waits(sim, pieces, &levels, |c| hooks[c].is_none(), together_c);
+    for (c, hook) in hooks.iter().enumerate() {
+        let Some((near, at)) = *hook else { continue };
+        let m = movements.iter().position(|&m| m == (near, Turn::Straight));
+        let m = m.expect("the near-side road's traffic goes straight on");
+        let movement = MovementId(first.0 + m as u32);
+        let kind = BarrierKind::Signal { movement, on_red: None };
+        sim.add_barrier(pieces[c], Barrier::new(at, kind));
+        waiting.push((c, at));
+    }
     // Each connector's signal at its stop line, giving way to the turners
     // waiting inside on movements never green with it whose way on from their
     // waiting lines crosses its own; and, if it may turn on red, giving way
@@ -726,11 +825,12 @@ fn add_far_side_waits(
     sim: &mut SimNetwork,
     pieces: &[LaneId],
     levels: &[u8],
+    gives_way: impl Fn(usize) -> bool,
     together: impl Fn(usize, usize) -> bool,
 ) -> Vec<(usize, f64)> {
     let mut waiting = Vec::new();
     for (c, &connector) in pieces.iter().enumerate() {
-        if levels[c] != PRIORITY_ROAD + FAR_SIDE {
+        if levels[c] != PRIORITY_ROAD + FAR_SIDE || !gives_way(c) {
             continue;
         }
         let oncoming: Vec<LaneId> = pieces
@@ -783,7 +883,7 @@ fn add_priority(
         .enumerate()
         .map(|(c, &turn)| level(major.contains(&road(c)), turn, drives_on))
         .collect();
-    let waiting = add_far_side_waits(sim, pieces, &levels, |_, _| true);
+    let waiting = add_far_side_waits(sim, pieces, &levels, |_| true, |_, _| true);
     for (c, (&entry, &(s, line))) in entries.iter().zip(stops).enumerate() {
         if major.contains(&road(c)) {
             continue;
@@ -852,6 +952,57 @@ fn level(priority_road: bool, turn: Turn, drives_on: traffic_sim::Side) -> u8 {
     }
 }
 
+/// Narrows `built` on the inside of any bend too tight for its width, so its
+/// edges don't fold over, as `LaneGeometry` would refuse, as a hook turn's
+/// sharp turn from rest would: each
+/// segment's inner half-widths capped a little inside the radius its bend
+/// allows there, by the test `LaneGeometry::new` makes. A connector that
+/// doesn't fold is left as it is.
+fn unfold(built: &mut Built) {
+    let points = &built.points;
+    let n = points.len();
+    if n < 3 {
+        return;
+    }
+    let dirs: Vec<DVec2> = points.windows(2).map(|w| (w[1] - w[0]).normalize()).collect();
+    let lens: Vec<f64> = points.windows(2).map(|w| w[0].distance(w[1])).collect();
+    let mut tan_half = vec![0.0; dirs.len() + 1];
+    for i in 1..dirs.len() {
+        let (a, b) = (dirs[i - 1], dirs[i]);
+        tan_half[i] = a.perp_dot(b) / (1.0 + a.dot(b));
+    }
+    // Well inside, as snapping to the grid moves the points a little.
+    const MARGIN: f64 = 0.8;
+    for i in 0..dirs.len() {
+        let k = (-tan_half[i] - tan_half[i + 1]) / lens[i];
+        // Stretching by 1 + t·k across it: the left edge folds where k < 0,
+        // the right where k > 0, once as far out as 1 / |k|.
+        let (edge, limit) = match k {
+            k if k < 0.0 => (0, MARGIN / -k),
+            k if k > 0.0 => (1, MARGIN / k),
+            _ => continue,
+        };
+        for j in [i, i + 1] {
+            let h = &mut built.half_widths[j][edge];
+            *h = h.min(limit);
+        }
+    }
+    // Narrowed gradually, never faster than TAPER along it either way, so its
+    // edge doesn't zigzag.
+    for e in 0..2 {
+        for i in 1..n {
+            let taper = TAPER * lens[i - 1];
+            built.half_widths[i][e] =
+                built.half_widths[i][e].min(built.half_widths[i - 1][e] + taper);
+        }
+        for i in (0..n - 1).rev() {
+            let taper = TAPER * lens[i];
+            built.half_widths[i][e] =
+                built.half_widths[i][e].min(built.half_widths[i + 1][e] + taper);
+        }
+    }
+}
+
 /// A simulation lane from a built one.
 fn build(
     b: &Built,
@@ -864,22 +1015,29 @@ fn build(
 }
 
 /// A connector along `start`, from its lane's end into the intersection,
-/// heading `dir` there; then `straight` on; then a quintic Bézier to `end`,
-/// heading `end_dir` there, with no curvature at either end,
-/// sampled by the same tolerance as roads; then along `tail`. It is `width`
-/// wide, or by default as wide as the widest vehicle sweeps along it (see
-/// [`swept`]), plus the room one needs to pass another on each side. With it,
-/// the widest vehicle's body's sweep, run on past its ends as far as the
-/// vehicle overhangs them.
+/// heading `dir` there; then `straight` on; then, if it goes `via` points,
+/// straight on to the first, a quintic Bézier to the second, heading its way
+/// there, straight on to the third, and a quintic Bézier to the fourth,
+/// heading `end_dir` there, as a hook turn moves over, waits facing the way it
+/// came in, and turns sharply onto its way out; then a quintic Bézier to `end`, heading
+/// `end_dir` there, each
+/// with no curvature at either end, sampled by the same tolerance as roads;
+/// then along `tail`. It is `width` wide, or by default as wide as the widest
+/// vehicle sweeps along it (see [`swept`]), plus the room one needs to pass
+/// another on each side. With it, the widest vehicle's body's sweep, run on
+/// past its ends as far as the vehicle overhangs them, and how far along it
+/// its `via` point is, if it has one.
+#[allow(clippy::too_many_arguments)]
 fn connect(
     start: &[DVec2],
     dir: DVec2,
     straight: f64,
+    via: Option<(DVec2, DVec2, DVec2, DVec2)>,
     end: DVec2,
     end_dir: DVec2,
     tail: &[DVec2],
     width: Option<f64>,
-) -> (Built, Sweep) {
+) -> (Built, Sweep, Option<f64>) {
     let mouth = *start.last().expect("a connector starts somewhere");
     let p0 = mouth + straight * dir;
     // A quintic, its first two control points on from its start along its
@@ -889,26 +1047,45 @@ fn connect(
     // control points and directions the same, but with the next ones moved onto
     // its ends' lines. Gentler than that cubic at its sharpest, and a few
     // percent longer.
-    let reach = p0.distance(end) / 3.0;
-    let control = vec![
-        p0,
-        p0 + 0.6 * reach * dir,
-        p0 + 1.2 * reach * dir,
-        end - 1.2 * reach * end_dir,
-        end - 0.6 * reach * end_dir,
-        end,
-    ];
-    let (_, curve) = reference::sample_bezier(control);
+    let quintic = |from: DVec2, from_dir: DVec2, to: DVec2, to_dir: DVec2| {
+        let reach = from.distance(to) / 3.0;
+        let control = vec![
+            from,
+            from + 0.6 * reach * from_dir,
+            from + 1.2 * reach * from_dir,
+            to - 1.2 * reach * to_dir,
+            to - 0.6 * reach * to_dir,
+            to,
+        ];
+        reference::sample_bezier(control).1
+    };
     let mut points = start.to_vec();
     if straight > 0.0 {
         points.push(p0);
     }
-    points.extend(&curve[1..]);
+    // Through `via`: turning sharply from where it waits, as a hook turner does
+    // from rest, onto the line of its way out, rather than easing out first
+    // and running wide.
+    let turn_from = match via {
+        Some((drift_from, straight_from, at, turned)) => {
+            if drift_from.distance(p0) > WAIT_MARGIN {
+                points.push(drift_from);
+            }
+            points.extend(&quintic(drift_from, dir, straight_from, dir)[1..]);
+            points.push(at);
+            points.extend(&quintic(at, dir, turned, end_dir)[1..]);
+            turned
+        }
+        None => p0,
+    };
+    let turn_dir = if via.is_some() { end_dir } else { dir };
+    points.extend(&quintic(turn_from, turn_dir, end, end_dir)[1..]);
     points.extend(tail);
     // Its straight stretches in short segments, so its width can narrow
     // along them as a vehicle straightens.
     let points = densify(&points, SEGMENT);
     let s = arc_lengths(&points);
+    let via_s = via.and_then(|(_, _, at, _)| points.iter().position(|&p| p == at)).map(|i| s[i]);
     // The widest vehicle: the only class so far. Swept along the connector
     // run on past each end as far as it overhangs its rear axle there, so the
     // sweep beyond its ends, while its nose is in the road it turns into, is
@@ -945,7 +1122,7 @@ fn connect(
         body: Built { points: extended, half_widths: tracked },
         overhang,
     };
-    (Built { points, half_widths }, sweep)
+    (Built { points, half_widths }, sweep, via_s)
 }
 
 /// A vehicle's body's sweep along a connector, run on past its ends, the last
@@ -1070,7 +1247,13 @@ fn check_sweeps(
     for (k, ids) in connectors.iter().enumerate() {
         for (c, &id) in ids.iter().enumerate() {
             let sweep = body.next().expect("a body for each connector");
-            let b = &sweep.body;
+            // Narrowed where it would fold, as its connector is.
+            let mut b = Built {
+                points: sweep.body.points.clone(),
+                half_widths: sweep.body.half_widths.clone(),
+            };
+            unfold(&mut b);
+            let b = &b;
             // Lanes only for their geometry, never in the network, so of no road.
             let no_road = SimRoadId(u32::MAX);
             let swept = Lane::with_half_widths(&b.points, &b.half_widths, 1.0, no_road)

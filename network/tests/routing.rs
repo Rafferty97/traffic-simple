@@ -92,6 +92,13 @@ fn a_car_sent_to_each_exit_of_a_grid_leaves_by_it() {
 }
 
 #[test]
+fn a_car_sent_to_each_exit_of_a_hook_turn_crossroads_leaves_by_it() {
+    let sent = every_car_leaves_by_its_exit(&scenarios::hook_turn_crossroads(SPEED));
+    // From each of the four lanes in, to each of the three roads out but its own.
+    assert_eq!(sent, 4 * 3);
+}
+
+#[test]
 fn a_car_sent_off_the_freeway_takes_the_off_ramp() {
     let sent = every_car_leaves_by_its_exit(&scenarios::ramps(100.0 / 3.6, 60.0 / 3.6));
     assert!(sent >= 2, "{sent}");

@@ -5,8 +5,8 @@ use std::f64::consts::{FRAC_PI_2, PI, TAU};
 use traffic_sim::{Keep, Leaving};
 
 use crate::{
-    Arm, Control, Direction, Intersection, KeepClear, LaneRef, Piece, Pose, Profile, Road, RoadId,
-    RoadLane, RoadNetwork, Sign, SignalPhase, Turn,
+    Arm, CompileError, Control, Direction, HookGeometry, Intersection, KeepClear, LaneRef, Piece,
+    Pose, Profile, Road, RoadId, RoadLane, RoadNetwork, Sign, SignalPhase, Turn,
 };
 
 const WIDTH: f64 = 3.5;
@@ -35,32 +35,84 @@ pub fn crossroads(lanes: usize, speed_limit: f64) -> RoadNetwork {
 /// the other road, skewed from square by as much as the roads are from
 /// crossing square.
 pub fn oblique_crossroads(lanes: usize, speed_limit: f64, angle: f64) -> RoadNetwork {
-    junction([lanes; 2], speed_limit, angle, [true; 4])
+    junction(
+        [lanes; 2],
+        speed_limit,
+        angle,
+        [true; 4],
+        0.0,
+        JUNCTION_ROOM,
+        |_| {},
+    )
 }
 
 /// A T-junction as [`crossroads`] has it, without its north arm: the first
 /// road, with `lanes[0]` lanes each way, runs east to west, roads 0 and 1, and
 /// the second, with `lanes[1]`, comes in from the south, road 2.
 pub fn t_junction(lanes: [usize; 2], speed_limit: f64) -> RoadNetwork {
-    junction(lanes, speed_limit, FRAC_PI_2, [true, false, true, true])
+    junction(
+        lanes,
+        speed_limit,
+        FRAC_PI_2,
+        [true, false, true, true],
+        0.0,
+        JUNCTION_ROOM,
+        |_| {},
+    )
 }
 
 /// As [`oblique_crossroads`], the first road with `lanes[0]` lanes each way
 /// and the second with `lanes[1]`, and only the arms `present` says, by where
 /// they come in from: the first road's east end, the second's far end, the
 /// first's west end and the second's near end. Roads are numbered in that
-/// order, the arms left out skipped.
-fn junction(lanes: [usize; 2], speed_limit: f64, angle: f64, present: [bool; 4]) -> RoadNetwork {
+/// order, the arms left out skipped. Each road's lanes each way are `median`
+/// from its centre line, leaving room between them, and `before_fitting`
+/// finishes the intersection before its arms are fitted, as how it is
+/// controlled shapes its connectors. Each arm ends `room` beyond where its
+/// lanes clear the other road.
+#[allow(clippy::too_many_arguments)]
+fn junction(
+    lanes: [usize; 2],
+    speed_limit: f64,
+    angle: f64,
+    present: [bool; 4],
+    median: f64,
+    room: f64,
+    before_fitting: impl FnOnce(&mut Intersection),
+) -> RoadNetwork {
+    try_junction(
+        lanes,
+        speed_limit,
+        angle,
+        present,
+        median,
+        room,
+        before_fitting,
+    )
+    .expect("the junction compiles once fitted")
+}
+
+/// As [`junction`], or why it doesn't compile.
+#[allow(clippy::too_many_arguments)]
+fn try_junction(
+    lanes: [usize; 2],
+    speed_limit: f64,
+    angle: f64,
+    present: [bool; 4],
+    median: f64,
+    room: f64,
+    before_fitting: impl FnOnce(&mut Intersection),
+) -> Result<RoadNetwork, CompileError> {
     let mut net = RoadNetwork::default();
     // Each arm's road, the first or the second, and its lanes each way.
     let road_of = |arm: usize| arm % 2;
     let lanes_of = |arm: usize| lanes[road_of(arm)];
     // How far across each road's lanes reach from its centre line.
-    let across = lanes.map(|n| n as f64 * WIDTH);
+    let across = lanes.map(|n| median + n as f64 * WIDTH);
     // The junction's half-width along each road's arms, from its centre to
     // where the arm ends: where its outermost lane clears the other road, and
-    // 6 m more.
-    let half = [0, 1].map(|r| across[1 - r] / angle.sin() + across[r] / angle.tan().abs() + 6.0);
+    // `room` more.
+    let half = [0, 1].map(|r| across[1 - r] / angle.sin() + across[r] / angle.tan().abs() + room);
     // Each arm runs in toward the centre, from the first road's east end, the
     // second's far end, the first's west end and the second's near end, so
     // counterclockwise, its forward lanes coming in.
@@ -73,7 +125,8 @@ fn junction(lanes: [usize; 2], speed_limit: f64, angle: f64, present: [bool; 4])
                 heading: from[k] + PI,
             };
             let pieces = vec![Piece::Line { length: ARM - half }];
-            let road = || Road::ending_at(end, pieces, two_way(lanes_of(k)), speed_limit);
+            let lanes = two_way_apart(lanes_of(k), median);
+            let road = || Road::ending_at(end, pieces, lanes, speed_limit);
             present[k].then(|| net.add_road(road()))
         })
         .collect();
@@ -96,10 +149,11 @@ fn junction(lanes: [usize; 2], speed_limit: f64, angle: f64, present: [bool; 4])
         let stop_line = (-across[road_of(k)] * skew.tan()).max(0.0);
         intersection.arms.push(Arm { stop_line, skew, ..Arm::new(road) });
     }
+    before_fitting(&mut intersection);
     net.intersections.push(intersection);
     // Stop lines set back, and run outs, wherever turning vehicles sweep.
-    crate::fit_arms(&mut net).expect("the crossroads compile once fitted");
-    net
+    crate::fit_arms(&mut net)?;
+    Ok(net)
 }
 
 /// How a road meets a crossroads: its lanes coming in and going out, each
@@ -130,9 +184,15 @@ impl Way {
 /// `n` lanes each way: forward lanes on the left of the reference line,
 /// backward on its right, lane 0 of each by it, as driving on the left has it.
 fn two_way(n: usize) -> Vec<RoadLane> {
+    two_way_apart(n, 0.0)
+}
+
+/// As [`two_way`], each way's lanes `median` from the centre line.
+fn two_way_apart(n: usize, median: f64) -> Vec<RoadLane> {
+    let offset = |i: usize| median + WIDTH * (i as f64 + 0.5);
     (0..n)
-        .map(|i| RoadLane::new(WIDTH * (i as f64 + 0.5), WIDTH, Direction::Forward))
-        .chain((0..n).map(|i| RoadLane::new(-WIDTH * (i as f64 + 0.5), WIDTH, Direction::Backward)))
+        .map(|i| RoadLane::new(offset(i), WIDTH, Direction::Forward))
+        .chain((0..n).map(|i| RoadLane::new(-offset(i), WIDTH, Direction::Backward)))
         .collect()
 }
 
@@ -177,6 +237,76 @@ fn connect(intersection: &mut Intersection, ways: &[Option<Way>; 4]) {
 /// right turn shares its phase with the traffic coming the other way.
 pub fn signalised_crossroads(lanes: usize, speed_limit: f64) -> RoadNetwork {
     signalised(crossroads(lanes, speed_limit))
+}
+
+/// How far a crossroads' arms end beyond where their lanes clear the other
+/// road, in meters.
+const JUNCTION_ROOM: f64 = 6.0;
+
+/// As [`JUNCTION_ROOM`], for [`hook_turn_crossroads`]: room for a hook turner
+/// to move over and wait, facing the way it came in, short of the road across
+/// it, as Melbourne's wide streets have.
+const HOOK_ROOM: f64 = 8.0;
+
+/// Half the room down the middle of a Melbourne road left for its tram tracks,
+/// in meters: two tracks, each way's lanes beside them.
+const TRAM_ROOM: f64 = 5.0;
+
+/// A Melbourne crossroads, after William and Collins Streets, made symmetric:
+/// two two-way roads crossing at right angles, one lane each way, with room
+/// down the middle of each for tram tracks, signalised as
+/// [`signalised_crossroads`] is, every approach's right turns hook turns.
+/// Each lane coming in goes straight on, turns left, and turns right by a hook
+/// turn: on into the intersection, waiting on the left in front of the road
+/// it will follow into the road it turns into, until that road's light goes
+/// green. No trams yet: the room for them is empty.
+pub fn hook_turn_crossroads(speed_limit: f64) -> RoadNetwork {
+    hook_turn_crossroads_with(speed_limit, HookLayout::default())
+        .expect("the hook-turn crossroads compiles once fitted")
+}
+
+/// How [`hook_turn_crossroads_with`] lays out its crossroads.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HookLayout {
+    /// How its hook turns are laid out.
+    pub geometry: HookGeometry,
+    /// Half the room down the middle of each road for tram tracks, in meters.
+    pub tram_room: f64,
+    /// How far each arm ends beyond where its lanes clear the other road, in
+    /// meters.
+    pub room: f64,
+}
+
+impl Default for HookLayout {
+    fn default() -> Self {
+        Self {
+            geometry: HookGeometry::default(),
+            tram_room: TRAM_ROOM,
+            room: HOOK_ROOM,
+        }
+    }
+}
+
+/// As [`hook_turn_crossroads`], laid out as `layout` says; or why it doesn't
+/// compile so, as when a hook turn is too tight for its connector to bend.
+pub fn hook_turn_crossroads_with(
+    speed_limit: f64,
+    layout: HookLayout,
+) -> Result<RoadNetwork, CompileError> {
+    let roads = [0, 1, 2, 3].map(RoadId);
+    try_junction(
+        [1, 1],
+        speed_limit,
+        FRAC_PI_2,
+        [true; 4],
+        layout.tram_room,
+        layout.room,
+        |intersection| {
+            intersection.hook_turns = roads.to_vec();
+            intersection.hook_geometry = layout.geometry;
+            intersection.control = signal_plan(roads, [30.0; 2]);
+        },
+    )
 }
 
 /// As [`signalised_crossroads`], with near-side turns allowed on red: each
@@ -224,7 +354,15 @@ pub fn all_way_stop_crossroads(lanes: usize, speed_limit: f64) -> RoadNetwork {
 /// road, east to west, with `lanes[0]` lanes each way, has it, and the
 /// second, with `lanes[1]`, has `sign` on its approaches.
 pub fn priority_crossroads(lanes: [usize; 2], speed_limit: f64, sign: Sign) -> RoadNetwork {
-    let mut net = junction(lanes, speed_limit, FRAC_PI_2, [true; 4]);
+    let mut net = junction(
+        lanes,
+        speed_limit,
+        FRAC_PI_2,
+        [true; 4],
+        0.0,
+        JUNCTION_ROOM,
+        |_| {},
+    );
     prioritise(
         &mut net,
         &[RoadId(0), RoadId(2)],

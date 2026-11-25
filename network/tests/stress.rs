@@ -1,9 +1,9 @@
 //! Busy intersections for a quarter of an hour each, drivers varied, over many
 //! seeds: signalised crossroads, square and oblique, one to three lanes each
-//! way, turning on red or with a keep-clear zone; priority crossroads and
-//! T-junctions; all-way stops; and grids of signalised and priority crossroads
-//! joined by short roads. None may lock up, and the junction's queue invariants
-//! must hold throughout. A grid may gridlock, as a queue backs up from one
+//! way, with hook turns, and turning on red or with a keep-clear zone; priority
+//! crossroads and T-junctions; all-way stops; and grids of signalised and
+//! priority crossroads joined by short roads. None may lock up, and the
+//! junction's queue invariants must hold throughout. A grid may gridlock, as a queue backs up from one
 //! crossroads through the next and round to the first, which the design allows:
 //! that is counted and printed, not failed. Slow, so ignored by default:
 //! `cargo test --release --test stress -- --ignored --nocapture`.
@@ -197,6 +197,7 @@ fn busy_signalised_crossroads_never_lock_up() {
             "75°",
             scenarios::signalised_oblique_crossroads(2, SPEED, 75f64.to_radians()),
         ),
+        ("hook turns", scenarios::hook_turn_crossroads(40.0 / 3.6)),
     ]);
 }
 

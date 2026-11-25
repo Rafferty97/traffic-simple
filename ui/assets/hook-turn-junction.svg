@@ -1,0 +1,23 @@
+<svg width="744" height="708" viewBox="0 0 744 708" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M140 522.5C208.4 522.5 227 556.5 227 606.5V708H559V610C559 541.6 593 523 643 523H744V232.5L646 232.5C577.6 232.5 559 198.5 559 148.5V0H227.5L227 148.5C227 216.9 190 232.5 140 232.5H0.5V522.5H140Z" fill="#656565"/>
+<rect x="231" y="320" width="38" height="94" stroke-width="4" stroke="#4CFF00"/>
+<rect x="290" y="653" width="41" height="53" stroke-width="4" stroke="#FF00BB"/>
+<rect x="487" y="2" width="41" height="56" stroke-width="4" stroke="#FF00BB"/>
+<rect x="657" y="436" width="85" height="41" stroke-width="4" stroke="#FF00BB"/>
+<rect x="2" y="275" width="70" height="41" stroke-width="4" stroke="#FF00BB"/>
+<rect x="402" y="222" width="94" height="43" stroke-width="4" stroke="#4CFF00"/>
+<rect x="500" y="397" width="39" height="94" stroke-width="4" stroke="#4CFF00"/>
+<rect x="335" y="487" width="92" height="44" stroke-width="4" stroke="#4CFF00"/>
+<rect x="2" y="388" width="740" height="23" stroke-width="4" stroke="black"/>
+<rect x="2" y="339" width="740" height="23" stroke-width="4" stroke="black"/>
+<rect x="348" y="2" width="23" height="704" stroke-width="4" stroke="black"/>
+<rect x="397" y="2" width="23" height="704" stroke-width="4" stroke="black"/>
+<line x1="229" y1="109" x2="559" y2="109" stroke-width="4" stroke="white"/>
+<line x1="217" y1="202" x2="570" y2="202" stroke-width="4" stroke="white"/>
+<line x1="217" y1="554" x2="567" y2="554" stroke-width="4" stroke="white"/>
+<line x1="183" y1="526" x2="183" y2="229" stroke-width="4" stroke="white"/>
+<line x1="95" y1="521.993" x2="96" y2="231.993" stroke-width="4" stroke="white"/>
+<line x1="612" y1="526" x2="612" y2="229" stroke-width="4" stroke="white"/>
+<line x1="565" y1="555.983" x2="568" y2="199.983" stroke-width="4" stroke="white"/>
+<line x1="226" y1="604" x2="559" y2="604" stroke-width="4" stroke="white"/>
+</svg>

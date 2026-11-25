@@ -217,6 +217,56 @@ pub struct Intersection {
     /// which way it goes: turning left on red from one one-way street into
     /// another, say.
     pub turn_on_red: Vec<(RoadId, Turn)>,
+    /// At signals, the roads whose far-side turns are hook turns, as in
+    /// Melbourne: each runs from its lane into the intersection, drifting
+    /// toward the near side, to wait in front of the road on that side, beside
+    /// its stop line, angled toward the way out, out of the way of the traffic
+    /// going straight on behind it; then turns when that road's traffic goes
+    /// straight on, ahead of it (see `docs/DESIGN.md`, Hook turns).
+    pub hook_turns: Vec<RoadId>,
+    /// How its hook turns are laid out.
+    pub hook_geometry: HookGeometry,
+}
+
+/// How an intersection's hook turns are laid out, in meters (see
+/// `docs/DESIGN.md`, Hook turns): where each waits, relative to its lane in
+/// and to the road on its near side, and how it gets there and turns.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HookGeometry {
+    /// How far a turner moves over toward the near side from its lane in to
+    /// wait: a lane, so the traffic going straight on passes it.
+    pub shift: f64,
+    /// How far short of the near-side road's lane, the edge toward its
+    /// middle, its waiting line is, so that road's traffic passes in front of
+    /// it and it has room to turn.
+    pub across: f64,
+    /// The least it waits from the near-side road's stop line, along that
+    /// road: a cap on `shift`, for a tight intersection.
+    pub along: f64,
+    /// How far it runs straight on to where it waits: as long as a car waiting
+    /// there and its gap to the line, so it waits facing the way it came in,
+    /// parallel with the traffic going straight on. It moves over before this.
+    pub queue: f64,
+    /// How far along it moves over, as late as it can before its straight run:
+    /// shorter moves it over more sharply, keeping it off the corner it comes
+    /// in by.
+    pub drift: f64,
+    /// How far across its turn runs: from where it waits, it turns onto the
+    /// line of its way out this far across, then runs on along it.
+    pub turn_run: f64,
+}
+
+impl Default for HookGeometry {
+    fn default() -> Self {
+        Self {
+            shift: 5.5,
+            across: -0.2,
+            along: 3.5,
+            queue: 9.5,
+            drift: 10.0,
+            turn_run: 6.0,
+        }
+    }
 }
 
 /// How a road meets an intersection: where its stop line is, and how far its
