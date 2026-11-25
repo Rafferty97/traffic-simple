@@ -13,6 +13,15 @@ How fast a step is, measured over time, so a change's effect, or a slow drift, s
 
 Times are criterion's middle estimate per step. Each table is one session.
 
+### 2026-11-25, desktop (Ryzen 9 7900, Windows), back to back
+
+| Commit | Change | `10k_16x16` | `flooded_4x4` | `crossroads_2` | `signals_2` | `ramps` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `8e2050d` | before the junction's order of decided pairs | 2.456 ms | 189.6 µs | 34.74 µs | 37.36 µs | 16.64 µs |
+| `5b6a749` | the order of decided pairs, whole connectors | 2.416 ms | 187.8 µs | 34.38 µs | 36.60 µs | 16.40 µs |
+
+Deciding pairs from the junction's own terms, and lifting vehicles in the order, cost nothing measurable against the cycle check it replaced: every benchmark was a percent or two faster, within what back-to-back runs vary by.
+
 ### 2026-11-24, desktop (Ryzen 9 7900, Windows), back to back
 
 | Commit | Change | `10k_16x16` | `flooded_4x4` |
