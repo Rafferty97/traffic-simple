@@ -293,25 +293,22 @@ fn a_signalised_crossroads_holds_each_connector_at_its_movements_light() {
     assert_eq!(plan.movements.len(), 12);
     for (&connector, &turn) in compiled.connectors[0].iter().zip(&compiled.turns[0]) {
         let barriers = sim.lane(connector).barriers();
-        assert_eq!(
-            barriers.len(),
-            1,
-            "{connector:?} turning {turn:?} has {barriers:?}"
+        let next = sim.lane(connector).successors()[0];
+        assert!(
+            sim.lane(next).junction().is_none(),
+            "{connector:?} is split"
         );
         // Right turns, across oncoming traffic green with them, also wait for
-        // a gap inside the junction: at the start of a second lane, which the
-        // first leads on to, alone, giving way only to the oncoming traffic,
-        // never another right turn.
-        let next = sim.lane(connector).successors()[0];
+        // a gap inside the junction: along their connector, giving way only to
+        // the oncoming traffic, never another right turn.
         match turn {
             Turn::Right => {
-                let inner = sim.lane(next).barriers();
-                assert_eq!(inner.len(), 1, "{next:?} after {connector:?} has {inner:?}");
-                assert_eq!(inner[0].kind, BarrierKind::GiveWay);
-                assert_eq!(inner[0].s, 0.0);
-                assert_eq!(sim.lane(next).junction(), sim.lane(connector).junction());
-                let yields = sim.yields(&inner[0]);
-                assert!(!yields.is_empty(), "{next:?} gives way to nothing");
+                assert_eq!(barriers.len(), 2, "{connector:?} has {barriers:?}");
+                let inner = barriers[1];
+                assert_eq!(inner.kind, BarrierKind::GiveWay);
+                assert!(inner.s > 0.0, "{connector:?} waits at its line");
+                let yields = sim.yields(&inner);
+                assert!(!yields.is_empty(), "{connector:?} gives way to nothing");
                 let turn_of = |lane| {
                     let ways = compiled.connectors[0].iter().zip(&compiled.turns[0]);
                     ways.clone().find(|&(&c, _)| c == lane).map(|(_, &t)| t)
@@ -320,14 +317,15 @@ fn a_signalised_crossroads_holds_each_connector_at_its_movements_light() {
                     assert_ne!(
                         turn_of(lane),
                         Some(Turn::Right),
-                        "{next:?} gives way to {lane:?}"
+                        "{connector:?} gives way to {lane:?}"
                     );
                 }
             }
             _ => {
-                assert!(
-                    sim.lane(next).junction().is_none(),
-                    "{connector:?} is split"
+                assert_eq!(
+                    barriers.len(),
+                    1,
+                    "{connector:?} turning {turn:?} has {barriers:?}"
                 );
             }
         }
@@ -798,9 +796,16 @@ fn at_signals_a_car_waits_behind_its_line_for_a_turner_in_its_way() {
     };
     let (right, straight) = (of(Turn::Right), of(Turn::Straight));
     let line = compiled.sim.lane(straight).barriers()[0].s;
-    // Where the turner waits for a gap: at the end of its first lane, where the
-    // second, with its give-way line, starts.
-    let waits = compiled.sim.lane(right).geometry().length();
+    // Where the turner waits for a gap: at its give-way line along its
+    // connector.
+    let waits = compiled
+        .sim
+        .lane(right)
+        .barriers()
+        .iter()
+        .find(|b| b.kind == traffic_sim::BarrierKind::GiveWay)
+        .expect("a give-way line inside")
+        .s;
     let mut sim = common::sim(compiled.sim);
     let car = VehicleSpec::passenger_car();
     // A turner held at its waiting line inside, on the road's first green.

@@ -115,53 +115,6 @@ impl Built {
     fn start_dir(&self) -> DVec2 {
         (self.points[1] - self.points[0]).normalize()
     }
-
-    /// It cut in two at `at` along it, inside it: at the point there, its
-    /// half-widths between the vertices either side, or at the vertex before
-    /// it if `at` is within [`SPLIT_SNAP`] of either, so that neither piece has
-    /// a segment too short to build.
-    fn split(&self, at: f64) -> [Built; 2] {
-        let s = arc_lengths(&self.points);
-        let i = s.partition_point(|&x| x <= at).clamp(1, s.len() - 1) - 1;
-        let (a, b) = (s[i], s[i + 1]);
-        let (cut, head, tail) = if at - a < SPLIT_SNAP || b - at < SPLIT_SNAP {
-            let k = i.max(1);
-            (k, k, k)
-        } else {
-            (usize::MAX, i + 1, i + 1)
-        };
-        let (point, half) = match cut {
-            usize::MAX => {
-                let t = (at - a) / (b - a);
-                let [l, r] = [0, 1].map(|e| {
-                    let h = &self.half_widths;
-                    h[i][e] + t * (h[i + 1][e] - h[i][e])
-                });
-                (self.points[i].lerp(self.points[i + 1], t), [l, r])
-            }
-            k => (self.points[k], self.half_widths[k]),
-        };
-        let first = Built {
-            points: self.points[..head].iter().copied().chain([point]).collect(),
-            half_widths: self.half_widths[..head].iter().copied().chain([half]).collect(),
-        };
-        let second = Built {
-            points: [point].into_iter().chain(self.points[tail..].iter().copied()).collect(),
-            half_widths: [half]
-                .into_iter()
-                .chain(self.half_widths[tail..].iter().copied())
-                .collect(),
-        };
-        // At a vertex, it starts the second piece and ends the first.
-        let second = match cut {
-            usize::MAX => second,
-            _ => Built {
-                points: second.points[1..].to_vec(),
-                half_widths: second.half_widths[1..].to_vec(),
-            },
-        };
-        [first, second]
-    }
 }
 
 /// Compiles a road network: each road lane and each intersection connector
@@ -192,63 +145,22 @@ pub fn compile(net: &RoadNetwork) -> Result<Compiled, CompileError> {
 
 /// As [`compile`], with every sweep that fails it, which only fails it once
 /// it has compiled otherwise.
-///
-/// Where a connector gets a barrier inside its junction, a far-side turn's
-/// give-way line, it is compiled again split there into two lanes, the second
-/// starting at the barrier: so a vehicle is handed over to the junction a lane
-/// at a time, each lane's conflicts its own (see `docs/DESIGN.md`, Barriers
-/// inside a junction). Its sweep is checked whole, in the first pass.
 fn compile_swept(net: &RoadNetwork) -> Result<(Compiled, Vec<CompileError>), CompileError> {
-    let (compiled, swept, waiting) = assemble(net, &[])?;
-    if !swept.is_empty() || net.intersections.is_empty() {
-        return Ok((compiled, swept));
-    }
-    // Cut each connector where it waits; and again further back while the lane
-    // before where it waits still meets traffic it gives way to, as a sliver at
-    // its end can.
-    let mut splits: Vec<Vec<Option<f64>>> =
-        compiled.connectors.iter().map(|ids| vec![None; ids.len()]).collect();
-    let mut waiting = waiting;
-    for _ in 0..SPLIT_PASSES {
-        for (k, c, at) in waiting {
-            if at <= SPLIT_MARGIN {
-                return Err(CompileError::Waiting { intersection: k, connection: c });
-            }
-            splits[k][c] = Some(at);
-        }
-        let compiled;
-        (compiled, _, waiting) = assemble(net, &splits)?;
-        if waiting.is_empty() {
-            return Ok((compiled, swept));
-        }
-    }
-    let (intersection, connection, _) = waiting[0];
-    Err(CompileError::Waiting { intersection, connection })
+    assemble(net)
 }
 
 /// How near one another, in meters, the places a road's lanes are cut at one
 /// end are merged into one vertex of its reference line.
 const MERGE_CUTS: f64 = 0.05;
 
-/// How many times [`compile_swept`] splits a connector again before giving up.
-const SPLIT_PASSES: usize = 8;
+/// How far into a connector a far-side turn's give-way line must be, past its
+/// stop line, in meters: one nearer would meet the traffic it gives way to as
+/// it crossed its stop line.
+const WAIT_MARGIN: f64 = 0.01;
 
-/// How near a vertex of a connector a split goes to it instead, in meters.
-const SPLIT_SNAP: f64 = 0.05;
-
-/// How far into a connector its barrier must be for it to be split there, in
-/// meters: one nearer its start stays where it is, at the start, in effect.
-const SPLIT_MARGIN: f64 = 0.01;
-
-/// [`compile_swept`]'s passes: each connector split where `splits` says, if it
-/// says. Checked for its sweep if it isn't, along its whole length. With it,
-/// each connector that should be split where it waits, further back if it is
-/// already, by intersection, connection and how far along it.
-#[allow(clippy::type_complexity)]
-fn assemble(
-    net: &RoadNetwork,
-    splits: &[Vec<Option<f64>>],
-) -> Result<(Compiled, Vec<CompileError>, Vec<(usize, usize, f64)>), CompileError> {
+/// [`compile_swept`]'s work: the network compiled, with every connector checked
+/// for its sweep.
+fn assemble(net: &RoadNetwork) -> Result<(Compiled, Vec<CompileError>), CompileError> {
     let mut lanes: Vec<Lane> = Vec::new();
     let mut built: Vec<Built> = Vec::new();
     let mut road_lanes = Vec::new();
@@ -392,7 +304,7 @@ fn assemble(
     // its own for routing, numbered after the roads' ways.
     let mut ways_through = std::collections::HashMap::new();
     let mut connectors = Vec::new();
-    // Each connection's lanes in its junction, more than one where it is split.
+    // Each connection's connector, by intersection.
     let mut pieces = Vec::new();
     // Each connection's first lane, where its stop line's barrier goes.
     let mut entries: Vec<Vec<LaneId>> = Vec::new();
@@ -452,31 +364,18 @@ fn assemble(
             let limit = net.roads[from.road.0].speed_limit.min(net.roads[to.road.0].speed_limit);
             let what = || format!("intersection {k} connection {c}");
             let limit = turn_limit(&connector.points, limit);
-            // Cut where it waits, if it does.
-            let mut cut = Vec::new();
-            let mut rest = connector;
-            if let Some(at) = splits.get(k).and_then(|s| s[c]) {
-                let [before, after] = rest.split(at);
-                cut.push(before);
-                rest = after;
-            }
-            cut.push(rest);
             let way_of = |l: LaneRef| road_way(l.road, net.roads[l.road.0].lanes[l.lane].direction);
             let next = (2 * net.roads.len() + ways_through.len()) as u32;
             let through =
                 *ways_through.entry((k, way_of(from), way_of(to))).or_insert(SimRoadId(next));
-            let mut lanes_of = Vec::new();
-            for piece in cut {
-                lanes.push(build(&piece, limit, through, what)?);
-                lanes_of.push(LaneId(built.len() as u32));
-                built.push(piece);
-            }
-            let ends = [lane_id(from)].into_iter().chain(lanes_of.iter().copied());
-            links.extend(ends.zip(lanes_of.iter().copied().chain([lane_id(to)])));
-            ids.push(lanes_of[0]);
+            lanes.push(build(&connector, limit, through, what)?);
+            let id = LaneId(built.len() as u32);
+            built.push(connector);
+            links.extend([(lane_id(from), id), (id, lane_id(to))]);
+            ids.push(id);
             // Its barrier at its stop line, at its start.
-            firsts.push(lanes_of[0]);
-            parts.push(lanes_of);
+            firsts.push(id);
+            parts.push(id);
         }
         connectors.push(ids);
         pieces.push(parts);
@@ -547,12 +446,11 @@ fn assemble(
         }
     }
 
-    for parts in &pieces {
-        let ids: Vec<LaneId> = parts.iter().flatten().copied().collect();
+    for ids in &pieces {
         if !ids.is_empty() {
-            sim.add_junction(&ids);
+            sim.add_junction(ids);
         }
-        for &id in &ids {
+        for &id in ids {
             sim.set_keep_clear(id, true);
         }
     }
@@ -586,17 +484,20 @@ fn assemble(
             add_all_way_stop(&mut sim, &pieces[k], &entries[k], &stops[k]);
         }
     }
+    // A far-side turn's give-way line past its stop line, so that nothing it
+    // gives way to meets it before it gets there.
+    if let Some(&(intersection, connection, _)) =
+        waiting.iter().find(|&&(_, _, at)| at <= WAIT_MARGIN)
+    {
+        return Err(CompileError::Waiting { intersection, connection });
+    }
     sim.validate().map_err(CompileError::Network)?;
-    let swept = match splits.is_empty() {
-        true => check_sweeps(&sim, &road_lanes, &connectors, &bodies),
-        false => Vec::new(),
-    };
+    let swept = check_sweeps(&sim, &road_lanes, &connectors, &bodies);
 
     let render = render::build(net, &polylines, &turns);
     Ok((
         Compiled { sim, render, road_lanes, connectors, turns },
         swept,
-        waiting,
     ))
 }
 
@@ -714,14 +615,14 @@ pub fn fit_arms(net: &mut RoadNetwork) -> Result<Compiled, CompileError> {
 /// [`AMBER_DECEL`]; its clearance, the time to cross its longest connector
 /// and a car's length at that limit.
 ///
-/// A far-side turn's give-way barrier goes at the start of its second lane,
-/// if it is split in two, or where it first meets traffic it gives way to (see
-/// [`add_far_side_waits`], whose splits it returns).
+/// A far-side turn's give-way barrier goes on its connector where it first
+/// meets traffic it gives way to (see [`add_far_side_waits`], whose places it
+/// returns).
 fn add_signals(
     net: &RoadNetwork,
     sim: &mut SimNetwork,
     intersection: &Intersection,
-    pieces: &[Vec<LaneId>],
+    pieces: &[LaneId],
     entries: &[LaneId],
     turns: &[Turn],
     stops: &[(f64, Option<Line>)],
@@ -761,20 +662,17 @@ fn add_signals(
             .map(|i| {
                 let of = &of;
                 let of_movement = move |m: usize| {
-                    pieces.iter().zip(of).filter(move |&(_, &o)| o == m).map(|(p, _)| p)
+                    pieces.iter().zip(of).filter(move |&(_, &o)| o == m).map(|(&p, _)| p)
                 };
-                let mine = || of_movement(i).flatten().copied();
                 let conflicts = (0..movements.len())
                     .filter(|&j| j != i && !together(i, j))
                     .filter(|&j| {
-                        let theirs: Vec<LaneId> = of_movement(j).flatten().copied().collect();
-                        mine().any(|a| theirs.iter().any(|&b| sim.conflict_between(a, b).is_some()))
+                        of_movement(i)
+                            .any(|a| of_movement(j).any(|b| sim.conflict_between(a, b).is_some()))
                     })
                     .fold(0u64, |mask, j| mask | (1 << j));
                 let speed = net.roads[movements[i].0.0].speed_limit;
-                let length = |p: &Vec<LaneId>| {
-                    p.iter().map(|&c| sim.lane(c).geometry().length()).sum::<f64>()
-                };
+                let length = |c: LaneId| sim.lane(c).geometry().length();
                 let longest = of_movement(i).map(length).fold(0.0, f64::max);
                 Movement {
                     conflicts,
@@ -791,9 +689,9 @@ fn add_signals(
     let levels: Vec<u8> = turns.iter().map(|&turn| level(true, turn, drives_on)).collect();
     let waiting = add_far_side_waits(sim, pieces, &levels, |c, o| together(of[c], of[o]));
     // Each connector's signal at its stop line, giving way to the turners
-    // waiting inside on movements never green with it whose next stretches
-    // cross its way; and, if it may turn on red, giving way then to every lane
-    // its own lanes conflict with.
+    // waiting inside on movements never green with it whose way on from their
+    // waiting lines crosses its own; and, if it may turn on red, giving way
+    // then to every lane it conflicts with.
     let on_red = |c: usize| {
         let (from, turn) = (intersection.connections[c].0.road, turns[c]);
         let near_side = turn != Turn::Straight && !turn.far_side(drives_on);
@@ -805,24 +703,18 @@ fn add_signals(
             .iter()
             .enumerate()
             .filter(|&(o, _)| o != c)
-            .flat_map(|(_, other)| other.iter().copied())
-            .filter(|&other| {
-                pieces[c].iter().any(|&mine| sim.conflict_between(mine, other).is_some())
-            })
+            .map(|(_, &other)| other)
+            .filter(|&other| sim.conflict_between(pieces[c], other).is_some())
             .collect();
         let on_red = on_red(c).then(|| sim.add_yields(&crossed));
         let kind = BarrierKind::Signal { movement, on_red };
-        let waiting_turners: Vec<LaneId> = pieces
+        let waiting_turners: Vec<LaneId> = waiting
             .iter()
-            .enumerate()
-            .filter(|&(o, _)| !together(of[c], of[o]))
-            .filter_map(|(_, other)| match other[..] {
-                [_, next] => Some(next),
-                _ => None,
+            .filter(|&&(o, _)| !together(of[c], of[o]))
+            .filter(|&&(o, at)| {
+                sim.conflict_between(pieces[o], pieces[c]).is_some_and(|x| x.mine.end > at)
             })
-            .filter(|&next| {
-                pieces[c].iter().any(|&mine| sim.conflict_between(mine, next).is_some())
-            })
+            .map(|&(o, _)| pieces[o])
             .collect();
         let yields = (!waiting_turners.is_empty()).then(|| sim.add_yields(&waiting_turners));
         sim.add_barrier(entry, Barrier { line, yields, ..Barrier::new(s, kind) });
@@ -833,53 +725,39 @@ fn add_signals(
 /// Each far-side turn from a priority road, of level `PRIORITY_ROAD +
 /// FAR_SIDE`, gives way to the traffic it crosses, waiting inside the junction
 /// at its first conflict with a connection of a higher level that can be moving
-/// with it, by `together`, and gives way to the lanes of those connections.
-/// Levels are compilation's alone: the simulation has only the lanes each
-/// barrier gives way to. Each connection's lanes are `pieces`, and its level
-/// `levels`, by connection.
+/// with it, by `together`, and gives way to those connections. Levels are
+/// compilation's alone: the simulation has only the lanes each barrier gives
+/// way to. Each connection's connector is `pieces`, and its level `levels`, by
+/// connection.
 ///
-/// Returned, each connection whose first lane meets such traffic, and where:
-/// one to split there.
+/// Returned, each connection that waits so, and how far along its connector.
 fn add_far_side_waits(
     sim: &mut SimNetwork,
-    pieces: &[Vec<LaneId>],
+    pieces: &[LaneId],
     levels: &[u8],
     together: impl Fn(usize, usize) -> bool,
 ) -> Vec<(usize, f64)> {
     let mut waiting = Vec::new();
-    for (c, piece) in pieces.iter().enumerate() {
+    for (c, &connector) in pieces.iter().enumerate() {
         if levels[c] != PRIORITY_ROAD + FAR_SIDE {
             continue;
         }
-        let connector = piece[0];
         let oncoming: Vec<LaneId> = pieces
             .iter()
             .enumerate()
             .filter(|&(o, _)| levels[o] > levels[c] && together(c, o))
-            .flat_map(|(_, other)| other.iter().copied())
+            .map(|(_, &other)| other)
             .collect();
         let waits = oncoming
             .iter()
             .filter_map(|&other| sim.conflict_between(connector, other))
             .map(|conflict| conflict.mine.start)
             .fold(f64::INFINITY, f64::min);
-        let yields = Some(sim.add_yields(&oncoming));
-        let give_way = |s| Barrier { yields, ..Barrier::new(s, BarrierKind::GiveWay) };
-        match piece[..] {
-            // Split already: it waits at its second lane's start.
-            [_, inner] => {
-                sim.add_barrier(inner, give_way(0.0));
-                if waits.is_finite() {
-                    waiting.push((c, waits));
-                }
-            }
-            _ if waits.is_finite() => {
-                sim.add_barrier(connector, give_way(waits));
-                if waits > SPLIT_MARGIN {
-                    waiting.push((c, waits));
-                }
-            }
-            _ => {}
+        if waits.is_finite() {
+            let yields = Some(sim.add_yields(&oncoming));
+            let give_way = Barrier { yields, ..Barrier::new(waits, BarrierKind::GiveWay) };
+            sim.add_barrier(connector, give_way);
+            waiting.push((c, waits));
         }
     }
     waiting
@@ -894,12 +772,12 @@ fn add_far_side_waits(
 /// from another such line. It takes one gap from the line, a far-side turn
 /// too.
 ///
-/// Returned, as from [`add_far_side_waits`], where to split connections.
+/// Returned, as from [`add_far_side_waits`], where far-side turns wait.
 fn add_priority(
     net: &RoadNetwork,
     sim: &mut SimNetwork,
     intersection: &Intersection,
-    pieces: &[Vec<LaneId>],
+    pieces: &[LaneId],
     entries: &[LaneId],
     turns: &[Turn],
     stops: &[(f64, Option<Line>)],
@@ -924,18 +802,14 @@ fn add_priority(
             Sign::GiveWay => BarrierKind::GiveWay,
             Sign::Stop => BarrierKind::Stop,
         };
-        let crosses = |o: usize| {
-            pieces[c]
-                .iter()
-                .any(|&a| pieces[o].iter().any(|&b| sim.conflict_between(a, b).is_some()))
-        };
+        let crosses = |o: usize| sim.conflict_between(pieces[c], pieces[o]).is_some();
         let priority: Vec<LaneId> = (0..pieces.len())
             .filter(|&o| levels[o] > levels[c] && crosses(o))
-            .flat_map(|o| pieces[o].iter().copied())
+            .map(|o| pieces[o])
             .collect();
         let equal: Vec<LaneId> = (0..pieces.len())
             .filter(|&o| !major.contains(&road(o)) && levels[o] == levels[c] && crosses(o))
-            .flat_map(|o| pieces[o].iter().copied())
+            .map(|o| pieces[o])
             .collect();
         let yields = (!priority.is_empty()).then(|| sim.add_yields(&priority));
         let ties = (!equal.is_empty()).then(|| sim.add_yields(&equal));
@@ -954,20 +828,14 @@ fn add_priority(
 /// `docs/models/gap-acceptance.md`).
 fn add_all_way_stop(
     sim: &mut SimNetwork,
-    pieces: &[Vec<LaneId>],
+    pieces: &[LaneId],
     entries: &[LaneId],
     stops: &[(f64, Option<Line>)],
 ) {
     for (c, (&entry, &(s, line))) in entries.iter().zip(stops).enumerate() {
-        let crosses = |o: usize| {
-            pieces[c]
-                .iter()
-                .any(|&a| pieces[o].iter().any(|&b| sim.conflict_between(a, b).is_some()))
-        };
-        let equal: Vec<LaneId> = (0..pieces.len())
-            .filter(|&o| o != c && crosses(o))
-            .flat_map(|o| pieces[o].iter().copied())
-            .collect();
+        let crosses = |o: usize| sim.conflict_between(pieces[c], pieces[o]).is_some();
+        let equal: Vec<LaneId> =
+            (0..pieces.len()).filter(|&o| o != c && crosses(o)).map(|o| pieces[o]).collect();
         let ties = (!equal.is_empty()).then(|| sim.add_yields(&equal));
         sim.add_barrier(
             entry,

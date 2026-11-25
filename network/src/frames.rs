@@ -49,22 +49,28 @@ fn turner_cycle_with_x() -> (Frame, VehicleId) {
     };
     let ways = compiled.connectors[0].iter().copied().zip(compiled.turns[0].iter().copied());
     let straight = || ways.clone().filter(|&(_, turn)| turn == Turn::Straight).map(|(l, _)| l);
-    // A right turn, waiting at the start of its second lane; a straight
-    // connector from the cross street, never green with it, crossing both its
-    // lanes; and one oncoming, green with it, crossing its second.
-    let (t_first, x_lane, o_lane) = ways
-        .clone()
-        .filter(|&(_, turn)| turn == Turn::Right)
-        .find_map(|(first_lane, _)| {
-            let second = *net.lane(first_lane).successors().first()?;
-            let t_movement = movement(first_lane)?;
-            let with = |l: LaneId| movement(l).is_some_and(|m| together(m, t_movement));
-            let meets = |l: LaneId, lane: LaneId| net.conflict_between(l, lane).is_some();
-            let x = straight().find(|&x| meets(x, first_lane) && meets(x, second) && !with(x))?;
-            let o = straight().find(|&o| meets(o, second) && !meets(o, first_lane) && with(o))?;
-            Some((first_lane, x, o))
-        })
-        .expect("a right turn, a straight across both its lanes, and one oncoming");
+    // A right turn, waiting at its give-way line along its connector; a
+    // straight connector from the cross street, never green with it, crossing
+    // its way both before and past that line; and one oncoming, green with it,
+    // crossing it only past it.
+    let (t_first, x_lane, o_lane) =
+        ways.clone()
+            .filter(|&(_, turn)| turn == Turn::Right)
+            .find_map(|(first_lane, _)| {
+                let wait =
+                    net.lane(first_lane).barriers().iter().find_map(|b| {
+                        (b.kind == traffic_sim::BarrierKind::GiveWay).then_some(b.s)
+                    })?;
+                let t_movement = movement(first_lane)?;
+                let with = |l: LaneId| movement(l).is_some_and(|m| together(m, t_movement));
+                let range = |l: LaneId| net.conflict_between(first_lane, l).map(|c| c.mine.clone());
+                let across = |l: LaneId| range(l).is_some_and(|r| r.start < wait && r.end > wait);
+                let past = |l: LaneId| range(l).is_some_and(|r| r.start >= wait);
+                let x = straight().find(|&x| across(x) && !with(x))?;
+                let o = straight().find(|&o| past(o) && with(o))?;
+                Some((first_lane, x, o))
+            })
+            .expect("a right turn, a straight across its waiting line, and one oncoming");
     let (t_movement, x_movement) = (movement(t_first).unwrap(), movement(x_lane).unwrap());
     let approach = net.lane(t_first).predecessors()[0];
     let approach_length = net.lane(approach).geometry().length();

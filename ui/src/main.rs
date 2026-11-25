@@ -1985,46 +1985,64 @@ fn fan_mesh(points: &[DVec2], color: Color32) -> Shape {
 
 /// Each signal barrier's lane, from the barrier on, in its movement's light's
 /// colour while green or amber, and nothing while red, as the old visualiser
-/// drew them: the ways through the junction open now. A connector split where
-/// it waits for a gap, a far-side turn's, goes on in white from its give-way
-/// line: open, but giving way; and so does one that may turn on red, while red.
+/// drew them: the ways through the junction open now. A far-side turn's goes on
+/// in white from its give-way line: open, but giving way; and so does one that
+/// may turn on red, while red.
 fn draw_lights(painter: &egui::Painter, sim: &Simulation) {
     let network = sim.network();
-    let line = |lane: &traffic_sim::Lane, from: f64, colour: Color32| {
+    // Along `lane` from `from` to `to`, its vertices between and the points at
+    // either end.
+    let line = |lane: &traffic_sim::Lane, from: f64, to: f64, colour: Color32| {
         let geometry = lane.geometry();
-        let ahead = geometry.vertex_s().zip(geometry.centerline());
-        let points: Vec<Pos2> =
-            ahead.filter(|&(s, _)| s >= from).map(|(_, p)| to_scene(p)).collect();
+        let at = |s: f64| to_scene(geometry.lane_to_world(geometry.lane_pos(s, 0.0)));
+        let between = geometry.vertex_s().zip(geometry.centerline());
+        let inner = between.filter(|&(s, _)| from < s && s < to).map(|(_, p)| to_scene(p));
+        let points: Vec<Pos2> = [at(from)].into_iter().chain(inner).chain([at(to)]).collect();
         painter.add(Shape::line(points, Stroke::new(0.6, colour)));
+    };
+    let giving_way = Color32::from_rgba_unmultiplied(240, 240, 240, 170);
+    // Along `lane` from `from` on, in white from a give-way line past it.
+    let rest = |lane: &traffic_sim::Lane, from: f64, colour: Color32| {
+        let end = lane.geometry().length();
+        let give_way = lane
+            .barriers()
+            .iter()
+            .find(|b| b.s > from && b.kind == BarrierKind::GiveWay)
+            .map(|b| b.s);
+        match give_way {
+            Some(at) => {
+                line(lane, from, at, colour);
+                line(lane, at, end, giving_way);
+                giving_way
+            }
+            None => {
+                line(lane, from, end, colour);
+                colour
+            }
+        }
     };
     for (_, lane) in network.lanes() {
         for barrier in lane.barriers() {
             let BarrierKind::Signal { movement, on_red } = barrier.kind else {
                 continue;
             };
-            let giving_way = Color32::from_rgba_unmultiplied(240, 240, 240, 170);
             let colour = match sim.light(movement).light {
                 Light::Green => Color32::from_rgba_unmultiplied(60, 220, 90, 150),
                 Light::Amber => Color32::from_rgba_unmultiplied(250, 190, 40, 170),
                 Light::Red if on_red.is_some() => giving_way,
                 Light::Red => continue,
             };
-            line(lane, barrier.s, colour);
+            let mut colour = rest(lane, barrier.s, colour);
             // On through the rest of its connector, the lanes after it in the
             // junction, each the only way on from the last.
-            let (mut on, mut colour) = (lane, colour);
+            let mut on = lane;
             while let [next] = on.successors()[..] {
-                // On through the junction.
                 let next_lane = network.lane(next);
                 let on_through = on.junction().is_none_or(|j| next_lane.junction() == Some(j));
                 if next_lane.junction().is_none() || !on_through {
                     break;
                 }
-                let gives_way = next_lane.barriers().iter().any(|b| b.kind == BarrierKind::GiveWay);
-                if gives_way {
-                    colour = giving_way;
-                }
-                line(next_lane, 0.0, colour);
+                colour = rest(next_lane, 0.0, colour);
                 on = next_lane;
             }
         }

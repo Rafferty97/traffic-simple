@@ -184,16 +184,22 @@ pub(crate) fn arrive(
     }
 }
 
-/// The lane of `junction` where `vehicle`'s next barrier it hasn't committed to
-/// is, if that is in the junction: where it will wait, inside it.
+/// The lane of `junction` where `vehicle` will wait inside it, if it will: where
+/// its next barrier it hasn't committed to is, in the junction, once it is
+/// inside, on one of the junction's lanes or committed to a barrier on one. A
+/// vehicle at its stop line isn't inside, though its line is on a connector
+/// along which a turner waits further on.
 pub(crate) fn waits_at(
     network: &SimNetwork,
     vehicle: &Vehicle,
     junction: JunctionId,
 ) -> Option<LaneId> {
-    barrier::nth(network, vehicle, usize::from(vehicle.committed))
-        .map(|(lane, _)| lane)
-        .filter(|&lane| network.lane(lane).junction() == Some(junction))
+    let k = usize::from(vehicle.committed);
+    let in_it = |lane: LaneId| network.lane(lane).junction() == Some(junction);
+    let (lane, _) = barrier::nth(network, vehicle, k)?;
+    let inside = in_it(vehicle.path[0])
+        || k > 0 && barrier::nth(network, vehicle, k - 1).is_some_and(|(l, _)| in_it(l));
+    (in_it(lane) && inside).then_some(lane)
 }
 
 /// Adds the lanes of `path` up to the first of `junction`'s lanes on it with a
@@ -427,8 +433,7 @@ impl View<'_> {
     /// it: they are a decided pair, or the `m`th follows the `k`th.
     fn edge(self, order: &[VehicleId], k: usize, m: usize) -> bool {
         let (upper, lower) = (order[k], order[m]);
-        let (u, l) = (&self.vehicles[upper], &self.vehicles[lower]);
-        follows(self.network, self.occupants, l, upper, u) || self.decided(upper, lower)
+        follows(self.occupants, &self.vehicles[lower], upper) || self.decided(upper, lower)
     }
 
     /// Lifts `lower` above `upper` in `order`, with every vehicle between them
@@ -450,13 +455,7 @@ impl View<'_> {
             places.get(upper).expect("queued"),
             places.get(lower).expect("queued"),
         );
-        if follows(
-            self.network,
-            self.occupants,
-            &self.vehicles[lower],
-            upper,
-            &self.vehicles[upper],
-        ) {
+        if follows(self.occupants, &self.vehicles[lower], upper) {
             return false;
         }
         // The pair's own edge is the one the lift reverses.
@@ -518,7 +517,7 @@ impl View<'_> {
 /// How far a vehicle is from where its way conflicts with another's, along its
 /// path: its front back from the start, negative once in it, and its rear back
 /// from the end, negative once clear of it; and whether a barrier it hasn't
-/// committed to holds it back before it would clear it.
+/// committed to holds it back before the start.
 #[derive(Clone, Copy, Debug)]
 struct Reach {
     to_start: f64,
@@ -530,10 +529,8 @@ impl Reach {
     /// The braking a vehicle needs to give way to the other, from `accel`, the
     /// term the junction would give it for the other (see [`pair_accel`]),
     /// worked out only if needed: infinite once its front is in their conflict;
-    /// none while a barrier holds it back before it would clear it, as it will
-    /// stop there rather than go through, as at a red light, even where the
-    /// conflict starts a little short of its line; and `None` once it has
-    /// cleared it.
+    /// none while a barrier holds it back before the conflict, as it will stop
+    /// there, as at a red light; and `None` once it has cleared it.
     fn need(self, accel: impl FnOnce() -> f64) -> Option<f64> {
         if self.to_clear <= 0.0 {
             return None;
@@ -603,27 +600,33 @@ fn zone(
         way(network, occupants, junction, ia, a),
         way(network, occupants, junction, ib, b),
     );
-    // Each one's first start, last end, and the lane the end is on and where
-    // along it.
-    type Span = (f64, f64, Option<(usize, f64)>);
-    let mut ra: Span = (f64::INFINITY, f64::NEG_INFINITY, None);
-    let mut rb: Span = (f64::INFINITY, f64::NEG_INFINITY, None);
-    let widen = |r: &mut Span, start: f64, end: f64, k: Option<usize>, s: f64| {
-        r.0 = r.0.min(start);
-        if end > r.1 {
-            (r.1, r.2) = (end, k.map(|k| (k, s)));
+    // Each one's first start, the lane it is on and where along it, and last
+    // end.
+    type Span = (f64, Option<(usize, f64)>, f64);
+    let mut ra: Span = (f64::INFINITY, None, f64::NEG_INFINITY);
+    let mut rb: Span = (f64::INFINITY, None, f64::NEG_INFINITY);
+    let widen = |r: &mut Span, start: f64, k: Option<usize>, s: f64, end: f64| {
+        if start < r.0 {
+            (r.0, r.1) = (start, k.map(|k| (k, s)));
         }
+        r.2 = r.2.max(end);
     };
     for &(la, sa, ka) in &way_a {
         for &(lb, sb, kb) in &way_b {
             if let Some(c) = network.conflict_between(la, lb) {
                 let (mine, theirs) = (&c.mine, &c.theirs);
-                widen(&mut ra, sa + mine.start, sa + mine.end, ka, mine.end);
-                widen(&mut rb, sb + theirs.start, sb + theirs.end, kb, theirs.end);
+                widen(&mut ra, sa + mine.start, ka, mine.start, sa + mine.end);
+                widen(
+                    &mut rb,
+                    sb + theirs.start,
+                    kb,
+                    theirs.start,
+                    sb + theirs.end,
+                );
             }
         }
     }
-    let reach = |(start, end, at): Span, v: &Vehicle| Reach {
+    let reach = |(start, at, end): Span, v: &Vehicle| Reach {
         to_start: start,
         to_clear: end + v.spec.length,
         held: at.is_some_and(|(k, s)| barrier::holds_before(network, v, k, s)),
@@ -705,22 +708,16 @@ pub(crate) fn holds_back(
 }
 
 /// Whether `follower` follows `leader`, `id`: the leader's body is ahead of it
-/// on a lane of its path, one the leader is headed along or is leaving behind,
-/// so the follower can't pass it.
-fn follows(
-    network: &SimNetwork,
-    occupants: &[Vec<Occupant>],
-    follower: &Vehicle,
-    id: VehicleId,
-    leader: &Vehicle,
-) -> bool {
+/// on a lane of its path, so car following holds it back. Its body is on a
+/// lane it is headed along or leaving, or, at a fork, overlapping a branch
+/// beside its own until it has diverged: in a junction, those are the only
+/// records a vehicle has, as crossing lanes are kept apart by the junction.
+fn follows(occupants: &[Vec<Occupant>], follower: &Vehicle, id: VehicleId) -> bool {
     let rear = follower.lane_pos.s - follower.spec.rear_axle;
     follower.path.iter().enumerate().any(|(k, &lane)| {
-        let along = leader.path.contains(&lane) || network.left_behind(leader.path[0], lane);
-        along
-            && occupants[lane.0 as usize]
-                .iter()
-                .any(|o| o.is_record_of(id) && (k > 0 || o.s() > rear))
+        occupants[lane.0 as usize]
+            .iter()
+            .any(|o| o.is_record_of(id) && (k > 0 || o.s() > rear))
     })
 }
 

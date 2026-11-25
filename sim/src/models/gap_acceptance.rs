@@ -316,14 +316,14 @@ fn clear(
             continue;
         }
         // One the junction has decided goes after this one is no matter: it
-        // gives way to this one.
+        // gives way to this one, and so does everyone behind it on its way.
         let order = &state.queues[way.junction.0 as usize].order;
         let place = |v: VehicleId| order.iter().position(|&q| q == v);
         if let (Some(mine), Some(theirs)) = (place(id), place(o.id))
             && mine < theirs
             && crate::junction::decided(state, way.junction, id, o.id)
         {
-            continue;
+            return Ok(());
         }
         // One that holds this one back, or would once it joined the queue below
         // it, can't be gone ahead of, whatever their levels: only behind.
@@ -550,8 +550,12 @@ fn room_beyond(state: &SimState, id: VehicleId, vehicle: &Vehicle, k: usize, s: 
                 continue;
             }
             if !other.path.contains(&exit_lane) {
-                let blocks =
-                    other.speed == 0.0 || waits_inside(other, usize::from(other.committed));
+                // A body beside the lane, overlapping it where it runs alongside
+                // its own, as at a fork, is in the way only where its own lanes
+                // are, as the junction has it: on its way, or left behind.
+                let on_it = other.path.contains(&lane) || network.left_behind(other.path[0], lane);
+                let blocks = on_it
+                    && (other.speed == 0.0 || waits_inside(other, usize::from(other.committed)));
                 if blocks && !may_wait {
                     return false;
                 }

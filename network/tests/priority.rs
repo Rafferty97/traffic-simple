@@ -59,20 +59,19 @@ fn minor_roads_have_their_sign_at_their_lines_and_major_far_side_turns_wait_insi
         {
             let barriers = sim.lane(connector).barriers();
             let next = sim.lane(sim.lane(connector).successors()[0]);
-            let inner = next.junction().is_some().then(|| next.barriers());
+            assert!(next.junction().is_none(), "{name}: {connector:?} is split");
             match (major(&compiled, &net, c), turn) {
                 // A far-side turn from the major road: nothing at its line, and a
-                // give-way line inside, at the start of its second lane, giving
-                // way to its oncoming traffic.
+                // give-way line inside, along its connector, giving way to its
+                // oncoming traffic.
                 (true, Turn::Right) => {
+                    assert_eq!(barriers.len(), 1, "{name}: {connector:?} has {barriers:?}");
+                    assert_eq!(barriers[0].kind, BarrierKind::GiveWay);
                     assert!(
-                        barriers.is_empty(),
-                        "{name}: {connector:?} has {barriers:?}"
+                        barriers[0].s > 0.0,
+                        "{name}: {connector:?} waits at its line"
                     );
-                    let inner = inner.unwrap_or_else(|| panic!("{name}: {connector:?} unsplit"));
-                    assert_eq!(inner.len(), 1);
-                    assert_eq!(inner[0].kind, BarrierKind::GiveWay);
-                    assert!(!sim.yields(&inner[0]).is_empty());
+                    assert!(!sim.yields(&barriers[0]).is_empty());
                 }
                 (true, _) => {
                     assert!(
@@ -86,7 +85,6 @@ fn minor_roads_have_their_sign_at_their_lines_and_major_far_side_turns_wait_insi
                     assert_eq!(barriers.len(), 1, "{name}: {connector:?} has {barriers:?}");
                     assert_eq!(barriers[0].kind, sign, "{name}");
                     assert!(!sim.yields(&barriers[0]).is_empty(), "{name}");
-                    assert!(inner.is_none(), "{name}: {connector:?} waits inside");
                 }
             }
         }
