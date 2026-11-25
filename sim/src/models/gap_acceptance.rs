@@ -315,14 +315,10 @@ fn clear(
         if rear <= 0.0 {
             continue;
         }
-        // One the junction has decided goes after this one is no matter: it
-        // gives way to this one, and so does everyone behind it on its way.
-        let order = &state.queues[way.junction.0 as usize].order;
-        let place = |v: VehicleId| order.iter().position(|&q| q == v);
-        if let (Some(mine), Some(theirs)) = (place(id), place(o.id))
-            && mine < theirs
-            && crate::junction::decided(state, way.junction, id, o.id)
-        {
+        // One the junction's order puts after this one, by a chain of decided
+        // pairs and vehicles following one another, is no matter: it can't go
+        // first, and nor can anyone behind it on its way.
+        if crate::junction::goes_after(state, way.junction, id, o.id) {
             return Ok(());
         }
         // One that holds this one back, or would once it joined the queue below

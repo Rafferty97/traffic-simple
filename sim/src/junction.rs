@@ -685,6 +685,50 @@ pub(crate) fn decided(state: &SimState, junction: JunctionId, a: VehicleId, b: V
     View { network, vehicles, occupants, junction }.decided(a, b)
 }
 
+/// How far down a junction's queue [`goes_after`] searches from a vehicle: so
+/// long a stretch is unheard of, and one beyond it isn't counted as after it.
+const AFTER_SPAN: usize = 256;
+
+/// Whether `later`, in `junction`'s queue below `id`, goes after it through
+/// the order: by a chain of decided pairs and vehicles following one another,
+/// each lower than the last, from `id` down to `later`. A barrier holding `id`
+/// needn't give way to such a vehicle, as it can't go first.
+pub(crate) fn goes_after(
+    state: &SimState,
+    junction: JunctionId,
+    id: VehicleId,
+    later: VehicleId,
+) -> bool {
+    let SimState { network, vehicles, occupants, queues, .. } = state;
+    let view = View { network, vehicles, occupants, junction };
+    let order = &queues[junction.0 as usize].order;
+    let place = |v: VehicleId| order.iter().position(|&q| q == v);
+    let (Some(top), Some(bottom)) = (place(id), place(later)) else {
+        return false;
+    };
+    if top >= bottom || bottom - top >= AFTER_SPAN {
+        return false;
+    }
+    // Down from `id`, no lower than `later`, by the places found.
+    let mut seen = [0u64; AFTER_SPAN / 64];
+    let mut stack = ArrayVec::<usize, AFTER_SPAN>::new();
+    stack.push(top);
+    while let Some(k) = stack.pop() {
+        for m in k + 1..=bottom {
+            let bit = m - top;
+            if seen[bit / 64] & 1 << (bit % 64) != 0 || !view.edge(order, k, m) {
+                continue;
+            }
+            if m == bottom {
+                return true;
+            }
+            seen[bit / 64] |= 1 << (bit % 64);
+            stack.push(m);
+        }
+    }
+    false
+}
+
 /// Whether `other`, in `junction`'s queue, holds `id` back: `id` is in the
 /// queue below it and they are a decided pair, or `id` isn't queued, so would
 /// join below it, and `other` can no longer give way to it braking comfortably.
