@@ -1,4 +1,4 @@
-//! Replaying the same inputs reproduces the same simulation, bit for bit.
+//! Running the same inputs again reproduces the same simulation, bit for bit.
 //!
 //! The inputs are the network, the sequence of `step` lengths and every call
 //! that changes the simulation (insertions, removals, holds, lane changes).
@@ -103,12 +103,12 @@ fn push_id(out: &mut Vec<u64>, id: VehicleId) {
 }
 
 #[test]
-fn replay_is_exact() {
+fn the_same_inputs_run_the_same() {
     let first = trace(0x2545_F491_4F6C_DD1D, 120.0);
     let second = trace(0x2545_F491_4F6C_DD1D, 120.0);
     assert!(first.len() > 100_000, "the run should be busy");
     let diverged = first.iter().zip(&second).position(|(a, b)| a != b);
-    assert_eq!(diverged, None, "replay diverged at word {diverged:?}");
+    assert_eq!(diverged, None, "the rerun diverged at word {diverged:?}");
     assert_eq!(first.len(), second.len());
 }
 

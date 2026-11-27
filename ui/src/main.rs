@@ -1,17 +1,14 @@
 //! egui app with a pretty view and a debug view of the simulation.
 
 mod glyphs;
-mod replay;
 
 use std::collections::HashMap;
 use std::f64::consts::TAU;
-use std::path::PathBuf;
 
 use eframe::egui::{self, Color32, Pos2, Rect, Shape, Stroke};
 use glam::DVec2;
 use rand::rngs::Xoshiro256PlusPlus;
 use rand::{RngExt, SeedableRng};
-use replay::Recorded;
 use traffic_network::{
     Arrow, MarkingStyle, RenderGeometry, RoadNetwork, Sign, Strip, compile, scenarios,
 };
@@ -380,7 +377,7 @@ enum View {
 }
 
 struct App {
-    sim: Recorded,
+    sim: Simulation,
     /// What the debug view shows of the simulation's algorithms, from the
     /// events its debug steps return.
     debug: DebugState,
@@ -400,8 +397,6 @@ struct App {
     layers: Layers,
     /// Why the last lane-change request for the selected vehicle was refused.
     lane_change_error: Option<LaneChangeError>,
-    /// Where the last capture was saved, or why it failed.
-    capture_status: Option<String>,
     harness: Harness,
     /// Each vehicle's corners before the last step, to draw it between there and
     /// where it is now (see [`Poses`]).
@@ -553,7 +548,7 @@ impl Default for Harness {
 impl Harness {
     /// Registers each exit of an open network as a destination: the lanes
     /// leading nowhere, grouped by road.
-    fn register_exits(&mut self, sim: &mut Recorded) {
+    fn register_exits(&mut self, sim: &mut Simulation) {
         if self.closed || self.still {
             return;
         }
@@ -571,7 +566,7 @@ impl Harness {
     }
 
     /// Runs after each simulation step of `dt` simulated seconds.
-    fn step(&mut self, sim: &mut Recorded, selected: Option<VehicleId>, dt: f64) {
+    fn step(&mut self, sim: &mut Simulation, selected: Option<VehicleId>, dt: f64) {
         if self.still {
             return;
         }
@@ -584,7 +579,7 @@ impl Harness {
     /// While the count is off target, spawns or despawns at up to
     /// [`CHANGE_RATE`], each at a random lane and point, or a random vehicle
     /// other than the `selected` one.
-    fn keep_count(&mut self, sim: &mut Recorded, selected: Option<VehicleId>, dt: f64) {
+    fn keep_count(&mut self, sim: &mut Simulation, selected: Option<VehicleId>, dt: f64) {
         let count = sim.vehicles().count();
         if count == self.target {
             self.credit = 0.0;
@@ -614,7 +609,7 @@ impl Harness {
     }
 
     /// Spawns at the flow, each into a random entry lane, near its start.
-    fn keep_flowing(&mut self, sim: &mut Recorded, dt: f64) {
+    fn keep_flowing(&mut self, sim: &mut Simulation, dt: f64) {
         let (trams, entries): (Vec<LaneId>, Vec<LaneId>) = sim
             .network()
             .lanes()
@@ -651,7 +646,7 @@ impl Harness {
 
     /// Tries to spawn a driver at `s` on `lane`, at its desired speed, taking
     /// one from the credit if it fits.
-    fn spawn(&mut self, sim: &mut Recorded, lane: LaneId, s: f64) {
+    fn spawn(&mut self, sim: &mut Simulation, lane: LaneId, s: f64) {
         // Drivers vary in how hard they'll brake to let someone in, in how much
         // they weigh others when changing lanes, and in how readily they change:
         // mostly cautious, about one in ten above 0.7.
@@ -732,7 +727,6 @@ impl App {
             selected: None,
             layers: Layers::default(),
             lane_change_error: None,
-            capture_status: None,
             harness: Harness::default(),
             poses: Poses::default(),
             step_times: StepTimes::default(),
@@ -754,7 +748,6 @@ impl App {
         if scenario.frame() {
             self.paused = true;
         }
-        self.capture_status = None;
         self.poses = Poses::default();
         let Harness { target, flow, to_exits, .. } = self.harness;
         self.harness = Harness {
@@ -783,35 +776,6 @@ impl App {
             self.poses.before = before;
         }
         self.harness.step(&mut self.sim, self.selected, dt);
-    }
-
-    /// Saves a replay of the session so far to `captures/` in the workspace,
-    /// named by the wall-clock time, and returns its path.
-    fn capture(&self) -> std::io::Result<PathBuf> {
-        let dir = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../captures"));
-        std::fs::create_dir_all(&dir)?;
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
-        let stamp = now.map_or(0, |d| d.as_secs());
-        let path = dir.join(format!("capture-{stamp}.replay"));
-        std::fs::write(&path, self.sim.capture(self.selected))?;
-        Ok(path.canonicalize().unwrap_or(path))
-    }
-
-    /// Saves a freeze frame of the simulation as it is now, with the selected
-    /// vehicle, to `captures/` in the workspace, named by the wall-clock time, and
-    /// returns its path. `sim/tests/common/frame.rs` loads it back.
-    fn freeze_frame(&self) -> std::io::Result<PathBuf> {
-        let dir = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../captures"));
-        std::fs::create_dir_all(&dir)?;
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
-        let stamp = now.map_or(0, |d| d.as_secs());
-        let path = dir.join(format!("frame-{stamp}.json"));
-        let frame = serde_json::json!({
-            "selected": self.selected,
-            "snapshot": self.sim.state(),
-        });
-        std::fs::write(&path, serde_json::to_string_pretty(&frame)?)?;
-        Ok(path.canonicalize().unwrap_or(path))
     }
 
     fn controls(&mut self, ui: &mut egui::Ui) {
@@ -867,30 +831,7 @@ impl App {
             if scenario != self.scenario || ui.button("Reset").clicked() {
                 self.load(scenario);
             }
-            if ui
-                .button("Capture")
-                .on_hover_text("Save a replay of this session, for a test case")
-                .clicked()
-            {
-                self.capture_status = Some(match self.capture() {
-                    Ok(path) => format!("Saved {}", path.display()),
-                    Err(error) => format!("Capture failed: {error}"),
-                });
-            }
-            if ui
-                .button("Freeze frame")
-                .on_hover_text("Save the simulation exactly as it is now, for a test case")
-                .clicked()
-            {
-                self.capture_status = Some(match self.freeze_frame() {
-                    Ok(path) => format!("Saved {}", path.display()),
-                    Err(error) => format!("Freeze frame failed: {error}"),
-                });
-            }
         });
-        if let Some(status) = &self.capture_status {
-            ui.small(status);
-        }
         let on_road = self.sim.vehicles().count();
         self.harness.controls(ui, on_road);
     }
@@ -2183,14 +2124,14 @@ fn to_scene(p: DVec2) -> Pos2 {
 /// harness fills it.
 /// The simulation for `scenario`, what to draw for its network, and the
 /// vehicle to select: built afresh, or, for a freeze frame, restored.
-fn new_sim(scenario: Scenario) -> (Recorded, RenderGeometry, Option<VehicleId>) {
+fn new_sim(scenario: Scenario) -> (Simulation, RenderGeometry, Option<VehicleId>) {
     if scenario == Scenario::TurnerCycle {
         let frame = traffic_network::frames::turner_cycle();
-        let sim = Recorded::new(Simulation::restore(frame.state));
+        let sim = Simulation::restore(frame.state);
         return (sim, frame.render, frame.selected);
     }
     let compiled = compile(&scenario.network()).expect("every scenario compiles");
-    let sim = Recorded::new(Simulation::new(compiled.sim));
+    let sim = Simulation::new(compiled.sim);
     (sim, compiled.render, None)
 }
 

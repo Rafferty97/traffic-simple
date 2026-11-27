@@ -29,5 +29,4 @@ Investigations and improvements worth picking up, each with where it starts. Ope
 
 ## Tidying
 
-14. **Replays,** a hack to remove: the format now lives only in the UI.
-15. **Speed profiles on large networks,** their cost, and whether connectors of the same shape could share one.
+14. **Speed profiles on large networks,** their cost, and whether connectors of the same shape could share one.

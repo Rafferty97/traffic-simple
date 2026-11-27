@@ -11,6 +11,5 @@ repository.workspace = true
 eframe = "0.37.0"
 glam.workspace = true
 rand.workspace = true
-serde_json.workspace = true
 traffic-network.workspace = true
-traffic-sim = { workspace = true, features = ["serde"] }
+traffic-sim.workspace = true

@@ -1,12 +1,12 @@
-//! Freeze frames: a snapshot of a simulation's whole state, through JSON and back.
-//! Needs the `serde` feature.
+//! Snapshots: a simulation's whole state, through JSON and back. Needs the
+//! `serde` feature.
 
 use rand::rngs::Xoshiro256PlusPlus;
 use rand::{RngExt, SeedableRng};
 use traffic_sim::{Lateral, Placement, Route, Side, SimState, Simulation, VehicleId};
 
 mod common;
-use common::{car, frame, ring_road};
+use common::{car, ring_road};
 
 const SPEED_LIMIT: f64 = 50.0 / 3.6;
 
@@ -115,15 +115,4 @@ fn a_restored_snapshot_continues_exactly_like_the_original() {
     let diverged = a.iter().zip(&b).position(|(x, y)| x != y);
     assert_eq!(diverged, None, "diverged at word {diverged:?}");
     assert_eq!(a.len(), b.len());
-}
-
-#[test]
-fn a_freeze_frame_loads_with_its_selection() {
-    // As the UI writes it.
-    let sim = busy();
-    let selected = sim.vehicles().nth(3).map(|(id, _)| id);
-    let json = serde_json::json!({ "selected": selected, "snapshot": sim.state() });
-    let (loaded, loaded_selected) = frame::load(&serde_json::to_string_pretty(&json).unwrap());
-    assert_eq!(loaded_selected, selected);
-    assert!(state(&loaded) == state(&sim), "loaded differently");
 }

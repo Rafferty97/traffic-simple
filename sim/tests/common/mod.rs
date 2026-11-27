@@ -1,9 +1,6 @@
 //! Shared helpers for tests and benchmarks.
 #![allow(dead_code)]
 
-#[cfg(feature = "serde")]
-pub mod frame;
-
 use std::f64::consts::TAU;
 
 use glam::DVec2;
