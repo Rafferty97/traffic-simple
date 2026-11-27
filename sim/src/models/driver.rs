@@ -16,6 +16,7 @@ use crate::vehicle::{VehicleId, VehicleSpec};
 /// other drivers. Its distribution is the caller's concern.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct Driver {
     /// How fast the driver likes to go relative to the speed limit: 1 is exactly
     /// the limit. SUMO's `speedFactor`.
@@ -50,24 +51,26 @@ pub struct Driver {
 }
 
 impl Default for Driver {
-    /// A driver of textbook habits: the limit exactly, MOBIL's politeness of
-    /// 0.2 as Treiber's simulator uses it, a little dawdling, and stopping
-    /// about a metre short of lines.
     fn default() -> Self {
-        Self {
-            speed_factor: 1.0,
-            accel_noise: 0.2,
-            line_gap: 1.0,
-            line_gap_spread: 0.5,
-            courtesy: 1.0,
-            politeness: 0.2,
-            assertiveness: 0.0,
-            seed: 0,
-        }
+        Self::DEFAULT
     }
 }
 
 impl Driver {
+    /// A driver of textbook habits: the limit exactly, MOBIL's politeness of
+    /// 0.2 as Treiber's simulator uses it, a little dawdling, and stopping
+    /// about a metre short of lines.
+    pub const DEFAULT: Driver = Driver {
+        speed_factor: 1.0,
+        accel_noise: 0.2,
+        line_gap: 1.0,
+        line_gap_spread: 0.5,
+        courtesy: 1.0,
+        politeness: 0.2,
+        assertiveness: 0.0,
+        seed: 0,
+    };
+
     /// The speed it wants on a lane with the given limit, in `vehicle`, no
     /// faster than the vehicle goes.
     pub fn desired_speed(&self, vehicle: &VehicleSpec, speed_limit: f64) -> f64 {

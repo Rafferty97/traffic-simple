@@ -28,6 +28,7 @@ impl VehicleId {
 /// accelerations in m/s².
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct VehicleSpec {
     pub length: f64,
     pub width: f64,
@@ -55,6 +56,9 @@ pub struct VehicleSpec {
 }
 
 impl VehicleSpec {
+    /// A passenger car (see [`VehicleSpec::passenger_car`]).
+    pub const PASSENGER_CAR: VehicleSpec = VehicleSpec::passenger_car();
+
     /// A passenger car with textbook parameters: IDM's as calibrated with LMRS
     /// (Schakel, Knoop and van Arem, 2012), as OpenTrafficSim uses them, a
     /// = 1.25 m/s², b = 2.09 m/s², s0 = 3 m and T = 1.2 s.
@@ -101,12 +105,15 @@ impl VehicleSpec {
 
 /// Where a vehicle is inserted.
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Placement {
     pub lane: LaneId,
     /// Position of the rear axle along the lane's centerline, as in [`Vehicle::lane_pos`].
     pub s: f64,
     pub speed: f64,
-    /// How it chooses its way at forks.
+    /// How it chooses its way at forks: random choices from seed 0, if left
+    /// out of its serialized form.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub route: Route,
 }
 
