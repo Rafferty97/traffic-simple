@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use traffic_network::{Turn, compile, scenarios};
+use traffic_network_legacy::{Turn, compile, scenarios};
 use traffic_sim::{
     Barrier, BarrierKind, Driver, LaneId, Light, MovementId, Placement, Route, Simulation,
     VehicleId, VehicleSpec,
@@ -25,7 +25,7 @@ struct Hook {
     movement: MovementId,
 }
 
-fn hooks(compiled: &traffic_network::Compiled) -> Vec<Hook> {
+fn hooks(compiled: &traffic_network_legacy::Compiled) -> Vec<Hook> {
     let (firsts, turns, sim) = (&compiled.connectors[0], &compiled.turns[0], &compiled.sim);
     let next = |lane: LaneId| sim.lane(lane).successors()[0];
     firsts

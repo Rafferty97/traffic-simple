@@ -1,6 +1,6 @@
 //! Experiment: forces lane changes on random vehicles in busy traffic, in a
 //! debug build, to catch broken occupancy invariants.
-use traffic_network::{compile, scenarios};
+use traffic_network_legacy::{compile, scenarios};
 use traffic_sim::{Driver, LaneId, Placement, Route, Side, Simulation, VehicleSpec};
 
 fn main() {

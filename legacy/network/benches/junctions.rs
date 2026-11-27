@@ -5,7 +5,7 @@
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use traffic_network::{RoadNetwork, compile, scenarios};
+use traffic_network_legacy::{RoadNetwork, compile, scenarios};
 use traffic_sim::{Driver, LaneId, Placement, Route, Simulation, VehicleSpec};
 
 /// The length of a step, in seconds: 30 Hz.

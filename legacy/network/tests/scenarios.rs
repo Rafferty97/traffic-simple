@@ -1,6 +1,6 @@
 //! Every example network compiles to a valid simulation network.
 
-use traffic_network::{compile, scenarios};
+use traffic_network_legacy::{compile, scenarios};
 use traffic_sim::Driver;
 
 mod common;
@@ -29,16 +29,16 @@ fn crossroads_of_one_and_three_lanes_each_way_compile() {
 
 #[test]
 fn lane_lines_stop_at_the_stop_line_coming_in_and_run_to_the_junction_going_out() {
-    use traffic_network::MarkingStyle;
+    use traffic_network_legacy::MarkingStyle;
     // Every arm's stop line set 2 m further back than the scenario has it.
     let mut net = scenarios::crossroads(2, 14.0);
     let x = &mut net.intersections[0];
-    let arms: Vec<_> = (0..4).map(|r| x.arm(traffic_network::RoadId(r))).collect();
+    let arms: Vec<_> = (0..4).map(|r| x.arm(traffic_network_legacy::RoadId(r))).collect();
     x.arms = arms
         .into_iter()
-        .map(|a| traffic_network::Arm { stop_line: a.stop_line + 2.0, ..a })
+        .map(|a| traffic_network_legacy::Arm { stop_line: a.stop_line + 2.0, ..a })
         .collect();
-    let back = net.intersections[0].arm(traffic_network::RoadId(0)).stop_line;
+    let back = net.intersections[0].arm(traffic_network_legacy::RoadId(0)).stop_line;
     let compiled = compile(&net).unwrap();
     let half = 2.0 * 3.5 + 6.0;
     // How far each line between lanes gets toward the junction's centre, along
@@ -97,13 +97,13 @@ fn crossroads_lanes_have_arrows_for_the_ways_they_turn() {
 /// at the edge of the junction, square to the lane.
 #[test]
 fn crossroads_lanes_have_stop_lines_where_they_come_in() {
-    use traffic_network::MarkingStyle;
+    use traffic_network_legacy::MarkingStyle;
     for lanes in 1..=3 {
         let net = scenarios::crossroads(lanes, 14.0);
         let compiled = compile(&net).unwrap();
         // Where the arms' lanes coming in end: their stop lines, set back as
         // the crossroads fitted them, the same on every arm.
-        let back = net.intersections[0].arm(traffic_network::RoadId(0)).stop_line;
+        let back = net.intersections[0].arm(traffic_network_legacy::RoadId(0)).stop_line;
         let half = lanes as f64 * 3.5 + 6.0 + back;
         let stops: Vec<_> = compiled
             .render
@@ -284,7 +284,7 @@ fn an_oblique_crossroads_flooded_with_traffic_has_no_collisions() {
 
 #[test]
 fn a_signalised_crossroads_holds_each_connector_at_its_movements_light() {
-    use traffic_network::Turn;
+    use traffic_network_legacy::Turn;
     use traffic_sim::BarrierKind;
     let compiled = compile(&scenarios::signalised_crossroads(2, 14.0)).unwrap();
     let sim = &compiled.sim;
@@ -439,7 +439,7 @@ fn at_signals_nobody_crosses_a_line_on_red_and_traffic_keeps_flowing() {
 #[test]
 fn at_signals_straight_traffic_never_stops_or_brakes_hard_for_right_turners_on_its_green() {
     use std::collections::HashMap;
-    use traffic_network::Turn;
+    use traffic_network_legacy::Turn;
     use traffic_sim::{
         AccelSource, BarrierKind, DebugEvent, LaneId, Light, MovementId, Placement, Route,
         VehicleId, VehicleSpec,
@@ -526,7 +526,7 @@ fn at_signals_straight_traffic_never_stops_or_brakes_hard_for_right_turners_on_i
 #[test]
 fn at_signals_a_right_turner_at_its_line_turns_on_its_next_green() {
     use std::collections::HashMap;
-    use traffic_network::Turn;
+    use traffic_network_legacy::Turn;
     use traffic_sim::{
         BarrierKind, LaneId, Light, MovementId, Placement, Route, VehicleId, VehicleSpec,
     };
@@ -783,7 +783,7 @@ fn ramps_traffic(flow: f64, seconds: f64) {
 /// drive through. It goes once the turner has.
 #[test]
 fn at_signals_a_car_waits_behind_its_line_for_a_turner_in_its_way() {
-    use traffic_network::Turn;
+    use traffic_network_legacy::Turn;
     use traffic_sim::{Placement, Route, Simulation, VehicleSpec};
     // Two lanes each way: the inner one goes straight on or right.
     let compiled = compile(&scenarios::signalised_crossroads(2, 50.0 / 3.6)).unwrap();

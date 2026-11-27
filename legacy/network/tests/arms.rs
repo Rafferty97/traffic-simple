@@ -2,7 +2,7 @@
 //! out that start further on, and turning vehicles' sweeps kept off road lanes.
 
 use glam::DVec2;
-use traffic_network::{
+use traffic_network_legacy::{
     Arm, Compiled, LaneRef, MarkingStyle, RoadId, RoadNetwork, compile, fit_arms, scenarios,
 };
 use traffic_sim::{BarrierKind, LaneId};

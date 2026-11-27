@@ -1,7 +1,7 @@
 //! A keep-clear zone on a signalised crossroads' approach: the queue at a red
 //! light backs past it and leaves it empty.
 
-use traffic_network::{MarkingStyle, compile, scenarios};
+use traffic_network_legacy::{MarkingStyle, compile, scenarios};
 use traffic_sim::{BarrierKind, Driver, LaneId, Placement, Route, VehicleSpec};
 
 mod common;

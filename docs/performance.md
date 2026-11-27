@@ -4,7 +4,7 @@ How fast a step is, measured over time, so a change's effect, or a slow drift, s
 
 ## How to measure
 
-- **Benchmarks:** `cargo bench -p traffic-network --bench city -- city_step`: `10k_16x16` keeps 10,000 vehicles on a 16 by 16 grid of 200 m blocks; `flooded_4x4` floods a 4 by 4 grid of 100 m blocks with traffic. `junctions` and `sim/benches/ring.rs` cover junctions and lane changes.
+- **Benchmarks:** `cargo bench -p traffic-network-legacy --bench city -- city_step`: `10k_16x16` keeps 10,000 vehicles on a 16 by 16 grid of 200 m blocks; `flooded_4x4` floods a 4 by 4 grid of 100 m blocks with traffic. `junctions` and `sim/benches/ring.rs` cover junctions and lane changes.
 - **Where:** on the idle desktop (`ssh alex-pc`, see below), not a laptop in use: on the laptop, whatever else was running moved a step by 15–20%, more than most changes do.
 - **Compare only within one session, back to back.** The same tree measured 2.40 ms one evening and 2.56–2.58 ms later the same night on the same machine, so numbers from different sessions aren't comparable. To measure a change, benchmark the commits before and after one after the other, each from a clean `git archive` of the commit, so nothing uncommitted leaks in.
 - **Profiling:** build with `--profile profiling` (release with debug symbols) and sample with samply, or, on macOS without it, record with `xctrace record --template 'Time Profiler' --launch -- <bench binary> --bench --profile-time 25 <bench>`, export the `time-profile` table with `xctrace export`, and resolve each sampled address with `atos -i -o <binary> -l <load address>`, which names inlined frames. Inlined frames' line attribution is approximate: check a surprising one against the code.

@@ -5,7 +5,9 @@ use std::f64::consts::TAU;
 use std::time::{Duration, Instant};
 
 use glam::DVec2;
-use traffic_network::{Direction, Piece, Pose, Road, RoadLane, RoadNetwork, compile, scenarios};
+use traffic_network_legacy::{
+    Direction, Piece, Pose, Road, RoadLane, RoadNetwork, compile, scenarios,
+};
 use traffic_sim::{
     DebugEvent, Driver, Keep, LaneId, Placement, Route, Side, Simulation, VehicleId, VehicleSpec,
 };

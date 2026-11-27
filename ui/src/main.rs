@@ -1,37 +1,21 @@
 //! egui app with a pretty view and a debug view of the simulation.
 
 mod glyphs;
+mod scenarios;
+mod script;
 
 use std::collections::HashMap;
-use std::f64::consts::TAU;
+use std::path::Path;
 
 use eframe::egui::{self, Color32, Pos2, Rect, Shape, Stroke};
 use glam::DVec2;
-use rand::rngs::Xoshiro256PlusPlus;
-use rand::{RngExt, SeedableRng};
-use traffic_network::{
-    Arrow, MarkingStyle, RenderGeometry, RoadNetwork, Sign, Strip, compile, scenarios,
-};
+use traffic_network::{Arrow, MarkingStyle, RenderGeometry, Strip};
 use traffic_sim::{
-    AccelSource, BarrierDecision, BarrierKind, ConflictKind, DebugEvent, DestinationId, Driver,
-    Field, LaneChangeError, LaneChangeIntent, LaneId, Leaving, Light, PassCheck, Placement, RoadId,
-    Route, Side, Simulation, Vehicle, VehicleClass, VehicleId, VehicleSpec,
+    AccelSource, BarrierDecision, BarrierKind, ConflictKind, DebugEvent, Field, LaneChangeError,
+    LaneChangeIntent, LaneId, Light, PassCheck, Route, Side, SimState, Simulation, Vehicle,
+    VehicleClass, VehicleId,
 };
 
-/// How long, on average, between trams on each track, in seconds.
-const TRAM_HEADWAY: f64 = 90.0;
-
-/// The hook-turn scenario's speed limit: 40 km/h, as Melbourne's CBD has.
-const HOOK_SPEED_LIMIT: f64 = 40.0 / 3.6;
-
-/// The inner lane's circumference: about 160 m across, roomy enough for
-/// vehicles to accelerate, settle into gaps and change lanes.
-const RING_CIRCUMFERENCE: f64 = 1000.0;
-const RING_LANES: usize = 3;
-const SPEED_LIMIT: f64 = 50.0 / 3.6;
-
-/// Most spawns or despawns per simulated second, while the count is off target.
-const CHANGE_RATE: f64 = 2.0;
 /// The speed the inspector's slow button imposes, in m/s: 20 km/h.
 const SLOW_CAP: f64 = 20.0 / 3.6;
 /// How far outside a vehicle a click still selects it, in screen points.
@@ -173,14 +157,18 @@ fn body_colour(
 /// Runs the UI, starting on the scenario named on the command line, by its
 /// key (see [`Scenario::key`]), or on the ring.
 fn main() -> eframe::Result {
-    let scenario = match std::env::args().nth(1) {
-        None => Scenario::Ring,
-        Some(key) => match Scenario::ALL.into_iter().find(|s| s.key() == key) {
-            Some(scenario) => scenario,
+    let scenarios = scenarios::list(Path::new(scenarios::DIR)).unwrap_or_default();
+    let start = match std::env::args().nth(1) {
+        None => (!scenarios.is_empty()).then_some(0),
+        Some(stem) => match scenarios.iter().position(|s| s.stem() == stem) {
+            Some(i) => Some(i),
             None => {
-                eprintln!("No scenario called {key:?}. The scenarios are:");
-                for s in Scenario::ALL {
-                    eprintln!("  {:<16} {}", s.key(), s.name());
+                eprintln!(
+                    "No scenario called {stem:?} in {}. The scenarios are:",
+                    scenarios::DIR
+                );
+                for s in &scenarios {
+                    eprintln!("  {:<16} {}", s.stem(), s.name);
                 }
                 std::process::exit(2);
             }
@@ -189,170 +177,8 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Traffic Simulator",
         eframe::NativeOptions::default(),
-        Box::new(move |_cc| Ok(Box::new(App::new(scenario)))),
+        Box::new(move |_cc| Ok(Box::new(App::new(scenarios, start)))),
     )
-}
-
-/// A network to run, and how vehicles come and go on it.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Scenario {
-    Ring,
-    /// Two two-way roads crossing, with this many lanes each way.
-    Crossroads(usize),
-    /// As `Crossroads`, signalised.
-    Signals(usize),
-    /// As `Signals`, with two lanes each way, the roads crossing at 60°.
-    ObliqueSignals,
-    /// As `Signals`, with two lanes each way, and a keep-clear zone on the
-    /// way in from the west.
-    KeepClear,
-    /// As `Signals`, with two lanes each way, turning left on red.
-    TurnOnRed,
-    /// As `Crossroads`, an all-way stop.
-    AllWayStop(usize),
-    /// A crossroads, the east–west road, with the first number of lanes each
-    /// way, with priority, and the other, with the second, with this sign.
-    Priority([usize; 2], Sign),
-    /// A T-junction, the road through, with the first number of lanes each
-    /// way, with priority, and the one from the south, with the second, with
-    /// this sign.
-    TJunction([usize; 2], Sign),
-    /// A freeway with an on-ramp and an off-ramp, the acceleration lane left as
-    /// this says.
-    Ramps(Leaving),
-    /// A grid of 4 by 4 crossroads 100 m apart, of roads with two lanes each
-    /// way, signalised and controlled by priority in turn.
-    Grid,
-    /// A Melbourne crossroads, one lane each way and room for tram tracks,
-    /// signalised, its right turns hook turns.
-    HookTurns,
-}
-
-impl Scenario {
-    const ALL: [Scenario; 25] = [
-        Scenario::Ring,
-        Scenario::Crossroads(1),
-        Scenario::Crossroads(2),
-        Scenario::Crossroads(3),
-        Scenario::Signals(1),
-        Scenario::Signals(2),
-        Scenario::Signals(3),
-        Scenario::ObliqueSignals,
-        Scenario::KeepClear,
-        Scenario::TurnOnRed,
-        Scenario::AllWayStop(1),
-        Scenario::AllWayStop(2),
-        Scenario::Priority([1, 1], Sign::GiveWay),
-        Scenario::Priority([2, 1], Sign::GiveWay),
-        Scenario::Priority([2, 2], Sign::GiveWay),
-        Scenario::Priority([1, 1], Sign::Stop),
-        Scenario::Priority([2, 1], Sign::Stop),
-        Scenario::TJunction([1, 1], Sign::GiveWay),
-        Scenario::TJunction([2, 1], Sign::GiveWay),
-        Scenario::TJunction([1, 1], Sign::Stop),
-        Scenario::TJunction([2, 1], Sign::Stop),
-        Scenario::Ramps(Leaving::Zipper),
-        Scenario::Ramps(Leaving::Early),
-        Scenario::Grid,
-        Scenario::HookTurns,
-    ];
-
-    /// What to call it on the command line.
-    fn key(self) -> &'static str {
-        match self {
-            Scenario::Ring => "ring",
-            Scenario::Crossroads(1) => "crossroads-1",
-            Scenario::Crossroads(2) => "crossroads-2",
-            Scenario::Crossroads(_) => "crossroads-3",
-            Scenario::Signals(1) => "signals-1",
-            Scenario::Signals(2) => "signals-2",
-            Scenario::Signals(_) => "signals-3",
-            Scenario::ObliqueSignals => "oblique-signals",
-            Scenario::KeepClear => "keep-clear",
-            Scenario::TurnOnRed => "turn-on-red",
-            Scenario::AllWayStop(1) => "all-way-1",
-            Scenario::AllWayStop(_) => "all-way-2",
-            Scenario::Priority([1, 1], Sign::GiveWay) => "give-way-1x1",
-            Scenario::Priority([2, 1], Sign::GiveWay) => "give-way-2x1",
-            Scenario::Priority(_, Sign::GiveWay) => "give-way-2x2",
-            Scenario::Priority([1, 1], Sign::Stop) => "stop-1x1",
-            Scenario::Priority(_, Sign::Stop) => "stop-2x1",
-            Scenario::TJunction([1, 1], Sign::GiveWay) => "t-give-way-1x1",
-            Scenario::TJunction(_, Sign::GiveWay) => "t-give-way-2x1",
-            Scenario::TJunction([1, 1], Sign::Stop) => "t-stop-1x1",
-            Scenario::TJunction(_, Sign::Stop) => "t-stop-2x1",
-            Scenario::Ramps(Leaving::Zipper) => "ramps-zipper",
-            Scenario::Ramps(Leaving::Early) => "ramps-early",
-            Scenario::Grid => "grid",
-            Scenario::HookTurns => "hook-turns",
-        }
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            Scenario::Ring => "Three-lane ring",
-            Scenario::Crossroads(1) => "Crossroads of 2-lane roads",
-            Scenario::Crossroads(2) => "Crossroads of 4-lane roads",
-            Scenario::Crossroads(_) => "Crossroads of 6-lane roads",
-            Scenario::Signals(1) => "Signalised crossroads of 2-lane roads",
-            Scenario::Signals(2) => "Signalised crossroads of 4-lane roads",
-            Scenario::Signals(_) => "Signalised crossroads of 6-lane roads",
-            Scenario::ObliqueSignals => "Signalised 4-lane roads crossing at 60°",
-            Scenario::KeepClear => "Signalised crossroads with a keep-clear zone",
-            Scenario::TurnOnRed => "Signalised crossroads, turning left on red",
-            Scenario::AllWayStop(1) => "All-way stop of 2-lane roads",
-            Scenario::AllWayStop(_) => "All-way stop of 4-lane roads",
-            Scenario::Priority([1, 1], Sign::GiveWay) => "Give-way crossroads of 2-lane roads",
-            Scenario::Priority([2, 1], Sign::GiveWay) => {
-                "Give-way crossroads, a 2-lane road across a 4-lane one"
-            }
-            Scenario::Priority(_, Sign::GiveWay) => "Give-way crossroads of 4-lane roads",
-            Scenario::Priority([1, 1], Sign::Stop) => "Stop-sign crossroads of 2-lane roads",
-            Scenario::Priority(_, Sign::Stop) => {
-                "Stop-sign crossroads, a 2-lane road across a 4-lane one"
-            }
-            Scenario::TJunction([1, 1], Sign::GiveWay) => "Give-way T-junction of 2-lane roads",
-            Scenario::TJunction(_, Sign::GiveWay) => {
-                "Give-way T-junction, a 2-lane road into a 4-lane one"
-            }
-            Scenario::TJunction([1, 1], Sign::Stop) => "Stop-sign T-junction of 2-lane roads",
-            Scenario::TJunction(_, Sign::Stop) => {
-                "Stop-sign T-junction, a 2-lane road into a 4-lane one"
-            }
-            Scenario::Ramps(Leaving::Zipper) => "Freeway with ramps, zipper merge",
-            Scenario::Ramps(Leaving::Early) => "Freeway with ramps, early merge",
-            Scenario::Grid => "Grid of 4 by 4 crossroads of 4-lane roads, signals and priority",
-            Scenario::HookTurns => "Melbourne crossroads with hook turns, 1 lane each way",
-        }
-    }
-
-    fn network(self) -> RoadNetwork {
-        match self {
-            Scenario::Ring => scenarios::ring(RING_CIRCUMFERENCE, RING_LANES, SPEED_LIMIT),
-            Scenario::Crossroads(lanes) => scenarios::crossroads(lanes, SPEED_LIMIT),
-            Scenario::Signals(lanes) => scenarios::signalised_crossroads(lanes, SPEED_LIMIT),
-            Scenario::ObliqueSignals => {
-                scenarios::signalised_oblique_crossroads(2, SPEED_LIMIT, 60f64.to_radians())
-            }
-            Scenario::KeepClear => scenarios::signalised_crossroads_keep_clear(2, SPEED_LIMIT),
-            Scenario::TurnOnRed => scenarios::signalised_crossroads_turn_on_red(2, SPEED_LIMIT),
-            Scenario::AllWayStop(lanes) => scenarios::all_way_stop_crossroads(lanes, SPEED_LIMIT),
-            Scenario::Priority(lanes, sign) => {
-                scenarios::priority_crossroads(lanes, SPEED_LIMIT, sign)
-            }
-            Scenario::TJunction(lanes, sign) => {
-                scenarios::priority_t_junction(lanes, SPEED_LIMIT, sign)
-            }
-            Scenario::Ramps(leaving) => scenarios::ramps_leaving(100.0 / 3.6, 80.0 / 3.6, leaving),
-            Scenario::Grid => scenarios::grid(4, 4, 2, 100.0, SPEED_LIMIT),
-            Scenario::HookTurns => scenarios::hook_turn_crossroads(HOOK_SPEED_LIMIT),
-        }
-    }
-
-    /// Whether the network is closed: vehicles neither enter nor leave it.
-    fn closed(self) -> bool {
-        matches!(self, Scenario::Ring)
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -370,7 +196,13 @@ struct App {
     events: Vec<DebugEvent>,
     /// What to draw for the network.
     render: RenderGeometry,
-    scenario: Scenario,
+    /// The scenarios to choose from, and which is loaded.
+    scenarios: Vec<scenarios::ScenarioFile>,
+    current: Option<usize>,
+    /// Why the scenarios couldn't be listed, or the last couldn't be loaded.
+    error: Option<String>,
+    /// The simulation as the loaded scenario's script left it, to restart from.
+    initial: Option<SimState>,
     view: View,
     paused: bool,
     /// Simulated seconds per real second.
@@ -382,7 +214,6 @@ struct App {
     layers: Layers,
     /// Why the last lane-change request for the selected vehicle was refused.
     lane_change_error: Option<LaneChangeError>,
-    harness: Harness,
     /// Each vehicle's corners before the last step, to draw it between there and
     /// where it is now (see [`Poses`]).
     poses: Poses,
@@ -481,260 +312,90 @@ impl Poses {
     }
 }
 
-/// Keeps vehicles coming. On a closed network, such as the ring, it keeps a
-/// target number on the road, spawning and despawning anywhere; on an open one,
-/// it spawns at a flow into each lane that nothing leads into, and vehicles
-/// leave where lanes lead nowhere.
-struct Harness {
-    /// Whether the network is closed: nowhere to come in or leave.
-    closed: bool,
-    /// How many vehicles it keeps on a closed network.
-    target: usize,
-    /// Vehicles per hour into each entry lane of an open network.
-    flow: f64,
-    /// Whether vehicles on an open network are routed to an exit, drawn at
-    /// random from those they can reach, rather than choosing at random at
-    /// each fork.
-    to_exits: bool,
-    /// Each exit of the network, the lanes leading out at the end of a road,
-    /// registered as a destination.
-    exits: Vec<DestinationId>,
-    /// Spawns or despawns owed: grows at [`CHANGE_RATE`], or at the flow, and a
-    /// refused spawn waits here.
-    credit: f64,
-    spawned: u32,
-    despawned: u32,
-    /// Draws drivers and their routes. Seeded, so every run spawns the same.
-    rng: Xoshiro256PlusPlus,
-    /// Trams owed to the tracks.
-    tram_credit: f64,
-}
-
-impl Default for Harness {
-    fn default() -> Self {
-        Self {
-            closed: true,
-            target: 60,
-            flow: 600.0,
-            to_exits: true,
-            exits: Vec::new(),
-            tram_credit: 0.0,
-            credit: 0.0,
-            spawned: 0,
-            despawned: 0,
-            rng: Xoshiro256PlusPlus::seed_from_u64(0),
-        }
-    }
-}
-
-impl Harness {
-    /// Registers each exit of an open network as a destination: the lanes
-    /// leading nowhere, grouped by road.
-    fn register_exits(&mut self, sim: &mut Simulation) {
-        if self.closed {
-            return;
-        }
-        let mut roads: Vec<(RoadId, Vec<LaneId>)> = Vec::new();
-        for (id, lane) in sim.network().lanes() {
-            if !lane.successors().is_empty() {
-                continue;
-            }
-            match roads.iter_mut().find(|(road, _)| *road == lane.road()) {
-                Some((_, lanes)) => lanes.push(id),
-                None => roads.push((lane.road(), vec![id])),
-            }
-        }
-        self.exits = roads.iter().map(|(_, lanes)| sim.add_destination(lanes)).collect();
-    }
-
-    /// Runs after each simulation step of `dt` simulated seconds.
-    fn step(&mut self, sim: &mut Simulation, selected: Option<VehicleId>, dt: f64) {
-        match self.closed {
-            true => self.keep_count(sim, selected, dt),
-            false => self.keep_flowing(sim, dt),
-        }
-    }
-
-    /// While the count is off target, spawns or despawns at up to
-    /// [`CHANGE_RATE`], each at a random lane and point, or a random vehicle
-    /// other than the `selected` one.
-    fn keep_count(&mut self, sim: &mut Simulation, selected: Option<VehicleId>, dt: f64) {
-        let count = sim.vehicles().count();
-        if count == self.target {
-            self.credit = 0.0;
-            return;
-        }
-        // At most one owed: a backlog would arrive as a burst.
-        self.credit = (self.credit + CHANGE_RATE * dt).min(1.0);
-        if self.credit < 1.0 {
-            return;
-        }
-        if count < self.target {
-            let lanes = sim.network().lanes().count() as u32;
-            let lane = LaneId(self.rng.random_range(0..lanes));
-            let s = self.rng.random::<f64>() * sim.network().lane(lane).geometry().length();
-            self.spawn(sim, lane, s);
-        } else {
-            // Never the one being inspected.
-            let others = || sim.vehicles().map(|(id, _)| id).filter(|&id| Some(id) != selected);
-            let n = others().count();
-            if n > 0 {
-                let id = others().nth(self.rng.random_range(0..n)).unwrap();
-                sim.remove(id);
-                self.credit -= 1.0;
-                self.despawned += 1;
-            }
-        }
-    }
-
-    /// Spawns at the flow, each into a random entry lane, near its start.
-    fn keep_flowing(&mut self, sim: &mut Simulation, dt: f64) {
-        let (trams, entries): (Vec<LaneId>, Vec<LaneId>) = sim
-            .network()
-            .lanes()
-            .filter(|(_, lane)| lane.predecessors().is_empty())
-            .map(|(id, _)| id)
-            .partition(|&id| !sim.network().lane(id).allows().contains(VehicleClass::Car));
-        // A tram on each track every TRAM_HEADWAY, on average; cars on the
-        // lanes cars may use.
-        if !trams.is_empty() {
-            self.tram_credit += trams.len() as f64 * dt / TRAM_HEADWAY;
-            if self.tram_credit >= 1.0 {
-                let lane = trams[self.rng.random_range(0..trams.len())];
-                let seed = self.rng.random();
-                let limit = sim.network().lane(lane).speed_limit();
-                let at = Placement { lane, s: 5.0, speed: limit, route: Route::random(seed) };
-                let driver = Driver { accel_noise: 0.0, seed, ..Driver::default() };
-                if sim.try_insert(VehicleSpec::tram(), driver, at).is_ok() {
-                    self.tram_credit -= 1.0;
-                    self.spawned += 1;
-                }
-            }
-        }
-        if entries.is_empty() {
-            return;
-        }
-        let rate = self.flow / 3600.0 * entries.len() as f64;
-        // A few owed at most: a long backlog would arrive as a burst.
-        self.credit = (self.credit + rate * dt).min(entries.len() as f64);
-        if self.credit >= 1.0 {
-            let lane = entries[self.rng.random_range(0..entries.len())];
-            self.spawn(sim, lane, 5.0);
-        }
-    }
-
-    /// Tries to spawn a driver at `s` on `lane`, at its desired speed, taking
-    /// one from the credit if it fits.
-    fn spawn(&mut self, sim: &mut Simulation, lane: LaneId, s: f64) {
-        // Drivers vary in how hard they'll brake to let someone in, in how much
-        // they weigh others when changing lanes, and in how readily they change:
-        // mostly cautious, about one in ten above 0.7.
-        let car = demo_car();
-        let mut driver = Driver {
-            speed_factor: self.speed_factor(),
-            courtesy: 2.0 * self.rng.random::<f64>(),
-            politeness: 0.1 + 0.3 * self.rng.random::<f64>(),
-            assertiveness: self.rng.random::<f64>().powi(3),
-            ..Driver::default()
-        };
-        let limit = sim.network().lane(lane).speed_limit();
-        let seed = self.rng.random();
-        driver.seed = seed;
-        // To an exit it can reach from where it starts, if it is to go to one.
-        let reachable: Vec<_> = match self.to_exits {
-            true => self
-                .exits
-                .iter()
-                .filter(|&&d| sim.time_to(d, VehicleClass::Car, lane).is_some())
-                .collect(),
-            false => Vec::new(),
-        };
-        let route = match reachable.len() {
-            0 => Route::random(seed),
-            n => Route::to(*reachable[self.rng.random_range(0..n)]),
-        };
-        let at = Placement { lane, s, speed: driver.desired_speed(&car, limit), route };
-        // Refused where there is no safe room: the credit waits for another try.
-        if sim.try_insert(car, driver, at).is_ok() {
-            self.credit -= 1.0;
-            self.spawned += 1;
-        }
-    }
-
-    /// A speed factor from a normal distribution with mean 1 and deviation 0.05,
-    /// clamped to [0.85, 1.15]: nearly every driver on a 50 km/h road wants 45
-    /// to 55 km/h. SUMO's default deviation, 0.1, spreads them wider.
-    fn speed_factor(&mut self) -> f64 {
-        // Box-Muller on two uniform samples, u in (0, 1] so its log is finite.
-        let u = 1.0 - self.rng.random::<f64>();
-        let v = self.rng.random::<f64>();
-        let normal = (-2.0 * u.ln()).sqrt() * (TAU * v).cos();
-        (1.0 + 0.05 * normal).clamp(0.85, 1.15)
-    }
-
-    fn controls(&mut self, ui: &mut egui::Ui, on_road: usize) {
-        ui.horizontal(|ui| {
-            if self.closed {
-                ui.add(egui::Slider::new(&mut self.target, 0..=300).text("target vehicles"));
-            } else {
-                let slider = egui::Slider::new(&mut self.flow, 0.0..=1800.0);
-                ui.add(slider.text("vehicles per hour per entry lane"));
-                ui.checkbox(&mut self.to_exits, "routed to exits");
-            }
-            ui.separator();
-            ui.label(format!(
-                "spawned {}, despawned {}, on the road {on_road}",
-                self.spawned, self.despawned
-            ));
-        });
-    }
-}
-
 impl App {
-    fn new(scenario: Scenario) -> Self {
-        let (sim, render) = new_sim(scenario);
+    fn new(scenarios: Vec<scenarios::ScenarioFile>, start: Option<usize>) -> Self {
         let mut app = Self {
-            sim,
+            sim: Simulation::new(traffic_sim::SimNetwork::new(Vec::new())),
             debug: DebugState::default(),
             events: Vec::new(),
-            render,
-            scenario,
+            render: RenderGeometry::default(),
+            scenarios,
+            current: None,
+            error: None,
+            initial: None,
             view: View::Pretty,
             paused: false,
             speed: 1.0,
-            scene_rect: Rect::NOTHING,
+            scene_rect: Rect::from_center_size(Pos2::ZERO, egui::vec2(100.0, 100.0)),
             selected: None,
             layers: Layers::default(),
             lane_change_error: None,
-            harness: Harness::default(),
             poses: Poses::default(),
             step_times: StepTimes::default(),
             travelled: Travelled::default(),
         };
-        app.load(scenario);
+        if let Some(i) = start {
+            app.load(i);
+        }
         app
     }
 
-    /// Starts the scenario afresh, with the harness's settings kept, and fits
-    /// the view to it.
-    fn load(&mut self, scenario: Scenario) {
-        (self.sim, self.render) = new_sim(scenario);
+    /// Lists the scenarios afresh, keeping the one loaded selected if it is
+    /// still there.
+    fn refresh(&mut self) {
+        let loaded = self.current.map(|i| self.scenarios[i].path.clone());
+        match scenarios::list(Path::new(scenarios::DIR)) {
+            Ok(list) => {
+                self.current = loaded.and_then(|path| list.iter().position(|s| s.path == path));
+                self.scenarios = list;
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error),
+        }
+    }
+
+    /// Reads scenario `i`'s script afresh and runs it, and fits the view to
+    /// its network. If it fails, the simulation is left as it was.
+    fn load(&mut self, i: usize) {
+        self.current = Some(i);
+        let file = &self.scenarios[i];
+        let loaded = std::fs::read_to_string(&file.path)
+            .map_err(|e| format!("{}: {e}", file.path.display()))
+            .and_then(|source| script::run(&source, &file.path.to_string_lossy()));
+        let scenario = match loaded {
+            Ok(scenario) => scenario,
+            Err(error) => {
+                self.error = Some(error);
+                return;
+            }
+        };
+        self.error = None;
+        self.initial = Some(scenario.sim.state().clone());
+        self.sim = scenario.sim;
+        self.render = scenario.render;
         self.debug = DebugState::default();
-        self.scenario = scenario;
         self.selected = None;
         self.poses = Poses::default();
-        let Harness { target, flow, to_exits, .. } = self.harness;
-        self.harness = Harness {
-            closed: scenario.closed(),
-            target,
-            flow,
-            to_exits,
-            ..Harness::default()
-        };
-        self.harness.register_exits(&mut self.sim);
         let road_points = self.render.roads.iter().flat_map(|r| r.left.iter().chain(&r.right));
         let points: Vec<Pos2> = road_points.map(|&p| to_scene(p)).collect();
-        self.scene_rect = Rect::from_points(&points).expand(10.0);
+        if !points.is_empty() {
+            self.scene_rect = Rect::from_points(&points).expand(10.0);
+        }
+    }
+
+    /// Starts the loaded scenario's simulation over, as its script left it,
+    /// without running the script again, and with the view as it is.
+    fn restart(&mut self) {
+        let Some(initial) = &self.initial else {
+            return;
+        };
+        self.sim = Simulation::restore(initial.clone());
+        self.debug = DebugState::default();
+        self.poses = Poses::default();
+        self.travelled = Travelled::default();
+        self.lane_change_error = None;
+        // The same vehicle, if it was there from the start.
+        self.selected = self.selected.filter(|&id| self.sim.get(id).is_some());
     }
 
     fn step(&mut self, dt: f64) {
@@ -748,7 +409,6 @@ impl App {
             self.step_times.push(steps, started.elapsed().as_secs_f64());
             self.poses.before = before;
         }
-        self.harness.step(&mut self.sim, self.selected, dt);
     }
 
     fn controls(&mut self, ui: &mut egui::Ui) {
@@ -792,21 +452,35 @@ impl App {
                 );
             }
             ui.separator();
-            let mut scenario = self.scenario;
-            egui::ComboBox::from_id_salt("scenario").selected_text(scenario.name()).show_ui(
-                ui,
-                |ui| {
-                    for option in Scenario::ALL {
-                        ui.selectable_value(&mut scenario, option, option.name());
+            let selected = self.current.map_or("No scenario", |i| self.scenarios[i].name.as_str());
+            let mut chosen = self.current;
+            egui::ComboBox::from_id_salt("scenario")
+                .selected_text(selected)
+                .show_ui(ui, |ui| {
+                    for (i, scenario) in self.scenarios.iter().enumerate() {
+                        ui.selectable_value(&mut chosen, Some(i), &scenario.name);
                     }
-                },
-            );
-            if scenario != self.scenario || ui.button("Reset").clicked() {
-                self.load(scenario);
+                });
+            let restart = egui::Button::new("Restart");
+            let restart = ui
+                .add_enabled(self.initial.is_some(), restart)
+                .on_hover_text("Start the simulation over, without reading the script again");
+            if restart.clicked() {
+                self.restart();
+            }
+            let reset = ui.add_enabled(chosen.is_some(), egui::Button::new("Reset"));
+            let reset = reset.on_hover_text("Read the script again and run it");
+            match chosen {
+                Some(i) if chosen != self.current || reset.clicked() => self.load(i),
+                _ => {}
+            }
+            if ui.button("Refresh").on_hover_text("List the scenarios afresh").clicked() {
+                self.refresh();
             }
         });
-        let on_road = self.sim.vehicles().count();
-        self.harness.controls(ui, on_road);
+        if let Some(error) = &self.error {
+            ui.colored_label(Color32::from_rgb(230, 80, 70), error);
+        }
     }
 
     fn inspector(&mut self, ui: &mut egui::Ui, id: VehicleId) {
@@ -2091,15 +1765,4 @@ fn dashes(points: &[DVec2], on: f64, period: f64) -> Vec<Vec<DVec2>> {
 /// World meters (y up) to scene coordinates (y down).
 fn to_scene(p: DVec2) -> Pos2 {
     Pos2::new(p.x as f32, -p.y as f32)
-}
-
-/// An empty simulation of a scenario's network, and what to draw for it; the
-/// harness fills it.
-fn new_sim(scenario: Scenario) -> (Simulation, RenderGeometry) {
-    let compiled = compile(&scenario.network()).expect("every scenario compiles");
-    (Simulation::new(compiled.sim), compiled.render)
-}
-
-fn demo_car() -> VehicleSpec {
-    VehicleSpec::passenger_car()
 }

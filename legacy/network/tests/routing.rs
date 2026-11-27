@@ -1,7 +1,7 @@
 //! Vehicles routed to destinations: each takes the lane changes and turns its
 //! route needs, and leaves the network where it was sent.
 
-use traffic_network::{Sign, compile, scenarios};
+use traffic_network_legacy::{Sign, compile, scenarios};
 use traffic_sim::{
     DestinationId, Driver, LaneId, Placement, Route, Simulation, VehicleClass, VehicleSpec,
 };
@@ -28,7 +28,7 @@ fn exits(sim: &mut Simulation) -> Vec<DestinationId> {
 
 /// Sends a car alone from every entry lane to every exit it has a way to, one
 /// after another, and checks each leaves by its exit. Returns how many it sent.
-fn every_car_leaves_by_its_exit(net: &traffic_network::RoadNetwork) -> usize {
+fn every_car_leaves_by_its_exit(net: &traffic_network_legacy::RoadNetwork) -> usize {
     let mut sim = common::sim(compile(net).unwrap().sim);
     let exits = exits(&mut sim);
     let entries: Vec<LaneId> = sim
@@ -110,7 +110,7 @@ fn a_car_sent_off_the_freeway_takes_the_off_ramp() {
 /// Sends cars into `net` for a quarter of an hour, one every 1.5 s into a
 /// random entry lane, each to a random exit it has a way to, and returns how
 /// many left by their exit, and how many by another.
-fn busy(net: &traffic_network::RoadNetwork) -> (usize, usize) {
+fn busy(net: &traffic_network_legacy::RoadNetwork) -> (usize, usize) {
     let mut sim = common::sim(compile(net).unwrap().sim);
     let exits = exits(&mut sim);
     let entries: Vec<LaneId> = sim

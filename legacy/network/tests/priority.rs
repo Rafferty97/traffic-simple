@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use traffic_network::{Compiled, RoadNetwork, Sign, Turn, compile, scenarios};
+use traffic_network_legacy::{Compiled, RoadNetwork, Sign, Turn, compile, scenarios};
 use traffic_sim::{
     AccelSource, BarrierKind, DebugEvent, Driver, LaneId, Placement, Route, SAFE_BRAKING,
     Simulation, VehicleId, VehicleSpec,

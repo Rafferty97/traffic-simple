@@ -1,7 +1,7 @@
 //! Turning on red: where the network allows it, a near-side turn at signals is
 //! a stop line on red, giving way to every lane it crosses or merges with.
 
-use traffic_network::{Compiled, RoadId, Turn, compile, scenarios};
+use traffic_network_legacy::{Compiled, RoadId, Turn, compile, scenarios};
 use traffic_sim::{
     BarrierKind, Driver, LaneId, Light, MovementId, Placement, Route, Simulation, VehicleId,
     VehicleSpec,

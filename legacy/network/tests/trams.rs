@@ -1,7 +1,7 @@
 //! Trams on the tracks down the middle of the hook-turn crossroads, going
 //! straight through on their road's lights, among its cars.
 
-use traffic_network::{compile, scenarios};
+use traffic_network_legacy::{compile, scenarios};
 use traffic_sim::{Driver, LaneId, Placement, Route, Simulation, VehicleClass, VehicleSpec};
 
 mod common;

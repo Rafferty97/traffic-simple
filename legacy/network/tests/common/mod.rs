@@ -219,12 +219,12 @@ pub fn uncovered(sim: &traffic_sim::Simulation) -> Option<String> {
 /// second at its entry lanes in turn, asserting that no two bodies ever overlap,
 /// and that every vehicle has a record on each lane its body is in.
 #[allow(dead_code)]
-pub fn flood(net: &traffic_network::RoadNetwork, seconds: f64) {
+pub fn flood(net: &traffic_network_legacy::RoadNetwork, seconds: f64) {
     use traffic_sim::{LaneId, Placement, Route, Simulation, VehicleSpec};
     let car = VehicleSpec::passenger_car();
 
     {
-        let compiled = traffic_network::compile(net).unwrap();
+        let compiled = traffic_network_legacy::compile(net).unwrap();
         let mut sim = Simulation::new(compiled.sim);
         let entries: Vec<LaneId> = sim
             .network()

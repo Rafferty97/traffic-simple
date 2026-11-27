@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["sim", "network", "ui"]
+members = ["sim", "network", "legacy/network", "ui"]
 
 [workspace.package]
 version = "0.0.0"
@@ -14,7 +14,7 @@ traffic-sim = { path = "sim" }
 traffic-network = { path = "network" }
 glam = "0.34.3"
 rand = { version = "0.10.3", default-features = false }
-# For freeze-frame snapshots. `float_roundtrip` so f64s read back exactly.
+# For snapshots and scripts' data. `float_roundtrip` so f64s read back exactly.
 serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
 
 # The UI runs from a dev build, and the simulation and its geometry are too slow

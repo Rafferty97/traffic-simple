@@ -2,14 +2,14 @@
 //! city has: traffic goes through one crossroads after another, and queues
 //! back up from one into the next.
 
-use traffic_network::{Control, compile, scenarios};
+use traffic_network_legacy::{Control, compile, scenarios};
 
 mod common;
 
 const SPEED: f64 = 50.0 / 3.6;
 
 /// The grid the tests run: 4 by 4 crossroads, 100 m apart.
-fn grid(lanes: usize) -> traffic_network::RoadNetwork {
+fn grid(lanes: usize) -> traffic_network_legacy::RoadNetwork {
     scenarios::grid(4, 4, lanes, 100.0, SPEED)
 }
 

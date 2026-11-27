@@ -8,7 +8,7 @@
 //! that is counted and printed, not failed. Slow, so ignored by default:
 //! `cargo test --release --test stress -- --ignored --nocapture`.
 
-use traffic_network::{RoadNetwork, Sign, compile, scenarios};
+use traffic_network_legacy::{RoadNetwork, Sign, compile, scenarios};
 use traffic_sim::{Driver, LaneId, Placement, Route, Simulation, VehicleSpec};
 
 mod common;

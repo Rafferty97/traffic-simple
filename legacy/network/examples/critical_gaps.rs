@@ -5,9 +5,9 @@
 //! gaps, about 6.5 s straight across a two-lane road, 7 s turning across it
 //! and 6 s turning into it.
 //!
-//! `cargo run --release -p traffic-network --example critical_gaps`
+//! `cargo run --release -p traffic-network-legacy --example critical_gaps`
 
-use traffic_network::{Sign, Turn, compile, scenarios};
+use traffic_network_legacy::{Sign, Turn, compile, scenarios};
 use traffic_sim::{Driver, LaneId, Placement, Route, Simulation, VehicleId, VehicleSpec};
 
 /// The length of a step, in seconds: 30 Hz.

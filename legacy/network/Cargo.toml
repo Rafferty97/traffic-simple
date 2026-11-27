@@ -1,6 +1,6 @@
 [package]
-name = "traffic-network"
-description = "Road networks described at road level, compiled to a SimNetwork and render geometry. A proof of concept."
+name = "traffic-network-legacy"
+description = "The old road-level network crate, kept compiling for reference, its tests and differential checks while `network` is rebuilt."
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
