@@ -59,6 +59,9 @@ pub enum MarkingStyle {
     Edge,
     /// Between lanes going opposite ways.
     Centre,
+    /// Along a lane going on beside a dropped lane's taper, in short dashes, as
+    /// a continuity line marks a lane drop.
+    Continuity,
     /// Across a lane where it comes into an intersection: a stop line, 300 mm
     /// wide, its far edge where the intersection starts.
     Stop,
@@ -111,13 +114,8 @@ pub fn render(net: &Network, tolerance: f64) -> Result<RenderGeometry, CompileEr
                         };
                         let at = mid(i)[side];
                         let others = (0..lanes.len()).filter(|&j| j != i);
-                        style(
-                            at,
-                            side,
-                            lanes[i].1,
-                            i,
-                            others.map(|j| (j, mid(j), lanes[j].1)),
-                        )
+                        let others = others.map(|j| (j, mid(j), lanes[j].1, lanes[j].0.dropped));
+                        style(at, side, lanes[i].1, lanes[i].0.dropped, i, others)
                     })
                     .collect();
                 let offsets = edge(i, side);
@@ -170,23 +168,31 @@ pub fn render(net: &Network, tolerance: f64) -> Result<RenderGeometry, CompileEr
 }
 
 /// The line along a lane's edge `at`, an offset from the road's path, on its
-/// right (`side` 0) or left (1), on a lane running in `reverse` or not, the
-/// `i`th of its road, beside its road's other lanes, each with its index, its
-/// edges and whether it runs in reverse. None where it is inside another lane,
-/// as where two converge; a line between them, drawn from the lane on the
-/// right, where it touches another beside it, dashed between lanes running the
-/// same way and a centre line between opposite ones; and an edge line
-/// elsewhere, drawn once where two lanes' edges coincide.
+/// right (`side` 0) or left (1), on a lane running in `reverse` or not, and
+/// `dropped` or not, the `i`th of its road, beside its road's other lanes,
+/// each with its index, its edges, whether it runs in reverse and whether it is
+/// dropped. Where it is inside another lane, as where two converge, none, or a
+/// continuity line if the other is dropped and this one isn't; a line between
+/// them, drawn from the lane on the right, where it touches another beside it,
+/// dashed between lanes running the same way and a centre line between
+/// opposite ones; and an edge line elsewhere, drawn once where two lanes'
+/// edges coincide.
 fn style(
     at: f64,
     side: usize,
     reverse: bool,
+    dropped: bool,
     i: usize,
-    others: impl Iterator<Item = (usize, [f64; 2], bool)>,
+    others: impl Iterator<Item = (usize, [f64; 2], bool, bool)>,
 ) -> Option<MarkingStyle> {
     let mut edge = Some(MarkingStyle::Edge);
-    for (j, [right, left], other_reverse) in others {
+    let mut inside = false;
+    for (j, [right, left], other_reverse, other_dropped) in others {
         if right + SAME_POINT < at && at < left - SAME_POINT {
+            if other_dropped && !dropped {
+                inside = true;
+                continue;
+            }
             return None;
         }
         // Touching it, it beyond the edge.
@@ -206,7 +212,10 @@ fn style(
             edge = None;
         }
     }
-    edge
+    match inside {
+        true => Some(MarkingStyle::Continuity),
+        false => edge,
+    }
 }
 
 /// The stretches of `line` not inside the polygon `area` by more than
@@ -361,12 +370,16 @@ mod test {
 
     /// A road whose outer lane eases in over its inner one, from 100 m to
     /// 180 m along, until the two are one.
-    fn converging() -> Network {
+    /// The outer lane dropped, if `dropped`, rather than zipping.
+    fn converging_with(dropped: bool) -> Network {
         let mut net = Network::new(Side::Left);
-        let easing = RoadLane::through(vec![
-            Station::new(100.0, -5.25, 3.5),
-            Station::new(180.0, -1.75, 3.5),
-        ]);
+        let easing = RoadLane {
+            dropped,
+            ..RoadLane::through(vec![
+                Station::new(100.0, -5.25, 3.5),
+                Station::new(180.0, -1.75, 3.5),
+            ])
+        };
         net.add_road(Road {
             path: Path::new(DVec2::ZERO).line_to(DVec2::new(200.0, 0.0)),
             speed_limit: kmh(60.0),
@@ -374,6 +387,29 @@ mod test {
             reverse: vec![],
         });
         net
+    }
+
+    fn converging() -> Network {
+        converging_with(false)
+    }
+
+    #[test]
+    fn beside_a_dropped_lane_s_taper_the_lane_going_on_has_a_continuity_line() {
+        let geometry = render(&converging_with(true), 0.005).unwrap();
+        let of = |style| geometry.markings.iter().filter(move |m| m.style == style);
+        // Along the inner lane's edge, from where the taper starts nearly to
+        // where it covers the lane.
+        let continuity: Vec<_> = of(MarkingStyle::Continuity).collect();
+        assert_eq!(continuity.len(), 1);
+        let line = &continuity[0].points;
+        assert!(line.iter().all(|p| p.y == -3.5), "{line:?}");
+        let (start, end) = (line[0].x, line[line.len() - 1].x);
+        assert!(
+            (start - 100.0).abs() < 1.0 && end > 170.0,
+            "{start} to {end}"
+        );
+        // Dashed before it, as when they zip.
+        assert_eq!(of(MarkingStyle::Dashed).count(), 1);
     }
 
     #[test]

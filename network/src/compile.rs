@@ -16,6 +16,11 @@ use crate::{Network, RoadId, cuts};
 /// so the tolerance sets only how closely they follow the curve.
 pub(crate) const LANE_TOLERANCE: f64 = 0.01;
 
+/// What driving a dropped lane's taper costs routing, in seconds, beyond its
+/// time: enough that changing out of it wins over small differences in time
+/// between ways (see [`RoadLane::dropped`](crate::RoadLane::dropped)).
+pub const DROPPED_COST: f64 = 10.0;
+
 /// Why a network doesn't compile.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CompileError {
@@ -268,11 +273,20 @@ pub fn compile(net: &Network) -> Result<Compiled, CompileError> {
     let mut lanes = Vec::new();
     let mut layouts = Vec::new();
     let mut neighbours = Vec::new();
+    // Each way along a road is a road for routing, and so is each dropped
+    // lane's taper.
+    let mut next_way = 2 * net.roads().len() as u32;
     for (r, (whole, cuts)) in whole.into_iter().zip(&cuts).enumerate() {
-        let pieces = match cuts.is_empty() {
+        let mut pieces = match cuts.is_empty() {
             true => vec![whole],
             false => pieces(net, r, cuts)?,
         };
+        for (i, (lane, _)) in net.roads()[r].lanes().enumerate() {
+            if lane.dropped {
+                taper(&mut pieces, i, traffic_sim::RoadId(next_way));
+                next_way += 1;
+            }
+        }
         let mut bounds: Vec<f64> = pieces.iter().map(|p| p.from).collect();
         bounds.push(net.roads()[r].path.length());
         layouts.push(Layout { first: lanes.len() as u32, bounds });
@@ -298,6 +312,25 @@ pub fn compile(net: &Network) -> Result<Compiled, CompileError> {
     declare_overlaps(&mut compiled, &related);
     compiled.sim.validate().map_err(CompileError::Network)?;
     Ok(compiled)
+}
+
+/// Makes the pieces of lane `i` that overlap another lane of their road its
+/// taper: a road for routing of their own, `way`, costing
+/// [`DROPPED_COST`] more, so drivers change out of the lane before it, where
+/// they can, and go through it where they can't.
+fn taper(pieces: &mut [Piece], i: usize, way: traffic_sim::RoadId) {
+    for piece in pieces {
+        let geometry = piece.lanes[i].0.geometry();
+        let overlaps = piece
+            .lanes
+            .iter()
+            .enumerate()
+            .any(|(j, (other, _))| j != i && geometry.overlap(other.geometry()).is_some());
+        if overlaps {
+            let lane = &mut piece.lanes[i].0;
+            *lane = lane.clone().with_road(way).with_cost(DROPPED_COST);
+        }
+    }
 }
 
 /// Road `r`'s pieces between `cuts`, distances along its reference line, each
@@ -736,6 +769,31 @@ mod test {
         let right = |lane: LaneId| sim.lane(lane).adj(Side::Right).map(|n| n.lane);
         assert_eq!(right(inner[0]), Some(outer[0]));
         assert_eq!(right(inner[1]), None);
+    }
+
+    #[test]
+    fn a_dropped_lane_s_taper_is_a_road_of_its_own_for_routing_costing_more() {
+        let mut net = Network::new(Side::Left);
+        let dropped = RoadLane::through(vec![
+            Station::new(100.0, -5.25, 3.5),
+            Station::new(180.0, -1.75, 3.5),
+        ])
+        .dropped();
+        let road = net.add_road(Road {
+            path: line((0.0, 0.0), (200.0, 0.0)),
+            speed_limit: kmh(60.0),
+            forward: vec![lane(-1.75), dropped],
+            reverse: vec![],
+        });
+        let c = compile(&net).unwrap();
+        let sim = c.sim_network();
+        let (inner, outer) = (c.lanes(road, 0), c.lanes(road, 1));
+        let [before, taper] = [outer[0], outer[1]].map(|l| sim.lane(l));
+        assert_eq!((before.cost(), taper.cost()), (0.0, DROPPED_COST));
+        assert_eq!(before.road(), sim.lane(inner[0]).road());
+        assert_ne!(taper.road(), before.road());
+        assert_ne!(taper.road(), sim.lane(inner[1]).road());
+        assert_eq!(sim.lane(inner[1]).cost(), 0.0);
     }
 
     #[test]

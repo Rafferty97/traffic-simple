@@ -211,15 +211,17 @@ fn roads_declared_to_overlap_are_cut_and_related_where_they_do() {
     assert!(pair(mine[1], theirs[1]), "{declared:?}");
 }
 
-#[test]
-fn traffic_zips_from_two_lanes_into_one_where_one_eases_in_over_the_other() {
-    // The outer lane eases in over the inner from 150 m to 230 m, and the two
-    // run on as one lane.
+/// A two-lane road whose outer lane eases in over the inner from 150 m to
+/// 230 m, the two running on as one lane: the road and the one after.
+fn two_into_one(dropped: bool) -> (Network, RoadId, RoadId) {
     let mut net = Network::new(Side::Left);
-    let outer = RoadLane::through(vec![
-        Station::new(150.0, -5.25, 3.5),
-        Station::new(230.0, -1.75, 3.5),
-    ]);
+    let outer = RoadLane {
+        dropped,
+        ..RoadLane::through(vec![
+            Station::new(150.0, -5.25, 3.5),
+            Station::new(230.0, -1.75, 3.5),
+        ])
+    };
     let two = net.add_road(Road {
         path: Path::new(p(0.0, 0.0)).line_to(p(250.0, 0.0)),
         speed_limit: kmh(60.0),
@@ -233,6 +235,12 @@ fn traffic_zips_from_two_lanes_into_one_where_one_eases_in_over_the_other() {
         reverse: vec![],
     });
     net.join(two, one);
+    (net, two, one)
+}
+
+#[test]
+fn traffic_zips_from_two_lanes_into_one_where_one_eases_in_over_the_other() {
+    let (net, two, _) = two_into_one(false);
     let compiled = compile(&net).unwrap();
     let mut sim = compiled.simulate();
     // Side by side, so they have to take turns.
@@ -243,6 +251,42 @@ fn traffic_zips_from_two_lanes_into_one_where_one_eases_in_over_the_other() {
         }
     }
     run(&mut sim, 90.0);
+    assert_eq!(
+        sim.vehicles().count(),
+        0,
+        "everybody gets through and leaves"
+    );
+}
+
+#[test]
+fn drivers_on_a_dropped_lane_change_out_of_it_before_its_taper() {
+    let (net, two, one) = two_into_one(true);
+    let compiled = compile(&net).unwrap();
+    let mut sim = compiled.simulate();
+    let destination = sim.add_destination(&compiled.lanes(one, 0));
+    // In the lane that drops, all with room to change out of it but the
+    // last, 40 m short of the taper, where a change at 50 km/h takes 55 m.
+    let mut insert = |s: f64| {
+        let mut at = compiled.place(two, 1, s, kmh(50.0)).unwrap();
+        at.route = traffic_sim::Route::to(destination);
+        sim.insert(VehicleSpec::PASSENGER_CAR, Driver::DEFAULT, at)
+    };
+    for i in 0..4 {
+        insert(10.0 + 20.0 * i as f64);
+    }
+    let late = insert(110.0);
+    let taper = compiled.lanes(two, 1)[1];
+    let mut through = false;
+    for _ in 0..30 * 40 {
+        sim.step();
+        for (id, v) in sim.vehicles() {
+            match id == late {
+                true => through |= v.lane() == taper,
+                false => assert_ne!(v.lane(), taper, "{id:?} went into the taper"),
+            }
+        }
+    }
+    assert!(through, "too late to change, it goes through the taper");
     assert_eq!(
         sim.vehicles().count(),
         0,

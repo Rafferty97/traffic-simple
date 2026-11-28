@@ -19,7 +19,7 @@ mod render;
 
 use traffic_sim::Side;
 
-pub use compile::{CompileError, Compiled, PlaceError, compile};
+pub use compile::{CompileError, Compiled, DROPPED_COST, PlaceError, compile};
 pub use lane::{RoadLane, Station};
 pub use path::{MIN_LENGTH, Path, PathError, Segment};
 pub use render::{Arrow, Marking, MarkingStyle, RenderGeometry, Strip, render};

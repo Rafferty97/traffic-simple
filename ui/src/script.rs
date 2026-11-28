@@ -30,7 +30,7 @@ use rquickjs::{CatchResultExt, Class, Context, Ctx, Exception, JsLifetime, Runti
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use traffic_network::{Compiled, Network, Path, RenderGeometry, RoadId, kmh, mph, render};
-use traffic_sim::{Driver, Placement, Side, Simulation, VehicleSpec};
+use traffic_sim::{Driver, LaneId, Placement, Route, Side, Simulation, VehicleSpec};
 
 /// How far drawn curves stray from the network's at most, in meters: finer
 /// than the simulation's lanes, which only vehicles follow.
@@ -290,7 +290,7 @@ impl JsCompiled {
         let (compiled, render) = &*self.inner;
         let sim = Rc::new(RefCell::new(compiled.simulate()));
         self.host.borrow_mut().made = Some((sim.clone(), render.clone()));
-        Class::instance(ctx, JsSimulation { sim })
+        Class::instance(ctx, JsSimulation { sim, destinations: Default::default() })
     }
 
     fn place<'js>(
@@ -330,6 +330,9 @@ impl JsCompiled {
 pub struct JsSimulation {
     #[qjs(skip_trace)]
     sim: Rc<RefCell<Simulation>>,
+    /// How many destinations the script has registered.
+    #[qjs(skip_trace)]
+    destinations: std::cell::Cell<u32>,
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -351,7 +354,29 @@ impl JsSimulation {
                 &format!("no lane {}", at.lane.0),
             ));
         }
+        if let Route::Destination(d) = at.route
+            && d.0 >= self.destinations.get()
+        {
+            let message = format!("no destination {}", d.0);
+            return Err(Exception::throw_range(&ctx, &message));
+        }
         let id = self.sim.borrow_mut().insert(spec, driver, at);
+        into_js(&ctx, &id)
+    }
+
+    /// Throws, where Rust panics, if a lane isn't the network's.
+    fn add_destination<'js>(
+        &self,
+        ctx: Ctx<'js>,
+        lanes: Value<'js>,
+    ) -> rquickjs::Result<Value<'js>> {
+        let lanes: Vec<LaneId> = from_js(&ctx, lanes)?;
+        let count = self.sim.borrow().network().lanes().count();
+        if let Some(lane) = lanes.iter().find(|l| l.0 as usize >= count) {
+            return Err(Exception::throw_range(&ctx, &format!("no lane {}", lane.0)));
+        }
+        let id = self.sim.borrow_mut().add_destination(&lanes);
+        self.destinations.set(self.destinations.get() + 1);
         into_js(&ctx, &id)
     }
 }
@@ -458,6 +483,35 @@ net.nothing();",
         .err()
         .unwrap();
         assert!(error.contains("broken.ts:5:"), "{error}");
+    }
+
+    #[test]
+    fn a_script_routes_vehicles_to_destinations_it_registers_and_no_others() {
+        let script = |register: bool| {
+            format!(
+                r#"
+                const net = new Network(Side.Left);
+                const road = net.addRoad({{
+                  path: new Path([0, 0]).lineTo([100, 0]),
+                  speedLimit: kmh(60),
+                  forward: [{{ offset: 0, left: 1.75, right: 1.75 }}],
+                }});
+                const compiled = compile(net);
+                const sim = compiled.simulate();
+                const end = {register} ? sim.addDestination(compiled.lanes(road, 0)) : 0;
+                const at = compiled.place(road, 0, 10, kmh(50));
+                sim.insert(VehicleSpec.PASSENGER_CAR, Driver.DEFAULT, {{ ...at, route: {{ Destination: end }} }});
+                "#
+            )
+        };
+        let scenario = run(&script(true), "routed.js").unwrap();
+        let (id, _) = scenario.sim.vehicles().next().unwrap();
+        assert!(matches!(
+            scenario.sim.route(id),
+            Some(Route::Destination(_))
+        ));
+        let error = run(&script(false), "unrouted.js").err().unwrap();
+        assert!(error.contains("no destination 0"), "{error}");
     }
 
     #[test]

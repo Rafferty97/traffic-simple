@@ -883,9 +883,13 @@ fn draw_pretty(
             MarkingStyle::Centre => drop(painter.add(Shape::line(points, yellow))),
             MarkingStyle::Stop => drop(painter.add(Shape::line(points, stop))),
             MarkingStyle::KeepClear => drop(painter.add(Shape::line(points, yellow))),
-            // 3 m dashes every 9 m.
-            MarkingStyle::Dashed => {
-                for dash in dashes(&marking.points, 3.0, 9.0) {
+            // 3 m dashes every 9 m, and a continuity line's 1 m every 4 m.
+            MarkingStyle::Dashed | MarkingStyle::Continuity => {
+                let (dash, every) = match marking.style {
+                    MarkingStyle::Dashed => (3.0, 9.0),
+                    _ => (1.0, 4.0),
+                };
+                for dash in dashes(&marking.points, dash, every) {
                     painter.add(Shape::line(dash.into_iter().map(to_scene).collect(), white));
                 }
             }

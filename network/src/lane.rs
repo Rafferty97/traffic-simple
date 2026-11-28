@@ -5,22 +5,30 @@
 /// ease (smoothstep) from one's to the other's; before the first and after the
 /// last they are those stations'. Every lane runs the road's whole length: a
 /// change in how many lanes there are is another road. In its serde form, a
-/// lane the same all along is `{ offset, left, right }`, and any other its
-/// list of stations.
+/// lane the same all along is `{ offset, left, right }`, a dropped lane
+/// `{ stations, dropped: true }`, and any other its list of stations.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(from = "LaneForm", into = "LaneForm"))]
 pub struct RoadLane {
     pub stations: Vec<Station>,
+    /// Whether it is dropped where it eases in over another lane of its
+    /// road, rather than the two zipping together: drivers on it change out
+    /// of it before it does, where they can, and the lane going on is marked
+    /// beside it with a short dashed line. Where two lanes ease together and
+    /// neither is dropped, they zip, with no line between them.
+    pub dropped: bool,
 }
 
-/// A lane's serde form: the same all along, or its stations.
+/// A lane's serde form: the same all along, its stations, or a dropped
+/// lane's stations.
 #[cfg(feature = "serde")]
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 enum LaneForm {
     Constant { offset: f64, left: f64, right: f64 },
     Stations(Vec<Station>),
+    Dropped { stations: Vec<Station>, dropped: bool },
 }
 
 #[cfg(feature = "serde")]
@@ -28,9 +36,10 @@ impl From<LaneForm> for RoadLane {
     fn from(form: LaneForm) -> Self {
         match form {
             LaneForm::Constant { offset, left, right } => {
-                RoadLane { stations: vec![Station { s: 0.0, offset, left, right }] }
+                RoadLane::through(vec![Station { s: 0.0, offset, left, right }])
             }
-            LaneForm::Stations(stations) => RoadLane { stations },
+            LaneForm::Stations(stations) => RoadLane::through(stations),
+            LaneForm::Dropped { stations, dropped } => RoadLane { stations, dropped },
         }
     }
 }
@@ -38,9 +47,12 @@ impl From<LaneForm> for RoadLane {
 #[cfg(feature = "serde")]
 impl From<RoadLane> for LaneForm {
     fn from(lane: RoadLane) -> Self {
-        match lane.stations[..] {
-            [Station { offset, left, right, .. }] => LaneForm::Constant { offset, left, right },
-            _ => LaneForm::Stations(lane.stations),
+        match (lane.dropped, &lane.stations[..]) {
+            (true, _) => LaneForm::Dropped { stations: lane.stations, dropped: true },
+            (false, &[Station { offset, left, right, .. }]) => {
+                LaneForm::Constant { offset, left, right }
+            }
+            (false, _) => LaneForm::Stations(lane.stations),
         }
     }
 }
@@ -87,12 +99,18 @@ impl From<Station> for [f64; 4] {
 impl RoadLane {
     /// A lane `width` wide all along, `offset` from the path.
     pub fn new(offset: f64, width: f64) -> Self {
-        Self { stations: vec![Station::new(0.0, offset, width)] }
+        Self::through(vec![Station::new(0.0, offset, width)])
     }
 
     /// A lane through `stations`, in order along the path.
     pub fn through(stations: Vec<Station>) -> Self {
-        Self { stations }
+        Self { stations, dropped: false }
+    }
+
+    /// It, dropped where it eases in over another lane (see
+    /// [`RoadLane::dropped`]).
+    pub fn dropped(self) -> Self {
+        Self { dropped: true, ..self }
     }
 
     /// Its profile `s` along the path: its offset and widths there.
@@ -229,5 +247,13 @@ mod test {
         let json = serde_json::to_string(&constant).unwrap();
         assert_eq!(json, r#"{"offset":-1.75,"left":1.75,"right":1.75}"#);
         assert_eq!(serde_json::from_str::<RoadLane>(&json).unwrap(), constant);
+        // A dropped one says so.
+        let dropped = lane.dropped();
+        let json = serde_json::to_string(&dropped).unwrap();
+        assert_eq!(
+            json,
+            r#"{"stations":[[0.0,-1.75,1.75,1.75],[50.0,-5.25,1.75,1.75]],"dropped":true}"#
+        );
+        assert_eq!(serde_json::from_str::<RoadLane>(&json).unwrap(), dropped);
     }
 }

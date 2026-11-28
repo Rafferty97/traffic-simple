@@ -59,12 +59,23 @@ type Station = [s: number, offset: number, left: number, right: number];
 
 /**
  * A lane of a road: its profile, the same all along, or stations in order
- * along the road. Between each two stations its offset and widths ease
- * (smoothstep) from one's to the other's; before the first and after the last
- * they are those stations'. Every lane runs its road's whole length: a change
- * in how many lanes there are is another road.
+ * along the road, or a dropped lane's stations. Between each two stations its
+ * offset and widths ease (smoothstep) from one's to the other's; before the
+ * first and after the last they are those stations'. Every lane runs its
+ * road's whole length: a change in how many lanes there are is another road.
  */
-type RoadLane = Profile | Station[];
+type RoadLane = Profile | Station[] | DroppedLane;
+
+/**
+ * A lane dropped where it eases in over another lane of its road, rather than
+ * the two zipping together: its taper costs routing more, so drivers bound for
+ * a destination change out of it before it, where they can, and the lane going
+ * on is marked beside it with a short dashed line.
+ */
+interface DroppedLane {
+  stations: Station[];
+  dropped: boolean;
+}
 
 /** A road: a path, lanes beside it, and a speed limit. */
 interface Road {
@@ -181,6 +192,11 @@ type VehicleId = { idx: number; version: number };
 interface Simulation {
   /** Places a vehicle on a lane's centreline, with no checks. */
   insert(spec: VehicleSpec, driver: Driver, at: Placement): VehicleId;
+  /**
+   * Registers `lanes` as a destination, for routes to it (`{ Destination: id }`
+   * in a placement). Throws if a lane isn't the network's.
+   */
+  addDestination(lanes: LaneId[]): DestinationId;
 }
 
 /**
