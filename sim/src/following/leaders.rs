@@ -27,7 +27,8 @@ pub enum Along {
     Leaving(Side, usize),
     /// The lanes beside its path on this side, as if it were already settled on
     /// their centerlines: weighing up a lane change. From its rear, projected onto
-    /// the first.
+    /// the first. It is converging onto them, as it will be once it changes, so
+    /// it passes nobody there.
     Into(Side),
     /// Its own path, as Path, for a vehicle not yet inserted, so with no record:
     /// from where its rear is.
@@ -183,15 +184,17 @@ pub fn find_leaders<B>(
         _ => horizon,
     };
     // How it relates to the `k`th lane searched: on its own path, in the lane or
-    // converging while it changes lanes; settled beside it, in the lane; leaving
-    // its old lanes, as its records there say, and converging where it has none.
+    // converging while it changes lanes; settled beside it, converging, as it will
+    // be just after changing, so the gap it accepts is one its own search will
+    // agree with then; leaving its old lanes, as its records there say, and
+    // converging where it has none.
     let own_lateral = |k: usize, lane: LaneId| match (along, own) {
         (Along::Leaving(..), Some(own)) if k == 0 => own.lateral,
         (Along::Leaving(..), Some(own)) => list(lane)
             .iter()
             .find(|o| o.is_record_of(own.id))
             .map_or(Lateral::CONVERGING, |o| o.lateral),
-        (Along::Into(_), _) => Lateral::InLane,
+        (Along::Into(_), _) => Lateral::CONVERGING,
         _ => match vehicle.lane_change {
             Some(_) => Lateral::CONVERGING,
             None => Lateral::InLane,

@@ -1019,6 +1019,43 @@ fn a_car_sees_a_diverging_car_its_leader_has_passed() {
 }
 
 #[test]
+fn weighing_up_a_change_it_follows_a_car_still_leaving_the_lane() {
+    // Three lanes, lane 0 on the left. B, changing left out of lane 1, has its
+    // right rear corner 1.6 m left of lane 1's centerline, as in the test
+    // above. A, in lane 2 just behind, weighs up changing left into lane 1:
+    // settled on its centerline, it would clear B by 0.65 m, but once it
+    // changes it is converging onto lane 1 and can pass nobody there, so B is
+    // its leader there from the start.
+    let mut sim = new_sim(road(&[(0.0, 500.0)], 3));
+    let b = sim.insert(car(), crate::simulation::test::driver(), at(1, 60.0, 3.75));
+    sim.change_lane(b, Side::Left).unwrap();
+    let lane_1 = sim.state.network.lane(LaneId(1));
+    let pos = lane_1.geometry().lane_to_world(lane_1.geometry().lane_pos(60.0, 2.55));
+    let lane_0 = sim.state.network.lane(LaneId(0));
+    let on_0 = lane_0.geometry().world_to_lane_near(pos, lane_0.geometry().lane_pos(60.0, 0.0));
+    let v = &mut sim.state.vehicles[b];
+    (v.pos, v.dir, v.lane_pos) = (pos, DVec2::X, on_0);
+    sim.update_occupancy(0.0);
+    let record = sim.state.occupants[1].iter().find(|o| o.id == b).unwrap();
+    assert_eq!(record.lateral, Lateral::Diverging(Side::Left));
+    let a = sim.insert(car(), crate::simulation::test::driver(), at(2, 59.0, 3.75));
+    let beside = |sim: &Simulation| {
+        let mut found = Vec::new();
+        let v = &sim.state.vehicles[a];
+        crate::following::for_each_leader(&sim.state, v, Along::Into(Side::Left), 0.0, |f| {
+            if let Found::Ahead(Ahead::Vehicle(leader), ..) = f {
+                found.push(leader);
+            }
+        });
+        found
+    };
+    assert_eq!(beside(&sim), [b]);
+    // As its own search will find it once it has changed.
+    sim.change_lane(a, Side::Left).unwrap();
+    assert_eq!(leaders(&sim, a), [b]);
+}
+
+#[test]
 fn a_leader_turning_off_doesnt_hide_the_queue_beyond() {
     // Lane 0 splits: lane 2 bears away, lane 1 runs straight on. B turns onto
     // lane 2; A goes straight on, where a car is held stopped.

@@ -84,6 +84,11 @@ If neither check applies, or neither succeeds, A follows B.
   there to find.
 - Two vehicles diverging to the same side keep closing in sideways, so they follow.
 
+A vehicle weighing up a change into Z is checked as it will be just after changing: converging onto Z, so it passes
+nothing there. A vehicle still pulling out of Z is then its leader at its record until it has left, and the gap it
+accepts is one its own search will agree with once it has changed. Checked as if in lane, it could pass a diverging car
+alongside by projection, change in, and then, converging, have to follow it from a gap of zero or less.
+
 ### Classifying occupancy records
 
 An occupancy record must be classified as "in lane", "converging" or "diverging".
