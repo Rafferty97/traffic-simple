@@ -18,7 +18,7 @@ pub mod scenarios;
 mod turns;
 
 use glam::DVec2;
-use traffic_sim::{Classes, Keep, LaneId, Leaving, Side, SimNetwork};
+use traffic_sim::{Classes, Keep, LaneId, Side, SimNetwork};
 
 pub use compile::{CompileError, compile, fit_arms};
 pub use render::{Arrow, Marking, MarkingStyle, RenderGeometry, Strip};
@@ -79,6 +79,23 @@ impl Profile {
         }
     }
 }
+
+/// How drivers leave a lane that ends by merging into its neighbour, as an
+/// acceleration lane does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Leaving {
+    /// They stay on it to the merge, where they take turns: a zipper.
+    #[default]
+    Zipper,
+    /// They change out of it along the way, wanting to more the nearer its
+    /// end: it costs routing [`EARLY_COST`] more, so they change out of it
+    /// where they can.
+    Early,
+}
+
+/// What a lane left early costs routing, in seconds (see [`Leaving::Early`]):
+/// enough to outweigh small differences in time between ways.
+pub const EARLY_COST: f64 = 10.0;
 
 /// Which way a lane runs along its road.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

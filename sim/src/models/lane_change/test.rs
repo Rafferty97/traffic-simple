@@ -605,27 +605,38 @@ fn keeping_to_a_side_is_a_free_lane_changes_worth_of_desire_toward_it() {
 }
 
 #[test]
-fn a_lane_left_early_makes_drivers_want_to_leave_it_more_near_its_end() {
-    // Lane 1 ends by merging into lane 0, and drivers leave it early.
-    let early = Some(crate::network::Leaving::Early);
+fn a_lane_that_costs_routing_makes_drivers_want_to_leave_it_more_near_its_end_while_they_can() {
+    // Lanes 0 and 1 side by side, going on as lanes 2 and 3 to a destination,
+    // lane 1 costing routing more, as a dropped lane's taper does.
     let mut network = {
-        let lane = |y: f64| {
+        let lane = |x: f64, y: f64, length: f64| {
             Lane::new(
-                &[DVec2::new(0.0, y), DVec2::new(500.0, y)],
+                &[DVec2::new(x, y), DVec2::new(x + length, y)],
                 WIDTH,
                 LIMIT,
                 crate::simulation::test::alone(),
             )
+            .unwrap()
         };
         SimNetwork::new(vec![
-            lane(0.0).unwrap(),
-            lane(-WIDTH).unwrap().with_leaving(early),
+            lane(0.0, 0.0, 500.0),
+            lane(0.0, -WIDTH, 500.0).with_cost(10.0),
+            lane(500.0, 0.0, 100.0),
+            lane(500.0, -WIDTH, 100.0),
         ])
     };
+    network.connect(LaneId(0), LaneId(2));
+    network.connect(LaneId(1), LaneId(3));
     network.set_adjacent(LaneId(0), LaneId(1), true, true);
+    network.set_adjacent(LaneId(2), LaneId(3), true, true);
     let mut sim = new_sim(network);
-    let far = sim.insert(car(), crate::simulation::test::driver(), at(1, 50.0, 10.0));
-    let near = sim.insert(car(), crate::simulation::test::driver(), at(1, 450.0, 10.0));
+    let destination = sim.add_destination(&[LaneId(2), LaneId(3)]);
+    let to =
+        |lane, s| crate::Placement { route: crate::Route::to(destination), ..at(lane, s, 10.0) };
+    let far = sim.insert(car(), crate::simulation::test::driver(), to(1, 50.0));
+    let near = sim.insert(car(), crate::simulation::test::driver(), to(1, 400.0));
+    // Too near its end to change out of it, it goes on through it.
+    let late = sim.insert(car(), crate::simulation::test::driver(), to(1, 480.0));
     let route = |id| decide_now(&sim, id).1[0].incentives.route;
     assert!(
         route(near) > route(far),
@@ -634,10 +645,16 @@ fn a_lane_left_early_makes_drivers_want_to_leave_it_more_near_its_end() {
         route(far)
     );
     assert!(route(near) > 0.5, "{}", route(near));
-    // Drivers in the lane that goes on have no reason to leave it.
-    let staying = sim.insert(car(), crate::simulation::test::driver(), at(0, 450.0, 10.0));
+    assert_eq!(route(late), 0.0);
+    // Drivers in the lane that costs nothing have no reason to leave it, and
+    // are kept out of the one that does.
+    let staying = sim.insert(car(), crate::simulation::test::driver(), to(0, 450.0));
     let evals = decide_now(&sim, staying).1;
-    assert_eq!(evals[0].incentives.route, 0.0);
+    assert!(
+        evals[0].incentives.route < 0.0,
+        "{}",
+        evals[0].incentives.route
+    );
 }
 
 /// A car indicating left from lane 1 at 300 m, at 10 m/s, and one in lane 0

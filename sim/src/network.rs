@@ -15,7 +15,7 @@ pub use conflict::{Conflict, ConflictKind, Junction, JunctionId};
 pub use control::{Barrier, BarrierKind, Line, Movement, MovementId, Phase, SignalPlan, YieldsId};
 use geometry::{LanePos, SAME_POINT};
 pub use lane::{
-    ALIGNED, Keep, Lane, LaneId, Leaving, MAX_PREDECESSORS, MAX_SUCCESSORS, Neighbor, RoadId, Side,
+    ALIGNED, Keep, Lane, LaneId, MAX_PREDECESSORS, MAX_SUCCESSORS, Neighbor, RoadId, Side,
 };
 
 /// Why a network breaks an assumption the simulation makes about it.

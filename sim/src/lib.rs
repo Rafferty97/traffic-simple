@@ -30,8 +30,8 @@ pub use motion::lateral::LaneChange;
 pub use network::geometry::{GRID, LaneError, LaneGeometry, LanePos, ParseLaneError, SAME_POINT};
 pub use network::{
     ALIGNED, Barrier, BarrierKind, Conflict, ConflictKind, End, Junction, JunctionId, Keep, Lane,
-    LaneId, Leaving, Line, MAX_PREDECESSORS, MAX_SUCCESSORS, Movement, MovementId, Neighbor,
-    NetworkError, Phase, RoadId, Side, SignalPlan, SimNetwork, YieldsId,
+    LaneId, Line, MAX_PREDECESSORS, MAX_SUCCESSORS, Movement, MovementId, Neighbor, NetworkError,
+    Phase, RoadId, Side, SignalPlan, SimNetwork, YieldsId,
 };
 pub use simulation::{Config, InsertError, LaneChangeError, SimState, Simulation};
 pub use vehicle::{LaneChangeIntent, Placement, Vehicle, VehicleId, VehicleSpec};

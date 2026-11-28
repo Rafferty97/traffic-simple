@@ -95,19 +95,6 @@ impl Keep {
     }
 }
 
-/// How drivers leave a lane that ends by merging into its neighbour, as an
-/// acceleration lane does.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum Leaving {
-    /// They stay on it to the merge, where they take turns: a zipper.
-    #[default]
-    Zipper,
-    /// They change out of it along the way, wanting to more the nearer its end:
-    /// LMRS's route desire.
-    Early,
-}
-
 /// A lane: its geometry and speed limit, plus its links to other lanes, which
 /// [`SimNetwork`](super::SimNetwork) sets.
 #[derive(Clone, Debug)]
@@ -129,10 +116,9 @@ pub struct Lane {
     /// Which side drivers keep to.
     #[cfg_attr(feature = "serde", serde(default))]
     pub(super) keep: Keep,
-    /// How drivers leave it, if it ends by merging into its neighbour: `None`
-    /// if it doesn't.
+    /// What driving it costs routing beyond its time, in seconds.
     #[cfg_attr(feature = "serde", serde(default))]
-    pub(super) leaving: Option<Leaving>,
+    pub(super) cost: f64,
     /// The road it is part of, for routing.
     pub(super) road: RoadId,
     /// Its barriers, sorted by `s`.
@@ -189,7 +175,7 @@ impl Lane {
             adj_right: None,
             junction: None,
             keep: Keep::NoPreference,
-            leaving: None,
+            cost: 0.0,
             road,
             barriers: Vec::new(),
             keep_clear: false,
@@ -207,14 +193,17 @@ impl Lane {
         Self { keep, ..self }
     }
 
-    /// How drivers leave it, if it ends by merging into its neighbour.
-    pub fn leaving(&self) -> Option<Leaving> {
-        self.leaving
+    /// What driving it costs routing beyond its time, in seconds: a way
+    /// through it costs that much more, as a dropped lane's taper does, so
+    /// drivers change out of it where they can, and where they can't, go
+    /// through it.
+    pub fn cost(&self) -> f64 {
+        self.cost
     }
 
-    /// As [`Lane::leaving`], to set.
-    pub fn with_leaving(self, leaving: Option<Leaving>) -> Self {
-        Self { leaving, ..self }
+    /// As [`Lane::cost`], to set.
+    pub fn with_cost(self, cost: f64) -> Self {
+        Self { cost, ..self }
     }
 
     /// The vehicle classes that may use it.
@@ -230,6 +219,11 @@ impl Lane {
     /// The road it is part of, for routing.
     pub fn road(&self) -> RoadId {
         self.road
+    }
+
+    /// As [`Lane::road`], to set.
+    pub fn with_road(self, road: RoadId) -> Self {
+        Self { road, ..self }
     }
 
     /// Its shape, and the mapping between world positions and lane coordinates.

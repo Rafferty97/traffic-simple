@@ -2,7 +2,9 @@
 
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
-use traffic_sim::{Classes, Keep, Leaving};
+use traffic_sim::{Classes, Keep};
+
+use crate::Leaving;
 
 use crate::{
     Arm, CompileError, Control, Direction, HookGeometry, Intersection, KeepClear, LaneRef, Piece,

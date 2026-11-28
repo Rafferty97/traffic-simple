@@ -12,7 +12,7 @@ use slotmap::SecondaryMap;
 use arrayvec::ArrayVec;
 
 use crate::class::VehicleClass;
-use crate::network::{LaneId, Leaving, MAX_SUCCESSORS, Neighbor, Side, SimNetwork};
+use crate::network::{LaneId, MAX_SUCCESSORS, Neighbor, Side, SimNetwork};
 use crate::vehicle::{Vehicle, VehicleId};
 
 /// Identifies a destination registered with the simulation (see
@@ -207,12 +207,8 @@ impl Needs {
 
 /// What `vehicle`'s route, `route`, needs from where it is and from beside it,
 /// on the neighbours it may change to on each side, `permitted`; `None` if it
-/// needs nothing of any of them.
-///
-/// Toward a destination, as its route table has them. On a random route, on a
-/// lane that ends by merging, left early (see [`Leaving::Early`]), one change
-/// toward the neighbour that goes on, by its end; nothing more, every lane
-/// leading somewhere.
+/// needs nothing of any of them: toward a destination, as its route table has
+/// them, and on a random route nothing, every lane leading somewhere.
 pub(crate) fn needs(
     network: &SimNetwork,
     tables: &Tables,
@@ -220,33 +216,15 @@ pub(crate) fn needs(
     vehicle: &Vehicle,
     permitted: impl Fn(Side) -> Option<Neighbor>,
 ) -> Option<Needs> {
-    if let Route::Destination(destination) = route {
-        return Some(needs_toward(
-            network,
-            tables[destination.0 as usize].get(vehicle.spec.class),
-            vehicle,
-            permitted,
-        ));
-    }
-    let lane = network.lane(vehicle.path[0]);
-    if lane.leaving() != Some(Leaving::Early) {
+    let Route::Destination(destination) = route else {
         return None;
-    }
-    let distance = lane.geometry().length() - vehicle.lane_pos.s;
-    let here = Need { changes: 1, distance };
-    // Beside it, none if the lane goes on, and as here if not.
-    let beside = |side: Side| {
-        let n = permitted(side)?;
-        Some(match network.lane(n.lane).leaving() {
-            None => Need::NONE,
-            Some(_) => here,
-        })
     };
-    Some(Needs {
-        here: Some(here),
-        left: beside(Side::Left),
-        right: beside(Side::Right),
-    })
+    Some(needs_toward(
+        network,
+        tables[destination.0 as usize].get(vehicle.spec.class),
+        vehicle,
+        permitted,
+    ))
 }
 
 /// What a vehicle needs toward a destination, by its `table`.

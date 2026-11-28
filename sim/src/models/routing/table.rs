@@ -9,7 +9,7 @@ use std::collections::{BinaryHeap, HashMap};
 use crate::class::VehicleClass;
 use crate::models::driver::Driver;
 use crate::motion::lateral::change_length;
-use crate::network::{LaneId, Leaving, Neighbor, RoadId, Side, SimNetwork};
+use crate::network::{LaneId, Neighbor, RoadId, Side, SimNetwork};
 use crate::vehicle::VehicleSpec;
 
 /// The most lane changes a table counts: a way that needs more counts as
@@ -63,8 +63,10 @@ impl Table {
     /// before the lanes run out beside each other and before the next change it
     /// needs, so a way that needs more changes than there is room for isn't
     /// one. Between ways equally quick, the one with fewer changes wins. A
-    /// lane that ends by merging and is left early leads nowhere: it must be
-    /// left by its end.
+    /// lane's cost counts as time on it (see [`Lane::cost`]), so a way round
+    /// a costly lane, through a change, wins over one through it.
+    ///
+    /// [`Lane::cost`]: crate::network::Lane::cost
     ///
     /// Each lane's reach comes from the ways that are quickest from it, so a
     /// vehicle wants the lane changes that take it the quickest way, and where
@@ -108,11 +110,9 @@ impl Table {
                     heap.push(Reverse(Label { time, changes, lane: from }));
                 }
             };
-            // The lanes leading into it, unless they are left early.
+            // The lanes leading into it.
             for &from in network.lane(lane).predecessors() {
-                if network.lane(from).leaving() != Some(Leaving::Early) {
-                    relax(from, (travel(from) + time, changes), &mut heap);
-                }
+                relax(from, (travel(from) + time, changes), &mut heap);
             }
             // The lanes beside it that may change into it, with room to.
             for side in [Side::Left, Side::Right] {
@@ -155,12 +155,10 @@ fn reach_from(
         let j = other.0 as usize;
         done[j] && close(via + best[j].0, time)
     };
-    if lane.leaving() != Some(Leaving::Early) {
-        for &next in lane.successors() {
-            if quickest(next, travel) {
-                for (r, beyond) in out.iter_mut().zip(reach[next.0 as usize]) {
-                    *r = r.max(length + beyond);
-                }
+    for &next in lane.successors() {
+        if quickest(next, travel) {
+            for (r, beyond) in out.iter_mut().zip(reach[next.0 as usize]) {
+                *r = r.max(length + beyond);
             }
         }
     }
@@ -202,7 +200,8 @@ fn reach_from(
 /// mean where each lane runs the road's length, as a road's lanes do, and the
 /// mean of the runs through it where they are split, as a junction's
 /// connectors waiting to turn are. A lane of a road every lane of which
-/// follows another of it, as a ring's does, costs its own time.
+/// follows another of it, as a ring's does, costs its own time. Each lane's
+/// own cost is on top.
 fn costs(network: &SimNetwork) -> Vec<f64> {
     let travel = |lane: &crate::network::Lane| lane.geometry().length() / lane.speed_limit();
     // Each road's time and the lanes that start it.
@@ -217,10 +216,13 @@ fn costs(network: &SimNetwork) -> Vec<f64> {
     }
     network
         .lanes()
-        .map(|(_, lane)| match roads[&lane.road()] {
-            (_, 0) => travel(lane),
-            (time, starting) if starts(lane) => time / f64::from(starting),
-            _ => 0.0,
+        .map(|(_, lane)| {
+            let road = match roads[&lane.road()] {
+                (_, 0) => travel(lane),
+                (time, starting) if starts(lane) => time / f64::from(starting),
+                _ => 0.0,
+            };
+            road + lane.cost()
         })
         .collect()
 }

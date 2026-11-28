@@ -12,7 +12,10 @@ use traffic_sim::{
 use crate::arms::{self, StopLine};
 use crate::reference::{self, Polyline};
 use crate::render;
-use crate::{Compiled, Control, Direction, Intersection, LaneRef, RoadId, RoadNetwork, Sign, Turn};
+use crate::{
+    Compiled, Control, Direction, EARLY_COST, Intersection, LaneRef, Leaving, RoadId, RoadNetwork,
+    Sign, Turn,
+};
 
 /// The road, for routing, of a road's lanes running in `direction`: each of a
 /// road's two ways is a road of its own.
@@ -285,7 +288,13 @@ fn assemble(net: &RoadNetwork) -> Result<(Compiled, Vec<CompileError>), CompileE
                 what,
             )?;
             lanes.push(
-                built_lane.with_keep(keep).with_leaving(lane.leaving).with_allows(lane.allows),
+                built_lane
+                    .with_keep(keep)
+                    .with_cost(match lane.leaving {
+                        Some(Leaving::Early) => EARLY_COST,
+                        _ => 0.0,
+                    })
+                    .with_allows(lane.allows),
             );
             ids.push(LaneId(built.len() as u32));
             built.push(b);
