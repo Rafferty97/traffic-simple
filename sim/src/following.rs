@@ -30,8 +30,8 @@ pub(crate) use classify::{around, classify, record};
 pub(crate) use join::{advance, join_overlaps, reclassify, remove_ghost};
 pub use leaders::{Ahead, Along, Found, find_leaders, for_each_leader};
 pub use overlaps::{Overlaps, overlaps};
-pub use pass::PASSING_CLEARANCE;
 pub(crate) use pass::body;
+pub use pass::{MIN_PASSING_CLEARANCE, PASSING_CLEARANCE, passing_leader};
 
 use glam::DVec2;
 use slotmap::SlotMap;

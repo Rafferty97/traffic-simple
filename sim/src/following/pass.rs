@@ -6,28 +6,64 @@ use glam::DVec2;
 use super::leaders::Along;
 use super::{Lateral, Occupant, inside};
 use crate::debug::PassCheck;
+use crate::motion::kinematics;
 use crate::motion::lateral::LaneChange;
 use crate::network::{LaneId, Side, SimNetwork};
 use crate::simulation::SimState;
 use crate::vehicle::Vehicle;
 
-/// The least room, in meters, a vehicle needs beside another to pass it.
+/// The room, in meters, beside a vehicle that another is given to pass it, as
+/// connectors are sized: it passes with less, more slowly (see
+/// [`MIN_PASSING_CLEARANCE`]).
 pub const PASSING_CLEARANCE: f64 = 0.5;
+
+/// The least room, in meters, beside another vehicle's rear corners that a
+/// vehicle passes it with, as its nose reaches the other's rear: its own room,
+/// above the most its tail swings (see `following::classify`) and what is left
+/// of where it plans to be (see [`Along::reach`]). Above it, how fast it goes
+/// by rises with the room (see [`passing_leader`]).
+pub const MIN_PASSING_CLEARANCE: f64 = 0.3;
+
+/// How many meters of gap each meter of room beside a vehicle being passed
+/// adds to the passing vehicle's gap to it (see [`passing_leader`]).
+pub const PASSING_GAP_PER_ROOM: f64 = 50.0;
+
+/// How many m/s each meter of room beside a vehicle being passed adds to its
+/// speed, as the passing vehicle follows it (see [`passing_leader`]).
+pub const PASSING_SPEED_PER_ROOM: f64 = 10.0;
+
+/// The leader a vehicle follows as it passes another, with `clearance` beside
+/// it, `gap` ahead at `speed`, as its gap and speed, and the room it has more
+/// than [`MIN_PASSING_CLEARANCE`]: the gap, floored at none once level, and the
+/// speed, each raised by that room. With none, it follows the other vehicle as
+/// any leader, so nothing jumps as the room crosses where it may pass; with
+/// more, following fades fast, the further back the sooner, and it goes by
+/// slower the tighter the room, as drivers do.
+pub fn passing_leader(gap: f64, speed: f64, clearance: f64) -> (f64, f64, f64) {
+    let room = (clearance - MIN_PASSING_CLEARANCE).max(0.0);
+    let gap = gap.max(0.0) + PASSING_GAP_PER_ROOM * room;
+    (gap, speed + PASSING_SPEED_PER_ROOM * room, room)
+}
+
+/// How many steps its rear axle trails its front in, planning where it will be
+/// as its nose reaches another vehicle's rear (see [`Along::reach`]).
+const REACH_STEPS: usize = 3;
 
 /// The pass check (see "Pass check" in `docs/multilane-car-following.md`):
 /// whether `vehicle`, searching `along` some lanes with its rear axle at
 /// `axle_s` along the lanes it follows and its pose `now`, may pass the vehicle
-/// whose record `o` it found `gap` ahead on `lane`, the `k`th lane searched,
-/// where it is itself `mine` to that lane. `None` where no check is made, and
-/// the other vehicle is simply followed.
+/// whose record `o` it found `at` along the lanes searched, on `lane`, the `k`th
+/// of them, where it is itself `mine` to that lane. `None` where no check is
+/// made, and the other vehicle is simply followed.
 ///
 /// A pair [`passing_side`] lets through is checked: with the follower where it
-/// plans to be as its front reaches the other's rear (see [`Along::pose`]),
-/// driving straight ahead must leave at least [`PASSING_CLEARANCE`] beside the
-/// other vehicle's rear corners. A follower diverging from the lane passes any
-/// record its body will be wholly out of the lane by then, since it never
-/// comes back, so it is checked against every leader, on the side it leaves
-/// toward.
+/// plans to be as its front reaches the other's rear (see [`Along::reach`]),
+/// driving straight ahead must leave at least [`MIN_PASSING_CLEARANCE`] beside
+/// the other vehicle's rear corners, and it goes by no faster than the room
+/// lets it, which is the caller's to apply. A follower diverging from the lane
+/// passes any record its body will be wholly out of the lane by then, freely,
+/// since it never comes back, so it is checked against every leader, on the
+/// side it leaves toward.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn check(
     state: &SimState,
@@ -37,7 +73,7 @@ pub(super) fn check(
     now: (DVec2, DVec2),
     k: usize,
     lane: LaneId,
-    gap: f64,
+    at: f64,
     o: &Occupant,
     mine: Lateral,
 ) -> Option<PassCheck> {
@@ -52,15 +88,25 @@ pub(super) fn check(
     // The record sits at the other vehicle's rearmost corner.
     let [rear_left, rear_right, ..] = other.corners();
     let (rearmost, corners) = (geometry.lane_to_world(o.hint), [rear_left, rear_right]);
-    let (pos, tangent) = along.reach(network, vehicle, axle_s, k, lane, gap, rearmost, o.s(), now);
+    let (pos, tangent, _) =
+        along.reach(network, vehicle, axle_s, k, lane, at, rearmost, o.s(), now);
     let half_width = 0.5 * vehicle.spec.width;
     let (clearance, corner) = clearance(side, pos, tangent, half_width, corners);
-    let gone = || {
+    let gone = mine.is_diverging() && {
         let body = body(&vehicle.spec, pos, tangent);
         !body.iter().any(|&c| inside(geometry, c, o.hint))
     };
-    let passed = (by_table && clearance >= PASSING_CLEARANCE) || (mine.is_diverging() && gone());
-    Some(PassCheck { leader: o.id, pos, tangent, side, corner, clearance, passed })
+    let passed = gone || (by_table && clearance >= MIN_PASSING_CLEARANCE);
+    Some(PassCheck {
+        leader: o.id,
+        pos,
+        tangent,
+        side,
+        corner,
+        clearance,
+        gone,
+        passed,
+    })
 }
 
 /// The side of a vehicle ahead a follower might pass it on, or `None` if it may
@@ -131,56 +177,85 @@ impl Along {
         }
     }
 
-    /// Its rear axle's position and heading, as a unit tangent, `ahead` meters
-    /// further along where it plans to be, from `axle_s` along the lanes it
-    /// follows: its path, with its lane change's cubic, or, settled beside it, the
-    /// centerlines there. The heading follows the cubic's slope as well as the
-    /// lanes' bends.
+    /// Its front axle's course, at `s` along the lanes it follows: its path, with
+    /// its lane change's quintic, its corners rounded as it drives them, or,
+    /// settled beside it, the centerlines there.
+    fn course(self, network: &SimNetwork, vehicle: &Vehicle, s: f64) -> DVec2 {
+        let change = self.change(vehicle);
+        let offset = |s: f64| change.map_or(0.0, |c| c.offset_at(s));
+        match self {
+            Along::Into(_) => {
+                let lanes = (0..).map_while(|k| self.lane(network, vehicle, k));
+                network.pose_along(lanes, s, 0.0, 0.0).0
+            }
+            _ => network.smooth_point_along(&vehicle.path, s, offset),
+        }
+    }
+
+    /// Its rear axle's position and heading, as a unit tangent, where it plans
+    /// to be with its front axle `front_s` along the lanes it follows (see
+    /// [`Along::course`]), with no pose to start from: its front axle on its
+    /// course, heading toward its course a wheelbase behind that, as a body on
+    /// rails would, its rear axle a wheelbase behind its front along that
+    /// heading. A rear axle trailing its front cuts inside a bend, which this
+    /// leaves out: at most about 15 cm by its nose across a lane change from
+    /// rest, and under 1 cm at speed.
     pub(crate) fn pose(
         self,
         network: &SimNetwork,
         vehicle: &Vehicle,
-        axle_s: f64,
-        ahead: f64,
+        front_s: f64,
     ) -> (DVec2, DVec2) {
-        let change = self.change(vehicle);
-        let lanes = (0..).map_while(|k| match self {
-            Along::Into(_) => self.lane(network, vehicle, k),
-            _ => vehicle.path.get(k).copied(),
-        });
-        let at = axle_s + ahead.max(0.0);
-        let (offset, slope) = change.map_or((0.0, 0.0), |c| (c.offset_at(at), c.slope_at(at)));
-        network.pose_along(lanes, at, offset, slope)
+        let wheelbase = vehicle.spec.wheelbase();
+        let front = self.course(network, vehicle, front_s);
+        let tangent = (front - self.course(network, vehicle, front_s - wheelbase))
+            .try_normalize()
+            .unwrap_or(vehicle.dir);
+        (front - wheelbase * tangent, tangent)
+    }
+
+    /// Its front axle's `s` along the lanes it follows: its own on its path, and,
+    /// settled beside it, a wheelbase ahead of its rear axle there, at `axle_s`.
+    pub(crate) fn front_s(self, vehicle: &Vehicle, axle_s: f64) -> f64 {
+        match self {
+            Along::Into(_) => axle_s + vehicle.spec.wheelbase(),
+            _ => vehicle.front_s,
+        }
     }
 
     /// Where it will be, as its rear axle's position and heading, when its nose
-    /// reaches `point`, another vehicle's rearmost corner, at `s`
-    /// on `lane`, the `k`th lane searched, with its rear axle at `axle_s` along the
-    /// lanes it follows (see [`Along::pose`]).
+    /// reaches `point`, another vehicle's rearmost corner, `at` along the lanes
+    /// searched, at `s` on `lane`, the `k`th of them, with its rear axle at
+    /// `axle_s` along the lanes it follows and its pose `now`; and how far its
+    /// front axle has to go to get there, along its course (see
+    /// [`Along::course`]), to its front overhang short of the corner.
     ///
-    /// Along the lanes it follows, `gap`, how far its rear axle travels before its
-    /// nose reaches `s`, is exact. Leaving the lanes searched, distances there
-    /// differ from its own, so `point` is projected onto its own `k`th lane
-    /// instead.
+    /// Along the lanes it follows, `at` is where the corner is. Leaving the lanes
+    /// searched, distances there differ from its own, so `point` is projected
+    /// onto its own `k`th lane instead.
     ///
-    /// If its nose is already there, there is no earlier point to check from, so
-    /// it is where it is `now` rather than where its course would put it, which
-    /// its rear axle, trailing its front, lags behind.
+    /// It drives there from `now`, its front axle along its course, its rear axle
+    /// trailing it as it moves, in [`REACH_STEPS`] equal steps: rough far
+    /// ahead, where its heading hardly bends meanwhile, and closer to how it
+    /// will go as it gets there, until where it plans to be is where it is. By
+    /// its nose, across a lane change from rest, that is out by under 2 cm with
+    /// 5 m to go, 5 cm with 10 m and about 12 cm with 15 m. If its front axle
+    /// is already there, it is where it is now.
     #[allow(clippy::too_many_arguments)]
-    fn reach(
+    pub(crate) fn reach(
         self,
         network: &SimNetwork,
         vehicle: &Vehicle,
         axle_s: f64,
         k: usize,
         lane: LaneId,
-        gap: f64,
+        at: f64,
         point: DVec2,
         s: f64,
         now: (DVec2, DVec2),
-    ) -> (DVec2, DVec2) {
-        let nose = vehicle.spec.length - vehicle.spec.rear_axle;
-        let ahead = match (self, vehicle.path.get(k)) {
+    ) -> (DVec2, DVec2, f64) {
+        let overhang = vehicle.spec.length - vehicle.spec.front_axle;
+        let at = match (self, vehicle.path.get(k)) {
             (Along::Leaving(..), Some(&own)) => {
                 let (own_lane, searched) = (network.lane(own), network.lane(lane));
                 let before: f64 =
@@ -190,14 +265,25 @@ impl Along {
                     s / searched.geometry().length() * own_lane.geometry().length(),
                     0.0,
                 );
-                before + own_lane.geometry().world_to_lane_near(point, hint).s - nose - axle_s
+                before + own_lane.geometry().world_to_lane_near(point, hint).s
             }
-            _ => gap,
+            _ => at,
         };
-        match ahead > 0.0 {
-            true => self.pose(network, vehicle, axle_s, ahead),
-            false => now,
+        let from = self.front_s(vehicle, axle_s);
+        let ahead = (at - overhang - from).max(0.0);
+        let wheelbase = vehicle.spec.wheelbase();
+        let (mut rear, mut dir) = now;
+        if ahead > 0.0 {
+            for i in 1..=REACH_STEPS {
+                let front = self.course(
+                    network,
+                    vehicle,
+                    from + ahead * i as f64 / REACH_STEPS as f64,
+                );
+                (rear, dir) = kinematics::trail(rear, dir, front, wheelbase);
+            }
         }
+        (rear, dir, ahead)
     }
 }
 
@@ -277,10 +363,11 @@ mod test {
     }
 
     #[test]
-    fn a_vehicle_plans_to_follow_its_cubic() {
+    fn a_vehicle_plans_its_front_axle_along_its_quintic() {
         // Straight along x, changing from 3.5 m left of the centerline back onto
-        // it, from rest, as sharply as it can steer: halfway, it is 1.75 m left
-        // and heading right of x.
+        // it, from rest, as sharply as it can steer: with its front axle halfway,
+        // that is 1.75 m left, heading right of x, its rear axle a wheelbase
+        // behind.
         let lane = Lane::new(
             &[DVec2::ZERO, DVec2::new(100.0, 0.0)],
             3.5,
@@ -293,13 +380,18 @@ mod test {
         let change = LaneChange::new(0.0, 3.5, 0.0, 0.0);
         vehicle.lane_change = Some(change);
         let along = Along::Path(0);
+        let wheelbase = vehicle.spec.wheelbase();
         let half = 0.5 * change.length;
-        let (pos, tangent) = along.pose(&network, &vehicle, 0.0, half);
-        assert!((pos - DVec2::new(half, 1.75)).length() < 1e-9, "at {pos}");
+        let (pos, tangent) = along.pose(&network, &vehicle, half);
+        let front = pos + wheelbase * tangent;
+        assert!(
+            (front - DVec2::new(half, 1.75)).length() < 1e-9,
+            "at {front}"
+        );
         assert!(tangent.y < -0.2, "heading {tangent}");
         // Not changing, it heads straight along the centerline.
         vehicle.lane_change = None;
-        let (pos, tangent) = along.pose(&network, &vehicle, 0.0, 7.5);
+        let (pos, tangent) = along.pose(&network, &vehicle, 7.5 + wheelbase);
         assert!((pos - DVec2::new(7.5, 0.0)).length() < 1e-9);
         assert!((tangent - DVec2::X).length() < 1e-9);
     }
@@ -307,19 +399,24 @@ mod test {
     #[test]
     fn settled_into_the_lane_beside_it_plans_to_follow_its_centerline() {
         // On lane 1 of the bend, weighing up lane 0 on its left: as if already
-        // there, on lane 0's centerline, with no cubic and not moving across.
+        // there, its front axle on lane 0's centerline a wheelbase ahead of its
+        // rear axle, with no quintic and not moving across, and its rear axle
+        // within the chord's sagitta of it, under a centimetre.
         let network = bend();
         let vehicle = car_at(&network, 1, 10.0);
         let along = Along::Into(Side::Left);
         assert_eq!(along.lane(&network, &vehicle, 0), Some(LaneId(0)));
         let axle_s = axle_beside(&network, &vehicle, LaneId(0));
-        let (pos, _) = along.pose(&network, &vehicle, axle_s, 20.0);
-        let inside = network.lane(LaneId(0));
-        let on = inside
-            .geometry()
-            .world_to_lane_near(pos, inside.geometry().lane_pos(axle_s + 20.0, 0.0));
+        let wheelbase = vehicle.spec.wheelbase();
+        let (pos, tangent) = along.pose(&network, &vehicle, axle_s + wheelbase + 20.0);
+        let inside = network.lane(LaneId(0)).geometry();
+        let front = pos + wheelbase * tangent;
+        let s = axle_s + wheelbase + 20.0;
+        let on = inside.world_to_lane_near(front, inside.lane_pos(s, 0.0));
         assert!(on.t.abs() < 1e-6, "{on:?}");
-        assert!((on.s - (axle_s + 20.0)).abs() < 1e-6, "{on:?}");
+        assert!((on.s - s).abs() < 1e-6, "{on:?}");
+        let on = inside.world_to_lane_near(pos, inside.lane_pos(axle_s + 20.0, 0.0));
+        assert!(on.t.abs() < 0.01, "{on:?}");
     }
 
     /// Two concentric half-circle lanes, curving left: lane 0 inside, of radius
@@ -357,8 +454,6 @@ mod test {
 
     /// The test car's nose, ahead of its rear axle.
     const NOSE: f64 = 3.6;
-    /// Unused: `reach` shouldn't fall back to where the vehicle is.
-    const NOWHERE: (DVec2, DVec2) = (DVec2::new(1e9, 1e9), DVec2::X);
 
     #[test]
     fn on_its_own_lane_the_nose_stops_just_short_of_the_other_rear() {
@@ -367,17 +462,16 @@ mod test {
         let lane = network.lane(LaneId(1));
         // A rear corner 60 m along, off the centerline.
         let corner = lane.geometry().lane_to_world(lane.geometry().lane_pos(60.0, -0.9));
-        let gap = 60.0 - (10.0 + NOSE);
-        let (pos, tangent) = Along::Path(0).reach(
+        let (pos, tangent, _) = Along::Path(0).reach(
             &network,
             &vehicle,
             10.0,
             0,
             LaneId(1),
-            gap,
+            60.0,
             corner,
             60.0,
-            NOWHERE,
+            (vehicle.pos, vehicle.dir),
         );
         let nose = nose_along(&network, LaneId(1), pos, tangent, NOSE, 60.0);
         assert!((nose - 60.0).abs() < 0.02, "nose at {nose}");
@@ -386,13 +480,13 @@ mod test {
     #[test]
     fn on_the_old_side_the_other_rear_is_projected_onto_its_own_lane() {
         // Leaving lane 0 for lane 1: lane 0 is shorter round the bend, so its
-        // distances aren't lane 1's, and the gap is ignored.
+        // distances aren't lane 1's, and where it is along lane 0 is ignored.
         let network = bend();
         let vehicle = car_at(&network, 1, 10.0);
         let beside = network.lane(LaneId(0));
         let corner = beside.geometry().lane_to_world(beside.geometry().lane_pos(58.0, -1.2));
         let along = Along::Leaving(Side::Left, 0);
-        let (pos, tangent) = along.reach(
+        let (pos, tangent, _) = along.reach(
             &network,
             &vehicle,
             10.0,
@@ -401,7 +495,7 @@ mod test {
             999.0,
             corner,
             58.0,
-            NOWHERE,
+            (vehicle.pos, vehicle.dir),
         );
         let own = network.lane(LaneId(1));
         let target =
@@ -422,17 +516,16 @@ mod test {
         vehicle.lane_change = Some(LaneChange::new(10.0, 3.5, 0.0, 0.0));
         let lane = network.lane(LaneId(1));
         let corner = lane.geometry().lane_to_world(lane.geometry().lane_pos(25.0, 0.0));
-        let gap = 25.0 - (10.0 + NOSE);
-        let (pos, tangent) = Along::Path(0).reach(
+        let (pos, tangent, _) = Along::Path(0).reach(
             &network,
             &vehicle,
             10.0,
             0,
             LaneId(1),
-            gap,
+            25.0,
             corner,
             25.0,
-            NOWHERE,
+            (vehicle.pos, vehicle.dir),
         );
         let nose = nose_along(&network, LaneId(1), pos, tangent, NOSE, 25.0);
         assert!(nose <= 25.0 + 1e-9 && nose > 25.0 - 0.3, "nose at {nose}");
@@ -447,10 +540,9 @@ mod test {
         // The other rear is behind its nose already, or level with it.
         for s in [11.0, 13.0, 10.0 + NOSE] {
             let corner = lane.geometry().lane_to_world(lane.geometry().lane_pos(s, 0.0));
-            let gap = s - (10.0 + NOSE);
             let reached =
-                Along::Path(0).reach(&network, &vehicle, 10.0, 0, LaneId(1), gap, corner, s, now);
-            assert_eq!(reached, now, "rear at {s}");
+                Along::Path(0).reach(&network, &vehicle, 10.0, 0, LaneId(1), s, corner, s, now);
+            assert_eq!(reached, (now.0, now.1, 0.0), "rear at {s}");
         }
     }
 }

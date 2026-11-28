@@ -93,8 +93,8 @@ fn lateral(
     let known = known - axle;
 
     let geometry = network.lane(lane).geometry();
-    let pose = |ahead: f64| {
-        let (pos, tangent) = Along::Path(0).pose(network, vehicle, axle, ahead);
+    let pose = |front_s: f64| {
+        let (pos, tangent) = Along::Path(0).pose(network, vehicle, front_s);
         body(&vehicle.spec, pos, tangent)
     };
     let mut hint = o.hint;
@@ -157,7 +157,7 @@ fn lateral(
 
     // Which side of the lane it ends up on: as far along as it knows its way.
     let centre = {
-        let c = pose(known);
+        let c = pose(axle + known);
         geometry.world_to_lane_near(0.5 * (c[0] + c[2]), hint)
     };
     let side = match centre.t {

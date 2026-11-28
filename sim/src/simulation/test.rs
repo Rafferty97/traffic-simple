@@ -1011,11 +1011,71 @@ fn a_car_sees_a_diverging_car_its_leader_has_passed() {
     let record = sim.state.occupants[1].iter().find(|o| o.id == c).unwrap();
     assert_eq!(record.lateral, Lateral::Diverging(Side::Left));
     let b = sim.insert(car(), crate::simulation::test::driver(), at(1, 45.0, 10.0));
-    let wide = VehicleSpec { width: 2.6, ..car() };
+    let wide = VehicleSpec { width: 2.9, ..car() };
     let a = sim.insert(wide, driver(), at(1, 30.0, 10.0));
     assert_eq!(leaders(&sim, b), [], "B passes C");
     // A reacts to B, and to C past it, rather than finding C only once B is by.
     assert_eq!(leaders(&sim, a), [b, c]);
+}
+
+#[test]
+fn passing_a_diverging_car_it_goes_by_slower_the_tighter_the_room() {
+    // C, as in the test above, its right rear corner 1.6 m left of lane 1's
+    // centerline, changing out at 3.75 m/s. B, in lane 1 behind it, passes it
+    // following it as a leader further ahead and faster, by the room beside it
+    // above the least it passes with. A wider B has less room, so eases off
+    // more; one wider still has too little, and follows C.
+    let place = |width: f64| {
+        let mut sim = two_lanes();
+        let c = sim.insert(car(), crate::simulation::test::driver(), at(1, 60.0, 3.75));
+        sim.change_lane(c, Side::Left).unwrap();
+        let lane_1 = sim.state.network.lane(LaneId(1));
+        let pos = lane_1.geometry().lane_to_world(lane_1.geometry().lane_pos(60.0, 2.55));
+        let lane_0 = sim.state.network.lane(LaneId(0));
+        let on_0 = lane_0.geometry().world_to_lane_near(pos, lane_0.geometry().lane_pos(60.0, 0.0));
+        let v = &mut sim.state.vehicles[c];
+        (v.pos, v.dir, v.lane_pos) = (pos, DVec2::X, on_0);
+        sim.update_occupancy(0.0);
+        let spec = VehicleSpec { width, ..car() };
+        let b = sim.insert(spec, crate::simulation::test::driver(), at(1, 51.0, 10.0));
+        (sim, b, c, spec)
+    };
+    // B's pass check against C, its term for passing it, whether it follows C
+    // instead, and the term it would have against the leader it passes as.
+    let passing = |width: f64| {
+        let (mut sim, b, c, spec) = place(width);
+        let (check, gap, headway) = search(&sim, b, |found| match found {
+            Found::Pass(check, gap, headway) => ControlFlow::Break((check, gap, headway)),
+            _ => ControlFlow::Continue(()),
+        })
+        .break_value()
+        .unwrap();
+        let mut sink = Terms::default();
+        sim.update_accels(&mut sink);
+        let term = sink.0.iter().find_map(|&(id, source, accel)| match source {
+            AccelSource::Passing { id: leader, room, .. } if id == b && leader == c => {
+                Some((accel, room))
+            }
+            _ => None,
+        });
+        let (ahead, speed, _) = crate::following::passing_leader(gap, 3.75, check.clearance);
+        let expected = acceleration::relaxed(&spec, 10.0, ahead, speed, headway);
+        (check, term, expected, leaders(&sim, b) == [c])
+    };
+    let (check, term, expected, follows) = passing(car().width);
+    assert!(check.passed && !follows, "{check:?}");
+    let (accel, room) = term.unwrap();
+    assert!((room - (check.clearance - crate::following::MIN_PASSING_CLEARANCE)).abs() < 1e-12);
+    assert_eq!(accel, expected);
+    let (check, wider, _, follows) = passing(car().width + 0.4);
+    assert!(check.passed && !follows, "{check:?}");
+    let (tighter, _) = wider.unwrap();
+    assert!(
+        tighter < accel,
+        "{tighter} with less room, {accel} with more"
+    );
+    let (check, term, _, follows) = passing(car().width + 0.8);
+    assert!(!check.passed && follows && term.is_none(), "{check:?}");
 }
 
 #[test]
@@ -1053,6 +1113,148 @@ fn weighing_up_a_change_it_follows_a_car_still_leaving_the_lane() {
     // As its own search will find it once it has changed.
     sim.change_lane(a, Side::Left).unwrap();
     assert_eq!(leaders(&sim, a), [b]);
+}
+
+#[test]
+fn where_it_plans_to_pass_from_closes_in_on_where_it_gets_to() {
+    // Changing left from lane 1, from a crawl to a moderate speed. Passing
+    // clearance is measured across its heading as its nose reaches another
+    // vehicle's rear, its front axle its front overhang short. Planning afresh
+    // at every step, as the pass check does, where it plans its body's
+    // centerline to cross each point ahead along x is close to where it does
+    // as its front axle gets there, and closer the nearer it is: within 1 cm
+    // plus 1 cm a metre of the way still to go.
+    for speed in [0.5, 1.0, 3.0, 10.0] {
+        let mut sim = two_lanes();
+        let id = sim.insert(
+            car(),
+            crate::simulation::test::driver(),
+            at(1, 100.0, speed),
+        );
+        sim.change_lane(id, Side::Left).unwrap();
+        let v = &sim.state.vehicles[id];
+        let overhang = v.spec.length - v.spec.front_axle;
+        let length = v.lane_change.unwrap().length;
+        let start = v.front_s + overhang;
+        // Where a body's centerline crosses x.
+        let across = |pos: DVec2, dir: DVec2, x: f64| pos.y + (x - pos.x) * dir.y / dir.x;
+        let targets: Vec<f64> =
+            (1..=40).map(|i| start + 0.05 * i as f64 * (length + 15.0)).collect();
+        // Each target's plans so far: how far its front axle had to go, and where.
+        let mut plans = vec![Vec::new(); targets.len()];
+        let mut next = 0;
+        for _ in 0..20_000 {
+            if next == targets.len() {
+                break;
+            }
+            let v = &sim.state.vehicles[id];
+            for (t, &x) in targets.iter().enumerate().skip(next) {
+                let point = DVec2::new(x, 0.0);
+                let now = (v.pos, v.dir);
+                let (pos, dir, ahead) = Along::Path(0).reach(
+                    &sim.state.network,
+                    v,
+                    v.lane_pos.s,
+                    0,
+                    LaneId(0),
+                    x,
+                    point,
+                    x,
+                    now,
+                );
+                if ahead > 0.0 {
+                    plans[t].push((ahead, across(pos, dir, x)));
+                }
+            }
+            sim.update_motion(1.0 / 60.0, &mut NoopSink);
+            sim.update_occupancy(0.0);
+            let v = &sim.state.vehicles[id];
+            while next < targets.len() && v.front_s + overhang >= targets[next] {
+                let x = targets[next];
+                let y = across(v.pos, v.dir, x);
+                for &(ahead, planned) in &plans[next] {
+                    let error = (planned - y).abs();
+                    let bound = 0.01 + 0.01 * ahead;
+                    assert!(
+                        error < bound,
+                        "at {speed} m/s, x {x}, {ahead} m to go: out by {error}"
+                    );
+                }
+                next += 1;
+            }
+        }
+        assert_eq!(next, targets.len(), "at {speed} m/s, never got there");
+    }
+}
+
+#[test]
+fn changing_lanes_from_rest_past_a_stopped_car_it_never_brakes_hard() {
+    // A car held stopped in lane 1, and another behind it changing left out of
+    // lane 1 from rest, from each of a range of places, so it passes the stopped
+    // car's rear corner at every clearance across the threshold, or follows it:
+    // straight on, or held a while partway through its change, its body angled
+    // across the lanes, and moving off again. Either way, it never turns to
+    // follow a car it is already level with, braking hard, nor comes to rest
+    // alongside it.
+    let mut flips = Vec::new();
+    let mut stuck = Vec::new();
+    let (mut runs, mut passed) = (0, 0);
+    for stop_after in (0..=16).map(|k| (k > 0).then_some(0.5 * k as f64)) {
+        for i in 0..400 {
+            let mut sim = two_lanes();
+            let held = sim.insert(car(), crate::simulation::test::driver(), at(1, 120.0, 0.0));
+            sim.hold(held);
+            // Its nose from 0.1 m to 10 m short of the stopped car's rear.
+            let s = 115.3 - 0.025 * i as f64;
+            let id = sim.insert(car(), crate::simulation::test::driver(), at(1, s, 0.0));
+            sim.change_lane(id, Side::Left).unwrap();
+            let mut released = stop_after.is_none();
+            let (mut at_rest, mut alongside) = (0, 0);
+            for _ in 0..(30.0 / STEP) as usize {
+                sim.step();
+                let v = &sim.state.vehicles[id];
+                if !released {
+                    // Held once its front axle has gone so far, and let go a
+                    // second after it comes to rest.
+                    let front = v.front_s - (s + car().wheelbase());
+                    if stop_after.is_some_and(|d| front >= d) {
+                        sim.hold(id);
+                    }
+                    if sim.state.vehicles[id].speed == 0.0 && front > 0.0 {
+                        at_rest += 1;
+                    }
+                    if at_rest > 30 {
+                        sim.release(id);
+                        released = true;
+                    }
+                    continue;
+                }
+                if v.speed > 0.0 && v.accel < -SAFE_BRAKING_FOR_TESTS {
+                    flips.push((stop_after, s, sim.time(), v.accel));
+                    break;
+                }
+                // At rest with its nose past the stopped car's rear, and its rear
+                // axle short of its front.
+                let nose = v.pos + (car().length - car().rear_axle) * v.dir;
+                match v.speed == 0.0 && nose.x > 119.0 && v.pos.x < 123.7 {
+                    true => alongside += 1,
+                    false => alongside = 0,
+                }
+                if alongside as f64 * STEP > 5.0 {
+                    stuck.push((stop_after, s, sim.time()));
+                    break;
+                }
+            }
+            runs += 1;
+            if sim.state.vehicles[id].pos.x > 130.0 {
+                passed += 1;
+            }
+        }
+    }
+    assert!(flips.is_empty(), "{} of {runs}: {flips:?}", flips.len());
+    assert!(stuck.is_empty(), "{} of {runs}: {stuck:?}", stuck.len());
+    // Some get by, some wait behind: the threshold is crossed.
+    assert!(passed > 0 && passed < runs, "{passed} of {runs} passed");
 }
 
 #[test]

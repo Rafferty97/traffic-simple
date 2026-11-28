@@ -79,9 +79,13 @@ pub enum Found {
     /// relaxation has it (see [`acceleration::relaxation`]): each is its own
     /// term in the longitudinal model, whose minimum binds.
     Ahead(Ahead, f64, f64),
-    /// A check for passing a vehicle ahead, passed or not. One that fails is
-    /// followed by that vehicle, as [`Found::Ahead`].
-    Pass(PassCheck),
+    /// A check for passing a vehicle ahead, passed or not, with the gap to it and
+    /// the share of its time headway, as [`Found::Ahead`]. One that fails is
+    /// followed by that vehicle, as [`Found::Ahead`]; one that passes by the
+    /// room beside it is followed as a leader further ahead and faster, by how
+    /// much room it has (see [`super::passing_leader`]), which is the caller's to
+    /// apply.
+    Pass(PassCheck, f64, f64),
 }
 
 /// Searches for what is ahead of a vehicle, `along` some lanes, within its
@@ -112,9 +116,9 @@ pub enum Found {
 /// A vehicle diverging from a lane searched passes any record there that its
 /// body will be wholly out of the lane by the time it reaches: it never comes
 /// back. Some records may also be passed, by the rules in `pass::passing_side`. One
-/// of those is passed if, with this vehicle where it plans to be (see [`Along::pose`]) as its
+/// of those is passed if, with this vehicle where it plans to be (see [`Along::reach`]) as its
 /// front reaches that record's rear, driving straight ahead would leave at least
-/// [`PASSING_CLEARANCE`](super::PASSING_CLEARANCE) beside the other vehicle's rear corners. That reads the
+/// [`MIN_PASSING_CLEARANCE`](super::MIN_PASSING_CLEARANCE) beside the other vehicle's rear corners. That reads the
 /// other vehicle's corners from the state's vehicles, as does working out what a
 /// leader shields. Each such check is passed to `f`, as [`Found::Pass`].
 ///
@@ -203,7 +207,7 @@ pub fn find_leaders<B>(
     // Settled beside its path, it is nowhere yet, so where it is now is where it
     // would be.
     let now = match along {
-        Along::Into(_) => along.pose(network, vehicle, axle_s, 0.0),
+        Along::Into(_) => along.pose(network, vehicle, along.front_s(vehicle, axle_s)),
         _ => (vehicle.pos, vehicle.dir),
     };
 
@@ -290,18 +294,19 @@ pub fn find_leaders<B>(
             if in_lane && k < covered {
                 continue;
             }
-            let mine = own_lateral(k, lane);
-            let check = pass::check(state, vehicle, along, axle_s, now, k, lane, gap, o, mine);
-            if let Some(check) = check {
-                f(Found::Pass(check))?;
-                if check.passed {
-                    continue;
-                }
-            }
             let headway = match own_age {
                 Some(own) => acceleration::relaxation(own.min(o.age)),
                 None => 1.0,
             };
+            let mine = own_lateral(k, lane);
+            let at = offset + o.s();
+            let check = pass::check(state, vehicle, along, axle_s, now, k, lane, at, o, mine);
+            if let Some(check) = check {
+                f(Found::Pass(check, gap, headway))?;
+                if check.passed {
+                    continue;
+                }
+            }
             f(Found::Ahead(Ahead::Vehicle(o.id), gap, headway))?;
             if in_lane {
                 let cover = shields(lane_at, k, &state.vehicles[o.id].path);

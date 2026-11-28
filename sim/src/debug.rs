@@ -117,7 +117,12 @@ pub struct PassCheck {
     /// Room between that corner and the searching vehicle's near edge, in meters:
     /// negative if they overlap.
     pub clearance: f64,
-    /// Whether that is enough to pass.
+    /// Whether it will be wholly out of the other vehicle's lane by then, so it
+    /// passes it freely, however little room it has.
+    pub gone: bool,
+    /// Whether it may pass: gone, or with at least
+    /// [`crate::following::MIN_PASSING_CLEARANCE`], going by no faster than the
+    /// room lets it.
     pub passed: bool,
 }
 
@@ -130,6 +135,10 @@ pub enum AccelSource {
     /// and the share of its time headway the follower keeps to it as relaxation
     /// has it: less than 1 just after either appeared in the lane.
     Leader { id: VehicleId, gap: f64, headway: f64 },
+    /// A vehicle it is passing, the gap to its rear, and the room beside it above
+    /// the least it passes with, in meters: followed as a leader further ahead
+    /// and faster, the more room it has (see [`crate::following::passing_leader`]).
+    Passing { id: VehicleId, gap: f64, room: f64 },
     /// A lower speed limit on a lane ahead along its path, the speed it would go
     /// there, in m/s, and the gap from its front to that lane's start: zero
     /// once its front is on it.

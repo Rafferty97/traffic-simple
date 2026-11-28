@@ -65,6 +65,11 @@ fn describe(source: AccelSource) -> (String, Option<Entity>, Option<f64>) {
         AccelSource::Leader { id, gap, .. } => {
             ("leader".into(), Some(Entity::Vehicle(id)), Some(gap))
         }
+        AccelSource::Passing { id, gap, room } => (
+            format!("passing, {room:.2} m spare"),
+            Some(Entity::Vehicle(id)),
+            Some(gap),
+        ),
         AccelSource::Cap { max_speed: 0.0 } => ("held to a stop".into(), None, None),
         AccelSource::Cap { max_speed } => {
             (format!("capped at {:.0} km/h", max_speed * 3.6), None, None)
@@ -115,6 +120,7 @@ fn describe(source: AccelSource) -> (String, Option<Entity>, Option<f64>) {
 fn named(source: AccelSource) -> Option<VehicleId> {
     match source {
         AccelSource::Leader { id, .. }
+        | AccelSource::Passing { id, .. }
         | AccelSource::Junction { id, .. }
         | AccelSource::Merge { id, .. } => Some(id),
         AccelSource::Model { id, .. } => id,

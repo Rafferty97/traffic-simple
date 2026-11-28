@@ -113,7 +113,7 @@ pub(crate) fn measure(
             let term = acceleration::relaxed(&vehicle.spec, vehicle.speed, gap, speed, share);
             own_after = own_after.min(term);
         }
-        Found::Pass(_) => {}
+        Found::Pass(..) => {}
     });
     let own_after = own_after.min(cap);
 

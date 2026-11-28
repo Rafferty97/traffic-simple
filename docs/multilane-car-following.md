@@ -58,15 +58,30 @@ below, whatever they are doing.
 ### Pass check
 
 A's own record on Z is classified too, so each of A and B is in lane, converging or diverging. Both checks start from A's
-projected pose: the pose A will have when its front reaches B's rear.
+projected pose: the pose A will have when its front reaches B's rear, its front axle its front overhang short of B's
+rearmost corner along A's own lanes. A is driven there from where it is: its front axle along its course, its lane
+change's quintic included, as the motion places it, and its rear axle trailing it by the motion's own step, in three
+equal steps however far it has to go. Far ahead its heading hardly bends over a step, so the plan is rough; as it closes
+in, the steps shorten and the plan becomes how it will drive, until, with nowhere left to go, it is where it is. Across a
+lane change from rest, the line its body drives along is out by its nose by under 2 cm with 5 m to go, 5 cm with 10 m
+and about 12 cm with 15 m; at speed, by millimetres. Placing its rear axle on its course instead, ignoring that it trails,
+was out by up to 0.9 m on a change from rest, more than the room the check asked for, and the plan jumped where it met
+the real pose, so a car already level with another could suddenly have to follow it. Neither SUMO nor MOBIL predicts
+here: SUMO's sublane model compares lateral gaps as they are now.
 
 - **Gone:** if A is diverging and its projected body is wholly outside Z, it may pass B, whatever B is doing. A diverging
   vehicle never comes back into Z once it has left, and B is confined to Z and its own other lanes, so they can only meet
   in a lane A searches as its own (invariant 1), where that search deals with B. B moves on meanwhile, so A reaches it
   further on, further out of Z still.
-- **Projection:** if at that pose A clears B's rear corners with sufficient margin, it may pass. This only has to check
+- **Projection:** if at that pose A clears B's rear corners by at least 0.3 m, it may pass. This only has to check
   the trailing side of the diverging vehicle, and is only sound where neither vehicle moves toward the other sideways
-  after that point.
+  after that point. The 0.3 m is well above the most a tail swings (about 10 cm, see Classifying occupancy records) and
+  what is left of the plan's error as A gets there. A passing by projection still follows B as it goes by, as a leader
+  further ahead and faster: its gap, floored at nothing once level, lengthened by 50 m, and its speed raised by 10 m/s,
+  for each metre of room above the 0.3 m. With no more room it simply follows B, so its acceleration doesn't jump as the
+  room crosses where it may pass; with more, B soon stops mattering, the further back the sooner, and A goes by slower
+  the tighter the room, as drivers do: about 4 m/s beside a stopped car with 0.5 m of room, and a crawl with 0.35 m. This
+  is the simulator's own; road design ties lateral clearance to speed through shy distances.
 
 The gone check applies whenever A is diverging. Whether the projection applies depends on the two classifications:
 

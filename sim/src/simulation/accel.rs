@@ -11,7 +11,7 @@ use crate::barrier;
 use crate::debug::{AccelSource, DebugEvent, DebugSink};
 use std::ops::ControlFlow;
 
-use crate::following::{Ahead, Along, Found, find_leaders, for_each_leader};
+use crate::following::{Ahead, Along, Found, find_leaders, for_each_leader, passing_leader};
 use crate::junction::{self, Queue};
 use crate::merge::{self, Merges};
 use crate::models::acceleration;
@@ -390,9 +390,17 @@ fn react<D: DebugSink>(
 ) -> Option<f64> {
     let (ahead, gap, headway) = match found {
         Found::Ahead(ahead, gap, headway) => (ahead, gap, headway),
-        Found::Pass(check) => {
+        Found::Pass(check, gap, headway) => {
             sink.record(|| DebugEvent::PassCheck { vehicle: id, check });
-            return None;
+            if !check.passed || check.gone {
+                return None;
+            }
+            let speed = vehicles[check.leader].speed;
+            let (ahead, speed, room) = passing_leader(gap, speed, check.clearance);
+            let term = acceleration::relaxed(&vehicle.spec, vehicle.speed, ahead, speed, headway);
+            let source = AccelSource::Passing { id: check.leader, gap, room };
+            sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
+            return Some(term);
         }
     };
     let source = match ahead {
