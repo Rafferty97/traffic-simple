@@ -81,10 +81,9 @@ pub enum Found {
     Ahead(Ahead, f64, f64),
     /// A check for passing a vehicle ahead, passed or not, with the gap to it and
     /// the share of its time headway, as [`Found::Ahead`]. One that fails is
-    /// followed by that vehicle, as [`Found::Ahead`]; one that passes by the
-    /// room beside it is followed as a leader further ahead and faster, by how
-    /// much room it has (see [`super::passing_leader`]), which is the caller's to
-    /// apply.
+    /// followed by that vehicle, as [`Found::Ahead`]; how one that passes by the
+    /// room beside it goes by is the longitudinal model's (see
+    /// [`acceleration::passing`]), which is the caller's to ask.
     Pass(PassCheck, f64, f64),
 }
 

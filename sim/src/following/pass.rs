@@ -20,30 +20,10 @@ pub const PASSING_CLEARANCE: f64 = 0.5;
 /// The least room, in meters, beside another vehicle's rear corners that a
 /// vehicle passes it with, as its nose reaches the other's rear: its own room,
 /// above the most its tail swings (see `following::classify`) and what is left
-/// of where it plans to be (see [`Along::reach`]). Above it, how fast it goes
-/// by rises with the room (see [`passing_leader`]).
+/// of where it plans to be (see [`Along::reach`]). How it goes by with the
+/// room it has above that is the longitudinal model's (see
+/// [`crate::models::acceleration::passing`]).
 pub const MIN_PASSING_CLEARANCE: f64 = 0.3;
-
-/// How many meters of gap each meter of room beside a vehicle being passed
-/// adds to the passing vehicle's gap to it (see [`passing_leader`]).
-pub const PASSING_GAP_PER_ROOM: f64 = 50.0;
-
-/// How many m/s each meter of room beside a vehicle being passed adds to its
-/// speed, as the passing vehicle follows it (see [`passing_leader`]).
-pub const PASSING_SPEED_PER_ROOM: f64 = 10.0;
-
-/// The leader a vehicle follows as it passes another, with `clearance` beside
-/// it, `gap` ahead at `speed`, as its gap and speed, and the room it has more
-/// than [`MIN_PASSING_CLEARANCE`]: the gap, floored at none once level, and the
-/// speed, each raised by that room. With none, it follows the other vehicle as
-/// any leader, so nothing jumps as the room crosses where it may pass; with
-/// more, following fades fast, the further back the sooner, and it goes by
-/// slower the tighter the room, as drivers do.
-pub fn passing_leader(gap: f64, speed: f64, clearance: f64) -> (f64, f64, f64) {
-    let room = (clearance - MIN_PASSING_CLEARANCE).max(0.0);
-    let gap = gap.max(0.0) + PASSING_GAP_PER_ROOM * room;
-    (gap, speed + PASSING_SPEED_PER_ROOM * room, room)
-}
 
 /// How many steps its rear axle trails its front in, planning where it will be
 /// as its nose reaches another vehicle's rear (see [`Along::reach`]).
@@ -59,8 +39,8 @@ const REACH_STEPS: usize = 3;
 /// A pair [`passing_side`] lets through is checked: with the follower where it
 /// plans to be as its front reaches the other's rear (see [`Along::reach`]),
 /// driving straight ahead must leave at least [`MIN_PASSING_CLEARANCE`] beside
-/// the other vehicle's rear corners, and it goes by no faster than the room
-/// lets it, which is the caller's to apply. A follower diverging from the lane
+/// the other vehicle's rear corners, and how it goes by with the room it has
+/// above that is the longitudinal model's, which is the caller's to ask. A follower diverging from the lane
 /// passes any record its body will be wholly out of the lane by then, freely,
 /// since it never comes back, so it is checked against every leader, on the
 /// side it leaves toward.

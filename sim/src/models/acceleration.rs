@@ -111,6 +111,48 @@ pub fn limit_ahead(spec: &VehicleSpec, speed: f64, gap: f64, limit: f64) -> Opti
     (needed > spec.comfy_decel).then(|| -needed.min(2.0 * spec.comfy_decel))
 }
 
+/// How many meters of gap each meter of spare room beside a vehicle being
+/// passed adds to the passing vehicle's gap to it (see [`passing`]).
+pub const PASSING_GAP_PER_ROOM: f64 = 50.0;
+
+/// How many m/s each meter of spare room beside a vehicle being passed adds to
+/// its speed, as the passing vehicle follows it (see [`passing`]).
+pub const PASSING_SPEED_PER_ROOM: f64 = 10.0;
+
+/// The term for passing a vehicle `gap` ahead at `leader_speed`, with `room`
+/// meters beside it more than the least the core lets it pass with: following
+/// it, as [`relaxed`] at the share `headway` of its time headway, as a leader
+/// further ahead and faster, its gap, floored at none once level, lengthened by
+/// [`PASSING_GAP_PER_ROOM`] times the room, and its speed raised by
+/// [`PASSING_SPEED_PER_ROOM`] times it.
+///
+/// With no room to spare, it follows the other vehicle as any leader, so
+/// nothing jumps as the room crosses where it may pass; with more, following
+/// fades fast, the further back the sooner, and it goes by slower the tighter
+/// the room, as drivers do: about 4 m/s beside a stopped car with 0.2 m to
+/// spare, and a crawl with 5 cm. Raising the speed does more than lengthening
+/// the gap: with a quarter of a meter to spare, the closing speed it sees
+/// cancels the time headway it would keep, so it passes a car beside it at
+/// speed without dropping back.
+pub fn passing(
+    spec: &VehicleSpec,
+    speed: f64,
+    gap: f64,
+    leader_speed: f64,
+    headway: f64,
+    room: f64,
+) -> f64 {
+    let room = room.max(0.0);
+    let gap = gap.max(0.0) + PASSING_GAP_PER_ROOM * room;
+    relaxed(
+        spec,
+        speed,
+        gap,
+        leader_speed + PASSING_SPEED_PER_ROOM * room,
+        headway,
+    )
+}
+
 /// How far ahead of its front a lower speed can matter to a vehicle: any
 /// further, slowing to a stop there takes no more than comfortable braking.
 pub fn limit_reach(spec: &VehicleSpec, speed: f64) -> f64 {

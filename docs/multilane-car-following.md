@@ -76,12 +76,10 @@ here: SUMO's sublane model compares lateral gaps as they are now.
 - **Projection:** if at that pose A clears B's rear corners by at least 0.3 m, it may pass. This only has to check
   the trailing side of the diverging vehicle, and is only sound where neither vehicle moves toward the other sideways
   after that point. The 0.3 m is well above the most a tail swings (about 10 cm, see Classifying occupancy records) and
-  what is left of the plan's error as A gets there. A passing by projection still follows B as it goes by, as a leader
-  further ahead and faster: its gap, floored at nothing once level, lengthened by 50 m, and its speed raised by 10 m/s,
-  for each metre of room above the 0.3 m. With no more room it simply follows B, so its acceleration doesn't jump as the
-  room crosses where it may pass; with more, B soon stops mattering, the further back the sooner, and A goes by slower
-  the tighter the room, as drivers do: about 4 m/s beside a stopped car with 0.5 m of room, and a crawl with 0.35 m. This
-  is the simulator's own; road design ties lateral clearance to speed through shy distances.
+  what is left of the plan's error as A gets there. How A goes by with the room it has to spare above that is the
+  longitudinal model's: the core gives it the gap to B, B's speed and the spare room, and it follows B as a leader
+  further ahead and faster, by the room (see [the longitudinal model](models/longitudinal.md), Passing). With none to
+  spare it simply follows B, so its acceleration doesn't jump as the room crosses where it may pass.
 
 The gone check applies whenever A is diverging. Whether the projection applies depends on the two classifications:
 

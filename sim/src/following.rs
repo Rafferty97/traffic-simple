@@ -31,7 +31,7 @@ pub(crate) use join::{advance, join_overlaps, reclassify, remove_ghost};
 pub use leaders::{Ahead, Along, Found, find_leaders, for_each_leader};
 pub use overlaps::{Overlaps, overlaps};
 pub(crate) use pass::body;
-pub use pass::{MIN_PASSING_CLEARANCE, PASSING_CLEARANCE, passing_leader};
+pub use pass::{MIN_PASSING_CLEARANCE, PASSING_CLEARANCE};
 
 use glam::DVec2;
 use slotmap::SlotMap;

@@ -11,7 +11,7 @@ use crate::barrier;
 use crate::debug::{AccelSource, DebugEvent, DebugSink};
 use std::ops::ControlFlow;
 
-use crate::following::{Ahead, Along, Found, find_leaders, for_each_leader, passing_leader};
+use crate::following::{Ahead, Along, Found, MIN_PASSING_CLEARANCE, find_leaders, for_each_leader};
 use crate::junction::{self, Queue};
 use crate::merge::{self, Merges};
 use crate::models::acceleration;
@@ -395,9 +395,11 @@ fn react<D: DebugSink>(
             if !check.passed || check.gone {
                 return None;
             }
+            // How it goes by, with the room it has to spare, is the model's.
+            let room = (check.clearance - MIN_PASSING_CLEARANCE).max(0.0);
             let speed = vehicles[check.leader].speed;
-            let (ahead, speed, room) = passing_leader(gap, speed, check.clearance);
-            let term = acceleration::relaxed(&vehicle.spec, vehicle.speed, ahead, speed, headway);
+            let term =
+                acceleration::passing(&vehicle.spec, vehicle.speed, gap, speed, headway, room);
             let source = AccelSource::Passing { id: check.leader, gap, room };
             sink.record(|| DebugEvent::AccelTerm { vehicle: id, source, accel: term });
             return Some(term);

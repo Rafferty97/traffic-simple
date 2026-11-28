@@ -137,7 +137,8 @@ pub enum AccelSource {
     Leader { id: VehicleId, gap: f64, headway: f64 },
     /// A vehicle it is passing, the gap to its rear, and the room beside it above
     /// the least it passes with, in meters: followed as a leader further ahead
-    /// and faster, the more room it has (see [`crate::following::passing_leader`]).
+    /// and faster, the more room it has (see
+    /// [`crate::models::acceleration::passing`]).
     Passing { id: VehicleId, gap: f64, room: f64 },
     /// A lower speed limit on a lane ahead along its path, the speed it would go
     /// there, in m/s, and the gap from its front to that lane's start: zero

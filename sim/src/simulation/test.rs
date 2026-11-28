@@ -1041,7 +1041,7 @@ fn passing_a_diverging_car_it_goes_by_slower_the_tighter_the_room() {
         (sim, b, c, spec)
     };
     // B's pass check against C, its term for passing it, whether it follows C
-    // instead, and the term it would have against the leader it passes as.
+    // instead, and the term the longitudinal model gives for passing it.
     let passing = |width: f64| {
         let (mut sim, b, c, spec) = place(width);
         let (check, gap, headway) = search(&sim, b, |found| match found {
@@ -1058,8 +1058,8 @@ fn passing_a_diverging_car_it_goes_by_slower_the_tighter_the_room() {
             }
             _ => None,
         });
-        let (ahead, speed, _) = crate::following::passing_leader(gap, 3.75, check.clearance);
-        let expected = acceleration::relaxed(&spec, 10.0, ahead, speed, headway);
+        let room = check.clearance - crate::following::MIN_PASSING_CLEARANCE;
+        let expected = acceleration::passing(&spec, 10.0, gap, 3.75, headway, room);
         (check, term, expected, leaders(&sim, b) == [c])
     };
     let (check, term, expected, follows) = passing(car().width);
