@@ -207,6 +207,12 @@ impl JsPath {
         Ok(Self { inner: self.inner.clone().cubic_to(c1, c2, to) })
     }
 
+    fn arc_to<'js>(&self, ctx: Ctx<'js>, center: Value<'js>, sweep: f64) -> rquickjs::Result<Self> {
+        Ok(Self {
+            inner: self.inner.clone().arc_to(point(&ctx, center)?, sweep),
+        })
+    }
+
     fn slice(&self, from: f64, to: f64) -> Self {
         Self { inner: self.inner.slice(from, to) }
     }

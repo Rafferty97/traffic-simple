@@ -63,13 +63,8 @@ fn overlap(a: [DVec2; 4], b: [DVec2; 4]) -> bool {
 
 #[test]
 fn traffic_goes_round_a_ring_joined_to_itself() {
-    // A circle of radius 80, near enough, clockwise from four cubics.
-    let (r, k) = (80.0, 0.5523 * 80.0);
-    let path = Path::new(p(r, 0.0))
-        .cubic_to(p(r, -k), p(k, -r), p(0.0, -r))
-        .cubic_to(p(-k, -r), p(-r, -k), p(-r, 0.0))
-        .cubic_to(p(-r, k), p(-k, r), p(0.0, r))
-        .cubic_to(p(k, r), p(r, k), p(r, 0.0));
+    // A whole turn clockwise, of radius 80.
+    let path = Path::new(p(80.0, 0.0)).arc_to(DVec2::ZERO, -std::f64::consts::TAU);
     let mut net = Network::new(Side::Left);
     let ring = one_lane(&mut net, path);
     net.join(ring, ring);

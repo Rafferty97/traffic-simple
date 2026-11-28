@@ -33,6 +33,11 @@ pub enum Segment {
     /// A cubic Bézier to a point, with two control points. It continues
     /// smoothly from the last segment only if `c1` lies straight ahead.
     Cubic { c1: DVec2, c2: DVec2, to: DVec2 },
+    /// A circular arc about a centre, turning by `sweep` radians,
+    /// counterclockwise if positive, clockwise if negative: a whole turn is a
+    /// circle. It continues smoothly from the last segment only if that ends
+    /// square to the centre.
+    Arc { center: DVec2, sweep: f64 },
 }
 
 impl Path {
@@ -50,6 +55,13 @@ impl Path {
     /// The path, then a cubic Bézier to `to` with control points `c1` and `c2`.
     pub fn cubic_to(mut self, c1: DVec2, c2: DVec2, to: DVec2) -> Self {
         self.segments.push(Segment::Cubic { c1, c2, to });
+        self
+    }
+
+    /// The path, then a circular arc about `center`, turning by `sweep`
+    /// radians, counterclockwise if positive, clockwise if negative.
+    pub fn arc_to(mut self, center: DVec2, sweep: f64) -> Self {
+        self.segments.push(Segment::Arc { center, sweep });
         self
     }
 
@@ -75,11 +87,14 @@ impl Path {
             let placed = match *segment {
                 Segment::Line { to } => Placed::Line { start: from, end: to },
                 Segment::Cubic { c1, c2, to } => Placed::cubic([from, c1, c2, to]),
+                Segment::Arc { center, sweep } => {
+                    Placed::Arc { center, start: from - center, sweep }
+                }
             };
             let length = placed.length();
+            from = placed.end();
             out.push((s0, placed));
             s0 += length;
-            from = segment.end();
         }
         out
     }
@@ -180,15 +195,6 @@ impl Path {
     }
 }
 
-impl Segment {
-    /// Where it ends.
-    fn end(&self) -> DVec2 {
-        match *self {
-            Segment::Line { to } | Segment::Cubic { to, .. } => to,
-        }
-    }
-}
-
 /// Why a path can't be sampled.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PathError {
@@ -234,6 +240,12 @@ enum Placed {
         p: [DVec2; 4],
         lengths: Vec<f64>,
     },
+    /// About `center`, from `center + start`, turning by `sweep` radians.
+    Arc {
+        center: DVec2,
+        start: DVec2,
+        sweep: f64,
+    },
 }
 
 impl Placed {
@@ -248,10 +260,20 @@ impl Placed {
         Placed::Cubic { p, lengths }
     }
 
+    /// Where it ends.
+    fn end(&self) -> DVec2 {
+        match *self {
+            Placed::Line { end, .. } => end,
+            Placed::Cubic { p, .. } => p[3],
+            Placed::Arc { center, start, sweep } => center + DVec2::from_angle(sweep).rotate(start),
+        }
+    }
+
     fn length(&self) -> f64 {
         match self {
             Placed::Line { start, end } => start.distance(*end),
             Placed::Cubic { lengths, .. } => lengths[BEZIER_TABLE],
+            Placed::Arc { start, sweep, .. } => start.length() * sweep.abs(),
         }
     }
 
@@ -278,6 +300,12 @@ impl Placed {
                 let t = Self::parameter(lengths, s);
                 (bezier(p, t), bezier_tangent(p, t).normalize())
             }
+            Placed::Arc { center, start, sweep } => {
+                // Round by `s` over the radius, the way it turns.
+                let radial = DVec2::from_angle(sweep.signum() * s / start.length()).rotate(start);
+                let dir = radial.normalize().perp() * sweep.signum();
+                (center + radial, dir)
+            }
         }
     }
 
@@ -285,6 +313,7 @@ impl Placed {
     fn curvature(&self, s: f64) -> f64 {
         match *self {
             Placed::Line { .. } => 0.0,
+            Placed::Arc { start, .. } => 1.0 / start.length(),
             Placed::Cubic { ref p, ref lengths } => {
                 let t = Self::parameter(lengths, s);
                 let d1 = bezier_tangent(p, t);
@@ -318,6 +347,9 @@ impl Placed {
                     last = tangent;
                 }
                 (most * length).ceil() as usize
+            }
+            Placed::Arc { start, .. } => {
+                (density(1.0 / start.length(), tolerance) * length).ceil() as usize
             }
         };
         let n = n.max(1);
@@ -452,6 +484,44 @@ mod test {
                 assert!(k * r < 1.4, "radius {r}: a vertex turns as at {}", 1.0 / k);
             }
         }
+    }
+
+    #[test]
+    fn an_arc_turns_about_its_centre_and_runs_on_from_its_end() {
+        // A quarter turn clockwise about (0, 0) from (50, 0), then west.
+        let path = Path::new(p(50.0, 0.0))
+            .arc_to(p(0.0, 0.0), -std::f64::consts::FRAC_PI_2)
+            .line_to(p(-50.0, -50.0));
+        let quarter = 25.0 * std::f64::consts::PI;
+        assert!((path.length() - (quarter + 50.0)).abs() < 1e-9);
+        let line = path.sample(0.01).unwrap();
+        let n = line.points.len();
+        assert!(
+            line.points[n - 2].distance(p(0.0, -50.0)) < 1e-9,
+            "the arc ends on its quarter"
+        );
+        for &q in &line.points[..n - 1] {
+            assert!((q.length() - 50.0).abs() < 0.011, "{q} is off the circle");
+        }
+        // Each chord's midpoint is within the tolerance of it.
+        for w in line.points[..n - 1].windows(2) {
+            let off = 50.0 - (0.5 * (w[0] + w[1])).length();
+            assert!(off < 0.011, "{off}");
+        }
+        assert!(
+            line.points[1].x == 50.0,
+            "the second vertex is on the start tangent"
+        );
+    }
+
+    #[test]
+    fn a_whole_turn_is_a_circle() {
+        let path = Path::new(p(10.0, 0.0)).arc_to(p(0.0, 0.0), std::f64::consts::TAU);
+        let line = path.sample(0.01).unwrap();
+        let (first, last) = (line.points[0], *line.points.last().unwrap());
+        assert!(first.distance(last) < 1e-9, "{first} and {last}");
+        // Counterclockwise: north first.
+        assert!(line.points[1].y > 0.0);
     }
 
     #[test]

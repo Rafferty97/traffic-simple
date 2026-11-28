@@ -8,13 +8,8 @@ const lanes = 3;
 const width = 3.5;
 const r = circumference / (2 * Math.PI);
 
-// Clockwise from the east, a circle from four cubics, near enough.
-const k = 0.5523 * r;
-const path = new Path([r, 0])
-  .cubicTo([r, -k], [k, -r], [0, -r])
-  .cubicTo([-k, -r], [-r, -k], [-r, 0])
-  .cubicTo([-r, k], [-k, r], [0, r])
-  .cubicTo([k, r], [r, k], [r, 0]);
+// A whole turn clockwise, from the east.
+const path = new Path([r, 0]).arcTo([0, 0], -2 * Math.PI);
 
 const net = new Network(Side.Left);
 // Going clockwise, the lanes outward of the path are on its left.

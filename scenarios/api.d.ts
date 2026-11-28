@@ -26,6 +26,12 @@ declare class Path {
   /** The path, then a cubic Bézier to `to` with control points `c1` and `c2`. */
   cubicTo(c1: Point, c2: Point, to: Point): Path;
   /**
+   * The path, then a circular arc about `center`, turning by `sweep` radians,
+   * counterclockwise if positive, clockwise if negative: a whole turn is a
+   * circle. It runs on smoothly only if the path ends square to `center`.
+   */
+  arcTo(center: Point, sweep: number): Path;
+  /**
    * The stretch from `from` to `to`, distances along it in meters. A slice of a
    * slice is measured along the slice.
    */
