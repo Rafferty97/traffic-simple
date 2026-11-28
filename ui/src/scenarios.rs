@@ -1,5 +1,5 @@
 //! The scenarios to choose from: the scripts in the repository's `scenarios`
-//! directory, each named by its first line if that is `// name: …`, or by its
+//! directory, in JavaScript or TypeScript, each named by its first line if that is `// name: …`, or by its
 //! file name. Only names and paths are kept: a script is read afresh each time
 //! it is loaded.
 
@@ -16,7 +16,8 @@ pub struct ScenarioFile {
 }
 
 impl ScenarioFile {
-    /// Its file name without `.js`, by which the command line names it.
+    /// Its file name without its extension, by which the command line names
+    /// it.
     pub fn stem(&self) -> &str {
         self.path.file_stem().and_then(|s| s.to_str()).unwrap_or_default()
     }
@@ -28,7 +29,7 @@ pub fn list(dir: &Path) -> Result<Vec<ScenarioFile>, String> {
     let mut files: Vec<ScenarioFile> = entries
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|e| e == "js") && path.is_file())
+        .filter(|path| is_script(path) && path.is_file())
         .map(|path| {
             let file_name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
             let source = std::fs::read_to_string(&path).unwrap_or_default();
@@ -38,6 +39,13 @@ pub fn list(dir: &Path) -> Result<Vec<ScenarioFile>, String> {
         .collect();
     files.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(files)
+}
+
+/// Whether `path` is a script: JavaScript or TypeScript, but not
+/// declarations.
+fn is_script(path: &Path) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    (name.ends_with(".js") || name.ends_with(".ts")) && !name.ends_with(".d.ts")
 }
 
 /// The name a script gives itself on its first line, `// name: …`.
@@ -66,6 +74,10 @@ mod test {
     fn the_repository_s_scenarios_are_listed() {
         let files = list(Path::new(DIR)).unwrap();
         assert!(!files.is_empty());
-        assert!(files.iter().all(|f| f.path.extension().unwrap() == "js"));
+        assert!(files.iter().all(|f| is_script(&f.path)));
+        assert!(
+            !files.iter().any(|f| f.stem() == "api.d"),
+            "declarations aren't scenarios"
+        );
     }
 }

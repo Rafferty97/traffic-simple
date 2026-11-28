@@ -50,20 +50,33 @@ struct Host {
 }
 
 /// Runs a scenario's script, `file` naming it in errors, and returns the last
-/// simulation it made, or why it made none.
+/// simulation it made, or why it made none. A script in TypeScript, `file`
+/// ending in `.ts`, has its types stripped first, and its errors name places
+/// in it as it was written.
 pub fn run(source: &str, file: &str) -> Result<Scenario, String> {
+    let stripped = match file.ends_with(".ts") {
+        true => Some(crate::typescript::strip(source, file)?),
+        false => None,
+    };
+    let code = stripped.as_ref().map_or(source, |s| s.code.as_str());
+    let in_script = |error: String| match &stripped {
+        Some(stripped) => stripped.map_error(file, &error),
+        None => error,
+    };
     let host = Rc::new(RefCell::new(Host::default()));
     {
         let runtime = Runtime::new().map_err(|e| e.to_string())?;
         let context = Context::full(&runtime).map_err(|e| e.to_string())?;
-        context.with(|ctx| -> Result<(), String> {
-            define(&ctx, &host).catch(&ctx).map_err(|e| e.to_string())?;
-            let mut options = EvalOptions::default();
-            options.filename = Some(file.to_string());
-            ctx.eval_with_options::<(), _>(source, options)
-                .catch(&ctx)
-                .map_err(|e| e.to_string())
-        })?;
+        context
+            .with(|ctx| -> Result<(), String> {
+                define(&ctx, &host).catch(&ctx).map_err(|e| e.to_string())?;
+                let mut options = EvalOptions::default();
+                options.filename = Some(file.to_string());
+                ctx.eval_with_options::<(), _>(code, options)
+                    .catch(&ctx)
+                    .map_err(|e| e.to_string())
+            })
+            .map_err(in_script)?;
         // The runtime goes here, and with it the script's hold on its
         // simulations.
     }
@@ -413,6 +426,38 @@ mod test {
         .err()
         .unwrap();
         assert!(error.contains("meets no lane"), "{error}");
+    }
+
+    #[test]
+    fn a_script_in_typescript_runs_and_its_errors_name_its_own_lines() {
+        let script = r#"
+            interface Lanes { offset: number }
+            const lane = (l: Lanes): RoadLane => ({ offset: l.offset, left: 1.75, right: 1.75 });
+            const net: Network = new Network(Side.Left);
+            const road: RoadId = net.addRoad({
+              path: new Path([0, 0]).lineTo([100, 0]),
+              speedLimit: kmh(60),
+              forward: [lane({ offset: 0 })],
+            });
+            const compiled = compile(net);
+            const sim = compiled.simulate();
+            sim.insert(VehicleSpec.PASSENGER_CAR, Driver.DEFAULT, compiled.place(road, 0, 10, kmh(50)));
+            "#;
+        let scenario = run(script, "typed.ts").unwrap();
+        assert_eq!(scenario.sim.vehicles().count(), 1);
+        // A failure on line 4 of the script, after an interface stripping
+        // takes out.
+        let error = run(
+            "interface A {
+  x: number;
+}
+const net = new Network(Side.Left) as unknown as A;
+net.nothing();",
+            "broken.ts",
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("broken.ts:5:"), "{error}");
     }
 
     #[test]

@@ -15,7 +15,7 @@ SUMO's TraCI is the model for scripting: an outside script steps the simulation 
 - **The JS API is the Rust API.** It has the same operations, names in camelCase where Rust uses snake_case, the same argument types as plain objects, ids as opaque values, and errors thrown where Rust returns `Err`. Nothing exists in JS alone: anything a script needs goes into Rust first.
 - **Data crosses as serde.** A JS object is the serde form of the Rust type, so a network a script describes is the new crate's network as JSON, and enums take serde's tagging. The bindings convert through serde, so they hold no mapping of their own, and a script's objects can be pasted into Rust as `serde_json::json!` or rewritten as struct literals. A network can be saved and loaded the same way.
 - **New API, old algorithms.** Connector curves, swept paths and `unfold`, arms and fitting them, hook turns, and turning control into barriers and the lanes each gives way to are ported from the old crate and cleaned up, not derived afresh.
-- **No new dependencies in `sim`.** The JS engine, `rquickjs` (QuickJS), goes in `ui` alone.
+- **No new dependencies in `sim`.** The JS engine, `rquickjs` (QuickJS), goes in `ui` alone, and so does `oxc`, which strips a script's types when it is written in TypeScript, so editors can check scripts against `scenarios/api.d.ts`; it reprints the script, so its source map takes the positions errors name back to the script.
 
 ## The old crate
 

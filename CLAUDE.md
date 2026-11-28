@@ -25,7 +25,7 @@ A Rust traffic simulation aiming for city and freeway traffic that _looks_ reali
 - `sim`: core simulation; depends on nothing else in the workspace
 - `network`: source-of-truth network → `SimNetwork` + render geometry, being rebuilt alongside JS scripting (`docs/scripting-plan.md`)
 - `legacy/network`: the old `network`, kept for its tests and for reference until the rebuild replaces it
-- `ui`: egui app with pretty and debug views, running scenarios scripted in JS from `scenarios/`
+- `ui`: egui app with pretty and debug views, running scenarios scripted in TypeScript from `scenarios/`
 - `demand` (proposed): routing models and spawners
 
 ## Commands

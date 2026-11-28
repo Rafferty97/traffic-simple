@@ -6,12 +6,17 @@
 
 const net = new Network(Side.Left);
 const lane = [{ offset: 0, left: 1.75, right: 1.75 }];
-const road = (path) => net.addRoad({ path, speedLimit: kmh(60), forward: lane });
+const road = (path: Path): RoadId =>
+  net.addRoad({ path, speedLimit: kmh(60), forward: lane });
 
 // North of the merged road, `side` 1, or south, -1.
-const approach = (side) => new Path([0, 30 * side]).lineTo([150, 30 * side]);
-const curveIn = (side) => new Path([150, 30 * side]).cubicTo([225, 30 * side], [225, 0], [300, 0]);
-const branch = (side) => new Path([500, 0]).cubicTo([575, 0], [625, 30 * side], [700, 30 * side]).lineTo([800, 30 * side]);
+const approach = (side: number): Path => new Path([0, 30 * side]).lineTo([150, 30 * side]);
+const curveIn = (side: number): Path =>
+  new Path([150, 30 * side]).cubicTo([225, 30 * side], [225, 0], [300, 0]);
+const branch = (side: number): Path =>
+  new Path([500, 0])
+    .cubicTo([575, 0], [625, 30 * side], [700, 30 * side])
+    .lineTo([800, 30 * side]);
 
 const north = road(approach(1));
 const south = road(approach(-1));
@@ -23,12 +28,22 @@ const right = road(branch(-1));
 
 net.join(north, northIn);
 net.join(south, southIn);
-for (const from of [northIn, southIn]) net.join(from, merged);
-for (const to of [left, right]) net.join(merged, to);
+net.join(northIn, merged);
+net.join(southIn, merged);
+net.join(merged, left);
+net.join(merged, right);
 
 const compiled = compile(net);
 const sim = compiled.simulate();
 for (let s = 10; s < 140; s += 25) {
-  sim.insert(VehicleSpec.PASSENGER_CAR, Driver.DEFAULT, compiled.place(north, 0, s, kmh(50)));
-  sim.insert(VehicleSpec.PASSENGER_CAR, Driver.DEFAULT, compiled.place(south, 0, s + 8, kmh(50)));
+  sim.insert(
+    VehicleSpec.PASSENGER_CAR,
+    Driver.DEFAULT,
+    compiled.place(north, 0, s, kmh(50)),
+  );
+  sim.insert(
+    VehicleSpec.PASSENGER_CAR,
+    Driver.DEFAULT,
+    compiled.place(south, 0, s + 8, kmh(50)),
+  );
 }

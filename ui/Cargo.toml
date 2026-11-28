@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 eframe = "0.37.0"
 glam.workspace = true
+oxc = { version = "0.160", features = ["transformer", "codegen", "semantic"] }
 rquickjs = { version = "0.14.0", features = ["macro"] }
 serde = "1.0.229"
 serde_json.workspace = true

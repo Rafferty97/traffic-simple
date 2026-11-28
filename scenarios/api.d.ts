@@ -1,6 +1,7 @@
-// The scenario API, as `ui/src/script.rs` binds it, for editors: every `.js`
-// file here is checked against it (see `jsconfig.json`). Nothing reads it at
-// runtime. Data takes its Rust types' serde forms, their fields in camelCase.
+// The scenario API, as `ui/src/script.rs` binds it, for editors: every script
+// here, in TypeScript or JavaScript, is checked against it (see
+// `tsconfig.json`). Nothing reads it at runtime: the UI strips a script's types
+// and runs what is left. Data takes its Rust types' serde forms, their fields in camelCase.
 // Keep it in step with the bindings: a UI test checks it declares each global.
 
 /** A point, `[x, y]`, in meters. */

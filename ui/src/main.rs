@@ -3,6 +3,7 @@
 mod glyphs;
 mod scenarios;
 mod script;
+mod typescript;
 
 use std::collections::HashMap;
 use std::path::Path;
