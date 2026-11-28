@@ -320,3 +320,84 @@ fn with_room_beyond_for_one_a_car_counts_one_coming_another_way() {
         assert!(through, "{id:?} didn't get through");
     }
 }
+
+#[test]
+fn with_room_beyond_for_one_two_cars_at_rest_together_take_turns() {
+    // The same, but a car comes to rest at each line in the same step. Taking
+    // turns, the second to have come to rest gives way to the first, which
+    // then takes the room, and is counted: only one goes in.
+    let mut sim = common::sim(two_ways_into_one());
+    let blocker = sim.insert(
+        car(),
+        common::driver(),
+        Placement { lane: LaneId(4), s: 9.0, speed: 0.0, route: Route::default() },
+    );
+    sim.hold(blocker);
+    let spec = car();
+    let s = 100.0 - (spec.length - spec.rear_axle) - common::driver().line_gap;
+    let at = |lane: u32| Placement { lane: LaneId(lane), s, speed: 0.0, route: Route::default() };
+    let cars = [
+        sim.insert(spec, common::driver(), at(0)),
+        sim.insert(spec, Driver { seed: 1, ..common::driver() }, at(1)),
+    ];
+    let stuck = |sim: &Simulation, id: VehicleId| {
+        sim.get(id).is_some_and(|v| matches!(v.lane().0, 2 | 3) && v.speed() == 0.0)
+    };
+    run(&mut sim, 40.0, |sim| {
+        for id in cars {
+            assert!(
+                !stuck(sim, id),
+                "{id:?} stopped in the junction at {:.2} s",
+                sim.time()
+            );
+        }
+    });
+    let waiting = cars.iter().filter(|&&id| sim.get(id).unwrap().lane().0 < 2).count();
+    assert_eq!(waiting, 1, "both went in, or neither did");
+}
+
+#[test]
+fn room_beyond_counts_on_past_a_short_empty_lane_out() {
+    // A stop line into a 20 m junction, out onto a 3 m lane and then a long
+    // one, with a car held just beyond the short lane: the short lane is empty,
+    // but there is no room for a car behind the held one, so it waits at its
+    // line, and goes once the held car does.
+    let lane = |a: DVec2, b: DVec2| Lane::new(&[a, b], 3.5, LIMIT, common::alone()).unwrap();
+    let mut net = SimNetwork::new(vec![
+        lane(p(-120.0, 0.0), p(-20.0, 0.0)),
+        lane(p(-20.0, 0.0), p(0.0, 0.0)),
+        lane(p(0.0, 0.0), p(3.0, 0.0)),
+        lane(p(3.0, 0.0), p(300.0, 0.0)),
+    ]);
+    for i in 0..3 {
+        net.connect(LaneId(i), LaneId(i + 1));
+    }
+    net.add_junction(&[LaneId(1)]);
+    net.add_barrier(LaneId(1), Barrier::new(0.0, BarrierKind::Stop));
+    let mut sim = common::sim(net);
+    let blocker = sim.insert(
+        car(),
+        common::driver(),
+        Placement { lane: LaneId(3), s: 1.5, speed: 0.0, route: Route::default() },
+    );
+    sim.hold(blocker);
+    let spec = car();
+    let s = 100.0 - (spec.length - spec.rear_axle) - common::driver().line_gap;
+    let id = sim.insert(
+        spec,
+        common::driver(),
+        Placement { lane: LaneId(0), s, speed: 0.0, route: Route::default() },
+    );
+    run(&mut sim, 30.0, |_| {});
+    assert_eq!(
+        sim.get(id).unwrap().lane(),
+        LaneId(0),
+        "it went in with no room beyond"
+    );
+    sim.release(blocker);
+    run(&mut sim, 60.0, |_| {});
+    assert!(
+        sim.get(id).is_none_or(|v| v.lane().0 >= 2),
+        "it didn't go once there was room"
+    );
+}

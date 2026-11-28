@@ -557,8 +557,9 @@ fn room_past(
 /// itself, every vehicle ahead of it on its way through the junction to the
 /// same lane, and every vehicle from another way in bound for that lane that
 /// will go before it (see [`goes_first`]), each its length and minimum gap,
-/// behind the rearmost vehicle there, allowing for how far that one would go
-/// on if it stopped comfortably. Nor would it find room behind a vehicle ahead
+/// behind the rearmost vehicle there, or, with none, on the lanes after it,
+/// as far as it knows its way, allowing for how far that one would go on if it
+/// stopped comfortably. Nor would it find room behind a vehicle ahead
 /// of it on its way through, headed elsewhere, that is at rest or will wait
 /// inside the junction, as a turner waiting for a gap does: it couldn't drive
 /// through. Unless it will wait inside the junction itself, so may draw up
@@ -632,11 +633,19 @@ fn room_beyond(state: &SimState, id: VehicleId, vehicle: &Vehicle, k: usize, s: 
             }
         }
     }
-    let rearmost = state.occupants[exit_lane.0 as usize]
-        .iter()
-        .find(|o| !o.is_ghost() && o.id != id);
-    match rearmost {
-        None => true,
-        Some(o) => o.s() + state.vehicles[o.id].comfortable_stop() >= needed,
+    // Behind the rearmost vehicle along its path from the lane out, past any
+    // lanes empty before it, as far as it knows its way.
+    let mut start = 0.0;
+    for &lane in &path[exit..] {
+        let rearmost =
+            state.occupants[lane.0 as usize].iter().find(|o| !o.is_ghost() && o.id != id);
+        if let Some(o) = rearmost {
+            return start + o.s() + state.vehicles[o.id].comfortable_stop() >= needed;
+        }
+        start += network.lane(lane).geometry().length();
+        if start >= needed {
+            return true;
+        }
     }
+    true
 }
