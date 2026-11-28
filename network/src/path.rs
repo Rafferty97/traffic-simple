@@ -132,12 +132,20 @@ impl Path {
         // polyline's end segments run along them: then lanes offset from it end
         // square across the road, side by side, as the simulation needs of
         // neighbours, and meet the next road's exactly. Each as far out as the
-        // tolerance allows, and no further than the next vertex in.
+        // tolerance allows, and on a curve no further than a quarter of the way
+        // to the next vertex in: the polyline comes back onto the curve between
+        // them, so it turns there by more than the curve does, by up to a
+        // third more with the next vertex three times as far again, and
+        // without limit as the two come together.
         let inner = || stations.iter().copied().filter(|&s| s > a && s < b);
         let first_inner = inner().fold(b, f64::min);
         let last_inner = inner().fold(a, f64::max);
-        let start_step = end_step(curvature(a), tolerance).min(first_inner - a);
-        let end_step = end_step(curvature(b), tolerance).min(b - last_inner);
+        let step = |k: f64, gap: f64| match k > 0.0 {
+            true => end_step(k, tolerance).min(gap / 4.0),
+            false => gap,
+        };
+        let start_step = step(curvature(a), first_inner - a);
+        let end_step = step(curvature(b), b - last_inner);
         stations.extend([a + start_step, b - end_step]);
         stations.sort_by(f64::total_cmp);
         stations.dedup_by(|x, y| (*x - *y).abs() < 1e-6);
@@ -280,8 +288,10 @@ impl Placed {
             Placed::Cubic { ref p, ref lengths } => {
                 let t = Self::parameter(lengths, s);
                 let d1 = bezier_tangent(p, t);
+                // A cubic's second derivative: 3·2 times the Bézier of its
+                // control points' second differences.
                 let d2: Vec<DVec2> = p.windows(3).map(|w| w[2] - 2.0 * w[1] + w[0]).collect();
-                let d2 = bezier(&d2, t) * 2.0;
+                let d2 = bezier(&d2, t) * 6.0;
                 d1.perp_dot(d2).abs() / d1.length().powi(3).max(1e-12)
             }
         }
@@ -412,6 +422,36 @@ mod test {
             Path::new(p(0.0, 0.0)).sample(0.01),
             Err(PathError::TooShort)
         ));
+    }
+
+    /// A quarter circle of radius `r`, near enough, from a cubic.
+    fn quarter_circle(r: f64) -> Path {
+        let k = 0.5523 * r;
+        Path::new(p(0.0, 0.0)).cubic_to(p(k, 0.0), p(r, r - k), p(r, r))
+    }
+
+    #[test]
+    fn a_cubic_s_curvature_is_its_curve_s() {
+        let placed = quarter_circle(50.0).placed();
+        let (_, cubic) = &placed[0];
+        for s in [0.0, 0.5 * cubic.length(), cubic.length()] {
+            let k = cubic.curvature(s);
+            assert!((k * 50.0 - 1.0).abs() < 0.03, "{} at {s}", 1.0 / k);
+        }
+    }
+
+    #[test]
+    fn a_curve_s_polyline_turns_little_more_sharply_at_its_ends_than_it_does() {
+        // Over the mean of the segments either side, as the simulation's speed
+        // profiles take a lane's bends: a sharper turn slows vehicles.
+        for r in [20.0, 50.0, 160.0, 500.0] {
+            let points = quarter_circle(r).sample(0.01).unwrap().points;
+            for w in points.windows(3) {
+                let (a, b) = (w[1] - w[0], w[2] - w[1]);
+                let k = a.angle_to(b).abs() / (0.5 * (a.length() + b.length()));
+                assert!(k * r < 1.4, "radius {r}: a vertex turns as at {}", 1.0 / k);
+            }
+        }
     }
 
     #[test]
