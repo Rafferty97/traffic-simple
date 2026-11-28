@@ -162,7 +162,7 @@ fn body_colour(
 }
 
 /// Runs the UI, starting on the scenario named on the command line, by its
-/// key (see [`Scenario::key`]), or on the ring.
+/// key (see [`Scenarios::key`]), or on the ring.
 fn main() -> eframe::Result {
     let scenarios = scenarios::list(Path::new(scenarios::DIR)).unwrap_or_default();
     let start = match std::env::args().nth(1) {
