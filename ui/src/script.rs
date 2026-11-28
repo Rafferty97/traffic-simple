@@ -3,9 +3,9 @@
 //! The JS API is the Rust API, names in camelCase, data crossing in its serde
 //! form through JSON: a script's objects are what the Rust types serialize to,
 //! and classes such as `Path` serialize themselves (`toJSON`), so they can sit
-//! inside the data passed back. A script builds a network, hands it to
-//! `simulate`, and inserts vehicles into the simulation that returns; the last
-//! simulation it makes is the scenario's.
+//! inside the data passed back. A script builds a network, compiles it, makes
+//! a simulation of it, and inserts vehicles where the compiled network places
+//! them; the last simulation it makes is the scenario's.
 //!
 //! ```js
 //! const net = new Network(Side.Left);
@@ -14,8 +14,9 @@
 //!   speedLimit: kmh(60),
 //!   forward: [{ offset: -1.75, left: 1.75, right: 1.75 }],
 //! });
-//! const sim = simulate(net);
-//! sim.insert(VehicleSpec.PASSENGER_CAR, Driver.DEFAULT, { lane: road.lane(0), s: 10, speed: kmh(50) });
+//! const compiled = compile(net);
+//! const sim = compiled.simulate();
+//! sim.insert(VehicleSpec.PASSENGER_CAR, Driver.DEFAULT, compiled.place(road, 0, 10, kmh(50)));
 //! ```
 
 use std::cell::RefCell;
@@ -28,7 +29,7 @@ use rquickjs::prelude::Func;
 use rquickjs::{CatchResultExt, Class, Context, Ctx, Exception, JsLifetime, Runtime, Value};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use traffic_network::{Network, Path, RenderGeometry, RoadId, kmh, mph, render};
+use traffic_network::{Compiled, Network, Path, RenderGeometry, RoadId, kmh, mph, render};
 use traffic_sim::{Driver, Placement, Side, Simulation, VehicleSpec};
 
 /// How far drawn curves stray from the network's at most, in meters: finer
@@ -41,7 +42,8 @@ pub struct Scenario {
     pub render: RenderGeometry,
 }
 
-/// What a script's `simulate` calls made: the last of them.
+/// What a script's `simulate` calls made: the last of them, with what to draw
+/// for its network.
 #[derive(Default)]
 struct Host {
     made: Option<(Rc<RefCell<Simulation>>, RenderGeometry)>,
@@ -77,21 +79,21 @@ fn define<'js>(ctx: &Ctx<'js>, host: &Rc<RefCell<Host>>) -> rquickjs::Result<()>
     Class::<JsNetwork>::define(&globals)?;
     Class::<JsPath>::define(&globals)?;
     Class::<JsRoadId>::define(&globals)?;
+    Class::<JsCompiled>::define(&globals)?;
     Class::<JsSimulation>::define(&globals)?;
     globals.set("kmh", Func::from(kmh))?;
     globals.set("mph", Func::from(mph))?;
     let host = host.clone();
-    let simulate = move |ctx: Ctx<'js>, net: Class<'js, JsNetwork>| {
+    let compile = move |ctx: Ctx<'js>, net: Class<'js, JsNetwork>| {
         let net = &net.borrow().inner;
         let fail =
             |e: traffic_network::CompileError| Exception::throw_message(&ctx, &e.to_string());
-        let sim = traffic_network::simulate(net).map_err(fail)?;
+        let compiled = traffic_network::compile(net).map_err(fail)?;
         let render = render(net, RENDER_TOLERANCE).map_err(fail)?;
-        let sim = Rc::new(RefCell::new(sim));
-        host.borrow_mut().made = Some((sim.clone(), render));
-        Class::instance(ctx.clone(), JsSimulation { sim })
+        let inner = Rc::new((compiled, render));
+        Class::instance(ctx.clone(), JsCompiled { inner, host: host.clone() })
     };
-    globals.set("simulate", Func::from(simulate))?;
+    globals.set("compile", Func::from(compile))?;
     // Constants, as their serde forms, frozen.
     let constants = [
         (
@@ -160,6 +162,16 @@ impl JsNetwork {
 
     fn add_road<'js>(&mut self, ctx: Ctx<'js>, road: Value<'js>) -> rquickjs::Result<JsRoadId> {
         Ok(JsRoadId { inner: self.inner.add_road(from_js(&ctx, road)?) })
+    }
+
+    fn overlap<'js>(
+        &mut self,
+        ctx: Ctx<'js>,
+        a: Value<'js>,
+        b: Value<'js>,
+    ) -> rquickjs::Result<()> {
+        self.inner.overlap(from_js(&ctx, a)?, from_js(&ctx, b)?);
+        Ok(())
     }
 
     fn join<'js>(
@@ -236,20 +248,6 @@ pub struct JsRoadId {
 
 #[rquickjs::methods(rename_all = "camelCase")]
 impl JsRoadId {
-    /// Throws, where Rust panics, if the road has no such lane.
-    fn lane<'js>(&self, ctx: Ctx<'js>, i: usize) -> rquickjs::Result<Value<'js>> {
-        let count = self.inner.lane_count();
-        if i >= count {
-            let message = format!(
-                "road {} has {count} lanes, not {}",
-                self.inner.index(),
-                i + 1
-            );
-            return Err(Exception::throw_range(&ctx, &message));
-        }
-        into_js(&ctx, &self.inner.lane(i))
-    }
-
     fn lane_count(&self) -> usize {
         self.inner.lane_count()
     }
@@ -259,6 +257,58 @@ impl JsRoadId {
     #[allow(clippy::wrong_self_convention)]
     fn to_json<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<Value<'js>> {
         into_js(&ctx, &self.inner)
+    }
+}
+
+#[derive(Trace, JsLifetime)]
+#[rquickjs::class(rename = "Compiled")]
+pub struct JsCompiled {
+    /// The network compiled, and what to draw for it.
+    #[qjs(skip_trace)]
+    inner: Rc<(Compiled, RenderGeometry)>,
+    #[qjs(skip_trace)]
+    host: Rc<RefCell<Host>>,
+}
+
+#[rquickjs::methods(rename_all = "camelCase")]
+impl JsCompiled {
+    /// A simulation of it, which becomes the scenario's.
+    fn simulate<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<Class<'js, JsSimulation>> {
+        let (compiled, render) = &*self.inner;
+        let sim = Rc::new(RefCell::new(compiled.simulate()));
+        self.host.borrow_mut().made = Some((sim.clone(), render.clone()));
+        Class::instance(ctx, JsSimulation { sim })
+    }
+
+    fn place<'js>(
+        &self,
+        ctx: Ctx<'js>,
+        road: Value<'js>,
+        lane: usize,
+        s: f64,
+        speed: f64,
+    ) -> rquickjs::Result<Value<'js>> {
+        let road: RoadId = from_js(&ctx, road)?;
+        let at = self.inner.0.place(road, lane, s, speed);
+        let at = at.map_err(|e| Exception::throw_range(&ctx, &e.to_string()))?;
+        into_js(&ctx, &at)
+    }
+
+    /// Throws, where Rust panics, if the road isn't the network's or has no
+    /// such lane.
+    fn lanes<'js>(
+        &self,
+        ctx: Ctx<'js>,
+        road: Value<'js>,
+        lane: usize,
+    ) -> rquickjs::Result<Value<'js>> {
+        let road: RoadId = from_js(&ctx, road)?;
+        let compiled = &self.inner.0;
+        // Placing a vehicle checks the same, without panicking.
+        if let Err(e) = compiled.place(road, lane, 0.0, 0.0) {
+            return Err(Exception::throw_range(&ctx, &e.to_string()));
+        }
+        into_js(&ctx, &compiled.lanes(road, lane))
     }
 }
 
@@ -309,11 +359,12 @@ mod test {
               forward: [{ offset: -1.75, left: 1.75, right: 1.75 }],
               reverse: [{ offset: 1.75, left: 1.75, right: 1.75 }],
             });
-            const sim = simulate(net);
+            const compiled = compile(net);
+            const sim = compiled.simulate();
             if (VehicleSpec.PASSENGER_CAR.maxSpeed === undefined || Driver.DEFAULT.speedFactor === undefined) {
               throw new Error("fields aren't in camelCase");
             }
-            sim.insert(VehicleSpec.PASSENGER_CAR, Driver.DEFAULT, { lane: road.lane(1), s: 10, speed: kmh(50) });
+            sim.insert(VehicleSpec.PASSENGER_CAR, Driver.DEFAULT, compiled.place(road, 1, 10, kmh(50)));
             "#,
             "test.js",
         )
@@ -333,8 +384,11 @@ mod test {
             const a = net.addRoad({ path: new Path([0, 0]).lineTo([100, 0]), speedLimit: kmh(60), forward: [lane] });
             const b = net.addRoad({ path: new Path([100, 0]).lineTo([200, 0]), speedLimit: kmh(60), forward: [lane] });
             net.join(a, b);
-            const sim = simulate(net);
-            sim.insert(VehicleSpec.PASSENGER_CAR, Driver.DEFAULT, { lane: a.lane(0), s: 10, speed: kmh(50) });
+            const compiled = compile(net);
+            const sim = compiled.simulate();
+            sim.insert(VehicleSpec.PASSENGER_CAR, Driver.DEFAULT, compiled.place(a, 0, 10, kmh(50)));
+            const [onward] = compiled.lanes(b, 0);
+            if (onward !== 1) throw new Error(`road b's lane is ${onward}`);
             "#,
             "join.js",
         )
@@ -352,7 +406,7 @@ mod test {
             const a = net.addRoad({ path: new Path([0, 0]).lineTo([100, 0]), speedLimit: kmh(60), forward: [lane] });
             const b = net.addRoad({ path: new Path([110, 0]).lineTo([200, 0]), speedLimit: kmh(60), forward: [lane] });
             net.join(a, b);
-            simulate(net);
+            compile(net);
             "#,
             "gap.js",
         )
@@ -425,7 +479,7 @@ mod test {
               speedLimit: mph(30),
               forward: [{ offset: 0, left: 1.75, right: 1.75 }],
             });
-            road.lane(1);
+            compile(net).place(road, 1, 10, 0);
             "#,
             "lanes.js",
         )

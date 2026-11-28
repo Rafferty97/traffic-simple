@@ -6,7 +6,7 @@ Known limitations, behaviour not yet investigated, oddities to follow up on, and
 
 Faults in the `sim` crate that make vehicles do something physically wrong, or could lock a junction up: the first to fix.
 
-- **Merges starting far apart:** two roads' lanes that curve together from far apart and overlap only near their ends lock up. Their lanes overlap, so each vehicle on one has a record on the other (see [Multi-lane car following](multilane-car-following.md), invariant 1), placed by projecting it onto that lane; tens of metres apart on converging curves, the projection lands well ahead of where the vehicle really is, so vehicles on each lane find the other's ahead of them, follow them, and stop in a cycle. With two one-lane roads curving in from 30 m apart over 150 m, every vehicle but the first stopped within 80 m, whether they arrived side by side or staggered. The merge point is the start of the overlapping lanes, so the merge orders vehicles only before then. Where the roads first run alongside and the lanes that squeeze together start there, as `network/tests/joins.rs` builds it, traffic takes turns. Options: the network splitting a road's lanes where they start to overlap another's, so a merge's lanes start where they come together, as an acceleration lane's taper does within its road; or compiling such a network failing, saying where to split.
+None known.
 
 ## Longitudinal model
 

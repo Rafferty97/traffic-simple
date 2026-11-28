@@ -20,13 +20,13 @@ for (let i = 0; i < lanes; i++) {
 const ring = net.addRoad({ path, speedLimit: kmh(50), forward });
 net.join(ring, ring);
 
-const sim = simulate(net);
+const compiled = compile(net);
+const sim = compiled.simulate();
 const perLane = 20;
 for (let i = 0; i < lanes; i++) {
-  const length = 2 * Math.PI * (r + width * i);
   for (let j = 0; j < perLane; j++) {
-    // Staggered across the lanes.
-    const s = (length * (j + i / lanes)) / perLane;
-    sim.insert(VehicleSpec.PASSENGER_CAR, Driver.DEFAULT, { lane: ring.lane(i), s, speed: kmh(40) });
+    // Staggered across the lanes, along the path.
+    const s = (circumference * (j + i / lanes)) / perLane;
+    sim.insert(VehicleSpec.PASSENGER_CAR, Driver.DEFAULT, compiled.place(ring, i, s, kmh(40)));
   }
 }

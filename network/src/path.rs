@@ -79,6 +79,20 @@ impl Path {
         b - a
     }
 
+    /// The point `s` meters along it, and the unit direction there, if it is
+    /// along it.
+    pub(crate) fn pose(&self, s: f64) -> Option<(DVec2, DVec2)> {
+        let placed: Vec<_> = self.placed().into_iter().filter(|(_, p)| p.length() > 0.0).collect();
+        let [a, b] = self.range(&placed);
+        if !(0.0..=b - a).contains(&s) {
+            return None;
+        }
+        let s = a + s;
+        let i = placed.partition_point(|(s0, _)| *s0 <= s).saturating_sub(1);
+        let (s0, p) = placed.get(i)?;
+        Some(p.pose((s - s0).min(p.length())))
+    }
+
     /// Each segment placed, with where it starts along the whole path.
     fn placed(&self) -> Vec<(f64, Placed)> {
         let mut out = Vec::new();
@@ -191,7 +205,8 @@ impl Path {
                 }
             })
             .collect();
-        Ok(Polyline { points, miters })
+        let s = stations.iter().map(|&s| s - a).collect();
+        Ok(Polyline { points, miters, s })
     }
 }
 
@@ -403,6 +418,8 @@ pub(crate) struct Polyline {
     /// At each vertex, the left normal scaled so that offsetting by it keeps
     /// each segment parallel to the path's: the miter.
     pub miters: Vec<DVec2>,
+    /// At each vertex, how far along the path it is.
+    pub s: Vec<f64>,
 }
 
 impl Polyline {

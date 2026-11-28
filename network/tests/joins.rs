@@ -1,9 +1,10 @@
-//! Traffic across joins: round a ring joined to itself, and through two roads
-//! merging into one and forking again, nobody overlapping anybody.
+//! Traffic across joins and where roads overlap: round a ring joined to itself,
+//! through two roads merging into one and forking again, nobody overlapping
+//! anybody, and across a road at another grade, as if it weren't there.
 
 use glam::DVec2;
-use traffic_network::{Network, Path, Road, RoadId, RoadLane, kmh, simulate};
-use traffic_sim::{Driver, Placement, Side, Simulation, VehicleSpec};
+use traffic_network::{Compiled, Network, Path, Road, RoadId, RoadLane, compile, kmh};
+use traffic_sim::{Driver, Side, Simulation, VehicleSpec};
 
 const LANE: RoadLane = RoadLane { offset: 0.0, left: 1.75, right: 1.75 };
 
@@ -20,13 +21,8 @@ fn one_lane(net: &mut Network, path: Path) -> RoadId {
     })
 }
 
-fn insert(sim: &mut Simulation, road: RoadId, s: f64) {
-    let at = Placement {
-        lane: road.lane(0),
-        s,
-        speed: kmh(50.0),
-        route: Default::default(),
-    };
+fn insert(sim: &mut Simulation, compiled: &Compiled, road: RoadId, s: f64) {
+    let at = compiled.place(road, 0, s, kmh(50.0)).unwrap();
     sim.insert(VehicleSpec::PASSENGER_CAR, Driver::DEFAULT, at);
 }
 
@@ -68,9 +64,10 @@ fn traffic_goes_round_a_ring_joined_to_itself() {
     let mut net = Network::new(Side::Left);
     let ring = one_lane(&mut net, path);
     net.join(ring, ring);
-    let mut sim = simulate(&net).unwrap();
+    let compiled = compile(&net).unwrap();
+    let mut sim = compiled.simulate();
     for i in 0..20 {
-        insert(&mut sim, ring, 25.0 * i as f64);
+        insert(&mut sim, &compiled, ring, 25.0 * i as f64);
     }
     run(&mut sim, 60.0);
     assert_eq!(sim.vehicles().count(), 20, "nobody leaves a ring");
@@ -80,45 +77,78 @@ fn traffic_goes_round_a_ring_joined_to_itself() {
     );
 }
 
-#[test]
-fn traffic_merges_from_two_roads_and_forks_again() {
+/// Two one-lane roads 60 m apart, curving together over 150 m to meet end on
+/// and merge into one, which forks again 200 m on: the roads joining one in
+/// common, and the branches forking from it, are cut where their lanes start
+/// or stop overlapping.
+fn merging_and_forking() -> (Network, [RoadId; 4]) {
     let mut net = Network::new(Side::Left);
-    // Each approach curves in from 30 m out to run alongside the other, then
-    // squeezes in to meet it end on: the lanes start overlapping where the
-    // squeeze starts, the merge point (see `docs/known-issues.md`, Merges
-    // starting far apart).
     // North of the merged road, `side` 1, or south, -1.
-    let approach = |side: f64| {
-        let (out, beside) = (30.0 * side, 1.75 * side);
-        Path::new(p(0.0, out)).line_to(p(100.0, out)).cubic_to(
-            p(175.0, out),
-            p(175.0, beside),
-            p(250.0, beside),
-        )
+    let approach = |side: f64| Path::new(p(0.0, 30.0 * side)).line_to(p(150.0, 30.0 * side));
+    let curve_in = |side: f64| {
+        let out = 30.0 * side;
+        Path::new(p(150.0, out)).cubic_to(p(225.0, out), p(225.0, 0.0), p(300.0, 0.0))
     };
-    let squeeze = |side: f64| {
-        let beside = 1.75 * side;
-        Path::new(p(250.0, beside)).cubic_to(p(275.0, beside), p(275.0, 0.0), p(300.0, 0.0))
+    let branch = |side: f64| {
+        let out = 30.0 * side;
+        Path::new(p(500.0, 0.0)).cubic_to(p(575.0, 0.0), p(625.0, out), p(700.0, out))
     };
     let north = one_lane(&mut net, approach(1.0));
     let south = one_lane(&mut net, approach(-1.0));
-    let north_in = one_lane(&mut net, squeeze(1.0));
-    let south_in = one_lane(&mut net, squeeze(-1.0));
+    let north_in = one_lane(&mut net, curve_in(1.0));
+    let south_in = one_lane(&mut net, curve_in(-1.0));
     let merged = one_lane(&mut net, Path::new(p(300.0, 0.0)).line_to(p(500.0, 0.0)));
-    let branch = |y| Path::new(p(500.0, 0.0)).cubic_to(p(575.0, 0.0), p(625.0, y), p(700.0, y));
-    let left = one_lane(&mut net, branch(30.0));
-    let right = one_lane(&mut net, branch(-30.0));
+    let left = one_lane(&mut net, branch(1.0));
+    let right = one_lane(&mut net, branch(-1.0));
     net.join(north, north_in);
     net.join(south, south_in);
     net.join(north_in, merged);
     net.join(south_in, merged);
     net.join(merged, left);
     net.join(merged, right);
-    let mut sim = simulate(&net).unwrap();
+    (net, [north, south, north_in, left])
+}
+
+#[test]
+fn roads_merging_are_cut_where_their_lanes_start_to_overlap() {
+    let (net, [_, _, north_in, left]) = merging_and_forking();
+    let compiled = compile(&net).unwrap();
+    let sim = compiled.sim_network();
+    let geometry = |lane| sim.lane(lane).geometry();
+    let pieces = compiled.lanes(north_in, 0);
+    assert_eq!(pieces.len(), 2, "cut once, where it starts to overlap");
+    let south_in = net.road_id(3).unwrap();
+    let theirs = compiled.lanes(south_in, 0);
+    assert_eq!(theirs.len(), 2);
+    // The first pieces are apart, and the second overlap from about their
+    // starts.
+    for &other in &theirs {
+        assert_eq!(geometry(pieces[0]).overlap(geometry(other)), None);
+    }
+    let [on_mine, _] = geometry(pieces[1]).overlap(geometry(theirs[1])).unwrap();
+    assert!(
+        on_mine.start < 0.5,
+        "overlapping from {} m in",
+        on_mine.start
+    );
+    // The branches of the fork are cut where they part.
+    let branch = compiled.lanes(left, 0);
+    assert_eq!(branch.len(), 2, "cut once, where it stops overlapping");
+    let right = net.road_id(6).unwrap();
+    for &other in &compiled.lanes(right, 0) {
+        assert_eq!(geometry(branch[1]).overlap(geometry(other)), None);
+    }
+}
+
+#[test]
+fn traffic_merges_from_two_roads_and_forks_again() {
+    let (net, [north, south, ..]) = merging_and_forking();
+    let compiled = compile(&net).unwrap();
+    let mut sim = compiled.simulate();
     // Arriving side by side, so they have to take turns.
     for i in 0..6 {
-        insert(&mut sim, north, 10.0 + 20.0 * i as f64);
-        insert(&mut sim, south, 10.0 + 20.0 * i as f64);
+        insert(&mut sim, &compiled, north, 10.0 + 20.0 * i as f64);
+        insert(&mut sim, &compiled, south, 10.0 + 20.0 * i as f64);
     }
     run(&mut sim, 90.0);
     assert_eq!(
@@ -126,4 +156,59 @@ fn traffic_merges_from_two_roads_and_forks_again() {
         0,
         "everybody gets through and leaves"
     );
+}
+
+#[test]
+fn traffic_crosses_a_road_at_another_grade_as_if_it_werent_there() {
+    // A road east, and one north over it, as a bridge, neither joined to the
+    // other or to anything in common.
+    let mut net = Network::new(Side::Left);
+    let east = one_lane(&mut net, Path::new(p(0.0, 0.0)).line_to(p(200.0, 0.0)));
+    let north = one_lane(
+        &mut net,
+        Path::new(p(100.0, -100.0)).line_to(p(100.0, 100.0)),
+    );
+    let compiled = compile(&net).unwrap();
+    assert_eq!(compiled.lanes(east, 0).len(), 1, "not cut");
+    assert!(compiled.sim_network().declared_overlaps().is_empty());
+    let mut sim = compiled.simulate();
+    // Timed to reach the crossing together.
+    insert(&mut sim, &compiled, east, 40.0);
+    insert(&mut sim, &compiled, north, 40.0);
+    for _ in 0..30 * 10 {
+        sim.step();
+        for (id, v) in sim.vehicles() {
+            assert!(v.speed() > kmh(45.0), "{id:?} slowed to {} m/s", v.speed());
+        }
+    }
+}
+
+#[test]
+fn roads_declared_to_overlap_are_cut_and_related_where_they_do() {
+    // A road east, and beside it another that swerves in over its lane and
+    // back out, joined to nothing in common.
+    let roads = |declared: bool| {
+        let mut net = Network::new(Side::Left);
+        let east = one_lane(&mut net, Path::new(p(0.0, 0.0)).line_to(p(300.0, 0.0)));
+        let swerve = Path::new(p(0.0, -6.0))
+            .line_to(p(50.0, -6.0))
+            .cubic_to(p(100.0, -6.0), p(100.0, -2.0), p(150.0, -2.0))
+            .cubic_to(p(200.0, -2.0), p(200.0, -6.0), p(250.0, -6.0))
+            .line_to(p(300.0, -6.0));
+        let beside = one_lane(&mut net, swerve);
+        if declared {
+            net.overlap(east, beside);
+        }
+        (compile(&net).unwrap(), east, beside)
+    };
+    let (apart, east, _) = roads(false);
+    assert_eq!(apart.lanes(east, 0).len(), 1);
+    assert!(apart.sim_network().declared_overlaps().is_empty());
+
+    let (related, east, beside) = roads(true);
+    let (mine, theirs) = (related.lanes(east, 0), related.lanes(beside, 0));
+    assert_eq!((mine.len(), theirs.len()), (3, 3), "cut in and out");
+    let declared = related.sim_network().declared_overlaps();
+    let pair = |a, b| declared.contains(&[a, b]) || declared.contains(&[b, a]);
+    assert!(pair(mine[1], theirs[1]), "{declared:?}");
 }

@@ -24,11 +24,12 @@ const narrow = net.addRoad({
   forward: [{ offset: -1.6, left: 1.6, right: 1.6 }],
 });
 
-const sim = simulate(net);
+const compiled = compile(net);
+const sim = compiled.simulate();
 for (let s = 10; s < 250; s += 30) {
-  sim.insert(VehicleSpec.PASSENGER_CAR, Driver.DEFAULT, { lane: wide.lane(0), s, speed: kmh(50) });
-  sim.insert(VehicleSpec.PASSENGER_CAR, Driver.DEFAULT, { lane: wide.lane(1), s: s + 15, speed: kmh(45) });
+  sim.insert(VehicleSpec.PASSENGER_CAR, Driver.DEFAULT, compiled.place(wide, 0, s, kmh(50)));
+  sim.insert(VehicleSpec.PASSENGER_CAR, Driver.DEFAULT, compiled.place(wide, 1, s + 15, kmh(45)));
 }
 for (let s = 10; s < 300; s += 35) {
-  sim.insert(VehicleSpec.PASSENGER_CAR, Driver.DEFAULT, { lane: narrow.lane(0), s, speed: mph(25) });
+  sim.insert(VehicleSpec.PASSENGER_CAR, Driver.DEFAULT, compiled.place(narrow, 0, s, mph(25)));
 }

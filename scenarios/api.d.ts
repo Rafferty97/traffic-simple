@@ -65,13 +65,11 @@ interface Road {
 /** A lane in the simulation. */
 type LaneId = number;
 
-/** A road of a network, and through it its lanes in the simulation. */
+/**
+ * A road of a network. Its lanes are numbered forward lanes first, in the order
+ * given, then reverse ones; where they are in the simulation, `Compiled` says.
+ */
 interface RoadId {
-  /**
-   * Its `i`th lane: forward lanes first, in the order given, then reverse ones.
-   * Throws if it has no `i`th lane.
-   */
-  lane(i: number): LaneId;
   /** How many lanes it has. */
   laneCount(): number;
 }
@@ -91,6 +89,14 @@ declare class Network {
    * none across it.
    */
   join(from: RoadId, to: RoadId): void;
+  /**
+   * Declares that `a` and `b` overlap where their lanes' outlines do, on the
+   * same ground, so vehicles on them keep apart there. Otherwise roads are
+   * unrelated where they overlap, as at different grades, unless they join a
+   * road in common, as two roads merging into one or forking from one do; for
+   * those, declaring it changes nothing.
+   */
+  overlap(a: RoadId, b: RoadId): void;
 }
 
 type VehicleClass = "Car" | "Truck" | "Bus" | "Tram";
@@ -155,14 +161,30 @@ interface Placement {
 /** A vehicle in the simulation. */
 type VehicleId = { idx: number; version: number };
 
-/** A running simulation, as `simulate` returns it. */
+/** A running simulation, as `Compiled.simulate` returns it. */
 interface Simulation {
   /** Places a vehicle on a lane's centreline, with no checks. */
   insert(spec: VehicleSpec, driver: Driver, at: Placement): VehicleId;
 }
 
 /**
- * A simulation of `network`, compiled, with no vehicles yet: the last a script
- * makes is the scenario's. Throws if the network doesn't compile.
+ * A network compiled for the simulation. Each road is cut wherever one of its
+ * lanes starts or stops overlapping a lane of a road related to it, so a road's
+ * lane may be several of the simulation's, one after the other.
  */
-declare function simulate(network: Network): Simulation;
+interface Compiled {
+  /** A simulation of it, with no vehicles yet: the last a script makes is the scenario's. */
+  simulate(): Simulation;
+  /**
+   * Where a vehicle goes to be `s` meters along `road`'s reference line, from
+   * its start, on its `lane`th lane, at `speed`: reverse lanes are measured
+   * from the road's start too. Throws if there is no such lane or `s` isn't
+   * along the road.
+   */
+  place(road: RoadId, lane: number, s: number, speed: number): Placement;
+  /** The simulation's lanes that are `road`'s `lane`th, in the order it runs along them. */
+  lanes(road: RoadId, lane: number): LaneId[];
+}
+
+/** `network` compiled. Throws if it doesn't compile. */
+declare function compile(network: Network): Compiled;

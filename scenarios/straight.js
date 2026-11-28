@@ -16,14 +16,12 @@ const road = net.addRoad({
   ],
 });
 
-const sim = simulate(net);
+const compiled = compile(net);
+const sim = compiled.simulate();
 for (let lane = 0; lane < road.laneCount(); lane++) {
   const inner = lane % 2 === 0;
   for (let s = 20; s < 300; s += 40) {
-    sim.insert(VehicleSpec.PASSENGER_CAR, Driver.DEFAULT, {
-      lane: road.lane(lane),
-      s: s + (inner ? 0 : 20),
-      speed: kmh(inner ? 70 : 60),
-    });
+    const at = compiled.place(road, lane, s + (inner ? 0 : 20), kmh(inner ? 70 : 60));
+    sim.insert(VehicleSpec.PASSENGER_CAR, Driver.DEFAULT, at);
   }
 }
