@@ -6,7 +6,7 @@ Investigations and improvements worth picking up, each with where it starts. Ope
 
 1. **Hook turners holding up straight-on traffic.** The turner's record on the straight-on branch persists because its turn swings back across it (see Known issues). Start in `sim/src/following/classify.rs`: should "diverged for good" ignore a converge that only comes after the vehicle's waiting barrier?
 2. **Lifts refused for an edge the rule would reverse anyway.** `View::lift` in `sim/src/junction.rs` treats every decided pair as fixed. Could one lift move every vehicle the lower one also qualifies to pass, in a single Pearce–Kelly step, rather than relying on walking the nearest pair first?
-3. **Where barriers still wait outside the order.** Four lockups came from barrier rules disagreeing with the junction: room beyond, giving way to vehicles inside, gap checks and following at forks. An audit of every place a barrier names a vehicle it waits on (`sim/src/models/gap_acceptance.rs`) against `junction::goes_after` might find the next before the stress test does.
+3. **Where barriers still wait outside the order.** Four lockups came from barrier rules disagreeing with the junction: room beyond, giving way to vehicles inside, gap checks and following at forks. The audit of every place a barrier waits on another vehicle is in Known issues (Barriers that wait outside the junction's order); catching cycles in the stress test, not only lockups, would find the next before it locks up.
 4. **Swinging wide on tight turns** (see the design, Vehicle kinematics). Self-contained, and it changes how hook turns and trams look.
 
 ## Geometry
