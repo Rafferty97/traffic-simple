@@ -13,6 +13,20 @@ How fast a step is, measured over time, so a change's effect, or a slow drift, s
 
 Times are criterion's middle estimate per step. Each table is one session.
 
+### 2026-11-28, laptop (idle, on AC), back to back, interleaved
+
+The pass-check fixes, the desktop being unreachable. Two rounds each, base and head alternating; the rounds agreed within 1%.
+
+| Commit | Change | `10k_16x16` | `flooded_4x4` | `ring_step/10000` |
+| --- | --- | --- | --- | --- |
+| `0186271` | before | 1.405 ms | 107.6 µs | 652.7 µs |
+| `6843b8a` | re-entry across a lane's start isn't coming back | | 108.1 µs | |
+| `756685c` | lane-change gaps checked converging | | 108.0 µs | |
+| `b4a16a7` | pass checks planned by a three-step tractrix, passing slower the tighter the room | 1.409 ms | 114.0 µs | 648.4 µs |
+| (trial) | the same with one tractrix step | | 104.9 µs | |
+
+The flooded grid's 6% is the tractrix's two extra steps, each a `smooth_point_along` and a `trail` per pass check: with one step it is faster than before. Pass checks there are many, against cars diverging at junction mouths. `smooth_point_along` sums the path's lane lengths and binary-searches its segment on each call, so starting each step from where the last left off would be the first thing to try.
+
 ### 2026-11-25, desktop (Ryzen 9 7900, Windows), back to back
 
 | Commit | Change | `10k_16x16` | `flooded_4x4` | `crossroads_2` | `signals_2` | `ramps` |
