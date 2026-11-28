@@ -153,10 +153,14 @@ when V advances onto the next lane, and when it joins the lanes that Z leads to.
 
 ## Preprocessing
 
-When the network is built, every pair of lanes whose outlines overlap, outside junctions, is recorded, with each lane's
+When the network is built, every pair of lanes that may overlap and whose outlines do, outside junctions, is recorded, with each lane's
 diverge point: the position along it after which the two lanes never converge again. It may be 0, as where a lane forks,
 and is never reached where they merge. Both centerlines are piecewise straight, so their separation is checked exactly,
 at every vertex of either lane.
+
+Lanes may overlap if they share a predecessor or a successor, as a fork's branches and lanes merging do, or if the
+network declares that they may (`SimNetwork::declare_overlap`). Any others are unrelated wherever their outlines overlap,
+as roads at different grades are: vehicles on one pass over or under the other's.
 
 Pairs that don't overlap have no diverge point. Once V's lane change has ended it is confined to X, which never meets Z, so
 the trace only has to run to the end of the lane change.

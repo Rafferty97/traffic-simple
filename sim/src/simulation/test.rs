@@ -591,6 +591,27 @@ fn a_record_ages_carries_its_age_on_and_starts_afresh_on_a_change_or_a_merge() {
 }
 
 #[test]
+fn lanes_crossing_unrelated_are_apart_unless_the_network_declares_otherwise() {
+    // Two lanes crossing in an X, as a bridge over a road does, linked to
+    // nothing.
+    let lane = |from: DVec2, to: DVec2| Lane::new(&[from, to], WIDTH, LIMIT, alone()).unwrap();
+    let lanes = || {
+        vec![
+            lane(DVec2::new(0.0, 0.0), DVec2::new(100.0, 0.0)),
+            lane(DVec2::new(50.0, -50.0), DVec2::new(50.0, 50.0)),
+        ]
+    };
+    let apart = new_sim(SimNetwork::new(lanes()));
+    assert!(apart.derived.overlaps.iter().all(Vec::is_empty));
+
+    let mut network = SimNetwork::new(lanes());
+    network.declare_overlap(LaneId(1), LaneId(0));
+    let declared = new_sim(network);
+    assert_eq!(declared.derived.overlaps[0].len(), 1);
+    assert_eq!(declared.derived.overlaps[1][0].lane, LaneId(0));
+}
+
+#[test]
 fn lanes_leading_into_the_same_lane_overlap_and_never_diverge() {
     let sim = a_taper();
     let partners = |lane: u32| {

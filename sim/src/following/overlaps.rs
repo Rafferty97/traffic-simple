@@ -1,8 +1,6 @@
 //! Which lanes overlap, outside junctions, and where each pair diverges for
 //! good: worked out when the simulation is built ("Preprocessing").
 
-use glam::DVec2;
-
 use crate::network::geometry::SAME_POINT;
 use crate::network::{LaneId, Side, SimNetwork};
 
@@ -18,45 +16,55 @@ pub struct Overlap {
 /// Each lane's overlaps, by lane: derived from the network.
 pub type Overlaps = Vec<Vec<Overlap>>;
 
-/// Finds every pair of lanes whose outlines overlap, other than lanes one after
-/// the other and neighbours, which touch only along an end or an edge, and
-/// each lane's diverge point from the other. Junctions keep vehicles on their
-/// lanes apart, so pairs there are left out, except for branches leaving the
-/// same lane: junctions rely on vehicles at a fork finding each other.
+/// Finds every pair of lanes that may overlap and whose outlines do, other
+/// than lanes one after the other and neighbours, which touch only along an end
+/// or an edge, and each lane's diverge point from the other. Lanes may overlap
+/// if they share a predecessor or a successor, as a fork's branches and lanes
+/// merging do, or if the network declares that they may; any others are
+/// unrelated, as roads at different grades are. Junctions keep vehicles on
+/// their lanes apart, so pairs there are left out, except for branches leaving
+/// the same lane: junctions rely on vehicles at a fork finding each other.
 pub fn overlaps(network: &SimNetwork) -> Overlaps {
     let count = network.lanes().count();
     let mut table = vec![Vec::new(); count];
-    let lanes: Vec<LaneId> = network.lanes().map(|(id, _)| id).collect();
-    let bounds: Vec<(DVec2, DVec2)> = lanes
-        .iter()
-        .map(|&id| {
-            let outline = network.lane(id).geometry().outline();
-            outline.fold((DVec2::MAX, DVec2::MIN), |(lo, hi), p| {
-                (lo.min(p), hi.max(p))
-            })
-        })
-        .collect();
-    for (i, &a) in lanes.iter().enumerate() {
-        for (j, &b) in lanes.iter().enumerate().skip(i + 1) {
-            let ((alo, ahi), (blo, bhi)) = (bounds[i], bounds[j]);
-            if alo.cmpgt(bhi).any() || blo.cmpgt(ahi).any() || related(network, a, b) {
-                continue;
-            }
-            let (la, lb) = (network.lane(a), network.lane(b));
-            let junction = la.junction().is_some() || lb.junction().is_some();
-            let fork = la.predecessors().iter().any(|p| lb.predecessors().contains(p));
-            if junction && !fork {
-                continue;
-            }
-            let (ga, gb) = (network.lane(a).geometry(), network.lane(b).geometry());
-            if ga.overlap(gb).is_none() {
-                continue;
-            }
-            table[a.0 as usize].push(Overlap { lane: b, diverge: diverge(network, a, b) });
-            table[b.0 as usize].push(Overlap { lane: a, diverge: diverge(network, b, a) });
+    for [a, b] in candidates(network) {
+        if related(network, a, b) {
+            continue;
         }
+        let (la, lb) = (network.lane(a), network.lane(b));
+        let junction = la.junction().is_some() || lb.junction().is_some();
+        let fork = la.predecessors().iter().any(|p| lb.predecessors().contains(p));
+        if junction && !fork {
+            continue;
+        }
+        if la.geometry().overlap(lb.geometry()).is_none() {
+            continue;
+        }
+        table[a.0 as usize].push(Overlap { lane: b, diverge: diverge(network, a, b) });
+        table[b.0 as usize].push(Overlap { lane: a, diverge: diverge(network, b, a) });
     }
     table
+}
+
+/// The pairs of lanes that may overlap, each once, the lower id first: those
+/// sharing a predecessor, those sharing a successor, and those the network
+/// declares.
+fn candidates(network: &SimNetwork) -> Vec<[LaneId; 2]> {
+    let mut pairs: Vec<[LaneId; 2]> = network.declared_overlaps().to_vec();
+    for (_, lane) in network.lanes() {
+        for links in [lane.successors(), lane.predecessors()] {
+            for (i, &a) in links.iter().enumerate() {
+                pairs.extend(links[i + 1..].iter().map(|&b| [a, b]));
+            }
+        }
+    }
+    for pair in &mut pairs {
+        pair.sort_by_key(|lane| lane.0);
+    }
+    pairs.sort_by_key(|[a, b]| (a.0, b.0));
+    pairs.dedup();
+    pairs.retain(|[a, b]| a != b);
+    pairs
 }
 
 /// Whether two lanes are one after the other or neighbours.

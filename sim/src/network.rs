@@ -64,6 +64,10 @@ pub struct SimNetwork {
     /// The sets of lanes barriers give way to.
     #[cfg_attr(feature = "serde", serde(default))]
     yields: Vec<Vec<LaneId>>,
+    /// Pairs of lanes the network says may overlap, besides those sharing a
+    /// predecessor or a successor (see [`SimNetwork::declare_overlap`]).
+    #[cfg_attr(feature = "serde", serde(default))]
+    overlapping: Vec<[LaneId; 2]>,
 }
 
 /// The most a rounded corner of a vehicle's front axle's course reaches either
@@ -81,7 +85,32 @@ impl SimNetwork {
             junctions: Vec::new(),
             signals: Vec::new(),
             yields: Vec::new(),
+            overlapping: Vec::new(),
         }
+    }
+
+    /// Declares that `a` and `b` may overlap, so that where their outlines do,
+    /// outside junctions, vehicles on them keep apart (see
+    /// `docs/multilane-car-following.md`, Preprocessing). Lanes sharing a
+    /// predecessor or a successor, as a fork's branches and lanes merging do,
+    /// need no declaring; any others that don't are unrelated wherever they
+    /// overlap, as roads at different grades are.
+    ///
+    /// Panics if either isn't a lane of the network, or they are the same.
+    pub fn declare_overlap(&mut self, a: LaneId, b: LaneId) {
+        let count = self.lanes.len();
+        assert!(
+            (a.0 as usize) < count && (b.0 as usize) < count,
+            "no lane {a:?} or {b:?}"
+        );
+        assert!(a != b, "a lane can't overlap itself");
+        self.overlapping.push([a, b]);
+    }
+
+    /// The pairs of lanes declared to overlap, as [`SimNetwork::declare_overlap`]
+    /// was given them.
+    pub fn declared_overlaps(&self) -> &[[LaneId; 2]] {
+        &self.overlapping
     }
 
     /// Adds a set of lanes for barriers to give way to, returning its id.
