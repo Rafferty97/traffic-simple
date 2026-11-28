@@ -870,6 +870,31 @@ fn a_straddling_car_carries_its_old_side_into_the_next_section() {
 }
 
 #[test]
+fn straddling_across_a_section_boundary_its_record_on_the_old_lanes_next_stays_diverging() {
+    // Changing left out of lane 1 from a crawl, as sharply as it steers, it
+    // advances onto lane 2 and joins lane 3, lane 1's successor, with its body
+    // crossing lane 3's start. Driving onto lane 3 across its start isn't
+    // coming back into it from beside it, wherever along the change it crosses.
+    for start in 0..60 {
+        let mut sim = new_sim(two_sections());
+        let s = 85.0 + 0.25 * start as f64;
+        let id = sim.insert(car(), crate::simulation::test::driver(), at(1, s, 1.0));
+        sim.change_lane(id, Side::Left).unwrap();
+        for _ in 0..1200 {
+            sim.update_motion(1.0 / 60.0, &mut NoopSink);
+            sim.update_occupancy(0.0);
+            for &(lane, ghost, lateral) in &records(&sim, id) {
+                if lane == 3 {
+                    assert!(!ghost);
+                    assert_eq!(lateral, Lateral::Diverging(Side::Left), "from {s}");
+                }
+            }
+        }
+        assert_eq!(sim.state.vehicles[id].path[0], LaneId(2), "from {s}");
+    }
+}
+
+#[test]
 fn at_a_lane_drop_the_old_side_clears_only_when_the_last_old_lane_record_goes() {
     // Lane 1, on the right, ends at 100 m; lane 0 runs on as lane 2.
     let straight = |x0: f64, x1: f64, y: f64| {

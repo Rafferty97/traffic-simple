@@ -119,7 +119,9 @@ after which these two always hold:
   change its tail swings back toward the lane it leaves by a few centimetres, so coming back by up to the most its tail
   can swing, from the furthest it has been, still counts as moving away: at full lock, about 10 cm for a car, from its
   rear overhang, width and steering lock, and well inside the passing check's clearance.
-- Once its body has stopped intersecting Z, it never intersects it again.
+- Once its body has stopped intersecting Z, it never intersects it again. That means coming back from beside Z: a body
+  driving onto Z across its start, between its edges there, as it does when V joins the lanes Z leads to while
+  straddling, isn't coming back into it.
 
 The samples fall where the course can bend: at the vertices of V's path and of Z, and along the lane change's quintic
 as closely as keeps straight lines between them within rounding to the grid. At each, V's body is where it will be as

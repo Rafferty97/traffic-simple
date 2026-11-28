@@ -31,10 +31,13 @@ fn swing(spec: &VehicleSpec) -> f64 {
 }
 
 /// One sample of a vehicle's course against a lane: whether its body overlaps
-/// it, its rear's `s` along it, and its corners' least and greatest `t`.
+/// it, whether any corner is between its edges wherever it is along it, before
+/// its start or past its end included, its rear's `s` along it, and its
+/// corners' least and greatest `t`.
 #[derive(Clone, Copy, Debug)]
 struct Sample {
     overlaps: bool,
+    beside: bool,
     rear: f64,
     t_min: f64,
     t_max: f64,
@@ -98,6 +101,7 @@ fn lateral(
     let mut sample = |corners: [DVec2; 4]| {
         let mut s = Sample {
             overlaps: false,
+            beside: false,
             rear: f64::INFINITY,
             t_min: f64::INFINITY,
             t_max: f64::NEG_INFINITY,
@@ -107,8 +111,9 @@ fn lateral(
             if i == 0 {
                 hint = p;
             }
-            let on = p.s >= 0.0 && p.s < geometry.length() && geometry.between_edges(p);
-            s.overlaps |= on;
+            let between = geometry.between_edges(p);
+            s.overlaps |= between && p.s >= 0.0 && p.s < geometry.length();
+            s.beside |= between;
             if i < 2 {
                 s.rear = s.rear.min(p.s);
             }
@@ -172,13 +177,15 @@ fn lateral(
     // Closing in again, or coming back into the lane, after an earlier sample. A
     // body swings its tail toward the lane it leaves as it turns, a few
     // centimetres, so closing in counts only beyond `SWING` from the furthest
-    // it has been: well inside the passing clearance.
+    // it has been: well inside the passing clearance. Coming back means from
+    // beside the lane, not across its start: a body driving onto the lane past
+    // its start, between its edges there, isn't closing in.
     let swing = swing(&vehicle.spec);
     let mut furthest = f64::NEG_INFINITY;
     let mut turn = 0;
     for j in 0..samples.len() {
         let b = &samples[j];
-        let back = j > 0 && b.overlaps && (!samples[j - 1].overlaps || away(b) < furthest - swing);
+        let back = j > 0 && b.overlaps && (!samples[j - 1].beside || away(b) < furthest - swing);
         if back {
             turn = j + 1;
             furthest = away(b);
