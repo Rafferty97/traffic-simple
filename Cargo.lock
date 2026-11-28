@@ -4338,6 +4338,7 @@ version = "0.0.0"
 dependencies = [
  "glam",
  "serde",
+ "serde_json",
  "traffic-sim",
 ]
 

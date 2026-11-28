@@ -23,6 +23,9 @@ pub enum CompileError {
     Path { road: usize, error: PathError },
     /// A road's lane isn't a valid lane.
     Lane { road: usize, lane: usize, error: LaneError },
+    /// A road's lane has no stations, or one that isn't finite, or they don't
+    /// run forward along the path.
+    Profile { road: usize, lane: usize },
     /// A join or an overlap names a road the network doesn't have.
     NoSuchRoad { road: usize },
     /// A road's lane meets no lane across the join at one of its ends: it
@@ -39,6 +42,12 @@ impl fmt::Display for CompileError {
             CompileError::Path { road, error } => write!(f, "road {road}: {error}"),
             CompileError::Lane { road, lane, error } => {
                 write!(f, "road {road}, lane {lane}: {error}")
+            }
+            CompileError::Profile { road, lane } => {
+                write!(
+                    f,
+                    "road {road}, lane {lane}: its stations are missing, not finite, or not in order along the road"
+                )
             }
             CompileError::NoSuchRoad { road } => {
                 write!(
@@ -177,7 +186,7 @@ impl Compiled {
         let off = PlaceError::OffRoad { road: r, s, length };
         let (point, dir) = description.path.pose(s).ok_or(off)?;
         let (road_lane, _) = description.lanes().nth(lane).expect("it has the lane");
-        let at = point + road_lane.offset * dir.perp();
+        let at = point + road_lane.at(s).offset * dir.perp();
         let bounds = &self.layouts[r].bounds;
         let piece = bounds[1..].partition_point(|&b| b <= s).min(bounds.len() - 2);
         let id = self.lane_id(r, piece, lane);
@@ -212,6 +221,9 @@ pub(crate) struct Piece {
     pub lanes: Vec<(Lane, Vec<f64>)>,
     /// Whether each lane runs in reverse.
     reverse: Vec<bool>,
+    /// Each two of its lanes running the same way side by side all along it,
+    /// their edges touching: the second on the first's left, as it runs.
+    neighbours: Vec<[usize; 2]>,
 }
 
 impl Piece {
@@ -255,6 +267,7 @@ pub fn compile(net: &Network) -> Result<Compiled, CompileError> {
     let cuts = cuts::cuts(&related, &whole);
     let mut lanes = Vec::new();
     let mut layouts = Vec::new();
+    let mut neighbours = Vec::new();
     for (r, (whole, cuts)) in whole.into_iter().zip(&cuts).enumerate() {
         let pieces = match cuts.is_empty() {
             true => vec![whole],
@@ -263,10 +276,17 @@ pub fn compile(net: &Network) -> Result<Compiled, CompileError> {
         let mut bounds: Vec<f64> = pieces.iter().map(|p| p.from).collect();
         bounds.push(net.roads()[r].path.length());
         layouts.push(Layout { first: lanes.len() as u32, bounds });
+        for (k, piece) in pieces.iter().enumerate() {
+            neighbours.extend(piece.neighbours.iter().map(|&[a, b]| (r, k, a, b)));
+        }
         lanes.extend(pieces.into_iter().flat_map(|p| p.lanes).map(|(lane, _)| lane));
     }
     let mut compiled = Compiled { network: net.clone(), sim: SimNetwork::new(lanes), layouts };
-    neighbours(&mut compiled);
+    // Vehicles are free to change between neighbours either way.
+    for (r, k, a, b) in neighbours {
+        let (left, right) = (compiled.lane_id(r, k, b), compiled.lane_id(r, k, a));
+        compiled.sim.set_adjacent(left, right, true, true);
+    }
     for road in (0..net.roads().len()).filter_map(|r| net.road_id(r)) {
         for lane in 0..road.lane_count() {
             for pair in compiled.lanes(road, lane).windows(2) {
@@ -286,6 +306,14 @@ pub fn compile(net: &Network) -> Result<Compiled, CompileError> {
 fn pieces(net: &Network, r: usize, cuts: &[f64]) -> Result<Vec<Piece>, CompileError> {
     let road = &net.roads()[r];
     let length = road.path.length();
+    for (i, (lane, _)) in road.lanes().enumerate() {
+        if !lane.is_valid() {
+            return Err(CompileError::Profile { road: r, lane: i });
+        }
+    }
+    // Where its lanes ease, along the road.
+    let eases: Vec<f64> =
+        road.lanes().flat_map(|(lane, _)| lane.vertices(LANE_TOLERANCE)).collect();
     let bounds: Vec<f64> =
         std::iter::once(0.0).chain(cuts.iter().copied()).chain([length]).collect();
     let mut out = Vec::new();
@@ -294,25 +322,57 @@ fn pieces(net: &Network, r: usize, cuts: &[f64]) -> Result<Vec<Piece>, CompileEr
             true => road.path.clone(),
             false => road.path.slice(w[0], w[1]),
         };
+        let extra: Vec<f64> = eases.iter().map(|s| s - w[0]).collect();
         let line = path
-            .sample(LANE_TOLERANCE)
+            .sample(LANE_TOLERANCE, &extra)
             .map_err(|error| CompileError::Path { road: r, error })?;
+        // Each vertex's distance along the road.
+        let along: Vec<f64> = line.s.iter().map(|s| w[0] + s).collect();
         let mut lanes = Vec::new();
         let mut reverses = Vec::new();
         for (i, (lane, reverse)) in road.lanes().enumerate() {
-            let mut points = line.offset(lane.offset);
+            let offsets: Vec<f64> = along.iter().map(|&s| lane.at(s).offset).collect();
+            let mut points = line.offset(&offsets);
+            let mut half_widths: Vec<[f64; 2]> = along
+                .iter()
+                .map(|&s| {
+                    let at = lane.at(s);
+                    [at.left, at.right]
+                })
+                .collect();
             if reverse {
                 points.reverse();
+                half_widths.reverse();
             }
-            let half_widths = vec![[lane.left, lane.right]; points.len()];
             let way = traffic_sim::RoadId(2 * r as u32 + u32::from(reverse));
             let built = Lane::with_half_widths(&points, &half_widths, road.speed_limit, way)
                 .map_err(|error| CompileError::Lane { road: r, lane: i, error })?;
             lanes.push((built, arc_lengths(&points)));
             reverses.push(reverse);
         }
-        let s = line.s.iter().map(|s| w[0] + s).collect();
-        out.push(Piece { from: w[0], s, lanes, reverse: reverses });
+        // `b` is on `a`'s left, as `a` runs, if its edge on the right touches
+        // `a`'s edge on the left at every vertex.
+        let mut neighbours = Vec::new();
+        let described: Vec<_> = road.lanes().collect();
+        for (a, &(lane_a, reverse_a)) in described.iter().enumerate() {
+            for (b, &(lane_b, reverse_b)) in described.iter().enumerate() {
+                if a == b || reverse_a != reverse_b {
+                    continue;
+                }
+                let touches = along.iter().all(|&s| {
+                    let [a_right, a_left] = lane_a.edges(s, reverse_a);
+                    let [b_right, b_left] = lane_b.edges(s, reverse_b);
+                    match reverse_a {
+                        false => (b_right - a_left).abs() < SAME_POINT,
+                        true => (b_left - a_right).abs() < SAME_POINT,
+                    }
+                });
+                if touches {
+                    neighbours.push([a, b]);
+                }
+            }
+        }
+        out.push(Piece { from: w[0], s: along, lanes, reverse: reverses, neighbours });
     }
     Ok(out)
 }
@@ -324,38 +384,6 @@ fn arc_lengths(points: &[DVec2]) -> Vec<f64> {
         s.push(s[s.len() - 1] + w[0].distance(w[1]));
     }
     s
-}
-
-/// Makes neighbours of each two lanes of a road running the same way whose
-/// edges touch, on each of its pieces, vehicles free to change between them
-/// either way.
-fn neighbours(compiled: &mut Compiled) {
-    for (r, road) in compiled.network.roads().iter().enumerate() {
-        let lanes: Vec<_> = road.lanes().collect();
-        let pieces = compiled.layouts[r].bounds.len() - 1;
-        for (a, &(lane_a, reverse_a)) in lanes.iter().enumerate() {
-            for (b, &(lane_b, reverse_b)) in lanes.iter().enumerate() {
-                if a == b || reverse_a != reverse_b {
-                    continue;
-                }
-                // `b` is on `a`'s left, as `a` runs, if its edge on the right
-                // touches `a`'s edge on the left.
-                let [a_right, a_left] = lane_a.edges(reverse_a);
-                let [b_right, b_left] = lane_b.edges(reverse_b);
-                let touches = match reverse_a {
-                    false => (b_right - a_left).abs() < SAME_POINT,
-                    true => (b_left - a_right).abs() < SAME_POINT,
-                };
-                if !touches {
-                    continue;
-                }
-                for k in 0..pieces {
-                    let (left, right) = (compiled.lane_id(r, k, b), compiled.lane_id(r, k, a));
-                    compiled.sim.set_adjacent(left, right, true, true);
-                }
-            }
-        }
-    }
 }
 
 /// Connects the lanes at each join wherever one ends where another starts:
@@ -452,7 +480,7 @@ mod test {
     use traffic_sim::Side;
 
     use super::*;
-    use crate::{Path, Road, RoadLane, kmh};
+    use crate::{Path, Road, RoadLane, Station, kmh};
 
     /// The simulation's lane for a road's `i`th lane, which isn't cut.
     fn only(c: &Compiled, road: RoadId, i: usize) -> LaneId {
@@ -472,7 +500,7 @@ mod test {
     }
 
     fn lane(offset: f64) -> RoadLane {
-        RoadLane { offset, left: 1.75, right: 1.75 }
+        RoadLane::new(offset, 3.5)
     }
 
     /// A straight 100 m road with two lanes each way.
@@ -677,6 +705,79 @@ mod test {
         let after = c.place(main, 0, cut + 1.0, 10.0).unwrap();
         assert_eq!(after.lane, pieces[1]);
         assert!((after.s - 1.0).abs() < 1e-6, "{}", after.s);
+    }
+
+    #[test]
+    fn a_lane_follows_its_profile_and_has_neighbours_only_where_it_touches_them() {
+        // The outer lane eases in over the inner one from 100 m to 180 m.
+        let mut net = Network::new(Side::Left);
+        let easing = RoadLane::through(vec![
+            Station::new(100.0, -5.25, 3.5),
+            Station::new(180.0, -1.75, 3.5),
+        ]);
+        let road = net.add_road(Road {
+            path: line((0.0, 0.0), (200.0, 0.0)),
+            speed_limit: kmh(60.0),
+            forward: vec![lane(-1.75), easing.clone()],
+            reverse: vec![],
+        });
+        let c = compile(&net).unwrap();
+        let sim = c.sim_network();
+        // Cut where they start to overlap.
+        let (inner, outer) = (c.lanes(road, 0), c.lanes(road, 1));
+        assert_eq!((inner.len(), outer.len()), (2, 2));
+        // Each vertex where the ease puts it.
+        for &piece in &outer {
+            for p in sim.lane(piece).geometry().centerline() {
+                assert!((p.y - easing.at(p.x).offset).abs() < 0.002, "{p}");
+            }
+        }
+        // Side by side until then, and not where they ease together.
+        let right = |lane: LaneId| sim.lane(lane).adj(Side::Right).map(|n| n.lane);
+        assert_eq!(right(inner[0]), Some(outer[0]));
+        assert_eq!(right(inner[1]), None);
+    }
+
+    #[test]
+    fn a_lane_narrowing_beside_its_neighbour_stays_its_neighbour() {
+        // The outer lane narrows to half its width, its edge against the inner
+        // lane's staying put.
+        let mut net = Network::new(Side::Left);
+        let narrowing = RoadLane::through(vec![
+            Station::new(50.0, -5.25, 3.5),
+            Station::new(150.0, -4.375, 1.75),
+        ]);
+        let road = net.add_road(Road {
+            path: line((0.0, 0.0), (200.0, 0.0)),
+            speed_limit: kmh(60.0),
+            forward: vec![lane(-1.75), narrowing],
+            reverse: vec![],
+        });
+        let c = compile(&net).unwrap();
+        let sim = c.sim_network();
+        let neighbour = sim.lane(only(&c, road, 0)).adj(Side::Right).map(|n| n.lane);
+        assert_eq!(neighbour, Some(only(&c, road, 1)));
+        let half_widths = sim.lane(only(&c, road, 1)).geometry().half_widths();
+        assert_eq!(half_widths.last(), Some(&[0.875, 0.875]));
+    }
+
+    #[test]
+    fn a_profile_running_backward_fails_to_compile() {
+        let mut net = Network::new(Side::Left);
+        let backward = RoadLane::through(vec![
+            Station::new(80.0, 0.0, 3.5),
+            Station::new(20.0, 1.0, 3.5),
+        ]);
+        net.add_road(Road {
+            path: line((0.0, 0.0), (100.0, 0.0)),
+            speed_limit: kmh(60.0),
+            forward: vec![backward],
+            reverse: vec![],
+        });
+        assert_eq!(
+            compile(&net).err(),
+            Some(CompileError::Profile { road: 0, lane: 0 })
+        );
     }
 
     #[test]

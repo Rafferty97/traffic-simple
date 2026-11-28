@@ -77,41 +77,66 @@ const INSIDE: f64 = 0.05;
 /// inner edge lines end where the roads meet; roads at other grades keep
 /// theirs.
 pub fn render(net: &Network, tolerance: f64) -> Result<RenderGeometry, CompileError> {
-    // Each road's surfaces and markings.
+    // Each road's surfaces, one for each lane, and markings.
     let mut roads: Vec<(Vec<Strip>, Vec<Marking>)> = Vec::new();
     for (r, road) in net.roads().iter().enumerate() {
-        let mut out = (Vec::new(), Vec::new());
+        let eases: Vec<f64> = road.lanes().flat_map(|(lane, _)| lane.vertices(tolerance)).collect();
         let line = road
             .path
-            .sample(tolerance)
+            .sample(tolerance, &eases)
             .map_err(|error| CompileError::Path { road: r, error })?;
-        let along = |offset: f64| line.offset(offset);
-        // Its lanes across it, from its path's left to its right.
-        let mut lanes: Vec<(&RoadLane, bool)> = road.lanes().collect();
-        lanes.sort_by(|a, b| b.0.offset.total_cmp(&a.0.offset));
-        // Runs of lanes side by side, each a carriageway: its surface, edge
-        // lines either side, and a line between each two of its lanes.
-        let mut start = 0;
+        let lanes: Vec<(&RoadLane, bool)> = road.lanes().collect();
+        // Each lane's edges at each vertex, right then left of the path.
+        let edges: Vec<Vec<[f64; 2]>> = lanes
+            .iter()
+            .map(|&(lane, reverse)| line.s.iter().map(|&s| lane.edges(s, reverse)).collect())
+            .collect();
+        let edge =
+            |i: usize, side: usize| -> Vec<f64> { edges[i].iter().map(|e| e[side]).collect() };
+        let strips = (0..lanes.len())
+            .map(|i| Strip {
+                left: line.offset(&edge(i, 1)),
+                right: line.offset(&edge(i, 0)),
+            })
+            .collect();
+        let mut markings = Vec::new();
         for i in 0..lanes.len() {
-            let next = lanes.get(i + 1);
-            let [right, _] = lanes[i].0.edges(lanes[i].1);
-            let touches = next.is_some_and(|n| (n.0.edges(n.1)[1] - right).abs() < SAME_POINT);
-            if let Some(&(_, reverse)) = next.filter(|_| touches) {
-                let style = match reverse == lanes[i].1 {
-                    true => MarkingStyle::Dashed,
-                    false => MarkingStyle::Centre,
-                };
-                out.1.push(Marking { points: along(right), style });
-                continue;
+            for side in [0, 1] {
+                // Each segment's line, if it has one, by its middle.
+                let styles: Vec<Option<MarkingStyle>> = (0..line.points.len() - 1)
+                    .map(|k| {
+                        let mid = |j: usize| -> [f64; 2] {
+                            let [a, b] = [edges[j][k], edges[j][k + 1]];
+                            [0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])]
+                        };
+                        let at = mid(i)[side];
+                        let others = (0..lanes.len()).filter(|&j| j != i);
+                        style(
+                            at,
+                            side,
+                            lanes[i].1,
+                            i,
+                            others.map(|j| (j, mid(j), lanes[j].1)),
+                        )
+                    })
+                    .collect();
+                let offsets = edge(i, side);
+                let points = line.offset(&offsets);
+                let mut k = 0;
+                while k < styles.len() {
+                    let Some(style) = styles[k] else {
+                        k += 1;
+                        continue;
+                    };
+                    let end = (k..styles.len())
+                        .find(|&j| styles[j] != Some(style))
+                        .unwrap_or(styles.len());
+                    markings.push(Marking { points: points[k..=end].to_vec(), style });
+                    k = end;
+                }
             }
-            let left = lanes[start].0.edges(lanes[start].1)[1];
-            out.0.push(Strip { left: along(left), right: along(right) });
-            for edge in [left, right] {
-                out.1.push(Marking { points: along(edge), style: MarkingStyle::Edge });
-            }
-            start = i + 1;
         }
-        roads.push(out);
+        roads.push((strips, markings));
     }
     // Each road's markings, but where they are on a related road's surface.
     let mut out = RenderGeometry::default();
@@ -142,6 +167,46 @@ pub fn render(net: &Network, tolerance: f64) -> Result<RenderGeometry, CompileEr
     }
     out.roads = roads.into_iter().flat_map(|(strips, _)| strips).collect();
     Ok(out)
+}
+
+/// The line along a lane's edge `at`, an offset from the road's path, on its
+/// right (`side` 0) or left (1), on a lane running in `reverse` or not, the
+/// `i`th of its road, beside its road's other lanes, each with its index, its
+/// edges and whether it runs in reverse. None where it is inside another lane,
+/// as where two converge; a line between them, drawn from the lane on the
+/// right, where it touches another beside it, dashed between lanes running the
+/// same way and a centre line between opposite ones; and an edge line
+/// elsewhere, drawn once where two lanes' edges coincide.
+fn style(
+    at: f64,
+    side: usize,
+    reverse: bool,
+    i: usize,
+    others: impl Iterator<Item = (usize, [f64; 2], bool)>,
+) -> Option<MarkingStyle> {
+    let mut edge = Some(MarkingStyle::Edge);
+    for (j, [right, left], other_reverse) in others {
+        if right + SAME_POINT < at && at < left - SAME_POINT {
+            return None;
+        }
+        // Touching it, it beyond the edge.
+        let beyond = match side {
+            0 => (left - at).abs() < SAME_POINT && right < at - SAME_POINT,
+            _ => (right - at).abs() < SAME_POINT && left > at + SAME_POINT,
+        };
+        if beyond {
+            return match side {
+                0 => None,
+                _ if reverse == other_reverse => Some(MarkingStyle::Dashed),
+                _ => Some(MarkingStyle::Centre),
+            };
+        }
+        // The same edge as one before it.
+        if j < i && ([right, left][side] - at).abs() < SAME_POINT {
+            edge = None;
+        }
+    }
+    edge
 }
 
 /// The stretches of `line` not inside the polygon `area` by more than
@@ -242,14 +307,20 @@ mod test {
     use traffic_sim::Side;
 
     use super::*;
-    use crate::{Path, Road, kmh};
+    use crate::{Path, Road, Station, kmh};
 
     fn lane(offset: f64) -> RoadLane {
-        RoadLane { offset, left: 1.75, right: 1.75 }
+        RoadLane::new(offset, 3.5)
     }
 
-    fn styles(geometry: &RenderGeometry) -> Vec<MarkingStyle> {
-        geometry.markings.iter().map(|m| m.style).collect()
+    /// How many lines of each style it has: centre, dashed and edge.
+    fn styles(geometry: &RenderGeometry) -> [usize; 3] {
+        let count = |style| geometry.markings.iter().filter(|m| m.style == style).count();
+        [
+            count(MarkingStyle::Centre),
+            count(MarkingStyle::Dashed),
+            count(MarkingStyle::Edge),
+        ]
     }
 
     #[test]
@@ -262,17 +333,16 @@ mod test {
             reverse: vec![lane(1.75)],
         });
         let geometry = render(&net, 0.01).unwrap();
-        assert_eq!(geometry.roads.len(), 1);
-        assert_eq!(
-            geometry.roads[0].left,
-            [DVec2::new(0.0, 3.5), DVec2::new(100.0, 3.5)]
-        );
-        assert_eq!(
-            geometry.roads[0].right,
-            [DVec2::new(0.0, -7.0), DVec2::new(100.0, -7.0)]
-        );
-        use MarkingStyle::*;
-        assert_eq!(styles(&geometry), [Centre, Dashed, Edge, Edge]);
+        // A surface for each lane, together from 3.5 m left of the path to
+        // 7 m right of it.
+        assert_eq!(geometry.roads.len(), 3);
+        let ys = geometry.roads.iter().flat_map(|r| r.left.iter().chain(&r.right)).map(|p| p.y);
+        let (lo, hi) = ys.fold((f64::MAX, f64::MIN), |(lo, hi), y| (lo.min(y), hi.max(y)));
+        assert_eq!((lo, hi), (-7.0, 3.5));
+        assert_eq!(styles(&geometry), [1, 1, 2]);
+        let line = |style| geometry.markings.iter().find(|m| m.style == style).unwrap();
+        assert_eq!(line(MarkingStyle::Centre).points[0].y, 0.0);
+        assert_eq!(line(MarkingStyle::Dashed).points[0].y, -3.5);
     }
 
     #[test]
@@ -286,7 +356,46 @@ mod test {
         });
         let geometry = render(&net, 0.01).unwrap();
         assert_eq!(geometry.roads.len(), 2);
-        assert_eq!(styles(&geometry), [MarkingStyle::Edge; 4]);
+        assert_eq!(styles(&geometry), [0, 0, 4]);
+    }
+
+    /// A road whose outer lane eases in over its inner one, from 100 m to
+    /// 180 m along, until the two are one.
+    fn converging() -> Network {
+        let mut net = Network::new(Side::Left);
+        let easing = RoadLane::through(vec![
+            Station::new(100.0, -5.25, 3.5),
+            Station::new(180.0, -1.75, 3.5),
+        ]);
+        net.add_road(Road {
+            path: Path::new(DVec2::ZERO).line_to(DVec2::new(200.0, 0.0)),
+            speed_limit: kmh(60.0),
+            forward: vec![lane(-1.75), easing],
+            reverse: vec![],
+        });
+        net
+    }
+
+    #[test]
+    fn lanes_converging_in_a_road_have_no_line_between_them_where_they_overlap() {
+        let geometry = render(&converging(), 0.005).unwrap();
+        for marking in &geometry.markings {
+            assert!(!runs_inside(&geometry, marking), "{:?}", marking.points);
+        }
+        // Dashed between them while they are side by side, and no more.
+        let dashed: Vec<_> =
+            geometry.markings.iter().filter(|m| m.style == MarkingStyle::Dashed).collect();
+        assert_eq!(dashed.len(), 1);
+        let end = dashed[0].points.last().unwrap();
+        assert!((end.x - 100.0).abs() < 1.0 && end.y == -3.5, "{end}");
+        // The edges either side run all the way.
+        let reach = |y: f64| {
+            geometry
+                .markings
+                .iter()
+                .any(|m| m.style == MarkingStyle::Edge && m.points[0].y == y)
+        };
+        assert!(reach(0.0) && reach(-7.0));
     }
 
     /// Two one-lane roads curving together from 60 m apart to meet end on,

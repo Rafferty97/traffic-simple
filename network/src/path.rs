@@ -123,7 +123,9 @@ impl Path {
     /// it, or why it can't be: too short, or a slice reaching beyond it. The
     /// simulation's lanes and what is drawn of them are each sampled at their
     /// own tolerance.
-    pub(crate) fn sample(&self, tolerance: f64) -> Result<Polyline, PathError> {
+    /// It has vertices at least at `extra`, distances along it, where they
+    /// are along it, as where a lane's offset or widths ease.
+    pub(crate) fn sample(&self, tolerance: f64, extra: &[f64]) -> Result<Polyline, PathError> {
         let placed: Vec<_> = self.placed().into_iter().filter(|(_, p)| p.length() > 0.0).collect();
         let total = placed.last().map_or(0.0, |(s0, p)| s0 + p.length());
         if total < MIN_LENGTH {
@@ -152,6 +154,7 @@ impl Path {
         };
 
         let mut stations = vec![a, b];
+        stations.extend(extra.iter().map(|s| a + s));
         for (s0, p) in &placed {
             stations.push(*s0);
             stations.extend(p.stations(tolerance).into_iter().map(|s| s0 + s));
@@ -423,9 +426,10 @@ pub(crate) struct Polyline {
 }
 
 impl Polyline {
-    /// The polyline offset by `offset` to the left.
-    pub fn offset(&self, offset: f64) -> Vec<DVec2> {
-        self.points.iter().zip(&self.miters).map(|(&p, &m)| p + offset * m).collect()
+    /// The polyline offset to the left by `offsets`, one at each vertex.
+    pub fn offset(&self, offsets: &[f64]) -> Vec<DVec2> {
+        let miters = self.points.iter().zip(&self.miters);
+        miters.zip(offsets).map(|((&p, &m), &offset)| p + offset * m).collect()
     }
 }
 
@@ -439,7 +443,7 @@ mod test {
 
     #[test]
     fn a_line_is_its_two_ends() {
-        let line = Path::new(p(0.0, 0.0)).line_to(p(100.0, 0.0)).sample(0.01).unwrap();
+        let line = Path::new(p(0.0, 0.0)).line_to(p(100.0, 0.0)).sample(0.01, &[]).unwrap();
         assert_eq!(line.points, [p(0.0, 0.0), p(100.0, 0.0)]);
     }
 
@@ -449,10 +453,10 @@ mod test {
         assert!((path.length() - 200.0).abs() < 1e-9);
         let slice = path.slice(50.0, 150.0);
         assert!((slice.length() - 100.0).abs() < 1e-9);
-        let line = slice.sample(0.01).unwrap();
+        let line = slice.sample(0.01, &[]).unwrap();
         assert_eq!(line.points, [p(50.0, 0.0), p(100.0, 0.0), p(100.0, 50.0)]);
         // A slice of the slice is measured along it.
-        let inner = slice.slice(25.0, 75.0).sample(0.01).unwrap();
+        let inner = slice.slice(25.0, 75.0).sample(0.01, &[]).unwrap();
         assert_eq!(inner.points, [p(75.0, 0.0), p(100.0, 0.0), p(100.0, 25.0)]);
     }
 
@@ -460,15 +464,15 @@ mod test {
     fn a_slice_beyond_the_path_is_refused() {
         let path = Path::new(p(0.0, 0.0)).line_to(p(100.0, 0.0));
         assert!(matches!(
-            path.slice(50.0, 150.0).sample(0.01),
+            path.slice(50.0, 150.0).sample(0.01, &[]),
             Err(PathError::Slice { .. })
         ));
         assert!(matches!(
-            path.slice(60.0, 40.0).sample(0.01),
+            path.slice(60.0, 40.0).sample(0.01, &[]),
             Err(PathError::Slice { .. })
         ));
         assert!(matches!(
-            Path::new(p(0.0, 0.0)).sample(0.01),
+            Path::new(p(0.0, 0.0)).sample(0.01, &[]),
             Err(PathError::TooShort)
         ));
     }
@@ -494,7 +498,7 @@ mod test {
         // Over the mean of the segments either side, as the simulation's speed
         // profiles take a lane's bends: a sharper turn slows vehicles.
         for r in [20.0, 50.0, 160.0, 500.0] {
-            let points = quarter_circle(r).sample(0.01).unwrap().points;
+            let points = quarter_circle(r).sample(0.01, &[]).unwrap().points;
             for w in points.windows(3) {
                 let (a, b) = (w[1] - w[0], w[2] - w[1]);
                 let k = a.angle_to(b).abs() / (0.5 * (a.length() + b.length()));
@@ -511,7 +515,7 @@ mod test {
             .line_to(p(-50.0, -50.0));
         let quarter = 25.0 * std::f64::consts::PI;
         assert!((path.length() - (quarter + 50.0)).abs() < 1e-9);
-        let line = path.sample(0.01).unwrap();
+        let line = path.sample(0.01, &[]).unwrap();
         let n = line.points.len();
         assert!(
             line.points[n - 2].distance(p(0.0, -50.0)) < 1e-9,
@@ -534,7 +538,7 @@ mod test {
     #[test]
     fn a_whole_turn_is_a_circle() {
         let path = Path::new(p(10.0, 0.0)).arc_to(p(0.0, 0.0), std::f64::consts::TAU);
-        let line = path.sample(0.01).unwrap();
+        let line = path.sample(0.01, &[]).unwrap();
         let (first, last) = (line.points[0], *line.points.last().unwrap());
         assert!(first.distance(last) < 1e-9, "{first} and {last}");
         // Counterclockwise: north first.
@@ -546,7 +550,7 @@ mod test {
         // A quarter circle, near enough, of radius 50.
         let k = 0.5523 * 50.0;
         let path = Path::new(p(0.0, 0.0)).cubic_to(p(k, 0.0), p(50.0, 50.0 - k), p(50.0, 50.0));
-        let line = path.sample(0.01).unwrap();
+        let line = path.sample(0.01, &[]).unwrap();
         assert!(line.points.len() > 10);
         assert!(
             (line.points[1].y).abs() < 1e-9,

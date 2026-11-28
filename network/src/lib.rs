@@ -13,12 +13,14 @@
 
 mod compile;
 mod cuts;
+mod lane;
 mod path;
 mod render;
 
 use traffic_sim::Side;
 
 pub use compile::{CompileError, Compiled, PlaceError, compile};
+pub use lane::{RoadLane, Station};
 pub use path::{MIN_LENGTH, Path, PathError, Segment};
 pub use render::{Arrow, Marking, MarkingStyle, RenderGeometry, Strip, render};
 
@@ -125,31 +127,6 @@ impl Road {
     fn lanes(&self) -> impl Iterator<Item = (&RoadLane, bool)> {
         let forward = self.forward.iter().map(|l| (l, false));
         forward.chain(self.reverse.iter().map(|l| (l, true)))
-    }
-}
-
-/// A lane of a road, in meters.
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct RoadLane {
-    /// From the road's path to the lane's centreline, positive to the left of
-    /// the path's direction, whichever way the lane runs.
-    pub offset: f64,
-    /// From the centreline to the lane's left edge, the left of the way the lane
-    /// runs.
-    pub left: f64,
-    /// From the centreline to the lane's right edge, the right of the way the
-    /// lane runs.
-    pub right: f64,
-}
-
-impl RoadLane {
-    /// Its edges, right then left of the path's direction, as offsets from it.
-    fn edges(&self, reverse: bool) -> [f64; 2] {
-        match reverse {
-            false => [self.offset - self.right, self.offset + self.left],
-            true => [self.offset - self.left, self.offset + self.right],
-        }
     }
 }
 

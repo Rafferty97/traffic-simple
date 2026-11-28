@@ -3,10 +3,8 @@
 //! anybody, and across a road at another grade, as if it weren't there.
 
 use glam::DVec2;
-use traffic_network::{Compiled, Network, Path, Road, RoadId, RoadLane, compile, kmh};
+use traffic_network::{Compiled, Network, Path, Road, RoadId, RoadLane, Station, compile, kmh};
 use traffic_sim::{Driver, Side, Simulation, VehicleSpec};
-
-const LANE: RoadLane = RoadLane { offset: 0.0, left: 1.75, right: 1.75 };
 
 fn p(x: f64, y: f64) -> DVec2 {
     DVec2::new(x, y)
@@ -16,7 +14,7 @@ fn one_lane(net: &mut Network, path: Path) -> RoadId {
     net.add_road(Road {
         path,
         speed_limit: kmh(60.0),
-        forward: vec![LANE],
+        forward: vec![RoadLane::new(0.0, 3.5)],
         reverse: vec![],
     })
 }
@@ -211,4 +209,43 @@ fn roads_declared_to_overlap_are_cut_and_related_where_they_do() {
     let declared = related.sim_network().declared_overlaps();
     let pair = |a, b| declared.contains(&[a, b]) || declared.contains(&[b, a]);
     assert!(pair(mine[1], theirs[1]), "{declared:?}");
+}
+
+#[test]
+fn traffic_zips_from_two_lanes_into_one_where_one_eases_in_over_the_other() {
+    // The outer lane eases in over the inner from 150 m to 230 m, and the two
+    // run on as one lane.
+    let mut net = Network::new(Side::Left);
+    let outer = RoadLane::through(vec![
+        Station::new(150.0, -5.25, 3.5),
+        Station::new(230.0, -1.75, 3.5),
+    ]);
+    let two = net.add_road(Road {
+        path: Path::new(p(0.0, 0.0)).line_to(p(250.0, 0.0)),
+        speed_limit: kmh(60.0),
+        forward: vec![RoadLane::new(-1.75, 3.5), outer],
+        reverse: vec![],
+    });
+    let one = net.add_road(Road {
+        path: Path::new(p(250.0, 0.0)).line_to(p(450.0, 0.0)),
+        speed_limit: kmh(60.0),
+        forward: vec![RoadLane::new(-1.75, 3.5)],
+        reverse: vec![],
+    });
+    net.join(two, one);
+    let compiled = compile(&net).unwrap();
+    let mut sim = compiled.simulate();
+    // Side by side, so they have to take turns.
+    for i in 0..7 {
+        for lane in [0, 1] {
+            let at = compiled.place(two, lane, 10.0 + 20.0 * i as f64, kmh(50.0)).unwrap();
+            sim.insert(VehicleSpec::PASSENGER_CAR, Driver::DEFAULT, at);
+        }
+    }
+    run(&mut sim, 90.0);
+    assert_eq!(
+        sim.vehicles().count(),
+        0,
+        "everybody gets through and leaves"
+    );
 }

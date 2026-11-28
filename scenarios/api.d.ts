@@ -41,8 +41,8 @@ declare class Path {
   length(): number;
 }
 
-/** A lane of a road, in meters. */
-interface RoadLane {
+/** A lane's profile across its road, in meters, the same all along it. */
+interface Profile {
   /** From the road's path to the lane's centreline, positive to the path's left. */
   offset: number;
   /** From the centreline to the lane's left edge, as the lane runs. */
@@ -50,6 +50,21 @@ interface RoadLane {
   /** From the centreline to the lane's right edge, as the lane runs. */
   right: number;
 }
+
+/**
+ * A lane's profile across its road at `s` meters along the road's path:
+ * `offset`, `left` and `right` as `Profile` has them.
+ */
+type Station = [s: number, offset: number, left: number, right: number];
+
+/**
+ * A lane of a road: its profile, the same all along, or stations in order
+ * along the road. Between each two stations its offset and widths ease
+ * (smoothstep) from one's to the other's; before the first and after the last
+ * they are those stations'. Every lane runs its road's whole length: a change
+ * in how many lanes there are is another road.
+ */
+type RoadLane = Profile | Station[];
 
 /** A road: a path, lanes beside it, and a speed limit. */
 interface Road {
