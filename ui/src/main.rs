@@ -162,7 +162,7 @@ fn body_colour(
 }
 
 /// Runs the UI, starting on the scenario named on the command line, by its
-/// key (see [`Scenarios::key`]), or on the ring.
+/// key (see [`Scenario::key`]), or on the ring.
 fn main() -> eframe::Result {
     let scenarios = scenarios::list(Path::new(scenarios::DIR)).unwrap_or_default();
     let start = match std::env::args().nth(1) {
@@ -1087,8 +1087,8 @@ fn draw_debug(
     for (_, lane) in sim.network().lanes() {
         if layers.on(Layer::LaneOutlines) {
             let geometry = lane.geometry();
-            // Its sides solid, and its ends dashed and faint, where it meets the
-            // lanes before and after it.
+            // Its sides, and at each end a tick in from each side along the
+            // end, so where lanes meet end to end their ticks coincide.
             let outline: Vec<_> = geometry.outline().collect();
             let n = outline.len();
             let (left, right) = outline.split_at(n / 2);
@@ -1098,12 +1098,15 @@ fn draw_debug(
                     thin,
                 ));
             }
-            let faint = Stroke::new(0.08, OUTLINE.gamma_multiply(0.5));
-            for ends in [
+            for [a, b] in [
                 [outline[n - 1], outline[0]],
                 [left[left.len() - 1], right[0]],
             ] {
-                painter.extend(Shape::dashed_line(&ends.map(to_scene), faint, 0.4, 0.3));
+                let tick = END_TICK.min(0.5 * a.distance(b));
+                for (corner, other) in [(a, b), (b, a)] {
+                    let inward = corner + tick * (other - corner).normalize_or_zero();
+                    painter.line_segment([to_scene(corner), to_scene(inward)], thin);
+                }
             }
         }
 
@@ -1151,7 +1154,7 @@ fn draw_debug(
         }
     }
 
-    // Solid, over every lane's dashed ends.
+    // Over every lane's outline.
     if layers.on(Layer::Barriers) {
         for (_, lane) in sim.network().lanes() {
             let geometry = lane.geometry();
@@ -1337,6 +1340,8 @@ fn draw_debug(
 
 // Debug view colors, shared by the drawing and the legend.
 const OUTLINE: Color32 = Color32::from_gray(160);
+/// How far in from each side of a lane its ends' ticks reach, in meters.
+const END_TICK: f64 = 0.5;
 const VERTEX: Color32 = Color32::from_gray(200);
 const CENTERLINE: Color32 = Color32::from_gray(110);
 const MAY_CHANGE: Color32 = Color32::from_rgb(80, 200, 80);
@@ -1405,7 +1410,7 @@ impl Layer {
             Layer::LaneOutlines => (
                 "Lane outlines",
                 &[OUTLINE],
-                "Each lane's edges, and its ends dashed and fainter",
+                "Each lane's edges, and a tick 0.5 m in from each at its ends",
             ),
             Layer::Centerlines => (
                 "Centerlines",
