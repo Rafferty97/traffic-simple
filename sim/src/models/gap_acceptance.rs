@@ -475,6 +475,34 @@ fn yields_inside(
     queued.or_else(|| coming().map(|o| o.id))
 }
 
+/// Whether `other`, from another way in than `id`'s, `own_way` along its path,
+/// will take room on `exit_lane` before `id` can: bound for it, not yet on it,
+/// where the rearmost vehicle there counts it, and with every barrier on its
+/// path before it committed to, so nothing left to hold it. One that may yet
+/// wait, as a turner waiting for a gap does, isn't counted: it might wait on
+/// `id`'s own way, and counting it would have each wait on the other.
+fn goes_first(
+    state: &SimState,
+    id: VehicleId,
+    other: VehicleId,
+    own_way: &[LaneId],
+    exit_lane: LaneId,
+) -> bool {
+    let network = &state.network;
+    let v = &state.vehicles[other];
+    let Some(exit) = v.path.iter().position(|&l| l == exit_lane) else {
+        return false;
+    };
+    let held = || {
+        nth(network, v, usize::from(v.committed))
+            .is_some_and(|(lane, _)| v.path[..exit].contains(&lane))
+    };
+    other != id
+        && !own_way.iter().any(|l| v.path.contains(l))
+        && !state.occupants[exit_lane.0 as usize].iter().any(|o| o.id == other)
+        && !held()
+}
+
 /// Whether there is room for `vehicle`, entering a keep-clear zone `length`
 /// long at `s` on its `k`th lane, beyond the zone's far end: room for itself
 /// and every vehicle ahead of it short of the far end, each its length and
@@ -526,14 +554,15 @@ fn room_past(
 
 /// Whether, entering the junction its `k`th lane is in at `s` along it, `vehicle`
 /// would find room on the lane after it, as the road rules require: room for
-/// itself and every vehicle ahead of it on its way through the junction to the
-/// same lane, each its length and minimum gap, behind the rearmost vehicle
-/// there, allowing for how far that one would go on if it stopped comfortably.
-/// Nor would it find room behind a vehicle ahead of it on its way through,
-/// headed elsewhere, that is at rest or will wait inside the junction, as a
-/// turner waiting for a gap does: it couldn't drive through. Unless it will
-/// wait inside the junction itself, so may draw up behind one. Always, for a
-/// barrier that isn't into a junction.
+/// itself, every vehicle ahead of it on its way through the junction to the
+/// same lane, and every vehicle from another way in bound for that lane that
+/// will go before it (see [`goes_first`]), each its length and minimum gap,
+/// behind the rearmost vehicle there, allowing for how far that one would go
+/// on if it stopped comfortably. Nor would it find room behind a vehicle ahead
+/// of it on its way through, headed elsewhere, that is at rest or will wait
+/// inside the junction, as a turner waiting for a gap does: it couldn't drive
+/// through. Unless it will wait inside the junction itself, so may draw up
+/// behind one. Always, for a barrier that isn't into a junction.
 fn room_beyond(state: &SimState, id: VehicleId, vehicle: &Vehicle, k: usize, s: f64) -> bool {
     let network = &state.network;
     let path = &vehicle.path;
@@ -546,6 +575,7 @@ fn room_beyond(state: &SimState, id: VehicleId, vehicle: &Vehicle, k: usize, s: 
         return true;
     };
     let exit_lane = path[exit];
+    let queue = &state.queues[junction.0 as usize];
     let junction = Some(junction);
     // Whether a vehicle will wait inside the junction: its next barrier it
     // hasn't committed to, after this one for this vehicle, is in it.
@@ -574,6 +604,32 @@ fn room_beyond(state: &SimState, id: VehicleId, vehicle: &Vehicle, k: usize, s: 
                 continue;
             }
             needed += other.spec.length + other.spec.min_gap;
+        }
+    }
+    // From other ways in: those above it in the queue, and, unless it is queued
+    // itself, so would join below them, those committed to their way in.
+    let own_way = &path[k..exit];
+    let goes_first = |v: VehicleId| goes_first(state, id, v, own_way, exit_lane);
+    let mine = queue.order.iter().position(|&q| q == id);
+    for &q in &queue.order[..mine.unwrap_or(queue.order.len())] {
+        if goes_first(q) {
+            let other = &state.vehicles[q];
+            needed += other.spec.length + other.spec.min_gap;
+        }
+    }
+    if mine.is_none() {
+        for &lane in &queue.approaching {
+            for o in &state.occupants[lane.0 as usize] {
+                let other = &state.vehicles[o.id];
+                // Once each, by the lane it follows.
+                let coming = !o.is_ghost()
+                    && other.path[0] == lane
+                    && other.committed > 0
+                    && !queue.order.contains(&o.id);
+                if coming && goes_first(o.id) {
+                    needed += other.spec.length + other.spec.min_gap;
+                }
+            }
         }
     }
     let rearmost = state.occupants[exit_lane.0 as usize]

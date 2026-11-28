@@ -239,3 +239,84 @@ fn a_car_waits_its_turn_behind_an_earlier_one_it_would_hold_up() {
         "C, at {tc:.2} s, went before B, at {tb:.2} s, which came first"
     );
 }
+
+/// Two ways in, lanes 0 and 1, each 100 m to a stop line, into connectors, 2
+/// and 3, that meet at the origin and both lead into lane 4: an all-way stop,
+/// each line taking turns with the other. Connector 2, from lane 0, runs 20 m
+/// straight on; connector 3, from lane 1, runs 70 m straight in from 18° to
+/// the south, clear of lane 0, meeting connector 2 only where they merge.
+fn two_ways_into_one() -> SimNetwork {
+    let lane = |a: DVec2, b: DVec2| Lane::new(&[a, b], 3.5, LIMIT, common::alone()).unwrap();
+    let dir = DVec2::from_angle(18f64.to_radians());
+    let mut net = SimNetwork::new(vec![
+        lane(p(-120.0, 0.0), p(-20.0, 0.0)),
+        lane(-170.0 * dir, -70.0 * dir),
+        lane(p(-20.0, 0.0), p(0.0, 0.0)),
+        lane(-70.0 * dir, p(0.0, 0.0)),
+        lane(p(0.0, 0.0), p(300.0, 0.0)),
+    ]);
+    for (from, to) in [(0, 2), (1, 3), (2, 4), (3, 4)] {
+        net.connect(LaneId(from), LaneId(to));
+    }
+    net.add_junction(&[LaneId(2), LaneId(3)]);
+    for (c, other) in [(2, 3), (3, 2)] {
+        let ties = Some(net.add_yields(&[LaneId(other)]));
+        net.add_barrier(
+            LaneId(c),
+            Barrier { ties, ..Barrier::new(0.0, BarrierKind::Stop) },
+        );
+    }
+    net
+}
+
+#[test]
+fn with_room_beyond_for_one_a_car_counts_one_coming_another_way() {
+    // The lane out is held up with room for one car beyond the junction. A car
+    // comes to rest at the line with the long way in, and goes, taking the
+    // room. Then one comes to rest at the line with the short way in, and could
+    // get in ahead of it: counting the first, though it comes another way, it
+    // waits at its line rather than going in and stopping in the junction,
+    // and the first never stops there either.
+    let mut sim = common::sim(two_ways_into_one());
+    let blocker = sim.insert(
+        car(),
+        common::driver(),
+        Placement { lane: LaneId(4), s: 9.0, speed: 0.0, route: Route::default() },
+    );
+    sim.hold(blocker);
+    let spec = car();
+    let s = 100.0 - (spec.length - spec.rear_axle) - common::driver().line_gap;
+    let at = |lane: u32| Placement { lane: LaneId(lane), s, speed: 0.0, route: Route::default() };
+    let long = sim.insert(spec, common::driver(), at(1));
+    run(&mut sim, 4.0, |_| {});
+    assert!(
+        sim.get(long).unwrap().lane() == LaneId(3),
+        "the first didn't go"
+    );
+    let short = sim.insert(spec, Driver { seed: 1, ..common::driver() }, at(0));
+    // At rest on a connector, stopped in the junction.
+    let stuck = |sim: &Simulation, id: VehicleId| {
+        sim.get(id).is_some_and(|v| matches!(v.lane().0, 2 | 3) && v.speed() == 0.0)
+    };
+    run(&mut sim, 40.0, |sim| {
+        for id in [long, short] {
+            assert!(
+                !stuck(sim, id),
+                "{id:?} stopped in the junction at {:.2} s",
+                sim.time()
+            );
+        }
+    });
+    assert_eq!(
+        sim.get(short).unwrap().lane(),
+        LaneId(0),
+        "the second went in"
+    );
+    assert_eq!(sim.get(long).unwrap().lane(), LaneId(4));
+    sim.release(blocker);
+    run(&mut sim, 80.0, |_| {});
+    for id in [long, short] {
+        let through = sim.get(id).is_none_or(|v| v.lane() == LaneId(4));
+        assert!(through, "{id:?} didn't get through");
+    }
+}
