@@ -76,6 +76,15 @@ declare class Network {
   constructor(drivesOn: Side);
   /** Adds a road, and returns its id. */
   addRoad(road: Road): RoadId;
+  /**
+   * Joins the end of `from` to the start of `to`, which should start where
+   * `from` ends: `from`'s forward lanes run on into `to`'s, and `to`'s reverse
+   * lanes into `from`'s. Lanes connect wherever one ends where another starts,
+   * so two lanes meeting one merge, and one meeting two diverge. A road may
+   * join itself, as a ring does. `simulate` throws if a lane at the join meets
+   * none across it.
+   */
+  join(from: RoadId, to: RoadId): void;
 }
 
 type VehicleClass = "Car" | "Truck" | "Bus" | "Tram";

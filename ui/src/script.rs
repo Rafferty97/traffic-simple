@@ -162,6 +162,16 @@ impl JsNetwork {
         Ok(JsRoadId { inner: self.inner.add_road(from_js(&ctx, road)?) })
     }
 
+    fn join<'js>(
+        &mut self,
+        ctx: Ctx<'js>,
+        from: Value<'js>,
+        to: Value<'js>,
+    ) -> rquickjs::Result<()> {
+        self.inner.join(from_js(&ctx, from)?, from_js(&ctx, to)?);
+        Ok(())
+    }
+
     #[qjs(rename = "toJSON")]
     fn to_json<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<Value<'js>> {
         into_js(&ctx, &self.inner)
@@ -306,6 +316,43 @@ mod test {
         let (_, car) = scenario.sim.vehicles().next().expect("a car");
         assert_eq!(car.lane(), traffic_sim::LaneId(1));
         assert!(!scenario.render.roads.is_empty());
+    }
+
+    #[test]
+    fn a_script_joins_roads() {
+        let scenario = run(
+            r#"
+            const net = new Network(Side.Left);
+            const lane = { offset: 0, left: 1.75, right: 1.75 };
+            const a = net.addRoad({ path: new Path([0, 0]).lineTo([100, 0]), speedLimit: kmh(60), forward: [lane] });
+            const b = net.addRoad({ path: new Path([100, 0]).lineTo([200, 0]), speedLimit: kmh(60), forward: [lane] });
+            net.join(a, b);
+            const sim = simulate(net);
+            sim.insert(VehicleSpec.PASSENGER_CAR, Driver.DEFAULT, { lane: a.lane(0), s: 10, speed: kmh(50) });
+            "#,
+            "join.js",
+        )
+        .unwrap();
+        let lanes = scenario.sim.network();
+        assert_eq!(
+            lanes.lane(traffic_sim::LaneId(0)).successors(),
+            [traffic_sim::LaneId(1)]
+        );
+        // And a join that doesn't meet up throws.
+        let error = run(
+            r#"
+            const net = new Network(Side.Left);
+            const lane = { offset: 0, left: 1.75, right: 1.75 };
+            const a = net.addRoad({ path: new Path([0, 0]).lineTo([100, 0]), speedLimit: kmh(60), forward: [lane] });
+            const b = net.addRoad({ path: new Path([110, 0]).lineTo([200, 0]), speedLimit: kmh(60), forward: [lane] });
+            net.join(a, b);
+            simulate(net);
+            "#,
+            "gap.js",
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("meets no lane"), "{error}");
     }
 
     #[test]

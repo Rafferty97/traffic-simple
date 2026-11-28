@@ -4,7 +4,9 @@
 //! tolerance.
 //!
 //! A network is roads, each laid along a [`Path`] with lanes beside it, going
-//! forward along the path or in reverse. The simulation sees only the lanes.
+//! forward along the path or in reverse, and joins, each one road's end running
+//! on into another's start, their lanes connecting where they meet. The
+//! simulation sees only the lanes.
 
 mod compile;
 mod path;
@@ -24,29 +26,55 @@ pub struct Network {
     /// Which side of the road traffic drives on.
     pub drives_on: Side,
     roads: Vec<Road>,
+    /// Each the end of one road running on into the start of another (see
+    /// [`Network::join`]).
+    #[cfg_attr(feature = "serde", serde(default))]
+    joins: Vec<[RoadId; 2]>,
 }
 
 impl Network {
     /// An empty network, its traffic driving on `drives_on`.
     pub fn new(drives_on: Side) -> Self {
-        Self { drives_on, roads: Vec::new() }
+        Self { drives_on, roads: Vec::new(), joins: Vec::new() }
     }
 
     /// Adds a road, and returns its id.
     pub fn add_road(&mut self, road: Road) -> RoadId {
-        let first_lane = self.roads.iter().map(Road::lane_count).sum::<usize>() as u32;
-        let id = RoadId {
-            index: self.roads.len() as u32,
-            first_lane,
-            lanes: road.lane_count() as u32,
-        };
         self.roads.push(road);
-        id
+        self.road_id(self.roads.len() - 1).expect("it was just added")
+    }
+
+    /// Joins the end of `from` to the start of `to`, which should start where
+    /// `from` ends: `from`'s forward lanes run on into `to`'s, and `to`'s
+    /// reverse lanes into `from`'s. Lanes connect wherever one ends where
+    /// another starts, so two lanes meeting one merge, and one meeting two
+    /// diverge. A road may join itself, as a ring does.
+    ///
+    /// Compiling fails if a lane at the join meets none across it.
+    pub fn join(&mut self, from: RoadId, to: RoadId) {
+        self.joins.push([from, to]);
     }
 
     /// Its roads, in the order they were added.
     pub fn roads(&self) -> &[Road] {
         &self.roads
+    }
+
+    /// Its joins, each from one road's end to another's start, in the order
+    /// they were made.
+    pub fn joins(&self) -> &[[RoadId; 2]] {
+        &self.joins
+    }
+
+    /// The id of its `index`th road, if it has one.
+    pub fn road_id(&self, index: usize) -> Option<RoadId> {
+        let road = self.roads.get(index)?;
+        let first_lane = self.roads[..index].iter().map(Road::lane_count).sum::<usize>();
+        Some(RoadId {
+            index: index as u32,
+            first_lane: first_lane as u32,
+            lanes: road.lane_count() as u32,
+        })
     }
 }
 
