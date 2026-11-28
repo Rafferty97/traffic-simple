@@ -506,11 +506,7 @@ fn goes_first(
 /// Whether there is room for `vehicle`, entering a keep-clear zone `length`
 /// long at `s` on its `k`th lane, beyond the zone's far end: room for itself
 /// and every vehicle ahead of it short of the far end, each its length and
-/// minimum gap. Taking the vehicles beyond nearest first: if there is that
-/// room behind one now, there is room; if there wouldn't be even once it had
-/// gone on as far as it would if it stopped comfortably, there isn't; and
-/// otherwise there is room only if there is room behind the next one for this
-/// one too. Along its path, as far as it knows it.
+/// minimum gap (see [`room_ahead`]). Along its path, as far as it knows it.
 fn room_past(
     state: &SimState,
     id: VehicleId,
@@ -521,16 +517,33 @@ fn room_past(
 ) -> bool {
     let network = &state.network;
     let path = &vehicle.path;
-    let mut needed = vehicle.spec.length + vehicle.spec.min_gap;
-    // Where each lane of its path starts, back from the zone's far end.
+    let needed = vehicle.spec.length + vehicle.spec.min_gap;
+    // Where its first lane starts, back from the zone's far end.
     let to_zone: f64 = path[..k].iter().map(|&l| network.lane(l).geometry().length()).sum();
-    let mut start = -(to_zone + s + length);
-    for (j, &lane) in path.iter().enumerate() {
-        let from = if j == 0 {
-            vehicle.lane_pos.s
-        } else {
-            f64::NEG_INFINITY
-        };
+    let start = -(to_zone + s + length);
+    room_ahead(state, id, path, vehicle.lane_pos.s, start, needed)
+}
+
+/// Whether there is `needed` room beyond a point, along `lanes`, the first
+/// starting `start` along from that point, from `from` on it: room for what
+/// is needed, and for every vehicle on them short of the point, each its length
+/// and minimum gap. Taking the vehicles beyond the point nearest first: if
+/// there is that room behind one now, there is room; if there wouldn't be even
+/// once it had gone on as far as it would if it stopped comfortably, there
+/// isn't; and otherwise there is room only if there is room behind the next
+/// one for it too, so one isn't counted on to move on further than the one
+/// ahead of it lets it. Beyond the last lane, as far as anyone knows, there is
+/// room.
+fn room_ahead(
+    state: &SimState,
+    id: VehicleId,
+    lanes: &[LaneId],
+    from: f64,
+    mut start: f64,
+    mut needed: f64,
+) -> bool {
+    for (j, &lane) in lanes.iter().enumerate() {
+        let from = if j == 0 { from } else { f64::NEG_INFINITY };
         for o in state.occupants[lane.0 as usize].iter().filter(|o| o.s() >= from) {
             if o.is_ghost() || o.id == id {
                 continue;
@@ -547,7 +560,7 @@ fn room_past(
             }
             needed += other.spec.length + other.spec.min_gap;
         }
-        start += network.lane(lane).geometry().length();
+        start += state.network.lane(lane).geometry().length();
     }
     true
 }
@@ -557,9 +570,9 @@ fn room_past(
 /// itself, every vehicle ahead of it on its way through the junction to the
 /// same lane, and every vehicle from another way in bound for that lane that
 /// will go before it (see [`goes_first`]), each its length and minimum gap,
-/// behind the rearmost vehicle there, or, with none, on the lanes after it,
-/// as far as it knows its way, allowing for how far that one would go on if it
-/// stopped comfortably. Nor would it find room behind a vehicle ahead
+/// along its path from the lane out's start, as far as it knows its way,
+/// among the vehicles there (see [`room_ahead`]), so none is counted on to
+/// move on further than the one ahead of it lets it. Nor would it find room behind a vehicle ahead
 /// of it on its way through, headed elsewhere, that is at rest or will wait
 /// inside the junction, as a turner waiting for a gap does: it couldn't drive
 /// through. Unless it will wait inside the junction itself, so may draw up
@@ -604,6 +617,10 @@ fn room_beyond(state: &SimState, id: VehicleId, vehicle: &Vehicle, k: usize, s: 
                 }
                 continue;
             }
+            // Already on the lane out, it is counted there.
+            if state.occupants[exit_lane.0 as usize].iter().any(|r| r.id == o.id) {
+                continue;
+            }
             needed += other.spec.length + other.spec.min_gap;
         }
     }
@@ -633,19 +650,6 @@ fn room_beyond(state: &SimState, id: VehicleId, vehicle: &Vehicle, k: usize, s: 
             }
         }
     }
-    // Behind the rearmost vehicle along its path from the lane out, past any
-    // lanes empty before it, as far as it knows its way.
-    let mut start = 0.0;
-    for &lane in &path[exit..] {
-        let rearmost =
-            state.occupants[lane.0 as usize].iter().find(|o| !o.is_ghost() && o.id != id);
-        if let Some(o) = rearmost {
-            return start + o.s() + state.vehicles[o.id].comfortable_stop() >= needed;
-        }
-        start += network.lane(lane).geometry().length();
-        if start >= needed {
-            return true;
-        }
-    }
-    true
+    // Those on the lane out, and beyond, from its start.
+    room_ahead(state, id, &path[exit..], f64::NEG_INFINITY, 0.0, needed)
 }

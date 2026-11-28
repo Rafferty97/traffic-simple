@@ -401,3 +401,57 @@ fn room_beyond_counts_on_past_a_short_empty_lane_out() {
         "it didn't go once there was room"
     );
 }
+
+#[test]
+fn room_beyond_doesnt_count_on_a_car_moving_on_that_cant() {
+    // A stop line into a 20 m junction and out onto a long lane, where a car is
+    // held at rest 10 m in, and another rolls up behind it from the lane's
+    // start: braking comfortably it would go 12 m on, but it stops behind the
+    // held car, leaving too little room for a car behind it. A car at rest at
+    // the line waits there rather than going in and stopping in the junction.
+    let lane = |a: DVec2, b: DVec2| Lane::new(&[a, b], 3.5, LIMIT, common::alone()).unwrap();
+    let mut net = SimNetwork::new(vec![
+        lane(p(-120.0, 0.0), p(-20.0, 0.0)),
+        lane(p(-20.0, 0.0), p(0.0, 0.0)),
+        lane(p(0.0, 0.0), p(300.0, 0.0)),
+    ]);
+    for i in 0..2 {
+        net.connect(LaneId(i), LaneId(i + 1));
+    }
+    net.add_junction(&[LaneId(1)]);
+    net.add_barrier(LaneId(1), Barrier::new(0.0, BarrierKind::Stop));
+    let mut sim = common::sim(net);
+    let spec = car();
+    let on_lane_out = |s: f64, speed: f64| Placement {
+        lane: LaneId(2),
+        s: s + spec.rear_axle,
+        speed,
+        route: Route::default(),
+    };
+    let held = sim.insert(spec, common::driver(), on_lane_out(10.0, 0.0));
+    sim.hold(held);
+    let rolling = sim.insert(spec, common::driver(), on_lane_out(0.0, 6.0));
+    let s = 100.0 - (spec.length - spec.rear_axle) - common::driver().line_gap;
+    let id = sim.insert(
+        spec,
+        common::driver(),
+        Placement { lane: LaneId(0), s, speed: 0.0, route: Route::default() },
+    );
+    run(&mut sim, 30.0, |sim| {
+        let v = sim.get(id).unwrap();
+        let stuck = v.lane() == LaneId(1) && v.speed() == 0.0;
+        assert!(!stuck, "it stopped in the junction at {:.2} s", sim.time());
+    });
+    assert_eq!(
+        sim.get(id).unwrap().lane(),
+        LaneId(0),
+        "it went in with no room beyond"
+    );
+    assert!(sim.get(rolling).unwrap().speed() == 0.0);
+    sim.release(held);
+    run(&mut sim, 60.0, |_| {});
+    assert!(
+        sim.get(id).is_none_or(|v| v.lane().0 >= 1),
+        "it didn't go once there was room"
+    );
+}
